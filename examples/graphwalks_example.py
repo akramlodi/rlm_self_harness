@@ -236,7 +236,7 @@ def main():
     parser.add_argument(
         "--max-chars", type=int, default=128_000, help="Max prompt_chars to keep (short subset)."
     )
-    parser.add_argument("--model", default="gemini-2.5-flash-lite")
+    parser.add_argument("--model", default="gemini-3.6-flash")
     parser.add_argument(
         "--max-depth", type=int, default=2, help="2 lets rlm_query() spawn a real child RLM."
     )
