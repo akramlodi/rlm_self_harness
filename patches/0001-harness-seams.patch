@@ -1,16 +1,18 @@
 diff --git a/rlm/core/rlm.py b/rlm/core/rlm.py
-index 43a5819..23c8352 100644
+index 43a5819..d8f39f7 100644
 --- a/rlm/core/rlm.py
 +++ b/rlm/core/rlm.py
-@@ -6,6 +6,7 @@ from typing import Any
+@@ -6,6 +6,9 @@ from typing import Any
  from rlm.clients import BaseLM, get_client
  from rlm.core.lm_handler import LMHandler
  from rlm.core.types import (
++    ANSWER_REDIRECTED,
++    ANSWER_SUBMITTED,
 +    AnswerDecision,
      ClientBackend,
      CodeBlock,
      EnvironmentType,
-@@ -25,8 +26,11 @@ from rlm.utils.exceptions import (
+@@ -25,8 +28,11 @@ from rlm.utils.exceptions import (
      TokenLimitExceededError,
  )
  from rlm.utils.parsing import (
@@ -22,7 +24,7 @@ index 43a5819..23c8352 100644
  )
  from rlm.utils.prompts import (
      RLM_SYSTEM_PROMPT,
-@@ -78,6 +82,11 @@ class RLM:
+@@ -78,6 +84,11 @@ class RLM:
          sub_sampling_args: dict[str, Any] | None = None,
          orchestrator: bool = True,
          user_prologue: str | None = None,
@@ -34,7 +36,7 @@ index 43a5819..23c8352 100644
      ):
          """
          Args:
-@@ -112,6 +121,24 @@ class RLM:
+@@ -112,6 +123,24 @@ class RLM:
              on_subcall_complete: Callback fired when a child RLM completes. Args: (depth, model, duration, error_or_none).
              on_iteration_start: Callback fired when an iteration starts. Args: (depth, iteration_num).
              on_iteration_complete: Callback fired when an iteration completes. Args: (depth, iteration_num, duration).
@@ -59,7 +61,7 @@ index 43a5819..23c8352 100644
          """
          # Sampling args plumbed into backend_kwargs / other_backend_kwargs
          # before the clients are constructed, so they reach the chat-completions
-@@ -173,6 +200,11 @@ class RLM:
+@@ -173,6 +202,11 @@ class RLM:
          self.max_errors = max_errors
          self.system_prompt = custom_system_prompt if custom_system_prompt else RLM_SYSTEM_PROMPT
          self.orchestrator = orchestrator
@@ -71,7 +73,7 @@ index 43a5819..23c8352 100644
          # Optional user-prologue message inserted between the metadata user
          # message and the iter-0 turn prompt. Mirrors RLMTrainEnv's
          # ``user_prologue`` so canonical inference can match envs that
-@@ -285,6 +317,9 @@ class RLM:
+@@ -285,6 +319,9 @@ class RLM:
              if self.compaction and self.environment_type in ("local", "docker"):
                  env_kwargs["compaction"] = True
              env_kwargs["max_concurrent_subcalls"] = self.max_concurrent_subcalls
@@ -81,7 +83,7 @@ index 43a5819..23c8352 100644
              environment: BaseEnv = get_environment(self.environment_type, env_kwargs)
  
              if self.persistent:
-@@ -313,6 +348,7 @@ class RLM:
+@@ -313,6 +350,7 @@ class RLM:
              custom_tools=self.custom_tools,
              root_prompt=root_prompt,
              orchestrator=self.orchestrator,
@@ -89,7 +91,7 @@ index 43a5819..23c8352 100644
          )
          if self.user_prologue:
              message_history.append({"role": "user", "content": self.user_prologue})
-@@ -401,6 +437,8 @@ class RLM:
+@@ -401,6 +439,8 @@ class RLM:
                          )
                      )
  
@@ -98,7 +100,7 @@ index 43a5819..23c8352 100644
                      iteration: RLMIteration = self._completion_turn(
                          prompt=message_history,
                          lm_handler=lm_handler,
-@@ -414,16 +452,45 @@ class RLM:
+@@ -414,16 +454,48 @@ class RLM:
                      # ``answer["content"]`` and setting ``answer["ready"] = True``.
                      # Each environment surfaces that on ``REPLResult.final_answer``.
                      final_answer = None
@@ -106,20 +108,23 @@ index 43a5819..23c8352 100644
                      for block in iteration.code_blocks:
                          if getattr(block.result, "final_answer", None) is not None:
                              final_answer = block.result.final_answer
-+                            answer_inventory = build_repl_inventory(block.result.locals)
++                            # Only the middleware reads the inventory; building it
++                            # otherwise walks the namespace for a value nobody uses.
++                            if self.answer_middleware is not None:
++                                answer_inventory = build_repl_inventory(block.result.locals)
                              break
 +
 +                    # S9: programmatic inspection of the detected answer.
 +                    answer_event: str | None = None
 +                    nudge: str | None = None
 +                    if final_answer is not None:
-+                        answer_event = "answer_submitted"
++                        answer_event = ANSWER_SUBMITTED
 +                        if self.answer_middleware is not None:
 +                            final_answer, nudge = self._apply_answer_middleware(
 +                                final_answer, answer_inventory, environment
 +                            )
 +                            if final_answer is None:
-+                                answer_event = "answer_redirected"
++                                answer_event = ANSWER_REDIRECTED
 +
                      iteration.final_answer = final_answer
  
@@ -144,7 +149,7 @@ index 43a5819..23c8352 100644
                      # If logger is used, log the iteration.
                      if self.logger:
                          self.logger.log(iteration)
-@@ -452,11 +519,12 @@ class RLM:
+@@ -452,11 +524,12 @@ class RLM:
                              metadata=self.logger.get_trajectory() if self.logger else None,
                          )
  
@@ -160,7 +165,7 @@ index 43a5819..23c8352 100644
                      if self.compaction and hasattr(environment, "append_compaction_entry"):
                          environment.append_compaction_entry(new_messages)
  
-@@ -489,6 +557,65 @@ class RLM:
+@@ -489,6 +562,65 @@ class RLM:
                  metadata=self.logger.get_trajectory() if self.logger else None,
              )
  
@@ -226,17 +231,41 @@ index 43a5819..23c8352 100644
      def _check_timeout(self, iteration: int, time_start: float) -> None:
          """Raise TimeoutExceededError if the timeout has been exceeded."""
          if self.max_timeout is None:
+@@ -818,6 +950,12 @@ class RLM:
+             max_tokens=self.max_tokens,
+             max_errors=self.max_errors,
+             custom_system_prompt=self.system_prompt,
++            # Without this the child defaults to orchestrator=True and receives
++            # ORCHESTRATOR_ADDENDUM even when the root does not. That would put the
++            # authors' hand-tuned orchestration guidance back into every recursive
++            # call of a harness whose whole purpose is to start without it.
++            orchestrator=self.orchestrator,
++            capacity_sentence=self.capacity_sentence,
+             other_backends=self.other_backends,
+             other_backend_kwargs=self.other_backend_kwargs,
+             # Give child its own logger so its trajectory is captured in metadata
 diff --git a/rlm/core/types.py b/rlm/core/types.py
-index 2a5c076..ed79036 100644
+index 2a5c076..4839862 100644
 --- a/rlm/core/types.py
 +++ b/rlm/core/types.py
-@@ -111,6 +111,35 @@ class UsageSummary:
+@@ -111,6 +111,46 @@ class UsageSummary:
          )
  
  
 +########################################################
 +########   Types for RLM Runtime Seams        #########
 +########################################################
++
++# The answer-protocol events recorded in a turn's trace metrics. These cross a
++# module boundary: the runtime writes them, and the harness's acceptance gate
++# reads them back to decide whether a run returned its answer from a REPL
++# variable (invariant I3). They are named here so a rename cannot silently
++# desynchronize the two sides and leave the gate reading an event that is never
++# emitted.
++ANSWER_SUBMITTED = "answer_submitted"
++ANSWER_REDIRECTED = "answer_redirected"
++
++AnswerEvent = Literal["answer_submitted", "answer_redirected"]
 +
 +
 +@dataclass
@@ -266,7 +295,7 @@ index 2a5c076..ed79036 100644
  ########################################################
  ########   Types for REPL and RLM Iterations   #########
  ########################################################
-@@ -129,6 +158,9 @@ class RLMChatCompletion:
+@@ -129,6 +169,9 @@ class RLMChatCompletion:
      error: str | None = (
          None  # Set when this single call failed (e.g. in a batch); response is empty.
      )
@@ -276,7 +305,7 @@ index 2a5c076..ed79036 100644
  
      def to_dict(self):
          out = {
-@@ -142,6 +174,8 @@ class RLMChatCompletion:
+@@ -142,6 +185,8 @@ class RLMChatCompletion:
              out["metadata"] = self.metadata
          if self.error is not None:
              out["error"] = self.error
@@ -285,7 +314,7 @@ index 2a5c076..ed79036 100644
          return out
  
      @classmethod
-@@ -154,6 +188,7 @@ class RLMChatCompletion:
+@@ -154,6 +199,7 @@ class RLMChatCompletion:
              execution_time=data.get("execution_time"),
              metadata=data.get("metadata"),
              error=data.get("error"),
@@ -293,7 +322,7 @@ index 2a5c076..ed79036 100644
          )
  
  
-@@ -212,15 +247,21 @@ class RLMIteration:
+@@ -212,15 +258,21 @@ class RLMIteration:
      code_blocks: list[CodeBlock]
      final_answer: str | None = None
      iteration_time: float | None = None
@@ -317,7 +346,7 @@ index 2a5c076..ed79036 100644
  
  ########################################################
 diff --git a/rlm/environments/local_repl.py b/rlm/environments/local_repl.py
-index bed3e6e..67dad13 100644
+index bed3e6e..c33552f 100644
 --- a/rlm/environments/local_repl.py
 +++ b/rlm/environments/local_repl.py
 @@ -21,6 +21,17 @@ from rlm.environments.base_env import (
@@ -375,7 +404,7 @@ index bed3e6e..67dad13 100644
      def _show_vars(self) -> str:
          """Show all available variables in the REPL environment."""
          available = {
-@@ -255,34 +282,164 @@ class LocalREPL(NonIsolatedEnv):
+@@ -255,34 +282,168 @@ class LocalREPL(NonIsolatedEnv):
              return "No variables created yet. Use ```repl``` blocks to create variables."
          return f"Available variables: {available}"
  
@@ -394,7 +423,11 @@ index bed3e6e..67dad13 100644
 +        """Number of extra attempts allowed for a syntax-classified sub-call error."""
 +        if not self._policy_enabled or not self.runtime_policy.get("retry_on_syntax_error"):
 +            return 0
-+        return int(self.runtime_policy.get("max_retries", 1))
++        # ``or 1`` rather than a ``get`` default: the shipped floor policy carries
++        # every field with an explicit ``None``, so a plain default never fires and
++        # ``int(None)`` would raise on the most natural first edit — turning retry on
++        # without also naming a retry count.
++        return int(self.runtime_policy.get("max_retries") or 1)
 +
 +    @staticmethod
 +    def _is_syntax_error(text: str) -> bool:
@@ -552,7 +585,7 @@ index bed3e6e..67dad13 100644
  
          Args:
              prompts: List of prompts to send to the LM.
-@@ -291,24 +448,58 @@ class LocalREPL(NonIsolatedEnv):
+@@ -291,24 +452,58 @@ class LocalREPL(NonIsolatedEnv):
          Returns:
              List of responses in the same order as input prompts.
          """
@@ -620,7 +653,7 @@ index bed3e6e..67dad13 100644
  
      def _rlm_query(self, prompt: str, model: str | None = None) -> str:
          """Spawn a recursive RLM sub-call for deeper thinking on a subtask.
-@@ -322,16 +513,26 @@ class LocalREPL(NonIsolatedEnv):
+@@ -322,16 +517,26 @@ class LocalREPL(NonIsolatedEnv):
              model: Optional model name override for the child.
          """
          if self.subcall_fn is not None:
@@ -653,7 +686,7 @@ index bed3e6e..67dad13 100644
      def _rlm_query_batched(self, prompts: list[str], model: str | None = None) -> list[str]:
          """Spawn recursive RLM sub-calls for multiple prompts in parallel.
  
-@@ -349,38 +550,37 @@ class LocalREPL(NonIsolatedEnv):
+@@ -349,38 +554,37 @@ class LocalREPL(NonIsolatedEnv):
          Returns:
              List of responses in the same order as input prompts.
          """
@@ -711,7 +744,7 @@ index bed3e6e..67dad13 100644
                  ]
                  # Wait for all futures to complete; exceptions are captured inside _run_subcall
                  for future in as_completed(futures):
-@@ -389,9 +589,9 @@ class LocalREPL(NonIsolatedEnv):
+@@ -389,9 +593,9 @@ class LocalREPL(NonIsolatedEnv):
              # Append completions in original prompt order for deterministic metadata
              completions.sort(key=lambda x: x[0])
              for _, completion in completions:
@@ -724,7 +757,7 @@ index bed3e6e..67dad13 100644
          # Fall back to plain batched LM call if no recursive capability
          return self._llm_query_batched(prompts, model)
 diff --git a/rlm/utils/parsing.py b/rlm/utils/parsing.py
-index 2a9aa09..0f4eceb 100644
+index 2a9aa09..f86107f 100644
 --- a/rlm/utils/parsing.py
 +++ b/rlm/utils/parsing.py
 @@ -3,9 +3,27 @@ Parsing utilities for RLM trjaectories.
@@ -839,7 +872,7 @@ index 2a9aa09..0f4eceb 100644
  
      Returns:
          A list of messages to add to the next prompt — always length 1
-@@ -53,17 +138,22 @@ def format_iteration(
+@@ -53,17 +138,35 @@ def format_iteration(
      messages = [{"role": "assistant", "content": iteration.response}]
  
      parts = []
@@ -853,12 +886,25 @@ index 2a9aa09..0f4eceb 100644
 -                + f"... + [{len(result) - max_character_length} chars...]"
 -            )
 +        formatted = format_execution_result(code_block.result)
-+        inventory = build_repl_inventory(code_block.result.locals)
 +        if metadata_builder is None:
-+            result = default_metadata_builder(formatted, inventory, max_character_length)
++            # The default builder ignores the inventory, and building one means
++            # walking the whole namespace and calling ``len`` on every value —
++            # including the prompt and any model-generated object. Unconfigured
++            # runs are the common case, so that scan is skipped rather than
++            # computed and discarded.
++            result = default_metadata_builder(formatted, {}, max_character_length)
++            # The default builder's rule is known exactly, so ask it directly. The
++            # length comparison used for custom builders reports False here: the
++            # replacement suffix can make a just-over-threshold block come back
++            # *longer* than it went in, which silently drops the truncation event
++            # from the failure signature.
++            block_truncated = len(formatted) > max_character_length
 +        else:
-+            result = metadata_builder(formatted, inventory)
-+        truncated = truncated or len(result) < len(formatted)
++            result = metadata_builder(formatted, build_repl_inventory(code_block.result.locals))
++            # An arbitrary builder has no declared rule to consult, so shrinkage is
++            # the only signal available.
++            block_truncated = len(result) < len(formatted)
++        truncated = truncated or block_truncated
          header = f"REPL output (block {i + 1}):" if multi else "REPL output:"
          parts.append(f"{header}\n{result}")
  
