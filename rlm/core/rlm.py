@@ -6,6 +6,8 @@ from typing import Any
 from rlm.clients import BaseLM, get_client
 from rlm.core.lm_handler import LMHandler
 from rlm.core.types import (
+    ANSWER_REDIRECTED,
+    ANSWER_SUBMITTED,
     AnswerDecision,
     ClientBackend,
     CodeBlock,
@@ -456,20 +458,23 @@ class RLM:
                     for block in iteration.code_blocks:
                         if getattr(block.result, "final_answer", None) is not None:
                             final_answer = block.result.final_answer
-                            answer_inventory = build_repl_inventory(block.result.locals)
+                            # Only the middleware reads the inventory; building it
+                            # otherwise walks the namespace for a value nobody uses.
+                            if self.answer_middleware is not None:
+                                answer_inventory = build_repl_inventory(block.result.locals)
                             break
 
                     # S9: programmatic inspection of the detected answer.
                     answer_event: str | None = None
                     nudge: str | None = None
                     if final_answer is not None:
-                        answer_event = "answer_submitted"
+                        answer_event = ANSWER_SUBMITTED
                         if self.answer_middleware is not None:
                             final_answer, nudge = self._apply_answer_middleware(
                                 final_answer, answer_inventory, environment
                             )
                             if final_answer is None:
-                                answer_event = "answer_redirected"
+                                answer_event = ANSWER_REDIRECTED
 
                     iteration.final_answer = final_answer
 

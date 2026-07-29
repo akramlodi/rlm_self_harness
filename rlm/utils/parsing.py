@@ -142,11 +142,15 @@ def format_iteration(
     multi = len(iteration.code_blocks) > 1
     for i, code_block in enumerate(iteration.code_blocks):
         formatted = format_execution_result(code_block.result)
-        inventory = build_repl_inventory(code_block.result.locals)
         if metadata_builder is None:
-            result = default_metadata_builder(formatted, inventory, max_character_length)
+            # The default builder ignores the inventory, and building one means
+            # walking the whole namespace and calling ``len`` on every value —
+            # including the prompt and any model-generated object. Unconfigured
+            # runs are the common case, so that scan is skipped rather than
+            # computed and discarded.
+            result = default_metadata_builder(formatted, {}, max_character_length)
         else:
-            result = metadata_builder(formatted, inventory)
+            result = metadata_builder(formatted, build_repl_inventory(code_block.result.locals))
         truncated = truncated or len(result) < len(formatted)
         header = f"REPL output (block {i + 1}):" if multi else "REPL output:"
         parts.append(f"{header}\n{result}")

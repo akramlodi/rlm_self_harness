@@ -115,6 +115,17 @@ class UsageSummary:
 ########   Types for RLM Runtime Seams        #########
 ########################################################
 
+# The answer-protocol events recorded in a turn's trace metrics. These cross a
+# module boundary: the runtime writes them, and the harness's acceptance gate
+# reads them back to decide whether a run returned its answer from a REPL
+# variable (invariant I3). They are named here so a rename cannot silently
+# desynchronize the two sides and leave the gate reading an event that is never
+# emitted.
+ANSWER_SUBMITTED = "answer_submitted"
+ANSWER_REDIRECTED = "answer_redirected"
+
+AnswerEvent = Literal["answer_submitted", "answer_redirected"]
+
 
 @dataclass
 class AnswerDecision:

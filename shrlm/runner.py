@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from rlm.core.rlm import RLM
-from rlm.core.types import AnswerDecision, RLMChatCompletion
+from rlm.core.types import ANSWER_SUBMITTED, AnswerDecision, RLMChatCompletion
 from rlm.environments.base_env import validate_custom_tools
 from rlm.logger import RLMLogger
 from rlm.utils.prompts import DEFAULT_CAPACITY_SENTENCE, ORCHESTRATOR_ADDENDUM
@@ -79,6 +79,14 @@ PROBE_ANSWER = "boundedness probe answer"
 
 # The REPL names that carry I2 (sub-calls issued by code) and I3 (the answer
 # accumulated in a variable and returned from it). No surface may shadow them.
+#
+# This is a semantic subset of ``base_env.RESERVED_TOOL_NAMES``, not a copy of
+# it: reserved names like ``SHOW_VARS`` are protected for other reasons and
+# carry no invariant. ``validate_custom_tools`` already rejects shadowing of
+# every reserved name; listing these separately is what produces the invariant-
+# specific error instead of a generic one. If the runtime ever gains another
+# sub-call primitive or answer channel, add it here as well as to the reserved
+# set — otherwise it is still protected, but the failure stops explaining why.
 REQUIRED_REPL_PLUMBING: tuple[str, ...] = (
     "llm_query",
     "llm_query_batched",
@@ -555,9 +563,7 @@ def run_metrics(completion: RLMChatCompletion) -> dict[str, Any]:
         "syntax_error_turns": sum(1 for turn in per_turn if turn["syntax_error"]),
         "truncation_events": sum(1 for turn in per_turn if turn["truncation_event"]),
         "answer_events": [turn["answer_event"] for turn in per_turn if turn["answer_event"]],
-        "answer_from_variable": any(
-            turn["answer_event"] == "answer_submitted" for turn in per_turn
-        ),
+        "answer_from_variable": any(turn["answer_event"] == ANSWER_SUBMITTED for turn in per_turn),
         "cost": completion.usage_summary.total_cost,
         "per_turn": per_turn,
     }
