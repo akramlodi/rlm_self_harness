@@ -187,8 +187,6 @@ def build_runtime_policy() -> dict[str, Any]:
         "enabled": False,
         "max_prompt_chars": None,
         "max_batch_width": None,
-        "max_calls_per_turn": None,
-        "max_calls_total": None,
         "max_depth": None,
         "retry_on_syntax_error": None,
         "max_retries": None,

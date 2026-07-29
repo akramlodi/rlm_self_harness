@@ -27,6 +27,7 @@ from rlm.environments.local_repl import (
     LocalREPL,
 )
 from rlm.utils.parsing import (
+    DEFAULT_MAX_CHARACTER_LENGTH,
     build_repl_inventory,
     format_execution_result,
     format_iteration,
@@ -691,3 +692,49 @@ class _RecordingLogger:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestReviewRegressions:
+    """Regressions found in code review of the seam work."""
+
+    def test_retry_enabled_on_the_floor_policy_does_not_crash(self):
+        """Turning retry on without naming a count is the most natural first edit.
+
+        The shipped floor policy carries every field as an explicit ``None``, so a
+        ``get(..., 1)`` default never fires and the budget computation used to raise
+        ``TypeError`` before any sub-call was made.
+        """
+        from shrlm.rlm_harness import build_runtime_policy
+
+        policy = build_runtime_policy()
+        policy["enabled"] = True
+        policy["retry_on_syntax_error"] = True
+
+        env = LocalREPL(runtime_policy=policy)
+        try:
+            assert env._retry_budget() == 1
+        finally:
+            env.cleanup()
+
+    def test_truncation_event_fires_for_a_block_just_over_the_threshold(self):
+        """A just-over-threshold block comes back longer than it went in.
+
+        The default builder replaces the tail with a ``... + [N chars...]`` marker,
+        so a shrinkage test reports no truncation for exactly the blocks that sit
+        closest to the boundary — dropping the event from the failure signature.
+        """
+        oversize = "x" * (DEFAULT_MAX_CHARACTER_LENGTH + 5)
+        iteration = make_iteration(stdout=oversize)
+        metrics: dict[str, object] = {}
+
+        format_iteration(iteration, metrics=metrics)
+
+        assert metrics["truncation_event"] is True
+
+    def test_untruncated_block_reports_no_truncation_event(self):
+        iteration = make_iteration(stdout="short output")
+        metrics: dict[str, object] = {}
+
+        format_iteration(iteration, metrics=metrics)
+
+        assert metrics["truncation_event"] is False

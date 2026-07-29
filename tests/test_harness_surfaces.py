@@ -237,8 +237,6 @@ class TestRuntimePolicy:
             "enabled",
             "max_prompt_chars",
             "max_batch_width",
-            "max_calls_per_turn",
-            "max_calls_total",
             "max_depth",
             "retry_on_syntax_error",
             "max_retries",

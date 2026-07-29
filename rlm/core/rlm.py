@@ -950,6 +950,12 @@ class RLM:
             max_tokens=self.max_tokens,
             max_errors=self.max_errors,
             custom_system_prompt=self.system_prompt,
+            # Without this the child defaults to orchestrator=True and receives
+            # ORCHESTRATOR_ADDENDUM even when the root does not. That would put the
+            # authors' hand-tuned orchestration guidance back into every recursive
+            # call of a harness whose whole purpose is to start without it.
+            orchestrator=self.orchestrator,
+            capacity_sentence=self.capacity_sentence,
             other_backends=self.other_backends,
             other_backend_kwargs=self.other_backend_kwargs,
             # Give child its own logger so its trajectory is captured in metadata

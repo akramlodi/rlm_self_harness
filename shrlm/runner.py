@@ -97,13 +97,16 @@ REQUIRED_REPL_PLUMBING: tuple[str, ...] = (
 
 # The S6 policy's own fields. Anything else in the dict is either an incidental
 # hazard (below) or a typo; both are rejected.
+#
+# Deliberately absent: per-turn and cumulative sub-call ceilings. The runtime has
+# no counter enforcing them, so accepting them here would hand a proposer a knob
+# it could set, validate, and promote while nothing changed — a silently inert
+# edit is worse than a rejected one. Add them back together with the counters.
 POLICY_FIELDS: frozenset[str] = frozenset(
     {
         "enabled",
         "max_prompt_chars",
         "max_batch_width",
-        "max_calls_per_turn",
-        "max_calls_total",
         "max_depth",
         "retry_on_syntax_error",
         "max_retries",

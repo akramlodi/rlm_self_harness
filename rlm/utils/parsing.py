@@ -149,9 +149,18 @@ def format_iteration(
             # runs are the common case, so that scan is skipped rather than
             # computed and discarded.
             result = default_metadata_builder(formatted, {}, max_character_length)
+            # The default builder's rule is known exactly, so ask it directly. The
+            # length comparison used for custom builders reports False here: the
+            # replacement suffix can make a just-over-threshold block come back
+            # *longer* than it went in, which silently drops the truncation event
+            # from the failure signature.
+            block_truncated = len(formatted) > max_character_length
         else:
             result = metadata_builder(formatted, build_repl_inventory(code_block.result.locals))
-        truncated = truncated or len(result) < len(formatted)
+            # An arbitrary builder has no declared rule to consult, so shrinkage is
+            # the only signal available.
+            block_truncated = len(result) < len(formatted)
+        truncated = truncated or block_truncated
         header = f"REPL output (block {i + 1}):" if multi else "REPL output:"
         parts.append(f"{header}\n{result}")
 

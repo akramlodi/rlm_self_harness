@@ -295,7 +295,11 @@ class LocalREPL(NonIsolatedEnv):
         """Number of extra attempts allowed for a syntax-classified sub-call error."""
         if not self._policy_enabled or not self.runtime_policy.get("retry_on_syntax_error"):
             return 0
-        return int(self.runtime_policy.get("max_retries", 1))
+        # ``or 1`` rather than a ``get`` default: the shipped floor policy carries
+        # every field with an explicit ``None``, so a plain default never fires and
+        # ``int(None)`` would raise on the most natural first edit — turning retry on
+        # without also naming a retry count.
+        return int(self.runtime_policy.get("max_retries") or 1)
 
     @staticmethod
     def _is_syntax_error(text: str) -> bool:
