@@ -21,6 +21,17 @@ from rlm.environments.base_env import (
     extract_tool_value,
     validate_custom_tools,
 )
+from rlm.utils.parsing import has_syntax_error
+
+# =============================================================================
+# S6 runtime-policy vocabulary
+# =============================================================================
+
+# Both batched sub-call helpers return ``list[str]``, so an over-budget call is
+# refused in-band with a parseable prefix the root model can read and branch on.
+SUBCALL_REFUSAL_PREFIX = "SUBCALL_REFUSED:"
+# A sub-output rejected by the configured validator is marked, not dropped.
+SUBCALL_INVALID_PREFIX = "SUBCALL_INVALID:"
 
 
 class _AnswerDict(dict):
@@ -162,6 +173,7 @@ class LocalREPL(NonIsolatedEnv):
         custom_sub_tools: dict[str, Any] | None = None,
         compaction: bool = False,
         max_concurrent_subcalls: int = 4,
+        runtime_policy: dict[str, Any] | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -171,6 +183,9 @@ class LocalREPL(NonIsolatedEnv):
             **kwargs,
         )
 
+        # S6 runtime policy. ``None`` or ``{"enabled": False}`` means every seam
+        # below is a pass-through and the environment behaves exactly as shipped.
+        self.runtime_policy: dict[str, Any] = runtime_policy or {}
         self.lm_handler_address = lm_handler_address
         self.subcall_fn = subcall_fn  # Callback for recursive RLM calls (depth > 1 support)
         self.original_cwd = os.getcwd()
@@ -244,6 +259,18 @@ class LocalREPL(NonIsolatedEnv):
     def _capture_answer(self, content: Any) -> None:
         self._last_final_answer = str(content)
 
+    def reset_answer(self) -> None:
+        """Reset the REPL-visible answer dict to ``{"content": "", "ready": False}``.
+
+        Used by the S9 redirect branch. Clearing only ``_last_final_answer`` is
+        not enough: the ``_AnswerDict`` in ``self.locals`` persists across turns
+        and ``_restore_scaffold`` leaves it untouched, so the model's namespace
+        would still read ``ready: True`` and it would conclude it had already
+        submitted an answer.
+        """
+        self.locals["answer"] = _AnswerDict(on_ready=self._capture_answer)
+        self._last_final_answer = None
+
     def _show_vars(self) -> str:
         """Show all available variables in the REPL environment."""
         available = {
@@ -255,34 +282,164 @@ class LocalREPL(NonIsolatedEnv):
             return "No variables created yet. Use ```repl``` blocks to create variables."
         return f"Available variables: {available}"
 
-    def _llm_query(self, prompt: str, model: str | None = None) -> str:
-        """Query the LM with a single plain completion (no REPL, no recursion).
+    # -------------------------------------------------------------------
+    # S6 runtime policy (retry, sub-output validation, hard caps)
+    # -------------------------------------------------------------------
 
-        This always makes a direct LM call via the handler, regardless of depth.
+    @property
+    def _policy_enabled(self) -> bool:
+        """True when an S6 policy is configured and switched on."""
+        return bool(self.runtime_policy.get("enabled"))
 
-        Args:
-            prompt: The prompt to send to the LM.
-            model: Optional model name to use (if handler has multiple clients).
-        """
+    def _retry_budget(self) -> int:
+        """Number of extra attempts allowed for a syntax-classified sub-call error."""
+        if not self._policy_enabled or not self.runtime_policy.get("retry_on_syntax_error"):
+            return 0
+        return int(self.runtime_policy.get("max_retries", 1))
+
+    @staticmethod
+    def _is_syntax_error(text: str) -> bool:
+        """Classify a sub-call result string as a syntax error."""
+        return text.startswith("Error:") and has_syntax_error(text)
+
+    def _validate_sub_output(self, text: str) -> str:
+        """Mark a sub-output invalid when the configured validator rejects it."""
+        validator = self.runtime_policy.get("validate_sub_output") if self._policy_enabled else None
+        if validator is None or validator(text):
+            return text
+        return f"{SUBCALL_INVALID_PREFIX} sub-output rejected by the configured validator"
+
+    def _batch_width_refusal(self, prompts: list[str]) -> list[str] | None:
+        """Whole-call refusal when a batch is wider than the configured cap."""
+        if not self._policy_enabled:
+            return None
+        max_width = self.runtime_policy.get("max_batch_width")
+        if max_width is None or len(prompts) <= max_width:
+            return None
+        refusal = (
+            f"{SUBCALL_REFUSAL_PREFIX} batch width {len(prompts)} "
+            f"exceeds max_batch_width {max_width}"
+        )
+        return [refusal] * len(prompts)
+
+    def _prompt_chars_refusal(self, prompt: str) -> str | None:
+        """Per-element refusal when one prompt is over the configured char ceiling."""
+        if not self._policy_enabled:
+            return None
+        max_chars = self.runtime_policy.get("max_prompt_chars")
+        if max_chars is None or len(prompt) <= max_chars:
+            return None
+        return (
+            f"{SUBCALL_REFUSAL_PREFIX} prompt of {len(prompt)} chars "
+            f"exceeds max_prompt_chars {max_chars}"
+        )
+
+    def _partition_by_prompt_cap(self, prompts: list[str]) -> tuple[list[int], list[str]]:
+        """Split a batch into runnable indices and a pre-filled results list of refusals."""
+        results: list[str] = [""] * len(prompts)
+        allowed: list[int] = []
+        for i, prompt in enumerate(prompts):
+            refusal = self._prompt_chars_refusal(prompt)
+            if refusal is None:
+                allowed.append(i)
+            else:
+                results[i] = refusal
+        return allowed, results
+
+    def _record_call(
+        self,
+        completion: RLMChatCompletion,
+        retries: int = 0,
+        syntax_error: bool = False,
+    ) -> None:
+        """Attach per-call trace metrics and queue the completion for the turn record."""
+        completion.trace_metrics = {
+            "cost": completion.usage_summary.total_cost if completion.usage_summary else None,
+            "retries": retries,
+            "syntax_error": syntax_error,
+        }
+        self._pending_llm_calls.append(completion)
+
+    def _call_with_retry(
+        self,
+        fn: Callable[[str, str | None], tuple[str, RLMChatCompletion | None]],
+        prompt: str,
+        model: str | None,
+    ) -> tuple[str, RLMChatCompletion | None, int, bool]:
+        """Run ``fn`` once, then retry while its result classifies as a syntax error."""
+        text, completion = fn(prompt, model)
+        saw_syntax_error = self._is_syntax_error(text)
+        retries = 0
+        budget = self._retry_budget()
+        while self._is_syntax_error(text) and retries < budget:
+            retries += 1
+            text, completion = fn(prompt, model)
+        return text, completion, retries, saw_syntax_error
+
+    def _retry_batch_element(
+        self,
+        fn: Callable[[str, str | None], tuple[str, RLMChatCompletion | None]],
+        prompt: str,
+        model: str | None,
+        current: str,
+    ) -> tuple[str, RLMChatCompletion | None, int]:
+        """Retry one already-attempted batch element that came back a syntax error."""
+        text = current
+        completion: RLMChatCompletion | None = None
+        retries = 0
+        budget = self._retry_budget()
+        while self._is_syntax_error(text) and retries < budget:
+            retries += 1
+            text, completion = fn(prompt, model)
+        return text, completion, retries
+
+    # -------------------------------------------------------------------
+    # Sub-call helpers exposed in the REPL
+    # -------------------------------------------------------------------
+
+    def _llm_query_once(
+        self, prompt: str, model: str | None = None
+    ) -> tuple[str, RLMChatCompletion | None]:
+        """One plain LM call. Returns (result_text, completion_or_None)."""
         if not self.lm_handler_address:
-            return "Error: No LM handler configured"
+            return "Error: No LM handler configured", None
 
         try:
             request = LMRequest(prompt=prompt, model=model, depth=self.depth)
             response = send_lm_request(self.lm_handler_address, request)
 
             if not response.success:
-                return f"Error: {response.error}"
+                return f"Error: {response.error}", None
 
-            self._pending_llm_calls.append(response.chat_completion)
-            return response.chat_completion.response
+            return response.chat_completion.response, response.chat_completion
         except Exception as e:
-            return f"Error: LM query failed - {e}"
+            return f"Error: LM query failed - {e}", None
+
+    def _llm_query(self, prompt: str, model: str | None = None) -> str:
+        """Query the LM with a single plain completion (no REPL, no recursion).
+
+        This always makes a direct LM call via the handler, regardless of depth.
+        Under a configured S6 policy, a syntax-classified error is retried and
+        the result is passed through the sub-output validator.
+
+        Args:
+            prompt: The prompt to send to the LM.
+            model: Optional model name to use (if handler has multiple clients).
+        """
+        text, completion, retries, saw_syntax_error = self._call_with_retry(
+            self._llm_query_once, prompt, model
+        )
+        if completion is not None:
+            self._record_call(completion, retries=retries, syntax_error=saw_syntax_error)
+        return self._validate_sub_output(text)
 
     def _llm_query_batched(self, prompts: list[str], model: str | None = None) -> list[str]:
         """Query the LM with multiple prompts concurrently (no REPL, no recursion).
 
         This always makes direct LM calls via the handler, regardless of depth.
+        Under a configured S6 policy, an over-wide batch is refused in full and
+        an over-long prompt is refused per element; both refusals are in-band
+        strings prefixed with ``SUBCALL_REFUSED:``.
 
         Args:
             prompts: List of prompts to send to the LM.
@@ -291,24 +448,58 @@ class LocalREPL(NonIsolatedEnv):
         Returns:
             List of responses in the same order as input prompts.
         """
+        width_refusal = self._batch_width_refusal(prompts)
+        if width_refusal is not None:
+            return width_refusal
+
         if not self.lm_handler_address:
             return ["Error: No LM handler configured"] * len(prompts)
+
+        allowed, results = self._partition_by_prompt_cap(prompts)
         try:
             responses = send_lm_request_batched(
-                self.lm_handler_address, prompts, model=model, depth=self.depth
+                self.lm_handler_address,
+                [prompts[i] for i in allowed],
+                model=model,
+                depth=self.depth,
             )
 
-            results = []
-            for response in responses:
+            for index, response in zip(allowed, responses, strict=True):
                 if not response.success:
-                    results.append(f"Error: {response.error}")
+                    results[index] = f"Error: {response.error}"
                 else:
-                    self._pending_llm_calls.append(response.chat_completion)
-                    results.append(response.chat_completion.response)
-
-            return results
+                    self._record_call(response.chat_completion)
+                    results[index] = response.chat_completion.response
         except Exception as e:
-            return [f"Error: LM query failed - {e}"] * len(prompts)
+            for index in allowed:
+                results[index] = f"Error: LM query failed - {e}"
+            return results
+
+        return self._finalize_batch(self._llm_query_once, prompts, model, allowed, results)
+
+    def _finalize_batch(
+        self,
+        fn: Callable[[str, str | None], tuple[str, RLMChatCompletion | None]],
+        prompts: list[str],
+        model: str | None,
+        allowed: list[int],
+        results: list[str],
+    ) -> list[str]:
+        """Apply the S6 per-element retry and sub-output validation to a batch."""
+        if self._retry_budget():
+            for index in allowed:
+                if not self._is_syntax_error(results[index]):
+                    continue
+                text, completion, retries = self._retry_batch_element(
+                    fn, prompts[index], model, results[index]
+                )
+                if completion is not None:
+                    self._record_call(completion, retries=retries, syntax_error=True)
+                results[index] = text
+
+        for index in allowed:
+            results[index] = self._validate_sub_output(results[index])
+        return results
 
     def _rlm_query(self, prompt: str, model: str | None = None) -> str:
         """Spawn a recursive RLM sub-call for deeper thinking on a subtask.
@@ -322,15 +513,25 @@ class LocalREPL(NonIsolatedEnv):
             model: Optional model name override for the child.
         """
         if self.subcall_fn is not None:
-            try:
-                completion = self.subcall_fn(prompt, model)
-                self._pending_llm_calls.append(completion)
-                return completion.response
-            except Exception as e:
-                return f"Error: RLM query failed - {e}"
+            text, completion, retries, saw_syntax_error = self._call_with_retry(
+                self._rlm_query_once, prompt, model
+            )
+            if completion is not None:
+                self._record_call(completion, retries=retries, syntax_error=saw_syntax_error)
+            return self._validate_sub_output(text)
 
         # Fall back to plain LM call if no recursive capability
         return self._llm_query(prompt, model)
+
+    def _rlm_query_once(
+        self, prompt: str, model: str | None = None
+    ) -> tuple[str, RLMChatCompletion | None]:
+        """One recursive sub-call. Returns (result_text, completion_or_None)."""
+        try:
+            completion = self.subcall_fn(prompt, model)
+            return completion.response, completion
+        except Exception as e:
+            return f"Error: RLM query failed - {e}", None
 
     def _rlm_query_batched(self, prompts: list[str], model: str | None = None) -> list[str]:
         """Spawn recursive RLM sub-calls for multiple prompts in parallel.
@@ -349,38 +550,37 @@ class LocalREPL(NonIsolatedEnv):
         Returns:
             List of responses in the same order as input prompts.
         """
+        width_refusal = self._batch_width_refusal(prompts)
+        if width_refusal is not None:
+            return width_refusal
+
         if self.subcall_fn is not None:
-            # For 0 or 1 prompts, no need for thread pool overhead
-            if len(prompts) <= 1:
-                results = []
-                for prompt in prompts:
-                    try:
-                        completion = self.subcall_fn(prompt, model)
-                        self._pending_llm_calls.append(completion)
-                        results.append(completion.response)
-                    except Exception as e:
-                        results.append(f"Error: RLM query failed - {e}")
-                return results
+            allowed, results = self._partition_by_prompt_cap(prompts)
+
+            # For 0 or 1 runnable prompts, no need for thread pool overhead
+            if len(allowed) <= 1:
+                for index in allowed:
+                    text, completion = self._rlm_query_once(prompts[index], model)
+                    if completion is not None:
+                        self._record_call(completion)
+                    results[index] = text
+                return self._finalize_batch(self._rlm_query_once, prompts, model, allowed, results)
 
             # Parallel execution for multiple prompts
-            max_workers = min(self.max_concurrent_subcalls, len(prompts))
-            # Pre-allocate result slots to preserve ordering
-            results: list[str] = [""] * len(prompts)
+            max_workers = min(self.max_concurrent_subcalls, len(allowed))
             completions: list[tuple[int, RLMChatCompletion]] = []
             lock = threading.Lock()
 
             def _run_subcall(index: int, prompt: str) -> None:
-                try:
-                    completion = self.subcall_fn(prompt, model)
+                text, completion = self._rlm_query_once(prompt, model)
+                if completion is not None:
                     with lock:
                         completions.append((index, completion))
-                    results[index] = completion.response
-                except Exception as e:
-                    results[index] = f"Error: RLM query failed - {e}"
+                results[index] = text
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [
-                    executor.submit(_run_subcall, i, prompt) for i, prompt in enumerate(prompts)
+                    executor.submit(_run_subcall, index, prompts[index]) for index in allowed
                 ]
                 # Wait for all futures to complete; exceptions are captured inside _run_subcall
                 for future in as_completed(futures):
@@ -389,9 +589,9 @@ class LocalREPL(NonIsolatedEnv):
             # Append completions in original prompt order for deterministic metadata
             completions.sort(key=lambda x: x[0])
             for _, completion in completions:
-                self._pending_llm_calls.append(completion)
+                self._record_call(completion)
 
-            return results
+            return self._finalize_batch(self._rlm_query_once, prompts, model, allowed, results)
 
         # Fall back to plain batched LM call if no recursive capability
         return self._llm_query_batched(prompts, model)

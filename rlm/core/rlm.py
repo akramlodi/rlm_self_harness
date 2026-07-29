@@ -6,6 +6,7 @@ from typing import Any
 from rlm.clients import BaseLM, get_client
 from rlm.core.lm_handler import LMHandler
 from rlm.core.types import (
+    AnswerDecision,
     ClientBackend,
     CodeBlock,
     EnvironmentType,
@@ -25,8 +26,11 @@ from rlm.utils.exceptions import (
     TokenLimitExceededError,
 )
 from rlm.utils.parsing import (
+    MetadataBuilder,
+    build_repl_inventory,
     find_code_blocks,
     format_iteration,
+    has_syntax_error,
 )
 from rlm.utils.prompts import (
     RLM_SYSTEM_PROMPT,
@@ -78,6 +82,11 @@ class RLM:
         sub_sampling_args: dict[str, Any] | None = None,
         orchestrator: bool = True,
         user_prologue: str | None = None,
+        metadata_builder: MetadataBuilder | None = None,
+        answer_middleware: Callable[[str, dict[str, tuple[str, int]]], AnswerDecision]
+        | None = None,
+        runtime_policy: dict[str, Any] | None = None,
+        capacity_sentence: str | None = None,
     ):
         """
         Args:
@@ -112,6 +121,24 @@ class RLM:
             on_subcall_complete: Callback fired when a child RLM completes. Args: (depth, model, duration, error_or_none).
             on_iteration_start: Callback fired when an iteration starts. Args: (depth, iteration_num).
             on_iteration_complete: Callback fired when an iteration completes. Args: (depth, iteration_num, duration).
+            metadata_builder: Optional S7 seam. Called as
+                ``builder(execution_result, repl_inventory)`` once per executed code
+                block to produce what carries into the next turn. ``repl_inventory``
+                is the redacted ``{name: (type_name, length)}`` view of the REPL
+                namespace — never the values. Defaults to the shipped 20K
+                head-truncation.
+            answer_middleware: Optional S9 seam. Called as
+                ``middleware(final_answer, repl_inventory)`` when a final answer is
+                detected; returns an ``AnswerDecision`` that either accepts the
+                answer (identity, the default when unset) or redirects — suppressing
+                the answer, resetting the REPL answer dict, and injecting a nudge.
+            runtime_policy: Optional S6 policy dict handed to the ``local``
+                environment: ``enabled``, ``max_batch_width``, ``max_prompt_chars``,
+                ``retry_on_syntax_error``, ``max_retries``, ``validate_sub_output``.
+                Applies to this RLM's own environment; child RLMs spawned by
+                ``rlm_query`` build their own. Defaults to unbounded pass-through.
+            capacity_sentence: Optional S6 sentence stating sub-call capacity in the
+                metadata user message. Defaults to the shipped ~100k tokens string.
         """
         # Sampling args plumbed into backend_kwargs / other_backend_kwargs
         # before the clients are constructed, so they reach the chat-completions
@@ -173,6 +200,11 @@ class RLM:
         self.max_errors = max_errors
         self.system_prompt = custom_system_prompt if custom_system_prompt else RLM_SYSTEM_PROMPT
         self.orchestrator = orchestrator
+        # Harness seams. All default to None, i.e. the shipped behavior.
+        self.metadata_builder = metadata_builder
+        self.answer_middleware = answer_middleware
+        self.runtime_policy = runtime_policy
+        self.capacity_sentence = capacity_sentence
         # Optional user-prologue message inserted between the metadata user
         # message and the iter-0 turn prompt. Mirrors RLMTrainEnv's
         # ``user_prologue`` so canonical inference can match envs that
@@ -285,6 +317,9 @@ class RLM:
             if self.compaction and self.environment_type in ("local", "docker"):
                 env_kwargs["compaction"] = True
             env_kwargs["max_concurrent_subcalls"] = self.max_concurrent_subcalls
+            # S6 runtime policy is enforced by the local REPL's sub-call helpers.
+            if self.runtime_policy is not None and self.environment_type == "local":
+                env_kwargs["runtime_policy"] = self.runtime_policy
             environment: BaseEnv = get_environment(self.environment_type, env_kwargs)
 
             if self.persistent:
@@ -313,6 +348,7 @@ class RLM:
             custom_tools=self.custom_tools,
             root_prompt=root_prompt,
             orchestrator=self.orchestrator,
+            capacity_sentence=self.capacity_sentence,
         )
         if self.user_prologue:
             message_history.append({"role": "user", "content": self.user_prologue})
@@ -401,6 +437,8 @@ class RLM:
                         )
                     )
 
+                    cost_before = lm_handler.get_usage_summary().total_cost
+
                     iteration: RLMIteration = self._completion_turn(
                         prompt=message_history,
                         lm_handler=lm_handler,
@@ -414,15 +452,44 @@ class RLM:
                     # ``answer["content"]`` and setting ``answer["ready"] = True``.
                     # Each environment surfaces that on ``REPLResult.final_answer``.
                     final_answer = None
+                    answer_inventory: dict[str, tuple[str, int]] = {}
                     for block in iteration.code_blocks:
                         if getattr(block.result, "final_answer", None) is not None:
                             final_answer = block.result.final_answer
+                            answer_inventory = build_repl_inventory(block.result.locals)
                             break
+
+                    # S9: programmatic inspection of the detected answer.
+                    answer_event: str | None = None
+                    nudge: str | None = None
+                    if final_answer is not None:
+                        answer_event = "answer_submitted"
+                        if self.answer_middleware is not None:
+                            final_answer, nudge = self._apply_answer_middleware(
+                                final_answer, answer_inventory, environment
+                            )
+                            if final_answer is None:
+                                answer_event = "answer_redirected"
+
                     iteration.final_answer = final_answer
 
                     # Store as best partial answer (most recent response with content)
                     if iteration.response and iteration.response.strip():
                         self._best_partial_answer = iteration.response
+
+                    turn_metrics = self._build_turn_metrics(
+                        iteration, answer_event, cost_before, lm_handler
+                    )
+                    # Format the iteration for the next prompt. Done before logging
+                    # so the turn record carries the truncation event.
+                    new_messages: list[dict[str, str]] | None = None
+                    if final_answer is None:
+                        new_messages = format_iteration(
+                            iteration,
+                            metadata_builder=self.metadata_builder,
+                            metrics=turn_metrics,
+                        )
+                    iteration.trace_metrics = turn_metrics
 
                     # If logger is used, log the iteration.
                     if self.logger:
@@ -452,11 +519,12 @@ class RLM:
                             metadata=self.logger.get_trajectory() if self.logger else None,
                         )
 
-                    # Format the iteration for the next prompt.
-                    new_messages = format_iteration(iteration)
-
                     # Update message history with the new messages.
+                    assert new_messages is not None
                     message_history.extend(new_messages)
+                    # S9 redirect: push the nudge back to the model and keep going.
+                    if nudge is not None:
+                        message_history.append({"role": "user", "content": nudge})
                     if self.compaction and hasattr(environment, "append_compaction_entry"):
                         environment.append_compaction_entry(new_messages)
 
@@ -488,6 +556,65 @@ class RLM:
                 execution_time=time_end - time_start,
                 metadata=self.logger.get_trajectory() if self.logger else None,
             )
+
+    def _apply_answer_middleware(
+        self,
+        final_answer: str,
+        answer_inventory: dict[str, tuple[str, int]],
+        environment: BaseEnv,
+    ) -> tuple[str | None, str | None]:
+        """
+        Run the S9 middleware on a detected final answer.
+
+        Returns ``(answer, nudge)``. An accepted decision returns
+        ``(answer, None)``; a redirect returns ``(None, nudge)`` after resetting
+        the environment's answer dict so the model's namespace no longer reads
+        ``ready: True``.
+        """
+        decision = self.answer_middleware(final_answer, answer_inventory)
+        if decision.accepted:
+            if decision.answer is None:
+                raise ValueError("Answer middleware accepted an answer but returned answer=None")
+            return decision.answer, None
+
+        if not hasattr(environment, "reset_answer"):
+            raise RuntimeError(
+                f"Answer middleware redirected, but environment "
+                f"'{type(environment).__name__}' does not implement reset_answer(). "
+                "Without it the REPL namespace still reads answer['ready'] = True and "
+                "the run burns to max_iterations."
+            )
+        environment.reset_answer()
+        return None, decision.nudge
+
+    @staticmethod
+    def _build_turn_metrics(
+        iteration: RLMIteration,
+        answer_event: str | None,
+        cost_before: float | None,
+        lm_handler: LMHandler,
+    ) -> dict[str, Any]:
+        """
+        Collect the per-turn trace metrics (KTD5).
+
+        ``truncation_event`` is filled in by ``format_iteration`` when the
+        metadata step actually shortens a block's output.
+        """
+        cost_after = lm_handler.get_usage_summary().total_cost
+        if cost_before is None or cost_after is None:
+            turn_cost = None
+        else:
+            turn_cost = cost_after - cost_before
+
+        return {
+            "sub_call_count": sum(len(block.result.rlm_calls) for block in iteration.code_blocks),
+            "syntax_error": any(
+                has_syntax_error(block.result.stderr) for block in iteration.code_blocks
+            ),
+            "answer_event": answer_event,
+            "truncation_event": False,
+            "cost": turn_cost,
+        }
 
     def _check_timeout(self, iteration: int, time_start: float) -> None:
         """Raise TimeoutExceededError if the timeout has been exceeded."""
