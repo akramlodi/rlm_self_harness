@@ -14,6 +14,12 @@ Layout:
 Naming convention, relied on by the runner and by the surface tests: a builder
 named ``build_<x>`` produces the ``Harness`` field named ``<x>``.
 
+Declared-bound convention, also relied on by the runner: every S7 builder carries
+a ``declared_bound`` attribute stating the largest execution-result size it lets
+through to the next turn. The runner derives S1's truncation sentence from it and
+probes the builder against it, so an S7 edit cannot leave S1 stating a bound the
+runtime does not honor.
+
 Brace convention for the prompt surfaces (S1-S5): every prompt surface's return
 value is concatenated into the string that ``rlm.utils.prompts`` passes through
 ``system_prompt.format(custom_tools_section=...)``. The only replacement field
@@ -210,6 +216,15 @@ def build_metadata(
         The entry that carries into the next turn.
     """
     return default_metadata_builder(stdout, repl_inventory, max_character_length)
+
+
+# S7's declared-bound convention. Every S7 builder carries ``declared_bound``: the
+# largest number of characters of one block's execution result it will ever let
+# through to the next turn. The runner reads it to write S1's truncation sentence
+# and probes the builder against it, so the stated bound and the honored bound
+# cannot drift (see ``shrlm.runner``). A builder without it is rejected at
+# construction rather than assumed to be the shipped default.
+build_metadata.declared_bound = DEFAULT_MAX_CHARACTER_LENGTH
 
 
 def build_repl_helpers() -> dict[str, Any]:

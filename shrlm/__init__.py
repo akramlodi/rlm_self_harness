@@ -11,6 +11,14 @@ from shrlm.rlm_harness import (
     assemble_system_prompt,
     escape_braces,
 )
+from shrlm.runner import (
+    HarnessedRLM,
+    HarnessRun,
+    acceptance_inputs,
+    build_harnessed_rlm,
+    check_harness,
+    run_metrics,
+)
 
 __all__ = [
     "H0",
@@ -19,7 +27,13 @@ __all__ = [
     "INVARIANTS",
     "SURFACES",
     "Harness",
+    "HarnessRun",
+    "HarnessedRLM",
     "Surface",
+    "acceptance_inputs",
     "assemble_system_prompt",
+    "build_harnessed_rlm",
+    "check_harness",
     "escape_braces",
+    "run_metrics",
 ]
