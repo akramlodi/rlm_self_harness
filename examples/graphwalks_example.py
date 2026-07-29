@@ -138,6 +138,31 @@ def score(predicted: list[str], golden: list[str]) -> dict[str, float]:
 
 
 # =============================================================================
+# Deterministic sub-call verification
+#
+# Exposed to the root RLM's REPL as a custom tool (see `custom_tools=` below) so it can
+# check a child's rlm_query() answer exactly, instead of eyeballing set equality.
+# =============================================================================
+
+
+def verify_child(chunk_edges, frontier_in, child_out, excluded, reverse=False):
+    """Did the child correctly take ONE relational hop over ITS slice of edges?
+
+    reverse=False -> follow edges forward  (BFS: children of the frontier)
+    reverse=True  -> follow edges backward (parents of the frontier)
+    """
+    frontier_in, excluded = set(frontier_in), set(excluded)
+
+    if reverse:
+        chunk_edges = [(v, u) for (u, v) in chunk_edges]
+
+    expected = {v for (u, v) in chunk_edges if u in frontier_in}
+    expected -= excluded
+
+    return set(child_out) == expected
+
+
+# =============================================================================
 # Task strategy handed to the root RLM as `root_prompt`
 # =============================================================================
 
@@ -159,21 +184,29 @@ this procedure in the REPL:
    not something to guess: a BFS frontier expansion (only nodes reachable at EXACTLY the
    requested depth, never the start node, never re-including nodes already seen at an
    earlier depth) for BFS operations, or a direct reverse-adjacency lookup for parents
-   operations.
-3. Before finalizing, cross-check your answer with a checkable sub-call: build the
-   induced subgraph of edges among only the nodes relevant to the query (for BFS depth D,
-   all nodes within D hops of the start node and the edges between them; for parents, the
-   direct incoming edges to the target) and render it as a small, self-contained edge-list
-   string. Call `rlm_query(prompt)` with that induced subgraph plus the same operation,
-   asking a child to independently solve it (the child has its own REPL too, and can
-   parse and compute exactly if it chooses). Because the induced subgraph is small, the
-   child's answer is directly checkable: parse its response the same way you'll parse
-   your own, and compare it (as a set) to your own code-computed result on that same
-   induced subgraph.
-   - If they agree, you've cross-validated your answer.
-   - If they disagree, print both sets and re-derive the correct one by rereading the
-     induced subgraph's edges directly -- both should be exact on this reduced problem, so
-     a disagreement means one of the parses was wrong.
+   operations. For BFS, keep each depth's frontier (`frontier_0 = {start}`, `frontier_1`,
+   ...) and the running `visited` set (union of all frontiers so far) -- you need both for
+   the cross-check in step 3.
+3. Before finalizing, cross-check EACH hop with a checkable sub-call, verified exactly
+   with `verify_child` (available in your REPL) rather than eyeballing set equality:
+   - For a BFS hop from `frontier_d` to `frontier_{d+1}`: build `chunk_edges`, the list of
+     (u, v) tuples pulled straight from your parsed edge list where `u` is in
+     `frontier_d` (do not include unrelated edges). Render `frontier_d` and `chunk_edges`
+     as a small, self-contained sub-problem and call `rlm_query(prompt)`, asking a child
+     to compute the children of `frontier_d` over just that edge list, ending in the same
+     "Final Answer: [...]" format. Parse its response into `child_out` with
+     `extract_answer_nodes`, then call
+     `verify_child(chunk_edges, frontier_d, child_out, excluded=visited_before_this_hop, reverse=False)`.
+     It returns True only if `child_out` is EXACTLY the correct one-hop result (with nodes
+     already visited at an earlier depth excluded).
+   - For a "parents" operation: build `chunk_edges` as the direct incoming edges to the
+     target (parent -> target tuples), call `rlm_query(prompt)` asking a child to find the
+     parents of the target over just those edges, parse its response into `child_out`, and
+     call `verify_child(chunk_edges, {target}, child_out, excluded=set(), reverse=True)`.
+   - If `verify_child` returns False, the child got that hop wrong -- fall back to your own
+     code-computed result for that hop (already computed in step 2); do not use the
+     child's answer.
+   - If it returns True for every hop, you've cross-validated your answer.
 4. Only after this cross-check, set `answer["content"]` to your final response, ending in
    the exact line format `Final Answer: [n1, n2, ...]` (or `Final Answer: []` if empty),
    and set `answer["ready"] = True`.
@@ -205,6 +238,18 @@ def run_example(
         max_iterations=max_iterations,
         logger=RLMLogger(log_dir=log_dir) if log_dir else None,
         verbose=verbose,
+        custom_tools={
+            "verify_child": {
+                "tool": verify_child,
+                "description": (
+                    "verify_child(chunk_edges, frontier_in, child_out, excluded, reverse=False) -> bool. "
+                    "Deterministically checks whether a child rlm_query() answer is EXACTLY the correct "
+                    "one-hop result over chunk_edges (a list of (u, v) edge tuples): the children of "
+                    "frontier_in if reverse=False, or the parents of frontier_in if reverse=True, with "
+                    "any node ids in excluded removed. Use this instead of comparing sets by eye."
+                ),
+            },
+        },
     )
 
     try:
