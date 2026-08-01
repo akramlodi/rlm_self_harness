@@ -31,7 +31,7 @@ them into targeted harness edits, and discover an orchestration harness that tra
 
 Our contributions are:
 
-- 1. Self-Harness for recursive language models. We adapt Self-Harness to RLMs by treating decomposition guidance, subcall policy, metadata return structure, answer middle- ware, error policy, and REPL helpers, as editable harness components. A fixed model mines recurring failure mechanisms from structured summaries of its recursive traces, proposes tar- geted edits, and validates them without weight updates or a stronger external model.
+- 1. Self-Harness for recursive language models. We adapt Self-Harness to RLMs by declaring nine editable harness surfaces keyed to phases of the RLM turn loop — the REPL contract, decomposition, execution, verification and recovery instructions, the runtime policy, the metadata function, REPL helpers, and answer middleware. A fixed model mines recurring failure mechanisms from structured summaries of its recursive traces, proposes tar- geted edits, and validates them without weight updates or a stronger external model. Optimization starts from a deliberately sparse floor in which seven of the nine surfaces are empty, disabled, or a single generic line.
 
 - 2. Evidence of length generalization. We optimize only on short source instances, freeze the harness, and evaluate it on source instances 8–32× longer, testing whether self-discovered harness improvements transfer across input length.
 
@@ -49,7 +49,7 @@ We use a single frozen language model, with the same model and decoding configur
 
 - 3. Outputs-in-variables. The final answer is accumulated in REPL variable and returned from it.
 
-Their runtime is extended to support metadata from child sub-calls, answer middleware, sub-call error handling, and batching policies. At initialization, these functionalities are stubbed and unused. These surface areas, in additition to decomposition prompt, and harness-local REPL helpers, are the edit surfaces optimized by Self-Harness. Model weights, external tools, and the evaluator, remain fixed. ?? maps these editable and fixed components onto the RLM architecture.
+Their runtime is extended with four injection points — an injected metadata function, answer-protocol middleware, sub-call retry and validation, and enforceable batch caps — each defaulting to the shipped behavior so an unconfigured harness is byte-identical to the reference implementation. These are the seams through which the declared surfaces of section 3.3 act. Model weights, external tools, and the evaluator remain fixed. ?? maps the editable and fixed components onto the RLM architecture.
 
 ## 3.2 Environments and splits.
 
@@ -70,7 +70,27 @@ Only the source environment is used for optimization. Its short split is partiti
 
 ## 3.3 Self-Harness Optimization
 
-We adapt the Self-Harness framework of Zhang et al. [2] to RLMs. The model weights remain fixed throughout, and the same model is used both to execute tasks and to propose harness changes. The editable surfaces are to decomposition guidance, sub-call/batching policy, sub-call metadata function, answer-protocol middleware, sub-call error handling + depth, and harness-local REPL helpers. The model may not modify the evaluator, external tools, or any of the three invariants mentioned in Section 3.1. Each optimization round has three stages. [URL 🔗](#page-0)
+We adapt the Self-Harness framework of Zhang et al. [2] to RLMs. The model weights remain fixed throughout, and the same model is used both to execute tasks and to propose harness changes.
+
+**Editable surfaces.** Following Zhang et al. [2], whose initial harness declares nine builder functions as configuration points of the agent loop, we declare nine editable surfaces keyed to phases of the RLM turn loop. Each is a builder function in a single harness-definition module:
+
+| Surface | Builder | Governs |
+|---|---|---|
+| S1 | `build_repl_contract` | the factual contract: names available in the REPL, the `answer` protocol, one code block per turn, print-only stdout, the truncation sentence |
+| S2 | `build_decomposition_instruction` | turns 1–2: probing the prompt variable and planning the decomposition |
+| S3 | `build_execution_instruction` | per-turn discipline: what to print, when to offload to a sub-call, how to aggregate |
+| S4 | `build_verification_instruction` | what to check before submitting an answer |
+| S5 | `build_recovery_instruction` | what to do when a sub-call errors or returns an unusable result |
+| S6 | `build_runtime_policy` | every numeric limit and switch: characters per prompt, batch width, calls per turn, calls total, recursion depth, retry-on-syntax-error, sub-output validation |
+| S7 | `build_metadata` | what carries across turns — the RLM's memory |
+| S8 | `build_repl_helpers`, `build_sub_repl_helpers` | functions and data injected into the root and child REPL namespaces |
+| S9 | `build_answer_middleware` | programmatic inspection of a detected answer, with redirect |
+
+The surfaces are declared from the loop's phase structure, not selected from failures already documented for RLMs. This matters for what the study can claim: a surface set chosen by reading a published catalogue of failures would make it impossible, at analysis time, to separate what the optimization loop discovered from what its designer already knew. Surface *selection* is part of the fixed scaffold shared by every condition, exactly as it is in Zhang et al. [2]; the model proposes bounded edits to declared surfaces, and does not choose which surfaces exist.
+
+The model may not modify the evaluator, external tools, or any of the three invariants of section 3.1. An edit that touches an invariant is unfaithful; that test is necessary but not sufficient, and two residual conditions complete it. First, middleware must operate on the root's own variables and answers rather than rewriting its program — an error policy and answer middleware rich enough to drive control flow satisfy all three invariants while moving orchestration out of the model. Second, an S2 or S9 edit can discourage recursion in prose without touching any invariant mechanically; prose is not mechanically checkable, so this is a preregistered constraint monitored through trace metrics rather than blocked at construction. We also permanently exclude one tempting surface: allowing the proposer to truncate or pre-summarize the prompt variable into root context. It would likely show held-in gains, and it violates the first invariant by turning the RLM back into a compaction agent.
+
+Each optimization round has three stages. [URL 🔗](#page-0)
 
 First, Weakness Mining runs the current harness on short held-in instances from a source envi- ronment and records verifier outcomes and recursive execution traces. Each sub-call is additionally scored by the environment’s synthesized sub-verifier, so a failed run carries a per-child correctness label alongside the root outcome. Failures are converted into a structured record containing the verifier-level failure, the level at which the error signal first appears, the agent behavior causally associated with it, the implicated harness mechanism, and supporting trace excerpts. Failures are then clustered by the verifier-grounded signature producing an evidence bundle of recurring, actionable failure patterns.
 
@@ -91,7 +111,9 @@ We evaluate the self-harnessed RLM against two baselines.
 
 - SH-RLM: Self-Harnessed RLM (ours). The frozen harness produced by section 3.3. [URL 🔗](#page-0)
 
-- B1: initial RLM. The unmodified reference harness, and the starting point of optimization.
+- H0: mechanism floor. The starting point of optimization. Seven of the nine surfaces are empty, disabled, or a single generic line: no orchestrator framing, no decomposition protocol, no per-prompt capacity ceiling, no batch-width rule, no answer-discipline instruction. Every clause it lacks is one the loop must recover from its own traces.
+
+- H0\*: shipped reference. The unmodified reference implementation of Zhang et al. [1], byte-identical to its default configuration. Because that default appends an orchestration addendum to every root system prompt, H0\* already carries the authors' hand-tuned guidance on decomposition, sub-call capacity, batch fan-out, and answer discipline — which is precisely why it cannot also serve as the mechanism floor. It is therefore reported as a *human-engineering* baseline alongside H1 rather than as the optimization starting point, and the gap H0\* − H0 measures the human-supplied orchestration prior rather than assuming it.
 
 - H1: λ-RLM [8]. A hand-designed extension, carried over unmodified, that replaces free- form recursive code generation with a typed functional runtime and invokes the model only on bounded leaf sub-problems. It measures Self-Harness against human harness engineering rather than against an unmodified starting point. [URL 🔗](#page-0)
 
@@ -111,7 +133,7 @@ reported separately for each target environment:
 
 - 4. target-long, measuring cross-environment transfer under an additional length shift.
 
-The primary comparisons are SH-RLM versus B1 on source-long, target-short, and target-long,
+The primary comparisons are SH-RLM versus H0 on source-long, target-short, and target-long,
 
 with SH-RLM versus H1 on the same three sets indicating whether a self-discovered harness is competitive with a hand-designed one. Improvement on source-long indicates that the learned harness changes survive a length shift within the optimization environment. Improvement on target- short provides the cleanest evidence that the edits capture a transferable compositional strategy rather than a source-specific rule. Improvement on target-long tests whether that transfer remains effective when environment and input length change simultaneously.
 
@@ -119,7 +141,11 @@ with SH-RLM versus H1 on the same three sets indicating whether a self-discovere
 
 The primary metric is verifier accuracy, reported separately for all four test sets. Results are
 
-averaged over repeated seeded runs and accompanied by bootstrap confidence intervals over task instances. B1 and SH-RLM are compared using a paired per-instance test; the exact test and repetition-to-instance aggregation rule will be preregistered.
+averaged over repeated seeded runs and accompanied by bootstrap confidence intervals over task instances. H0 and SH-RLM are compared using a paired per-instance test; the exact test and repetition-to-instance aggregation rule will be preregistered.
+
+**Rediscovery of documented failures (preregistered prediction).** Zhang et al. [2] have no external reference against which to check whether their mining stage recovers real failure mechanisms or merely plausible-sounding ones, and fall back on qualitative before-and-after trace inspection. RLMs afford a check they did not have: the literature already documents specific, model-attributed RLM failure mechanisms [3–5]. Because optimization begins from H0, whose surfaces state none of that guidance, we predict that mining will independently recover a subset of those documented mechanisms from traces alone. We therefore report the overlap as a rate — how many documented mechanisms the mining stage rediscovers for this backbone, and how many mined clusters have no published counterpart.
+
+We register the interpretation in advance, because both outcomes are informative and they say different things. High overlap is convergent validity for the mining stage, corroborating it against an independent source. Low overlap is evidence that RLM failure modes are strongly backbone-specific — a claim the existing literature gestures at, since each documented mechanism is attributed to a different model, but which no independent replication has measured. Neither outcome is treated as a null result, and the surface set does not change in response to it: surfaces are declared from loop structure, so a surface remains live whether or not a published failure maps to it.
 
 
 Secondary efficiency metrics are total input and output tokens, recursive-call count, maximum recursion depth, and accuracy per million tokens. Trace analysis tests whether optimization changes the mechanisms it was intended to repair. In particular, we report the frequency of each mined failure pattern before and after optimization and measure whole-input sub-call collapse, defined as a run that delegates most of the input to one child or performs no meaningful decomposition. Using the sub-verifiers, we also report the share of failures attributable to the root and to the children in each condition and split, which shows whether optimization moved errors down the call tree, repaired them, or merely relocated them.
@@ -138,9 +164,9 @@ runs over T = 15 rounds (Self-Harness used 15, 18, and 21, rounds for the three 
 
 tokens for a typical short run, so optimization costs approximately 2.4 × 109 tokens.
 
-After optimization, the three fixed-weight conditions B1, H1, and SH-RLM are evaluated on the source-short, source-long, target-short, and target-long test sets; F1 is budgeted separately (ap- pendix A). The target environment therefore adds final-evaluation cost but no mining, proposal, or candidate-validation cost. Total cost can be expressed as [URL 🔗](#page-0)
+After optimization, the four fixed-weight conditions H0, H0\*, H1, and SH-RLM are evaluated on the source-short, source-long, target-short, and target-long test sets; F1 is budgeted separately (ap- pendix A). The target environment therefore adds final-evaluation cost but no mining, proposal, or candidate-validation cost. Total cost can be expressed as [URL 🔗](#page-0)
 
-Evaluating three conditions on two environments at 40 short-test and 150 long-test instances with 3 repetitions is 720 short and 2,700 long runs. The long runs dominate: at inputs 8–32× larger, they average roughly 1.2 × 106 tokens each, giving approximately 3.2 × 109 tokens for final evaluation
+Evaluating four conditions on two environments at 40 short-test and 150 long-test instances with 3 repetitions is 960 short and 3,600 long runs. The long runs dominate: at inputs 8–32× larger, they average roughly 1.2 × 106 tokens each, giving approximately 3.2 × 109 tokens for final evaluation
 
 against 9 × 107 for the short tests. The project total is therefore approximately 5–6 × 109 tokens. Served locally that is roughly 650 H100-hours; purchased as hosted inference at current open- weights rates it is approximately \$1,200–\$2,000. The sub-verification ablation of appendix B adds [URL 🔗](#page-0)
 
@@ -229,7 +255,7 @@ risks in self-evolving LLM agents. arXiv preprint arXiv:2509.26354, 2025. URL ht
 
 F1 reproduces the weight-training arm of Zhang and Khattab [3] so that harness optimization and weight optimization are compared on the same backbone, harness, and environment. The recipe below follows their reported setup; any deviation forced by our compute allocation will be recorded before training begins. [URL 🔗](#page-0)
 
-- Backbone. Qwen3-30B-A3B-Instruct-2507, the model Zhang and Khattab [3] RL-train inside an RLM harness, and the same backbone used for B1, H1, and SH-RLM so that F1 differs from B1 only in its weights. [URL 🔗](#page-0)
+- Backbone. Qwen3-30B-A3B-Instruct-2507, the model Zhang and Khattab [3] RL-train inside an RLM harness, and the same backbone used for H0, H0\*, H1, and SH-RLM so that F1 differs from H0 only in its weights. [URL 🔗](#page-0)
 
 - Algorithm. RL with prime-rl: decoupled PPO with GRPO-style advantages and a KL penalty against the initial policy.
 
@@ -241,7 +267,7 @@ F1 reproduces the weight-training arm of Zhang and Khattab [3] so that harness o
 
 - Training inputs. Short instances only, at 8k–64k tokens, drawn from the same source-environment short split used for harness optimization. Long instances are never trained on.
 
-- Evaluation. The frozen checkpoint is evaluated on the same four untouched test sets as B1, H1, and SH-RLM, at 256k–2M tokens on the long splits.
+- Evaluation. The frozen checkpoint is evaluated on the same four untouched test sets as H0, H0\*, H1, and SH-RLM, at 256k–2M tokens on the long splits.
 
 - Hardware. 8×H100 nodes.
 
@@ -262,4 +288,4 @@ sampling variation.
 
 Given prior work on misevolution in self-optimizing agents [15], and in particular the finding that [URL 🔗](#page-0)
 
-capability-driven workflow optimization can sharply reduce refusal rates on harmful requests de- spite passing task-level validation [15], an optional extension is to evaluate SH-RLM for alignment drift as a side effect of harness promotion. Because our promotion gate, like that of Zhang et al. [2], is defined only over verifier accuracy and cost, edits that are capability-positive but compliance- increasing (e.g., “always commit to an answer,” suppressed hedging, or reasoning-mode changes, which are known to shift safety behavior in the Qwen3 family [16]) would be promoted without detection. The extension freezes a small safety probe of a few hundred harmful and borderline prompts [17], runs it through the RLM under B1 and under each promoted harness in the lineage, and scores refusal and harmful-answer rates with an automatic judge, yielding a safety trajectory plotted alongside the accuracy trajectory. At roughly 300 prompts across ∼8 harness states, with probe runs far shorter than benchmark instances, this adds on the order of 107–108 tokens, well un- der 2% of the budget in section 4. It would enable us to assess whether the propose–validate–accept structure incidentally preserves alignment, as its bounded edit surfaces might suggest, or whether the harness pathway exhibits the same drift documented for workflow evolution; either outcome is informative, and to our knowledge neither has been measured for Self-Harness-style harness optimization. Because no promotion decision depends on the probe, it is purely observational and does not alter the preregistered optimization loop.
+capability-driven workflow optimization can sharply reduce refusal rates on harmful requests de- spite passing task-level validation [15], an optional extension is to evaluate SH-RLM for alignment drift as a side effect of harness promotion. Because our promotion gate, like that of Zhang et al. [2], is defined only over verifier accuracy and cost, edits that are capability-positive but compliance- increasing (e.g., “always commit to an answer,” suppressed hedging, or reasoning-mode changes, which are known to shift safety behavior in the Qwen3 family [16]) would be promoted without detection. The extension freezes a small safety probe of a few hundred harmful and borderline prompts [17], runs it through the RLM under H0 and under each promoted harness in the lineage, and scores refusal and harmful-answer rates with an automatic judge, yielding a safety trajectory plotted alongside the accuracy trajectory. At roughly 300 prompts across ∼8 harness states, with probe runs far shorter than benchmark instances, this adds on the order of 107–108 tokens, well un- der 2% of the budget in section 4. It would enable us to assess whether the propose–validate–accept structure incidentally preserves alignment, as its bounded edit surfaces might suggest, or whether the harness pathway exhibits the same drift documented for workflow evolution; either outcome is informative, and to our knowledge neither has been measured for Self-Harness-style harness optimization. Because no promotion decision depends on the probe, it is purely observational and does not alter the preregistered optimization loop.
