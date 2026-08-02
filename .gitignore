@@ -213,3 +213,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Internals of the rlm
+docs/internals/
+
+# Claude - local progress
+CLAUDE.md
+
