@@ -89,14 +89,25 @@ class TestApplySubVerifier:
                 assert node.sub_verdict is True
                 assert result.verdicts[node.node_id] is True
 
-    def test_all_uncheckable_children_is_currently_grounded_undetermined(self):
-        # Current behavior: running a sub-verifier counts as grounded even when
-        # every verdict comes back None and the level is UNDETERMINED. A later
-        # unit changes this case to grounded=False; this test pins the present
-        # semantics so that change is visible.
+    def test_all_uncheckable_children_is_ungrounded_undetermined(self):
+        # "Ran" must not count as "checked": when every verdict comes back None
+        # the sub-verifier established nothing, so the level stays UNDETERMINED
+        # and the record is ungrounded -- the attributor is asked for the level
+        # instead, exactly as if no sub-verifier had been supplied.
         def sub_verifier(instance: dict[str, Any], node: CallNode) -> bool | None:
             return None
 
         result = apply_sub_verifier({}, nested_tree(), sub_verifier)
-        assert result.grounded is True
+        assert result.grounded is False
         assert result.failing_level is FailingLevel.UNDETERMINED
+
+    def test_no_descendants_with_sub_verifier_is_still_grounded(self):
+        # NO_RECURSION is read off the tree structure, not off verdicts, so it
+        # remains a checkable fact even though there is nothing to score.
+        def sub_verifier(instance: dict[str, Any], node: CallNode) -> bool | None:
+            return None
+
+        result = apply_sub_verifier({}, build_call_tree_from_dict(shallow_run()), sub_verifier)
+        assert result.grounded is True
+        assert result.failing_level is FailingLevel.NO_RECURSION
+        assert result.verdicts == {}

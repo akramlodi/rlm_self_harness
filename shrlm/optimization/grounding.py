@@ -26,7 +26,11 @@ class GroundingResult:
 
     ``verdicts`` maps node id to True, False, or None for "not checkable in
     isolation". ``failing_level`` is None when no sub-verifier ran, in which
-    case the attributor is asked for it instead.
+    case the attributor is asked for it instead. ``grounded`` is True only
+    when the level is a checkable fact: a sub-verifier ran and either the tree
+    had no descendants (NO_RECURSION) or at least one verdict was non-None.
+    An all-None pass leaves ``failing_level`` UNDETERMINED with ``grounded``
+    False, and the attributor is asked for the level there too.
     """
 
     failing_level: FailingLevel | None
@@ -76,8 +80,16 @@ def apply_sub_verifier(
         node.sub_verdict = verdict
         verdicts[node.node_id] = verdict
 
+    failing_level = derive_failing_level(root, verdicts)
+
+    # "Ran" must not count as "checked". A level of UNDETERMINED means the
+    # sub-verifier found descendants but could check none of them, so the
+    # record carries no checkable fact and is ungrounded; the attributor is
+    # asked for the level exactly as if no sub-verifier had been supplied.
+    # NO_RECURSION, CHILD, and ROOT are all grounded: the first is read off
+    # the tree structure, the others off at least one non-None verdict.
     return GroundingResult(
-        failing_level=derive_failing_level(root, verdicts),
-        grounded=True,
+        failing_level=failing_level,
+        grounded=failing_level is not FailingLevel.UNDETERMINED,
         verdicts=verdicts,
     )

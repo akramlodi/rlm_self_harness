@@ -1,0 +1,400 @@
+"""
+GraphWalks environment: instances, a mining-side Verifier, and a SubVerifier.
+
+GraphWalks (https://huggingface.co/datasets/openai/graphwalks) asks for the
+exact node set produced by a graph operation -- "BFS from node X at depth D" or
+"parents of node X" -- over a directed edge list, answered as a trailing
+"Final Answer: [n1, n2, ...]" line. Set-valued gold with a deterministic
+extraction rule makes it a natural fit for the weakness miner: the terminal
+verifier cause is arithmetic on two sets, and each sub-call the harness spawns
+is a one-hop sub-problem checkable in isolation.
+
+The parsing and scoring helpers here re-implement the logic of
+``examples/graphwalks_example.py`` rather than importing it: the example is a
+script under ``examples/``, not a package module, so importing it would couple
+library code to a demo entry point. One deliberate difference is documented on
+``extract_answer_nodes``: the example returns ``[]`` both for "no Final Answer
+line" and for a parsed empty list, while the Verifier and SubVerifier need to
+distinguish a format failure from an explicit empty-set answer.
+
+Resource exceptions never reach the Verifier: its signature receives only a
+produced string, and RESOURCE_TERMINATED is owned by the experiment driver.
+"""
+
+import hashlib
+import random
+import re
+from typing import Any
+
+from shrlm.optimization.taxonomy import VerifierCause
+from shrlm.optimization.types import CallNode, NodeKind, Verdict
+
+DATASET_REPO = "openai/graphwalks"
+DATASET_FILE = "graphwalks_128k_and_shorter.parquet"
+
+# One directed edge as the dataset renders it: "a1b2 -> c3d4".
+_EDGE_RE = re.compile(r"(\w+)\s*->\s*(\w+)")
+# The bracketed list inside a "Final Answer: [...]" line.
+_ANSWER_LIST_RE = re.compile(r"\[(.*)\]")
+# The operation line of a dataset prompt, used as the instance's question.
+_QUESTION_RE = re.compile(r"^\s*(Perform a BFS\b.*|Find the parents\b.*)$", re.MULTILINE)
+
+# Best-effort patterns over model-authored child prompts (see GraphWalksSubVerifier).
+_PARENTS_QUERY_RE = re.compile(r"\bparents of (?:the )?(?:node )?['\"`]?(\w+)", re.IGNORECASE)
+_CHILDREN_LIST_RE = re.compile(r"\bchildren of[^\[\]\n]*\[([^\]]*)\]", re.IGNORECASE)
+_FRONTIER_LIST_RE = re.compile(r"\bfrontier[^\[\]\n]*\[([^\]]*)\]", re.IGNORECASE)
+_CHILDREN_NODE_RE = re.compile(r"\bchildren of (?:the )?(?:node )?['\"`]?(\w+)", re.IGNORECASE)
+_EXCLUDE_LIST_RE = re.compile(r"\bexclud\w*[^\[\]\n]*\[([^\]]*)\]", re.IGNORECASE)
+_EXCLUDE_WORD_RE = re.compile(r"\bexclud", re.IGNORECASE)
+
+
+# =============================================================================
+# Answer parsing and scoring (per the dataset card)
+# =============================================================================
+
+
+def extract_answer_nodes(response: str) -> list[str] | None:
+    """
+    Parse the node list out of a response's trailing 'Final Answer: [...]' line.
+
+    Returns None when the last line carries no "Final Answer:" marker or no
+    bracketed list at all -- the response is not in the required format -- and
+    an empty list when a bracket pair parsed but held no items, i.e. the model
+    explicitly answered the empty set. Callers rely on that distinction: the
+    Verifier maps no-parse to WRONG_FORMAT but a parsed ``[]`` against a
+    non-empty gold to NO_ANSWER, and the SubVerifier treats an unparseable
+    child response as uncheckable rather than wrong.
+    """
+    line = response.strip().split("\n")[-1]
+    if "Final Answer:" not in line:
+        return None
+    match = _ANSWER_LIST_RE.search(line)
+    if match is None:
+        return None
+    return [item.strip() for item in match.group(1).split(",") if item.strip()]
+
+
+def score(predicted: list[str], golden: list[str]) -> dict[str, float]:
+    """
+    Precision/recall/F1 over node sets, verbatim per the dataset card.
+
+    The card's code returns f1=1.0 whenever precision + recall == 0, which
+    covers the intended both-empty case but also the degenerate empty
+    prediction against a non-empty gold. The Verifier therefore decides
+    pass/fail on exact set equality -- identical to F1 == 1.0 in every
+    non-degenerate case -- and never lets that branch turn a miss into a pass.
+    """
+    pred_set, gold_set = set(predicted), set(golden)
+    n_overlap = len(pred_set & gold_set)
+    n_golden, n_sampled = len(gold_set), len(pred_set)
+    recall = n_overlap / n_golden if n_golden > 0 else 0.0
+    precision = n_overlap / n_sampled if n_sampled > 0 else 0.0
+    f1 = 2 * (recall * precision) / (recall + precision) if (recall + precision) > 0 else 1.0
+    return {"precision": precision, "recall": recall, "f1": f1}
+
+
+def serialize_nodes(nodes: set[str]) -> str:
+    """Render a node set SORTED, so equal sets always serialize identically.
+
+    The Verdict's gold field feeds the digest sha and through it the
+    attribution cache; an order-dependent rendering would split cache entries
+    for byte-identical problems.
+    """
+    return "[" + ", ".join(sorted(nodes)) + "]"
+
+
+# =============================================================================
+# Dataset loading
+# =============================================================================
+
+
+def row_to_instance(row: dict[str, Any], sample_seed: int, sample_index: int) -> dict[str, Any]:
+    """
+    Pure transform from a dataset row to a mining instance.
+
+    The id is derived from CONTENT -- problem_type plus sha256(prompt)[:16] --
+    so the same problem keeps the same id across rounds and across differently
+    seeded samples. The seed and index are provenance, carried as separate
+    fields and deliberately not folded into the id.
+    """
+    prompt = str(row["prompt"])
+    problem_type = str(row["problem_type"])
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
+    return {
+        "id": f"{problem_type}-{digest}",
+        "question": extract_question(prompt),
+        "prompt": prompt,
+        "answer_nodes": [str(node) for node in row["answer_nodes"]],
+        "problem_type": problem_type,
+        "sample_seed": sample_seed,
+        "sample_index": sample_index,
+    }
+
+
+def extract_question(prompt: str) -> str:
+    """The operation line of the prompt ("Perform a BFS..."/"Find the parents..."),
+    falling back to the first non-empty line when no operation line is found."""
+    match = _QUESTION_RE.search(prompt)
+    if match is not None:
+        return match.group(1).strip()
+    for line in prompt.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def sample_rows(
+    rows: list[dict[str, Any]],
+    problem_types: tuple[str, ...],
+    limit: int | None,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """
+    Seeded sample over pre-filtered rows, balanced across problem types.
+
+    With a limit and more than one problem type, an equal share is drawn per
+    type so a small sample still exercises both operations; otherwise a plain
+    seeded shuffle-and-truncate. Deterministic for a given (rows, seed).
+    """
+    rng = random.Random(seed)
+    if limit is not None and len(problem_types) > 1:
+        per_type = max(1, limit // len(problem_types))
+        picked: list[dict[str, Any]] = []
+        for problem_type in problem_types:
+            pool = [row for row in rows if row["problem_type"] == problem_type]
+            rng.shuffle(pool)
+            picked.extend(pool[:per_type])
+        rng.shuffle(picked)
+        return picked[:limit]
+
+    pool = list(rows)
+    rng.shuffle(pool)
+    return pool[:limit] if limit is not None else pool
+
+
+def load_graphwalks(
+    problem_types: tuple[str, ...] = ("bfs", "parents"),
+    max_chars: int = 128_000,
+    limit: int | None = None,
+    seed: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Download the parquet from Hugging Face, filter, sample, and build instances.
+
+    The imports live inside the function so the module imports without the
+    ``graphwalks`` extra; only actually loading the dataset requires it.
+    """
+    try:
+        import pyarrow.parquet as pq
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise ImportError(
+            "Missing dependency for the GraphWalks dataset. Install with:\n"
+            '    uv pip install -e ".[graphwalks]"'
+        ) from exc
+
+    path = hf_hub_download(repo_id=DATASET_REPO, repo_type="dataset", filename=DATASET_FILE)
+    rows = pq.read_table(path).to_pylist()
+    rows = [
+        row
+        for row in rows
+        if row["prompt_chars"] <= max_chars and row["problem_type"] in problem_types
+    ]
+    selected = sample_rows(rows, problem_types, limit, seed)
+    return [
+        row_to_instance(row, sample_seed=seed, sample_index=index)
+        for index, row in enumerate(selected)
+    ]
+
+
+# =============================================================================
+# Verifier
+# =============================================================================
+
+
+class GraphWalksVerifier:
+    """
+    Deterministic outcome for a whole run: exact node-set match.
+
+    Cause mapping, decided entirely by set arithmetic on the parsed answer:
+
+    * no parseable trailing "Final Answer: [...]" line (including a prose
+      fallback answer) -> WRONG_FORMAT. The response never entered the
+      environment's answer channel, so nothing finer can be measured.
+    * a parsed ``[]`` against a non-empty gold -> NO_ANSWER. The format was
+      honored but no answer nodes were produced; ``extract_answer_nodes``
+      returning ``[]`` rather than None is what separates this from the case
+      above.
+    * missing nodes only -> INCOMPLETE; extra nodes only -> SPURIOUS; both
+      -> MIXED_SET_ERROR.
+    * both gold and prediction empty -> pass.
+
+    A pass requires the exact gold set, i.e. F1 == 1.0 under the dataset
+    card's scorer in every non-degenerate case (see ``score``).
+    """
+
+    PASS_F1_THRESHOLD: float = 1.0
+    EXTRACTION_RULE: str = "trailing-final-answer-line"
+    GOLD_ORDERING: str = "sorted"
+
+    def config(self) -> dict[str, Any]:
+        """Verifier facts surfaced into MiningConfig by the experiment driver."""
+        return {
+            "environment": "graphwalks",
+            "pass_f1_threshold": self.PASS_F1_THRESHOLD,
+            "extraction_rule": self.EXTRACTION_RULE,
+            "gold_ordering": self.GOLD_ORDERING,
+        }
+
+    def __call__(self, instance: dict[str, Any], produced: str) -> Verdict:
+        gold_set = {str(node) for node in instance["answer_nodes"]}
+        gold = serialize_nodes(gold_set)
+
+        parsed = extract_answer_nodes(produced)
+        if parsed is None:
+            return Verdict(
+                passed=False,
+                cause=VerifierCause.WRONG_FORMAT,
+                gold=gold,
+                produced=produced,
+                detail="no trailing 'Final Answer: [...]' line to parse",
+            )
+
+        pred_set = set(parsed)
+        produced_nodes = serialize_nodes(pred_set)
+        missing = gold_set - pred_set
+        extra = pred_set - gold_set
+        metrics = score(sorted(pred_set), sorted(gold_set))
+        detail = (
+            f"precision={metrics['precision']:.3f} recall={metrics['recall']:.3f} "
+            f"f1={metrics['f1']:.3f} missing={len(missing)} extra={len(extra)}"
+        )
+
+        if not missing and not extra:
+            return Verdict(
+                passed=True, cause=None, gold=gold, produced=produced_nodes, detail=detail
+            )
+
+        if not pred_set:
+            cause = VerifierCause.NO_ANSWER
+        elif missing and extra:
+            cause = VerifierCause.MIXED_SET_ERROR
+        elif missing:
+            cause = VerifierCause.INCOMPLETE
+        else:
+            cause = VerifierCause.SPURIOUS
+        return Verdict(passed=False, cause=cause, gold=gold, produced=produced_nodes, detail=detail)
+
+
+# =============================================================================
+# SubVerifier
+# =============================================================================
+
+
+def one_hop(
+    edges: list[tuple[str, str]],
+    frontier: set[str],
+    excluded: set[str],
+    reverse: bool,
+) -> set[str]:
+    """One relational hop over an edge slice, mirroring the example's verify_child:
+    forward follows edges out of the frontier, reverse follows them backward."""
+    if reverse:
+        edges = [(v, u) for (u, v) in edges]
+    return {v for (u, v) in edges if u in frontier} - excluded
+
+
+def parse_subproblem(
+    prompt: str,
+) -> tuple[list[tuple[str, str]], set[str], set[str], bool] | None:
+    """
+    Best-effort parse of a model-authored child prompt into a one-hop query.
+
+    Under H0 the root is instructed to hand each hop to a child as an edge
+    slice plus either "children of <frontier>" (forward) or "parents of
+    <node>" (reverse), but the exact wording is the model's. This recognizes
+    the shapes that phrasing can take -- a "parents of X" query, a bracketed
+    frontier list near "children of"/"frontier", or a single-node "children
+    of X" -- and returns None for anything else rather than guessing. If the
+    prompt mentions an exclusion but its node list does not parse, the whole
+    parse is None: grading without the exclusion could mark a correct child
+    wrong.
+    """
+    edges = _EDGE_RE.findall(prompt)
+    if not edges:
+        return None
+
+    parents_match = _PARENTS_QUERY_RE.search(prompt)
+    if parents_match is not None:
+        frontier = {parents_match.group(1)}
+        reverse = True
+    else:
+        list_match = _CHILDREN_LIST_RE.search(prompt) or _FRONTIER_LIST_RE.search(prompt)
+        if list_match is not None:
+            frontier = _split_nodes(list_match.group(1))
+        else:
+            node_match = _CHILDREN_NODE_RE.search(prompt)
+            if node_match is None:
+                return None
+            frontier = {node_match.group(1)}
+        reverse = False
+    if not frontier:
+        return None
+
+    excluded_match = _EXCLUDE_LIST_RE.search(prompt)
+    if excluded_match is not None:
+        excluded = _split_nodes(excluded_match.group(1))
+    elif _EXCLUDE_WORD_RE.search(prompt):
+        return None
+    else:
+        excluded = set()
+
+    return edges, frontier, excluded, reverse
+
+
+def _split_nodes(text: str) -> set[str]:
+    """Split a bracketed list's interior into node ids, tolerating quotes."""
+    return {item.strip().strip("'\"`") for item in text.split(",") if item.strip().strip("'\"`")}
+
+
+class GraphWalksSubVerifier:
+    """
+    Post-hoc, deterministic check of one sub-call against ITS OWN prompt.
+
+    The node's prompt is parsed for an edge slice and a one-hop query, the hop
+    is recomputed exactly, and the child's parsed "Final Answer" is compared
+    against it. Depth > 1 nodes are graded against the slice in their own
+    prompt only; the ``instance`` argument is deliberately unused, because a
+    child's sub-problem is defined by its parent's decomposition, not by the
+    environment.
+
+    Returns None -- uncheckable, never False -- for: a non-string (message
+    list) prompt, an errored node, a prompt that does not parse as a one-hop
+    query, and a child response with no parseable "Final Answer" line. That
+    last one matters: a child that answered correctly in the wrong format must
+    not masquerade as a wrong child answer, which would flip the failing level
+    to CHILD on a formatting quirk. The body is wrapped defensively because a
+    raise here would kill a whole mining round.
+    """
+
+    def __call__(self, instance: dict[str, Any], node: CallNode) -> bool | None:
+        try:
+            return self._check(node)
+        except Exception:
+            return None
+
+    def _check(self, node: CallNode) -> bool | None:
+        if node.kind is NodeKind.ERRORED or node.error_kind is not None:
+            return None
+        if not isinstance(node.prompt, str) or not isinstance(node.response, str):
+            return None
+
+        parsed = parse_subproblem(node.prompt)
+        if parsed is None:
+            return None
+        child_out = extract_answer_nodes(node.response)
+        if child_out is None:
+            return None
+
+        edges, frontier, excluded, reverse = parsed
+        return set(child_out) == one_hop(edges, frontier, excluded, reverse)
