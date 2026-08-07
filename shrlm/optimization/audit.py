@@ -46,9 +46,10 @@ The links, in walk order:
   mixed variants; either way the file's bytes must hash to the entry's
   ``prompt_sha256``), and every unattributed entry carries a non-empty
   per-attempt audit trail whose rejected attempts name their violations.
-  Transport-failed entries (``error`` prefixed ``transport failure:``) are
-  exempt from the non-empty demand: the model may never have produced a
-  response to record.
+  Transport-failed entries (``attribution_error_kind`` of ``transport``, or
+  for legacy entries an ``error`` prefixed ``transport failure:``) are exempt
+  from the non-empty demand: the model may never have produced a response to
+  record.
 
 Grounding coverage, reported in the summary stats, is derived from
 ``records.jsonl`` alone: the fraction of failure records whose
@@ -64,12 +65,12 @@ live capstone script stays trivial.
 """
 
 import argparse
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from shrlm.harness_identity import canonical_json_sha256
 from shrlm.optimization.bundle import (
     ATTRIBUTIONS_FILENAME,
     BUNDLE_FILENAME,
@@ -87,9 +88,10 @@ from shrlm.optimization.driver import (
     mine_round,
     round_dir,
     run_round,
+    sha256_file,
 )
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
-from shrlm.optimization.types import FailureRecord, MiningConfig
+from shrlm.optimization.types import AttributionErrorKind, FailureRecord, MiningConfig
 
 # Every link the walk can report, in walk order. The report always lists all
 # of them, so a link that checked nothing is visibly "0 checked" rather than
@@ -197,10 +199,6 @@ class _Walk:
         )
 
 
-def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
@@ -208,15 +206,14 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 def stored_harness_hash(envelope: dict[str, Any]) -> str:
     """Recompute the harness hash from the envelope's *stored* serialization.
 
-    Mirrors ``shrlm.harness_identity.harness_hash`` -- sha256 over the
-    canonical JSON (sorted keys, compact separators, ASCII) of the
-    serialization minus the informational ``name`` -- but operates on the
-    persisted dict, so the audit needs no live ``Harness`` object.
+    Mirrors ``shrlm.harness_identity.harness_hash`` -- the same
+    ``canonical_json_sha256`` over the serialization minus the informational
+    ``name`` -- but operates on the persisted dict, so the audit needs no live
+    ``Harness`` object.
     """
     material = dict(envelope["harness"])
     material.pop("name", None)
-    canonical = json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return canonical_json_sha256(material)
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +284,7 @@ def _audit_manifest(path: Path, walk: _Walk) -> list[dict[str, Any]]:
         if not trace_path.is_file():
             walk.fail("manifest_trace", run_id, f"trace file {entry['trace_path']} is missing")
             continue
-        actual = _sha256_file(trace_path)
+        actual = sha256_file(trace_path)
         if actual != str(entry["trace_sha256"]):
             walk.fail(
                 "manifest_trace",
@@ -308,7 +305,7 @@ def _check_digest(path: Path, sha: str, link: str, subject: str, walk: _Walk) ->
     if not digest_path.is_file():
         walk.fail(link, subject, f"digest file {DIGESTS_DIR}/{sha}.txt is missing")
         return
-    actual = _sha256_file(digest_path)
+    actual = sha256_file(digest_path)
     if actual != sha:
         walk.fail(link, subject, f"digest file {DIGESTS_DIR}/{sha}.txt hashes to {actual}")
 
@@ -340,7 +337,7 @@ def _audit_records(
             if not trace_path.is_file():
                 walk.fail("record_trace", str(run_id), f"trace file {trace_rel} is missing")
             else:
-                actual = _sha256_file(trace_path)
+                actual = sha256_file(trace_path)
                 if actual != str(record.get("trace_sha256")):
                     walk.fail(
                         "record_trace",
@@ -445,7 +442,7 @@ def _resolve_prompt_file(path: Path, prompt_sha: str) -> Path | None:
         path / ATTRIBUTOR_PROMPT_FILE,
     )
     for candidate in candidates:
-        if candidate.is_file() and _sha256_file(candidate) == prompt_sha:
+        if candidate.is_file() and sha256_file(candidate) == prompt_sha:
             return candidate
     return None
 
@@ -475,7 +472,12 @@ def _audit_attributions(path: Path, entries: list[dict[str, Any]], walk: _Walk) 
         if entry.get("attributed") is False:
             walk.check("attribution_attempts")
             attempts = entry.get("attempts") or []
-            transport = str(entry.get("error", "")).startswith(_TRANSPORT_ERROR_PREFIX)
+            kind = entry.get("attribution_error_kind")
+            transport = (
+                kind == AttributionErrorKind.TRANSPORT.value
+                if kind is not None
+                else str(entry.get("error", "")).startswith(_TRANSPORT_ERROR_PREFIX)
+            )
             if not attempts and not transport:
                 walk.fail(
                     "attribution_attempts",

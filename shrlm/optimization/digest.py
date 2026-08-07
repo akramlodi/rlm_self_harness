@@ -69,6 +69,11 @@ class TraceDigest:
     aggregated: bool = False
     n_descendants: int = 0
 
+    @property
+    def no_subcalls(self) -> bool:
+        """Whether the run made no sub-calls at all (and so cites no node ids)."""
+        return self.n_descendants == 0
+
 
 def head_tail(text: str, limit: int) -> str:
     """

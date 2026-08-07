@@ -18,6 +18,7 @@ from datetime import datetime
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import (
     KNOWN_SUBSTRATE_BIASES,
+    AttributionErrorKind,
     EvidenceBundle,
     FailurePattern,
     FailureRecord,
@@ -63,13 +64,26 @@ def compute_bundle_id(config: MiningConfig, records: list[FailureRecord]) -> str
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
+def _is_transport_error(record: FailureRecord) -> bool:
+    """Whether a record's attribution failed at the transport level.
+
+    Reads the typed ``attribution_error_kind`` mining stamps on the record,
+    falling back to the ``transport failure`` prefix of ``attribution_error``
+    for legacy records that predate the field.
+    """
+    if record.attribution_error_kind is not None:
+        return record.attribution_error_kind is AttributionErrorKind.TRANSPORT
+    return record.attribution_error.startswith("transport failure")
+
+
 def build_integrity_report(
     records: list[FailureRecord], digest_coverages: list[float]
 ) -> IntegrityReport:
     """A pure function of the records: every count is recomputable from
-    records.jsonl. Transport failures are recognized by the ``transport
-    failure:`` prefix mining stamps on ``attribution_error``, which keeps the
-    count derivable from the records rather than from process state."""
+    records.jsonl. Transport failures are recognized by the typed
+    ``attribution_error_kind`` mining stamps on each record (with a legacy
+    prefix fallback; see ``_is_transport_error``), which keeps the count
+    derivable from the records rather than from process state."""
     return IntegrityReport(
         total_suspected_lost_subcalls=sum(
             record.stats.suspected_lost_subcalls for record in records
@@ -89,9 +103,7 @@ def build_integrity_report(
         n_resource_terminated=sum(
             1 for record in records if record.verdict.cause is VerifierCause.RESOURCE_TERMINATED
         ),
-        n_transport_errors=sum(
-            1 for record in records if record.attribution_error.startswith("transport failure")
-        ),
+        n_transport_errors=sum(1 for record in records if _is_transport_error(record)),
         known_substrate_biases=list(KNOWN_SUBSTRATE_BIASES),
     )
 

@@ -82,12 +82,7 @@ def apply_sub_verifier(
 
     failing_level = derive_failing_level(root, verdicts)
 
-    # "Ran" must not count as "checked". A level of UNDETERMINED means the
-    # sub-verifier found descendants but could check none of them, so the
-    # record carries no checkable fact and is ungrounded; the attributor is
-    # asked for the level exactly as if no sub-verifier had been supplied.
-    # NO_RECURSION, CHILD, and ROOT are all grounded: the first is read off
-    # the tree structure, the others off at least one non-None verdict.
+    # "Ran" must not count as "checked": see the GroundingResult docstring.
     return GroundingResult(
         failing_level=failing_level,
         grounded=failing_level is not FailingLevel.UNDETERMINED,

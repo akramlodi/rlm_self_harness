@@ -28,8 +28,8 @@ from tests.optimization.test_driver import (
     BoomVerifier,
     ClientFactory,
     full_script,
-    make_config,
     make_miner,
+    make_round_config,
 )
 
 Mutator = Callable[[Path, MiningResult], None]
@@ -47,7 +47,7 @@ def audited(
     """A complete audited round: 3 runs (1 pass, 1 fail, 1 termination)."""
     factory = ClientFactory(full_script())
     monkeypatch.setattr(rlm_module, "get_client", factory)
-    config = make_config(tmp_path)
+    config = make_round_config(tmp_path)
     result, report = run_audited_round(config, make_miner(BoomVerifier()), split_id="held_in_v1")
     return round_dir(config.out_dir, config.round_index), result, report
 
@@ -186,6 +186,27 @@ class TestBreakage:
 
         assert not report.ok
         assert {broken.link for broken in report.broken} == expected_links
+
+    @pytest.mark.parametrize(
+        "extra_fields",
+        [
+            {"attribution_error_kind": "transport"},
+            {"error": "transport failure: LM unreachable"},
+        ],
+        ids=["typed kind", "legacy prefix"],
+    )
+    def test_transport_failed_entry_is_exempt_from_the_attempts_demand(self, audited, extra_fields):
+        round_path, _, _ = audited
+        attributions_path = round_path / "attributions.jsonl"
+        entries = [json.loads(line) for line in attributions_path.read_text().splitlines()]
+        entries[0].update(attributed=False, attempts=[], **extra_fields)
+        attributions_path.write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries)
+        )
+
+        report = audit_round(round_path.parent, 1)
+
+        assert "attribution_attempts" not in report.broken_link_names()
 
     def test_broken_link_names_the_offending_artifact(self, audited):
         round_path, result, _ = audited

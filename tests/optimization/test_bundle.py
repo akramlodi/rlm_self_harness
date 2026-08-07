@@ -22,7 +22,12 @@ from shrlm.optimization.bundle import (
 )
 from shrlm.optimization.clustering import cluster_failures, compute_marginals
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import EvidenceBundle, FailureRecord, MiningTotals
+from shrlm.optimization.types import (
+    AttributionErrorKind,
+    EvidenceBundle,
+    FailureRecord,
+    MiningTotals,
+)
 from tests.optimization.fixtures import make_config, make_record, make_stats, make_verdict
 
 
@@ -269,19 +274,33 @@ class TestIntegrityReport:
             assert entry["effect"]
 
     def test_operational_counts_are_sums_over_the_records(self):
-        transport = make_record("run-d", signature=None, detail=None, attribution_failed=True)
-        transport.attribution_error = "transport failure: connection reset"
+        # A legacy record: no typed kind, recognized by the message prefix.
+        legacy_transport = make_record(
+            "run-d", signature=None, detail=None, attribution_failed=True
+        )
+        legacy_transport.attribution_error = "transport failure: connection reset"
+        # A current record: typed kind, message carries no prefix.
+        typed_transport = make_record("run-e", signature=None, detail=None, attribution_failed=True)
+        typed_transport.attribution_error = "connection reset"
+        typed_transport.attribution_error_kind = AttributionErrorKind.TRANSPORT
+        # A typed rejection whose message happens to carry the prefix: the
+        # typed field wins over the legacy prefix heuristic.
+        typed_rejection = make_record("run-f", signature=None, detail=None, attribution_failed=True)
+        typed_rejection.attribution_error = "transport failure mentioned in a rejection"
+        typed_rejection.attribution_error_kind = AttributionErrorKind.REJECTION
         records = [
             make_record("run-a", signature=None, detail=None, attribution_failed=True),
             make_record("run-b", level_grounded=False),
             make_record("run-c", verdict=make_verdict(cause=VerifierCause.RESOURCE_TERMINATED)),
-            transport,
+            legacy_transport,
+            typed_transport,
+            typed_rejection,
         ]
         report = build_integrity_report(records, digest_coverages=[1.0])
-        assert report.n_unattributed == 2
+        assert report.n_unattributed == 4
         assert report.n_ungrounded == 1
         assert report.n_resource_terminated == 1
-        assert report.n_transport_errors == 1
+        assert report.n_transport_errors == 2
 
     def test_zero_failure_round_builds_a_valid_bundle(self):
         bundle = build_evidence_bundle(

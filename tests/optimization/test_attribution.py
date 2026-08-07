@@ -26,7 +26,7 @@ from shrlm.optimization.digest import TraceDigest, build_digest
 from shrlm.optimization.grounding import GroundingResult
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import CallNode, Verdict
+from shrlm.optimization.types import AttributionErrorKind, CallNode, Verdict
 from shrlm.optimization.walker import walk
 from tests.mock_lm import MockLM
 from tests.optimization.fixtures import (
@@ -192,8 +192,10 @@ class TestReAskAudit:
         )
 
         assert outcome.record is not None and outcome.record.attribution_failed
+        assert outcome.record.attribution_error_kind is AttributionErrorKind.REJECTION
         assert outcome.raw is not None
         assert outcome.raw["attributed"] is False
+        assert outcome.raw["attribution_error_kind"] == AttributionErrorKind.REJECTION.value
         assert "no valid attribution" in outcome.raw["error"]
         assert len(outcome.raw["attempts"]) == 3
         for entry in outcome.raw["attempts"]:
@@ -292,6 +294,8 @@ class TestTransportResilience:
         assert attributed.instance_id == "inst-1" and attributed.signature is not None
         assert failed.instance_id == "inst-2" and failed.attribution_failed
         assert failed.attribution_error.startswith("transport failure:")
+        assert failed.attribution_error_kind is AttributionErrorKind.TRANSPORT
+        assert attributed.attribution_error_kind is None
         assert result.errors == [
             {"instance_id": "inst-2", "run_index": 1, "error": result.errors[0]["error"]}
         ]

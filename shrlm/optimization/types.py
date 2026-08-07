@@ -45,6 +45,16 @@ class TraceIntegrity(str, Enum):
     DEGRADED = "degraded"
 
 
+class AttributionErrorKind(str, Enum):
+    """Why an attribution failed: the model's response was unusable, or the
+    model was never reached at all. The distinction matters downstream --
+    transport failures are exempt from the attempts-audit demand and are
+    counted separately in the integrity report."""
+
+    REJECTION = "rejection"
+    TRANSPORT = "transport"
+
+
 @dataclass
 class CodeBlockNode:
     """One ```repl block executed within an iteration."""
@@ -336,6 +346,11 @@ class FailureRecord:
     its persisted trace (see ``RunTraceLink``). They are None for legacy
     callers that mine in-memory completions with no persisted round behind
     them; ``mine_round`` always populates them from ``runs.jsonl``.
+
+    ``attribution_error_kind`` holds an ``AttributionErrorKind`` value when
+    ``attribution_failed`` is set by mining; it is None on records that
+    attributed cleanly and on legacy records, whose readers fall back to the
+    ``transport failure`` prefix of ``attribution_error``.
     """
 
     instance_id: str
@@ -348,6 +363,7 @@ class FailureRecord:
     digest_sha256: str = ""
     attribution_failed: bool = False
     attribution_error: str = ""
+    attribution_error_kind: AttributionErrorKind | None = None
     run_id: str | None = None
     trace_path: str | None = None
     trace_sha256: str | None = None
@@ -364,6 +380,9 @@ class FailureRecord:
             "digest_sha256": self.digest_sha256,
             "attribution_failed": self.attribution_failed,
             "attribution_error": self.attribution_error,
+            "attribution_error_kind": (
+                self.attribution_error_kind.value if self.attribution_error_kind else None
+            ),
             "run_id": self.run_id,
             "trace_path": self.trace_path,
             "trace_sha256": self.trace_sha256,

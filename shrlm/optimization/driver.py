@@ -139,7 +139,8 @@ def _instance_lines(instances: list[dict[str, Any]]) -> str:
     return "".join(json.dumps(instance, sort_keys=True) + "\n" for instance in instances)
 
 
-def _sha256_file(path: Path) -> str:
+def sha256_file(path: Path) -> str:
+    """Sha256 hex digest over the file's bytes."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -259,7 +260,7 @@ def _verify_trace(path: Path, entry: dict[str, Any]) -> Path:
         raise RoundPersistenceError(
             f"manifest entry {entry['run_id']!r} points at missing trace {trace_path}"
         )
-    actual = _sha256_file(trace_path)
+    actual = sha256_file(trace_path)
     if actual != entry["trace_sha256"]:
         raise RoundPersistenceError(
             f"trace {trace_path} sha256 {actual} does not match the manifest's "
@@ -326,7 +327,7 @@ def _persist_run(
         "cause": verdict.cause.value if verdict.cause is not None else None,
         "verdict": verdict.to_dict(),
         "trace_path": trace_rel,
-        "trace_sha256": _sha256_file(trace_path),
+        "trace_sha256": sha256_file(trace_path),
         "cost": completion.usage_summary.total_cost,
         "timestamp": _utc_now(),
     }
@@ -578,4 +579,5 @@ __all__ = [
     "round_dir",
     "run_id_for",
     "run_round",
+    "sha256_file",
 ]

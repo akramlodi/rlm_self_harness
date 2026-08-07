@@ -33,7 +33,9 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+from rlm.environments.base_env import parse_tool_entry
 from shrlm.rlm_harness import Harness
+from shrlm.runner import declared_metadata_bound
 
 
 class HarnessSerializationError(RuntimeError):
@@ -91,9 +93,11 @@ def json_safe_value(value: Any, surface: str) -> Any:
 def serialize_helper_entry(name: str, entry: Any, surface: str) -> Any:
     """Serialize one S8 helper entry to a reconstructible form.
 
-    S8 entries follow ``rlm.environments.base_env.parse_tool_entry``: an entry
-    is either a plain value/callable, or a ``{"tool": ..., "description": ...}``
-    dict. Callables become ``{"kind": "callable", "source": ...}``; plain data
+    The entry is interpreted through ``rlm.environments.base_env.
+    parse_tool_entry`` -- the runtime's own reading -- so serialization can
+    never diverge from what the REPL actually installs (e.g. a non-string
+    ``description`` is dropped to None, exactly as the runtime drops it).
+    Callables become ``{"kind": "callable", "source": ...}``; plain data
     becomes ``{"kind": "value", "value": ...}``; tool dicts keep the description
     alongside the serialized tool.
 
@@ -106,14 +110,14 @@ def serialize_helper_entry(name: str, entry: Any, surface: str) -> Any:
         A JSON-serializable representation of the entry.
     """
     label = f"{surface}[{name!r}]"
+    info = parse_tool_entry(name, entry)
+    if info.is_callable:
+        serialized = {"kind": "callable", "source": callable_source(info.value, label)}
+    else:
+        serialized = {"kind": "value", "value": json_safe_value(info.value, label)}
     if isinstance(entry, dict) and "tool" in entry:
-        return {
-            "description": entry.get("description"),
-            "tool": serialize_helper_entry(name, entry["tool"], surface),
-        }
-    if callable(entry):
-        return {"kind": "callable", "source": callable_source(entry, label)}
-    return {"kind": "value", "value": json_safe_value(entry, label)}
+        return {"description": info.description, "tool": serialized}
+    return serialized
 
 
 def serialize_harness(harness: Harness) -> dict[str, Any]:
@@ -129,15 +133,15 @@ def serialize_harness(harness: Harness) -> dict[str, Any]:
 
     Raises:
         HarnessSerializationError: If any callable surface has unrecoverable
-            source, if S7's builder lacks ``declared_bound``, or if a data value
-            is not JSON-serializable.
+            source, if S7's builder lacks a valid ``declared_bound`` (a
+            positive int, per ``shrlm.runner.declared_metadata_bound``), or if
+            a data value is not JSON-serializable.
     """
     metadata = harness.metadata
-    if not hasattr(metadata, "declared_bound"):
-        raise HarnessSerializationError(
-            f"cannot serialize S7 metadata: builder {metadata!r} carries no "
-            "declared_bound attribute"
-        )
+    try:
+        declared_bound = declared_metadata_bound(metadata)
+    except ValueError as error:
+        raise HarnessSerializationError(f"cannot serialize S7 metadata: {error}") from error
     return {
         "name": harness.name,
         "orchestrator": harness.orchestrator,
@@ -152,7 +156,7 @@ def serialize_harness(harness: Harness) -> dict[str, Any]:
                 for key, value in sorted(harness.runtime_policy.items())
             },
             "S7_metadata": {
-                "declared_bound": int(metadata.declared_bound),
+                "declared_bound": declared_bound,
                 "source": callable_source(metadata, "S7 metadata"),
             },
             "S8_repl_helpers": {
@@ -170,12 +174,29 @@ def serialize_harness(harness: Harness) -> dict[str, Any]:
     }
 
 
-def harness_hash(harness: Harness) -> str:
-    """Content hash of the harness: sha256 over the canonical hashed material.
+def canonical_json_sha256(material: dict[str, Any]) -> str:
+    """Sha256 over the canonical JSON rendering of ``material``.
+
+    Canonical means sorted keys, compact separators, ASCII, so the hash is
+    stable across processes and dict insertion orders.
+    """
+    canonical = json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def hash_of_serialization(serialization: dict[str, Any]) -> str:
+    """The content hash of an already-serialized harness dict.
 
     The hashed material is the serialization minus the informational ``name``
-    field, rendered as canonical JSON (sorted keys, compact separators, ASCII),
-    so the hash is stable across processes and dict insertion orders.
+    field (renaming a harness must not change its hash).
+    """
+    material = dict(serialization)
+    material.pop("name", None)
+    return canonical_json_sha256(material)
+
+
+def harness_hash(harness: Harness) -> str:
+    """Content hash of the harness: sha256 over the canonical hashed material.
 
     Args:
         harness: The harness to hash.
@@ -183,10 +204,7 @@ def harness_hash(harness: Harness) -> str:
     Returns:
         The sha256 hex digest identifying the harness's content.
     """
-    material = serialize_harness(harness)
-    del material["name"]
-    canonical = json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return hash_of_serialization(serialize_harness(harness))
 
 
 def write_harness_json(harness: Harness, path: str | Path) -> dict[str, Any]:
@@ -203,11 +221,12 @@ def write_harness_json(harness: Harness, path: str | Path) -> dict[str, Any]:
     Returns:
         The envelope dict that was written.
     """
+    serialization = serialize_harness(harness)
     envelope = {
         "format": "shrlm-harness/v1",
         "name": harness.name,
-        "hash": harness_hash(harness),
-        "harness": serialize_harness(harness),
+        "hash": hash_of_serialization(serialization),
+        "harness": serialization,
     }
     Path(path).write_text(json.dumps(envelope, sort_keys=True, indent=2) + "\n")
     return envelope

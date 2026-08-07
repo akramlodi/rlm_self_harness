@@ -325,7 +325,7 @@ class LLMAttributor:
 
     def cache_key(self, digest: TraceDigest, grounded: bool, attempt: int) -> str:
         material = (
-            f"{self.prompt_sha256(grounded, digest.aggregated, digest.n_descendants == 0)}"
+            f"{self.prompt_sha256(grounded, digest.aggregated, digest.no_subcalls)}"
             f"|{digest.sha256}|"
             f"{self.config_sha256()}|{attempt}"
         )
@@ -411,9 +411,7 @@ class LLMAttributor:
         if verdict.passed or verdict.cause is None:
             raise ValueError("Only failed runs are attributed; this verdict passed")
 
-        system = self.system_prompt(
-            grounding.grounded, digest.aggregated, digest.n_descendants == 0
-        )
+        system = self.system_prompt(grounding.grounded, digest.aggregated, digest.no_subcalls)
         rejection = ""
         attempts: list[AttributionAttempt] = []
 

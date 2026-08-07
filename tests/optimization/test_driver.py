@@ -160,7 +160,7 @@ def full_script() -> list[str]:
     ]
 
 
-def make_config(tmp_path: Path, **overrides: Any) -> RoundConfig:
+def make_round_config(tmp_path: Path, **overrides: Any) -> RoundConfig:
     values: dict[str, Any] = {
         "round_index": 1,
         "harness": H0,
@@ -207,7 +207,7 @@ def read_manifest(round_path: Path) -> list[dict[str, Any]]:
 def run_full_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RoundConfig:
     factory = ClientFactory(full_script())
     monkeypatch.setattr(rlm_module, "get_client", factory)
-    config = make_config(tmp_path)
+    config = make_round_config(tmp_path)
     run_round(config)
     return config
 
@@ -310,7 +310,7 @@ class TestResume:
     def test_resume_executes_only_the_missing_run(self, tmp_path, monkeypatch):
         first = ClientFactory(full_script())
         monkeypatch.setattr(rlm_module, "get_client", first)
-        config = make_config(tmp_path)
+        config = make_round_config(tmp_path)
         run_round(config, stop_after=2)  # simulated crash after two paid runs
 
         round_path = round_dir(config.out_dir, config.round_index)
@@ -320,7 +320,7 @@ class TestResume:
 
         resumed = ClientFactory(full_script()[2:])
         monkeypatch.setattr(rlm_module, "get_client", resumed)
-        run_round(make_config(tmp_path))
+        run_round(make_round_config(tmp_path))
 
         entries = read_manifest(round_path)
         assert len(entries) == 3
@@ -330,13 +330,12 @@ class TestResume:
         assert (round_path / "runs.jsonl").read_bytes()[: len(before)] == before
 
     def test_fully_complete_round_makes_no_model_calls(self, tmp_path, monkeypatch):
-        config = run_full_round(tmp_path, monkeypatch)
+        run_full_round(tmp_path, monkeypatch)
         idle = ClientFactory([])
         monkeypatch.setattr(rlm_module, "get_client", idle)
-        entries = run_round(make_config(tmp_path))
+        entries = run_round(make_round_config(tmp_path))
         assert len(entries) == 3
         assert idle.total_calls == 0
-        del config
 
     def test_trace_sha_mismatch_fails_loudly_without_overwrite(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)
@@ -348,7 +347,7 @@ class TestResume:
         idle = ClientFactory([])
         monkeypatch.setattr(rlm_module, "get_client", idle)
         with pytest.raises(RuntimeError, match="sha256"):
-            run_round(make_config(tmp_path))
+            run_round(make_round_config(tmp_path))
         assert trace.read_text() == "tampered"
         assert idle.total_calls == 0
 
@@ -362,7 +361,7 @@ class TestAttemptsAndPreconditions:
     def test_two_attempts_yield_two_distinct_run_ids(self, tmp_path, monkeypatch):
         factory = ClientFactory([final("RIGHT"), final("WRONG")])
         monkeypatch.setattr(rlm_module, "get_client", factory)
-        config = make_config(tmp_path, instances=[make_instances()[0]], attempts=2)
+        config = make_round_config(tmp_path, instances=[make_instances()[0]], attempts=2)
         run_round(config)
 
         entries = read_manifest(round_dir(config.out_dir, config.round_index))
@@ -375,7 +374,7 @@ class TestAttemptsAndPreconditions:
         factory = ClientFactory(full_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        config = make_config(tmp_path, backend="openrouter")
+        config = make_round_config(tmp_path, backend="openrouter")
 
         with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
             run_round(config)
@@ -385,7 +384,9 @@ class TestAttemptsAndPreconditions:
     def test_api_key_material_in_backend_kwargs_is_rejected(self, tmp_path, monkeypatch):
         factory = ClientFactory(full_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
-        config = make_config(tmp_path, backend_kwargs={"model_name": "m", "api_key": "sk-nope"})
+        config = make_round_config(
+            tmp_path, backend_kwargs={"model_name": "m", "api_key": "sk-nope"}
+        )
         with pytest.raises(ValueError, match="api_key"):
             run_round(config)
         assert factory.total_calls == 0
@@ -394,7 +395,7 @@ class TestAttemptsAndPreconditions:
         factory = ClientFactory(full_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
         instance = make_instances()[0]
-        config = make_config(tmp_path, instances=[instance, dict(instance)])
+        config = make_round_config(tmp_path, instances=[instance, dict(instance)])
         with pytest.raises(ValueError, match="duplicate"):
             run_round(config)
         assert factory.total_calls == 0
@@ -536,7 +537,7 @@ class TestMineRound:
         ]
         factory = ClientFactory([final("WRONG"), final("RIGHT")])
         monkeypatch.setattr(rlm_module, "get_client", factory)
-        config = make_config(tmp_path, instances=instances)
+        config = make_round_config(tmp_path, instances=instances)
         run_round(config)
 
         cache_path = tmp_path / "caches" / "attribution.jsonl"
@@ -564,7 +565,7 @@ class TestMineRound:
         instances = make_instances()[:2]
         factory = ClientFactory([final("RIGHT"), final("RIGHT")])
         monkeypatch.setattr(rlm_module, "get_client", factory)
-        config = make_config(tmp_path, instances=instances)
+        config = make_round_config(tmp_path, instances=instances)
         run_round(config)
 
         result = mine_round(

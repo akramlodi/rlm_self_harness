@@ -211,6 +211,18 @@ def test_s8_tool_entry_serializes_source_and_description() -> None:
     assert entries["corpus_label"] == {"kind": "value", "value": "arxiv"}
 
 
+def test_s8_non_string_description_serializes_as_none_like_the_runtime() -> None:
+    """The runtime (``parse_tool_entry``) drops a non-string description; the
+    serialization must record the same interpretation, not the raw entry."""
+    harness = dataclasses.replace(
+        H0,
+        repl_helpers={"word_count": {"tool": helper_word_count, "description": 42}},
+    )
+    entries = serialize_harness(harness)["surfaces"]["S8_repl_helpers"]
+    assert entries["word_count"]["description"] is None
+    assert "def helper_word_count" in entries["word_count"]["tool"]["source"]
+
+
 def test_s8_docstring_change_changes_the_hash() -> None:
     base = dataclasses.replace(H0, repl_helpers={"word_count": helper_word_count})
     redoc = dataclasses.replace(H0, repl_helpers={"word_count": helper_word_count_redoc})
@@ -231,6 +243,42 @@ def test_sourceless_s9_callable_fails_naming_the_surface() -> None:
 def test_sourceless_s8_callable_fails_naming_the_surface() -> None:
     broken = dataclasses.replace(H0, repl_helpers={"length": len})
     with pytest.raises(HarnessSerializationError, match="S8"):
+        serialize_harness(broken)
+
+
+# ---------------------------------------------------------------------------
+# Fail-fast on invalid S7 declared_bound (the runtime's own validator)
+# ---------------------------------------------------------------------------
+
+
+def bool_bound_metadata(
+    stdout: str,
+    repl_inventory: dict[str, tuple[str, int]],
+    max_character_length: int = DEFAULT_MAX_CHARACTER_LENGTH,
+) -> str:
+    """An S7 builder whose declared_bound is a bool, not an int."""
+    return stdout[:max_character_length]
+
+
+bool_bound_metadata.declared_bound = True
+
+
+def zero_bound_metadata(
+    stdout: str,
+    repl_inventory: dict[str, tuple[str, int]],
+    max_character_length: int = DEFAULT_MAX_CHARACTER_LENGTH,
+) -> str:
+    """An S7 builder whose declared_bound is non-positive."""
+    return stdout[:max_character_length]
+
+
+zero_bound_metadata.declared_bound = 0
+
+
+@pytest.mark.parametrize("builder", [bool_bound_metadata, zero_bound_metadata])
+def test_invalid_s7_declared_bound_fails_naming_the_surface(builder) -> None:
+    broken = dataclasses.replace(H0, metadata=builder)
+    with pytest.raises(HarnessSerializationError, match="S7"):
         serialize_harness(broken)
 
 

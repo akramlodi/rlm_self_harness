@@ -35,6 +35,7 @@ from shrlm.optimization.digest import DIGEST_VERSION, DigestConfig, build_digest
 from shrlm.optimization.grounding import apply_sub_verifier
 from shrlm.optimization.taxonomy import TAXONOMY_VERSION
 from shrlm.optimization.types import (
+    AttributionErrorKind,
     EvidenceBundle,
     FailureRecord,
     MiningConfig,
@@ -157,7 +158,7 @@ class WeaknessMiner:
             digest_sha256=digest.sha256,
         )
 
-        no_subcalls = digest.n_descendants == 0
+        no_subcalls = digest.no_subcalls
         prompt_text = self.attributor.system_prompt(
             grounding.grounded, digest.aggregated, no_subcalls
         )
@@ -189,22 +190,26 @@ class WeaknessMiner:
         except AttributionRejection as exc:
             record.attribution_failed = True
             record.attribution_error = str(exc)
+            record.attribution_error_kind = AttributionErrorKind.REJECTION
             raw.update(
                 signature=None,
                 detail=None,
                 attributed=False,
                 error=str(exc),
+                attribution_error_kind=record.attribution_error_kind.value,
                 attempts=[attempt.to_dict() for attempt in exc.attempts],
             )
             return outcome
         except AttributionTransportError as exc:
             record.attribution_failed = True
             record.attribution_error = f"transport failure: {exc}"
+            record.attribution_error_kind = AttributionErrorKind.TRANSPORT
             raw.update(
                 signature=None,
                 detail=None,
                 attributed=False,
                 error=record.attribution_error,
+                attribution_error_kind=record.attribution_error_kind.value,
                 attempts=[attempt.to_dict() for attempt in exc.attempts],
             )
             outcome.transport_error = str(exc)
