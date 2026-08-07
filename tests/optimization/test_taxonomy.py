@@ -16,15 +16,38 @@ from shrlm.optimization.taxonomy import (
     FAILING_LEVEL_DOCS,
     MECHANISM_DOCS,
     MECHANISM_SURFACE,
+    SURFACE_NAME,
+    SURFACE_REACH,
     TAXONOMY_VERSION,
     AgentMechanism,
     CausalStatus,
     EditableSurface,
     FailingLevel,
+    SurfaceReach,
     VerifierCause,
     render_failing_level_block,
+    render_surface_block,
     render_taxonomy_block,
 )
+from shrlm.rlm_harness import SURFACES
+
+# Mechanisms whose documented meaning is a child's own behavior rather than the
+# root's: INSUFFICIENT_RECURSION ("a sub-call received a piece ... and answered
+# it directly") and DEPTH_DEGRADATION (excess recursion happens inside the
+# sub-tree, below the root's own decision). An edit fixing them must reach the
+# children, so they must never map to a root-only surface.
+CHILD_LEVEL_MECHANISMS = {
+    AgentMechanism.INSUFFICIENT_RECURSION,
+    AgentMechanism.DEPTH_DEGRADATION,
+}
+
+# Surface values retired in taxonomy 2.0.0; none may survive in rendered text.
+RETIRED_SURFACE_VALUES = {
+    "decomposition_guidance",
+    "subcall_policy",
+    "subcall_metadata",
+    "error_policy",
+}
 
 
 def labels_in_block(block: str) -> set[str]:
@@ -32,9 +55,35 @@ def labels_in_block(block: str) -> set[str]:
     return set(re.findall(r"^  - ([a-z_]+):", block, flags=re.MULTILINE))
 
 
+class TestSurfaceAgreementWithHarness:
+    def test_surface_values_are_exactly_the_declared_harness_surface_ids(self):
+        assert {member.value for member in EditableSurface} == set(SURFACES)
+
+    def test_member_names_follow_the_declared_builders(self):
+        # SURFACE_NAME is derived from the harness's build_<x> naming convention,
+        # so a renamed builder or a drifted enum member fails here.
+        for surface in EditableSurface:
+            assert SURFACE_NAME[surface].startswith(surface.name.lower())
+
+    def test_every_surface_has_a_reach_annotation(self):
+        assert set(SURFACE_REACH) == set(EditableSurface)
+        assert all(isinstance(reach, SurfaceReach) for reach in SURFACE_REACH.values())
+
+    def test_root_only_surfaces_are_the_c7_seams(self):
+        # docs/residual-review-findings/feature-editable_surfaces.md, C7: the
+        # S6/S7/S9 seams apply at the root only. S1-S5 travel with the system
+        # prompt, which children inherit; S8 propagates via sub_repl_helpers.
+        root_only = {s for s, reach in SURFACE_REACH.items() if reach is SurfaceReach.ROOT_ONLY}
+        assert root_only == {
+            EditableSurface.RUNTIME_POLICY,
+            EditableSurface.METADATA,
+            EditableSurface.ANSWER_MIDDLEWARE,
+        }
+
+
 class TestCoverageInvariants:
-    def test_thirteen_concrete_mechanisms_plus_other(self):
-        assert len(AgentMechanism) == 14
+    def test_fifteen_concrete_mechanisms_plus_other(self):
+        assert len(AgentMechanism) == 16
         assert AgentMechanism.OTHER in AgentMechanism
 
     def test_every_mechanism_is_documented(self):
@@ -49,8 +98,23 @@ class TestCoverageInvariants:
     def test_other_has_no_surface_by_design(self):
         assert AgentMechanism.OTHER not in MECHANISM_SURFACE
 
-    def test_every_editable_surface_is_reachable_from_some_mechanism(self):
+    def test_reachable_surfaces_are_exactly_the_nine_declared_surfaces(self):
+        # Compared against the harness declaration, not the enum, so a shrunken
+        # or drifted mapping fails even if the enum drifts with it.
+        assert {surface.value for surface in MECHANISM_SURFACE.values()} == set(SURFACES)
         assert set(MECHANISM_SURFACE.values()) == set(EditableSurface)
+
+    def test_child_level_mechanisms_never_map_to_a_root_only_surface(self):
+        for mechanism in CHILD_LEVEL_MECHANISMS:
+            surface = MECHANISM_SURFACE[mechanism]
+            assert SURFACE_REACH[surface] is SurfaceReach.CHILD_REACHABLE
+
+    def test_premature_termination_is_homed_to_pre_submission_verification(self):
+        # Taxonomy 2.0.0 decision: committing while incompleteness evidence was
+        # available is a failed S4 verification pass, not an S9 middleware issue.
+        s4 = MECHANISM_SURFACE[AgentMechanism.PREMATURE_TERMINATION]
+        assert s4 is EditableSurface.VERIFICATION_INSTRUCTION
+        assert MECHANISM_SURFACE[AgentMechanism.SKIPPED_VERIFICATION] is s4
 
     def test_every_causal_status_is_documented_and_weighted(self):
         assert set(CAUSAL_STATUS_DOCS) == set(CausalStatus)
@@ -74,12 +138,27 @@ class TestCoverageInvariants:
     def test_taxonomy_version_is_a_semver_string(self):
         assert re.fullmatch(r"\d+\.\d+\.\d+", TAXONOMY_VERSION)
 
+    def test_taxonomy_version_is_the_nine_surface_contract(self):
+        assert TAXONOMY_VERSION == "2.0.0"
+
 
 class TestRenderedPromptText:
     def test_taxonomy_block_labels_match_the_enums_exactly(self):
         # Every member value appears, and no stale name survives a rename.
         expected = {m.value for m in CausalStatus} | {m.value for m in AgentMechanism}
         assert labels_in_block(render_taxonomy_block()) == expected
+
+    def test_taxonomy_block_shows_all_nine_surfaces_with_reach(self):
+        block = render_taxonomy_block()
+        for surface in EditableSurface:
+            line = f"- {surface.value} {SURFACE_NAME[surface]} [{SURFACE_REACH[surface].value}]:"
+            assert line in block
+        assert render_surface_block() in block
+
+    def test_taxonomy_block_carries_no_retired_surface_vocabulary(self):
+        block = render_taxonomy_block()
+        for retired in RETIRED_SURFACE_VALUES:
+            assert retired not in block
 
     @pytest.mark.parametrize("member", list(AgentMechanism))
     def test_each_mechanism_value_appears_in_the_block(self, member: AgentMechanism):

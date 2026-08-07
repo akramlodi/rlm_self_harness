@@ -18,19 +18,35 @@ the error signal first appears. Only ``causal_status`` and ``agent_mechanism``
 are language-model judgments: ``verifier_cause`` is computed by the verifier
 and ``failing_level`` is derived from per-child sub-verifier verdicts whenever
 a sub-verifier is supplied.
+
+Version 2.0.0 keys ``EditableSurface`` to the nine surfaces S1-S9 declared in
+``shrlm.rlm_harness.SURFACES`` and re-homes ``PREMATURE_TERMINATION`` from the
+answer middleware to S4 (pre-submission verification): its documented meaning
+-- committing to an answer while evidence of incompleteness was still
+available -- is a failure of the verification pass that S4 governs ("what to
+check before flipping ``answer['ready']``"), whereas S9 middleware can only
+inspect an answer the root has already committed to.
 """
 
 from enum import Enum
 
+from shrlm.rlm_harness import SURFACES
+
 # Bumped whenever any enum member, MECHANISM_DOCS entry, or MECHANISM_SURFACE
 # mapping changes. Bundles carrying different versions are not comparable, so
 # the frequency-before-vs-after analysis must assert on this.
-TAXONOMY_VERSION = "1.0.0"
+TAXONOMY_VERSION = "2.0.0"
 
 
 class EditableSurface(str, Enum):
     """
-    The harness components Self-Harness is permitted to edit.
+    The nine harness surfaces Self-Harness is permitted to edit.
+
+    Values are the surface ids declared in ``shrlm.rlm_harness.SURFACES``, so an
+    attribution names a surface stage 2 can actually target; member names follow
+    the ``Harness`` field each surface fills. A test asserts the value set equals
+    ``SURFACES``' key set and that each member name matches the surface's
+    declared builders.
 
     Fixed by the project design: the prompt-as-variable, programmatic-sub-call,
     and outputs-in-variables invariants of the reference RLM, along with model
@@ -38,12 +54,62 @@ class EditableSurface(str, Enum):
     member here.
     """
 
-    DECOMPOSITION_GUIDANCE = "decomposition_guidance"
-    SUBCALL_POLICY = "subcall_policy"
-    SUBCALL_METADATA = "subcall_metadata"
-    ANSWER_MIDDLEWARE = "answer_middleware"
-    ERROR_POLICY = "error_policy"
-    REPL_HELPERS = "repl_helpers"
+    REPL_CONTRACT = "S1"
+    DECOMPOSITION_INSTRUCTION = "S2"
+    EXECUTION_INSTRUCTION = "S3"
+    VERIFICATION_INSTRUCTION = "S4"
+    RECOVERY_INSTRUCTION = "S5"
+    RUNTIME_POLICY = "S6"
+    METADATA = "S7"
+    REPL_HELPERS = "S8"
+    ANSWER_MIDDLEWARE = "S9"
+
+
+# Human-readable surface names, derived from the harness's declared builders
+# (``build_<x>`` fills the field ``<x>``) rather than duplicated as literals.
+# S8 has two builders and renders as "repl_helpers+sub_repl_helpers".
+SURFACE_NAME: dict[EditableSurface, str] = {
+    surface: "+".join(
+        builder.__name__.removeprefix("build_") for builder in SURFACES[surface.value].builders
+    )
+    for surface in EditableSurface
+}
+
+
+class SurfaceReach(str, Enum):
+    """
+    Whether an edit to a surface reaches child RLMs or only the root.
+
+    An attribution that blames a child's own behavior on a root-only surface
+    proposes an edit that cannot fix the failure, so the attributor is shown
+    this annotation alongside each surface.
+    """
+
+    ROOT_ONLY = "root_only"
+    CHILD_REACHABLE = "child_reachable"
+
+
+# Grounded in the code and the residual review record, not in intent:
+# - S1-S5 are prompt surfaces concatenated into the system prompt, and a child
+#   RLM is constructed with ``custom_system_prompt=self.system_prompt``
+#   (``rlm/core/rlm.py``, child spawn in ``_handle_subcall``), so prompt edits
+#   reach every level of the tree.
+# - The S6/S7/S9 seams are applied at the root only; children do not receive
+#   them (docs/residual-review-findings/feature-editable_surfaces.md, C7).
+# - S8 is child-reachable through its second builder: ``sub_repl_helpers``
+#   becomes ``custom_sub_tools``, which the child spawn propagates as the
+#   child's own ``custom_tools``.
+SURFACE_REACH: dict[EditableSurface, SurfaceReach] = {
+    EditableSurface.REPL_CONTRACT: SurfaceReach.CHILD_REACHABLE,
+    EditableSurface.DECOMPOSITION_INSTRUCTION: SurfaceReach.CHILD_REACHABLE,
+    EditableSurface.EXECUTION_INSTRUCTION: SurfaceReach.CHILD_REACHABLE,
+    EditableSurface.VERIFICATION_INSTRUCTION: SurfaceReach.CHILD_REACHABLE,
+    EditableSurface.RECOVERY_INSTRUCTION: SurfaceReach.CHILD_REACHABLE,
+    EditableSurface.RUNTIME_POLICY: SurfaceReach.ROOT_ONLY,
+    EditableSurface.METADATA: SurfaceReach.ROOT_ONLY,
+    EditableSurface.REPL_HELPERS: SurfaceReach.CHILD_REACHABLE,
+    EditableSurface.ANSWER_MIDDLEWARE: SurfaceReach.ROOT_ONLY,
+}
 
 
 class VerifierCause(str, Enum):
@@ -115,8 +181,8 @@ class AgentMechanism(str, Enum):
     Cardinality is fixed by one rule: each mechanism maps to exactly one
     EditableSurface. The proposal stage requires every edit to modify a single
     declared surface, so a mechanism spanning two surfaces would be unusable
-    downstream. Six surfaces at roughly two mechanisms each gives thirteen
-    plus OTHER.
+    downstream. Nine surfaces at one to four mechanisms each gives fifteen
+    plus OTHER, and every surface is reachable from at least one mechanism.
 
     Three pairs are opposite in direction and must never be merged, since a
     cluster holding both members would demand contradictory edits:
@@ -125,28 +191,38 @@ class AgentMechanism(str, Enum):
     ITERATION_BUDGET_EXHAUSTION.
     """
 
-    # Decomposition guidance
+    # S1 -- REPL contract
+    REPL_CONTRACT_MISUSE = "repl_contract_misuse"
+
+    # S2 -- decomposition instruction
     WHOLE_INPUT_SUBCALL_COLLAPSE = "whole_input_subcall_collapse"
     INCOMPLETE_COVERAGE = "incomplete_coverage"
     REDUNDANT_DECOMPOSITION = "redundant_decomposition"
     MISALIGNED_UNIT = "misaligned_unit"
 
-    # Sub-call / batching policy and depth
+    # S3 -- execution instruction (what to print, when to offload, depth)
     DEPTH_DEGRADATION = "depth_degradation"
     INSUFFICIENT_RECURSION = "insufficient_recursion"
     LLM_FOR_RLM_SUBSTITUTION = "llm_for_rlm_substitution"
 
-    # Answer protocol and sub-call return structure
-    LOSSY_AGGREGATION = "lossy_aggregation"
-    UNPARSED_CHILD_OUTPUT = "unparsed_child_output"
-
-    # Termination policy
+    # S4 -- pre-submission verification
     PREMATURE_TERMINATION = "premature_termination"
+    SKIPPED_VERIFICATION = "skipped_verification"
+
+    # S5 -- sub-call failure recovery
+    SWALLOWED_SUBCALL_ERROR = "swallowed_subcall_error"
+
+    # S6 -- runtime policy (numbers and switches)
     ITERATION_BUDGET_EXHAUSTION = "iteration_budget_exhaustion"
 
-    # Sub-call error handling and REPL helpers
-    SWALLOWED_SUBCALL_ERROR = "swallowed_subcall_error"
+    # S7 -- metadata / sub-call return structure
+    UNPARSED_CHILD_OUTPUT = "unparsed_child_output"
+
+    # S8 -- REPL helpers
     REPL_EXECUTION_FAULT = "repl_execution_fault"
+
+    # S9 -- answer middleware
+    LOSSY_AGGREGATION = "lossy_aggregation"
 
     OTHER = "other"
 
@@ -155,6 +231,11 @@ class AgentMechanism(str, Enum):
 # them here rather than in the prompt string means the prompt cannot drift from
 # the code, and a parametrized test asserts every member has an entry.
 MECHANISM_DOCS: dict[AgentMechanism, str] = {
+    AgentMechanism.REPL_CONTRACT_MISUSE: (
+        "The root violated or misread the documented REPL contract -- for example attempting to "
+        "read the prompt variable into context wholesale, or ignoring the documented variable "
+        "protocol."
+    ),
     AgentMechanism.WHOLE_INPUT_SUBCALL_COLLAPSE: (
         "The root delegated nearly the entire context to a single sub-call, or performed no "
         "meaningful decomposition at all."
@@ -193,6 +274,10 @@ MECHANISM_DOCS: dict[AgentMechanism, str] = {
         "The root committed to an answer while evidence of incompleteness was still available, "
         "such as unvisited slices or an unresolved frontier."
     ),
+    AgentMechanism.SKIPPED_VERIFICATION: (
+        "The root submitted an answer without any verification pass over the accumulated "
+        "results; nothing was checked before the answer was marked ready."
+    ),
     AgentMechanism.ITERATION_BUDGET_EXHAUSTION: (
         "The root never committed to an answer; the iteration budget ran out and the answer was "
         "synthesized by the fallback."
@@ -215,19 +300,21 @@ MECHANISM_DOCS: dict[AgentMechanism, str] = {
 # absent: an unclassified mechanism has no known surface, and
 # `surface_addressable` in the actionability score reads that absence.
 MECHANISM_SURFACE: dict[AgentMechanism, EditableSurface] = {
-    AgentMechanism.WHOLE_INPUT_SUBCALL_COLLAPSE: EditableSurface.DECOMPOSITION_GUIDANCE,
-    AgentMechanism.INCOMPLETE_COVERAGE: EditableSurface.DECOMPOSITION_GUIDANCE,
-    AgentMechanism.REDUNDANT_DECOMPOSITION: EditableSurface.DECOMPOSITION_GUIDANCE,
-    AgentMechanism.MISALIGNED_UNIT: EditableSurface.DECOMPOSITION_GUIDANCE,
-    AgentMechanism.DEPTH_DEGRADATION: EditableSurface.SUBCALL_POLICY,
-    AgentMechanism.INSUFFICIENT_RECURSION: EditableSurface.SUBCALL_POLICY,
-    AgentMechanism.LLM_FOR_RLM_SUBSTITUTION: EditableSurface.SUBCALL_POLICY,
-    AgentMechanism.LOSSY_AGGREGATION: EditableSurface.ANSWER_MIDDLEWARE,
-    AgentMechanism.UNPARSED_CHILD_OUTPUT: EditableSurface.SUBCALL_METADATA,
-    AgentMechanism.PREMATURE_TERMINATION: EditableSurface.ANSWER_MIDDLEWARE,
-    AgentMechanism.ITERATION_BUDGET_EXHAUSTION: EditableSurface.SUBCALL_POLICY,
-    AgentMechanism.SWALLOWED_SUBCALL_ERROR: EditableSurface.ERROR_POLICY,
+    AgentMechanism.REPL_CONTRACT_MISUSE: EditableSurface.REPL_CONTRACT,
+    AgentMechanism.WHOLE_INPUT_SUBCALL_COLLAPSE: EditableSurface.DECOMPOSITION_INSTRUCTION,
+    AgentMechanism.INCOMPLETE_COVERAGE: EditableSurface.DECOMPOSITION_INSTRUCTION,
+    AgentMechanism.REDUNDANT_DECOMPOSITION: EditableSurface.DECOMPOSITION_INSTRUCTION,
+    AgentMechanism.MISALIGNED_UNIT: EditableSurface.DECOMPOSITION_INSTRUCTION,
+    AgentMechanism.DEPTH_DEGRADATION: EditableSurface.EXECUTION_INSTRUCTION,
+    AgentMechanism.INSUFFICIENT_RECURSION: EditableSurface.EXECUTION_INSTRUCTION,
+    AgentMechanism.LLM_FOR_RLM_SUBSTITUTION: EditableSurface.EXECUTION_INSTRUCTION,
+    AgentMechanism.PREMATURE_TERMINATION: EditableSurface.VERIFICATION_INSTRUCTION,
+    AgentMechanism.SKIPPED_VERIFICATION: EditableSurface.VERIFICATION_INSTRUCTION,
+    AgentMechanism.SWALLOWED_SUBCALL_ERROR: EditableSurface.RECOVERY_INSTRUCTION,
+    AgentMechanism.ITERATION_BUDGET_EXHAUSTION: EditableSurface.RUNTIME_POLICY,
+    AgentMechanism.UNPARSED_CHILD_OUTPUT: EditableSurface.METADATA,
     AgentMechanism.REPL_EXECUTION_FAULT: EditableSurface.REPL_HELPERS,
+    AgentMechanism.LOSSY_AGGREGATION: EditableSurface.ANSWER_MIDDLEWARE,
 }
 
 
@@ -278,6 +365,23 @@ def render_enum_block(title: str, docs: dict[Enum, str]) -> str:
     return "\n".join(lines)
 
 
+def render_surface_block() -> str:
+    """
+    Render the nine editable surfaces with their reach annotations.
+
+    Reach matters to attribution: a mechanism describing a child's own behavior
+    must not be pinned on a root-only surface, whose edits children never see.
+    """
+    lines = ["editable_surfaces (each mechanism implicates exactly one):"]
+    for surface in EditableSurface:
+        declared = SURFACES[surface.value]
+        lines.append(
+            f"  - {surface.value} {SURFACE_NAME[surface]}"
+            f" [{SURFACE_REACH[surface].value}]: {declared.governs}"
+        )
+    return "\n".join(lines)
+
+
 def render_taxonomy_block() -> str:
     """
     Render the vocabularies the attributor may choose from.
@@ -287,6 +391,7 @@ def render_taxonomy_block() -> str:
     """
     return "\n\n".join(
         [
+            render_surface_block(),
             render_enum_block("causal_status (choose exactly one)", CAUSAL_STATUS_DOCS),
             render_enum_block("agent_mechanism (choose exactly one)", MECHANISM_DOCS),
         ]

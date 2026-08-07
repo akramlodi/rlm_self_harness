@@ -16,10 +16,15 @@ three stages (§3.3 of the proposal):
 | **2. Harness Proposal** | Give the model the mined patterns, behaviors to preserve, and prior edit history; get back several minimal candidate edits, each targeting one pattern on one declared surface. | not implemented |
 | **3. Proposal Validation** | Evaluate candidates on held-in plus a disjoint held-out split never shown to the proposer. Promote only on no meaningful accuracy regression with sub-call/cost in a preregistered band. Merged compatible edits are re-evaluated before promotion. | not implemented |
 
-The six editable surfaces are enumerated in code as `EditableSurface`
-([taxonomy.py:31](optimization/taxonomy.py#L31)): decomposition guidance, sub-call/batching policy,
-sub-call metadata, answer-protocol middleware, error policy + depth, and harness-local REPL
-helpers. The evaluator, external tools, and the three §3.1 invariants are off-limits.
+The nine editable surfaces declared by the harness (`shrlm/rlm_harness.py`, `SURFACES`) are
+enumerated in code as `EditableSurface` ([taxonomy.py:41](optimization/taxonomy.py#L41)), keyed by
+surface id: S1 repl_contract, S2 decomposition_instruction, S3 execution_instruction,
+S4 verification_instruction, S5 recovery_instruction, S6 runtime_policy, S7 metadata,
+S8 repl_helpers+sub_repl_helpers, S9 answer_middleware. `SURFACE_REACH`
+([taxonomy.py:102](optimization/taxonomy.py#L102)) annotates each surface as root-only or
+child-reachable: S1–S5 travel with the system prompt, which child RLMs inherit, and S8 propagates
+via `sub_repl_helpers`, while the S6/S7/S9 seams apply at the root only (residual finding C7).
+The evaluator, external tools, and the three §3.1 invariants are off-limits.
 
 ## Why the package is laid out this way
 
@@ -41,18 +46,21 @@ Read in this order; each module depends only on the ones above it.
 
 ### `taxonomy.py` — the closed vocabulary
 Every label in the system, as enums: `VerifierCause`, `FailingLevel`, `CausalStatus`,
-`AgentMechanism` (13 concrete mechanisms + `OTHER`), `EditableSurface`. Plus three tables:
-`MECHANISM_DOCS`, `MECHANISM_SURFACE` (mechanism → the one surface that could fix it,
-[:217](optimization/taxonomy.py#L217)), and `CAUSAL_WEIGHT`.
+`AgentMechanism` (15 concrete mechanisms + `OTHER`), `EditableSurface` (the nine harness surfaces
+S1–S9). Plus four tables: `MECHANISM_DOCS`, `MECHANISM_SURFACE` (mechanism → the one surface that
+could fix it, [:302](optimization/taxonomy.py#L302); every one of the nine surfaces is reachable),
+`SURFACE_REACH`, and `CAUSAL_WEIGHT`.
 
 *Why closed:* the vocabulary **is** the clustering key. An open vocabulary would make every failure
 its own cluster and mining would return nothing.
 
 *Why the prompt text is generated here:* `render_taxonomy_block()`
-([:281](optimization/taxonomy.py#L281)) builds the attributor's label menu from the enums
-themselves, so adding a mechanism cannot leave the prompt describing a vocabulary the validator no
-longer accepts. `test_taxonomy.py` asserts every mechanism is documented and mapped to exactly one
-surface.
+([:385](optimization/taxonomy.py#L385)) builds the attributor's label menu — including the
+nine-surface table with reach annotations — from the enums themselves, so adding a mechanism cannot
+leave the prompt describing a vocabulary the validator no longer accepts.
+[`test_taxonomy.py`](../tests/optimization/test_taxonomy.py) asserts every mechanism is
+documented and mapped to exactly one surface, and that the surface ids agree with
+`shrlm.rlm_harness.SURFACES`.
 
 *Deliberate omission:* `FailingLevel` has no `BOTH` member. A trace where root and children both
 failed does not implicate one surface, so it is `UNDETERMINED` — an honest non-answer rather than a
@@ -96,7 +104,7 @@ returned a wrong local result the root faithfully combined. The two implicate di
 surfaces. With a `SubVerifier` this is a checkable fact; without one it is a model's opinion, and
 `FailureRecord.level_grounded` records which. Nothing else in the pipeline varies with that choice
 — otherwise the Appendix-B ablation would be comparing two things at once
-([test_mining.py::TestAblationSwitch](../tests/optimization/test_mining.py)).
+([test_grounding.py](../tests/optimization/test_grounding.py)).
 
 ### `digest.py` — bounded, deterministic trace view
 An RLM trace can exceed a context window — that is the premise of the paradigm — so the attributor
@@ -173,7 +181,7 @@ round.
 ## Dependency graph
 
 ```
-taxonomy                     (leaf — no internal imports)
+taxonomy                     (imports only `shrlm.rlm_harness.SURFACES`)
     ↑
   types
     ↑        ↑        ↑

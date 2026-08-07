@@ -66,7 +66,7 @@ class TestFailureSignature:
 
     def test_surface_is_the_taxonomy_mapping(self):
         swallowed = make_signature(mechanism=AgentMechanism.SWALLOWED_SUBCALL_ERROR)
-        assert swallowed.surface() is EditableSurface.ERROR_POLICY
+        assert swallowed.surface() is EditableSurface.RECOVERY_INSTRUCTION
 
     def test_other_mechanism_has_no_surface(self):
         assert make_signature(mechanism=AgentMechanism.OTHER).surface() is None
