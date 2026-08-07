@@ -212,6 +212,23 @@ class Verdict:
             "detail": self.detail,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Verdict":
+        """Rehydrate a persisted verdict; the inverse of ``to_dict``.
+
+        An unknown cause string raises ``ValueError`` through the enum
+        constructor rather than being coerced, since a persisted verdict from a
+        different taxonomy version is not comparable evidence.
+        """
+        cause = data.get("cause")
+        return cls(
+            passed=bool(data["passed"]),
+            cause=VerifierCause(cause) if cause is not None else None,
+            gold=str(data.get("gold", "")),
+            produced=str(data.get("produced", "")),
+            detail=str(data.get("detail", "")),
+        )
+
 
 class Verifier(Protocol):
     """Deterministic outcome for a whole run. Supplied per environment."""

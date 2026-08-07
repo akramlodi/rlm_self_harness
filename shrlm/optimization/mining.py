@@ -4,8 +4,16 @@ The weakness-mining stage: completed runs in, evidence bundle out.
 The miner does not execute the harness. It takes runs that already happened,
 which keeps the experiment driver's concerns (splits, repetitions, budgets) out
 of the mining code and keeps mining testable without a live model.
+
+Verdicts may be precomputed. By default the miner recomputes each verdict from
+the completion's response, but a caller that already holds one -- the driver
+persists verdicts at run time, including RESOURCE_TERMINATED verdicts the
+Verifier protocol can never produce because it is handed only a response
+string, never an exception -- passes it through instead and the verifier is not
+consulted for that run.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +35,7 @@ from shrlm.optimization.types import (
     MiningConfig,
     MiningTotals,
     SubVerifier,
+    Verdict,
     Verifier,
 )
 from shrlm.optimization.walker import walk
@@ -66,16 +75,23 @@ class WeaknessMiner:
         self.clustering_config = clustering_config or ClusteringConfig()
 
     def record_failure(
-        self, instance: dict[str, Any], completion: RLMChatCompletion
+        self,
+        instance: dict[str, Any],
+        completion: RLMChatCompletion,
+        verdict: Verdict | None = None,
     ) -> tuple[FailureRecord | None, dict[str, Any] | None, float]:
         """
         Verify one run and, if it failed, attribute it.
 
         Returns (record, raw attribution, digest coverage). The record is None
-        for a passing run.
+        for a passing run. When ``verdict`` is supplied it is used as-is and
+        the verifier is not called -- the path a driver takes when replaying
+        persisted verdicts, and the only way a RESOURCE_TERMINATED verdict can
+        enter mining.
         """
         instance_id = str(instance["id"])
-        verdict = self.verifier(instance, completion.response)
+        if verdict is None:
+            verdict = self.verifier(instance, completion.response)
         if verdict.passed:
             return None, None, 1.0
 
@@ -129,14 +145,28 @@ class WeaknessMiner:
         harness_version: str,
         split_id: str,
         created_at: str | None = None,
+        verdicts: Sequence[Verdict | None] | None = None,
     ) -> MiningResult:
-        """Run the full stage over a set of completed runs."""
+        """Run the full stage over a set of completed runs.
+
+        ``verdicts``, when given, is aligned index-for-index with ``runs``: a
+        Verdict replaces the verifier's judgment for that run, and None falls
+        back to recomputing it. Omitting the argument keeps the original
+        behavior for every existing caller.
+        """
+        if verdicts is not None and len(verdicts) != len(runs):
+            raise ValueError(
+                f"verdicts must align with runs one-to-one: got {len(verdicts)} verdicts "
+                f"for {len(runs)} runs"
+            )
+
         records: list[FailureRecord] = []
         raw_attributions: list[dict[str, Any]] = []
         coverages: list[float] = []
 
-        for instance, completion in runs:
-            record, raw, coverage = self.record_failure(instance, completion)
+        for index, (instance, completion) in enumerate(runs):
+            verdict = verdicts[index] if verdicts is not None else None
+            record, raw, coverage = self.record_failure(instance, completion, verdict=verdict)
             if record is None:
                 continue
             records.append(record)

@@ -1,0 +1,166 @@
+"""Tests pinning the ``WeaknessMiner`` precomputed-verdict seam.
+
+The default path -- the miner recomputes each verdict from the completion's
+response -- must stay byte-identical for existing callers; the new ``verdicts``
+argument replaces the verifier's judgment per run and is the only channel
+through which a RESOURCE_TERMINATED verdict (which no Verifier can produce)
+enters mining.
+"""
+
+import json
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
+
+from shrlm.optimization.attribution import LLMAttributor
+from shrlm.optimization.mining import WeaknessMiner
+from shrlm.optimization.taxonomy import VerifierCause
+from shrlm.optimization.types import Verdict
+from tests.mock_lm import MockLM
+from tests.optimization.fixtures import as_completion, shallow_run
+
+CANNED_ATTRIBUTION = (
+    "```json\n"
+    + json.dumps(
+        {
+            "causal_status": "causal",
+            "agent_mechanism": "premature_termination",
+            "failing_level": "no_recursion",
+            "evidence_node_ids": ["r"],
+            "symptom_summary": "answered without checking anything",
+        }
+    )
+    + "\n```"
+)
+
+
+@dataclass
+class CountingVerifier:
+    """Fails everything with WRONG_VALUE; records every call it receives."""
+
+    calls: list[str] = field(default_factory=list)
+
+    def __call__(self, instance: dict[str, Any], produced: str) -> Verdict:
+        self.calls.append(str(instance["id"]))
+        return Verdict(
+            passed=False,
+            cause=VerifierCause.WRONG_VALUE,
+            gold="expected",
+            produced=produced,
+        )
+
+
+def make_miner(verifier: CountingVerifier) -> WeaknessMiner:
+    lm = MockLM(responses=[CANNED_ATTRIBUTION] * 8)
+    return WeaknessMiner(verifier=verifier, attributor=LLMAttributor(lm))
+
+
+def failing_run() -> tuple[dict[str, Any], Any]:
+    instance = {"id": "inst-1", "question": "what is 2 + 2?"}
+    return instance, as_completion(shallow_run())
+
+
+class TestBackwardCompatibility:
+    def test_mine_without_verdicts_consults_the_verifier(self):
+        verifier = CountingVerifier()
+        instance, completion = failing_run()
+        result = make_miner(verifier).mine(
+            [(instance, completion)],
+            round_index=1,
+            harness_version="H0",
+            split_id="held_in_v1",
+        )
+        assert verifier.calls == ["inst-1"]
+        assert result.bundle.totals.n_failures == 1
+
+    def test_record_failure_without_a_verdict_consults_the_verifier(self):
+        verifier = CountingVerifier()
+        instance, completion = failing_run()
+        record, _, _ = make_miner(verifier).record_failure(instance, completion)
+        assert verifier.calls == ["inst-1"]
+        assert record is not None
+        assert record.verdict.cause is VerifierCause.WRONG_VALUE
+
+
+class TestPrecomputedVerdicts:
+    def test_a_supplied_verdict_bypasses_the_verifier(self):
+        verifier = CountingVerifier()
+        instance, completion = failing_run()
+        supplied = Verdict(
+            passed=False,
+            cause=VerifierCause.RESOURCE_TERMINATED,
+            gold="",
+            produced="",
+            detail="BudgetExceededError: spent $0.002000 of $0.001500 budget",
+        )
+        record, _, _ = make_miner(verifier).record_failure(instance, completion, verdict=supplied)
+        assert verifier.calls == []
+        assert record is not None
+        assert record.verdict is supplied
+
+    def test_a_supplied_passing_verdict_yields_no_record(self):
+        verifier = CountingVerifier()
+        instance, completion = failing_run()
+        supplied = Verdict(passed=True, cause=None, gold="4", produced="4")
+        record, raw, coverage = make_miner(verifier).record_failure(
+            instance, completion, verdict=supplied
+        )
+        assert (record, raw, coverage) == (None, None, 1.0)
+        assert verifier.calls == []
+
+    def test_mine_aligns_verdicts_with_runs_and_allows_none_gaps(self):
+        verifier = CountingVerifier()
+        instance, completion = failing_run()
+        other = {"id": "inst-2", "question": "still 2 + 2?"}
+        supplied = Verdict(
+            passed=False, cause=VerifierCause.RESOURCE_TERMINATED, gold="", produced=""
+        )
+        result = make_miner(verifier).mine(
+            [(instance, completion), (other, as_completion(shallow_run()))],
+            round_index=1,
+            harness_version="H0",
+            split_id="held_in_v1",
+            verdicts=[supplied, None],
+        )
+        # The None gap fell back to the verifier; the supplied verdict did not.
+        assert verifier.calls == ["inst-2"]
+        causes = {record.verdict.cause for record in result.records}
+        assert causes == {VerifierCause.RESOURCE_TERMINATED, VerifierCause.WRONG_VALUE}
+
+    def test_misaligned_verdicts_are_rejected(self):
+        verifier = CountingVerifier()
+        instance, completion = failing_run()
+        with pytest.raises(ValueError, match="align"):
+            make_miner(verifier).mine(
+                [(instance, completion)],
+                round_index=1,
+                harness_version="H0",
+                split_id="held_in_v1",
+                verdicts=[],
+            )
+        assert verifier.calls == []
+
+
+class TestVerdictRoundTrip:
+    def test_from_dict_inverts_to_dict(self):
+        verdict = Verdict(
+            passed=False,
+            cause=VerifierCause.RESOURCE_TERMINATED,
+            gold="",
+            produced="partial",
+            detail="TimeoutExceededError: 61.0s of 60.0s limit",
+        )
+        assert Verdict.from_dict(verdict.to_dict()) == verdict
+
+    def test_passing_verdict_round_trips(self):
+        verdict = Verdict(passed=True, cause=None, gold="[a, b]", produced="[a, b]")
+        assert Verdict.from_dict(verdict.to_dict()) == verdict
+
+    def test_unknown_cause_fails_loudly(self):
+        with pytest.raises(ValueError):
+            Verdict.from_dict({"passed": False, "cause": "not_a_cause", "gold": "", "produced": ""})
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])
