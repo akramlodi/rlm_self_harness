@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,8 +39,17 @@ from shrlm.optimization.types import (
     iter_nodes,
 )
 
-PROMPT_VERSION = "1.0.0"
+PROMPT_VERSION = "1.1.0"
+
+# Version of the validation logic in this module (validate, parse_enum,
+# extract_json_block). The validator's rejection text seeds re-asks, so a
+# change to it changes what later attempts are asked -- folding this into
+# config_sha256 keeps a validator change from replaying stale cached responses.
+VALIDATOR_VERSION = "1.0.0"
+
 DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_TRANSPORT_RETRIES = 3
+DEFAULT_TRANSPORT_BACKOFF_SECONDS = 0.5
 
 JSON_BLOCK_PATTERN = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
@@ -75,15 +85,81 @@ Respond with a single fenced JSON block and nothing else:
 }}
 ```
 
-Every entry in evidence_node_ids must be a node_id that appears in the run \
-below. Do not invent identifiers.
+{evidence_instruction}
 """
 
 FAILING_LEVEL_FIELD = '\n  "failing_level": "<value>",'
 
+# The evidence-citation demand depends on what the digest could show. A
+# per-call sub-call table names every node id, so citations from it are
+# checkable; a per-depth aggregate (wide decompositions) names none, and
+# demanding table ids there would send every response into a rejection spiral.
+EVIDENCE_INSTRUCTION_TABLE = (
+    "Every entry in evidence_node_ids must be a node_id that appears in the run "
+    "below. Do not invent identifiers."
+)
+EVIDENCE_INSTRUCTION_AGGREGATE = (
+    "The sub-call table below is aggregated by depth and lists no node ids. "
+    "Cite only node_ids that are visible in the focused sub-call excerpts, or "
+    "leave evidence_node_ids as an empty list. Do not invent identifiers."
+)
+
 
 class AttributionRejection(Exception):
-    """A response that did not satisfy the output contract."""
+    """A response that did not satisfy the output contract.
+
+    ``attempts`` carries the audit trail of every attempt made before giving
+    up, so an unattributed record can still show exactly what the model said
+    and which violation each response was rejected for.
+    """
+
+    def __init__(self, message: str, attempts: list["AttributionAttempt"] | None = None):
+        super().__init__(message)
+        self.attempts: list[AttributionAttempt] = attempts or []
+
+
+class AttributionTransportError(Exception):
+    """The LM call itself failed (network, rate limit, server error) after
+    bounded retries. Distinct from AttributionRejection: the model never
+    produced a judgable response, so the caller should checkpoint the round
+    rather than record a rejected attribution."""
+
+    def __init__(self, message: str, attempts: list["AttributionAttempt"] | None = None):
+        super().__init__(message)
+        self.attempts: list[AttributionAttempt] = attempts or []
+
+
+@dataclass(frozen=True)
+class AttributionAttempt:
+    """One attempt in the re-ask loop, kept for the audit trail.
+
+    ``cached`` distinguishes a replayed response from a fresh model call, so a
+    re-run of a round can be told apart from the run that paid for it.
+    """
+
+    attempt: int
+    cached: bool
+    raw_response: str
+    accepted: bool
+    violation: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attempt": self.attempt,
+            "cached": self.cached,
+            "raw_response": self.raw_response,
+            "accepted": self.accepted,
+            "violation": self.violation,
+        }
+
+
+@dataclass
+class AttributionResult:
+    """A successful attribution plus the attempts that produced it."""
+
+    signature: FailureSignature
+    detail: AttributionDetail
+    attempts: list[AttributionAttempt]
 
 
 @dataclass(frozen=True)
@@ -92,12 +168,16 @@ class AttributorConfig:
     Everything that changes what the attributor produces.
 
     Hashed into the cache key, so a config change cannot silently reuse
-    attributions made under different conditions.
+    attributions made under different conditions. The transport retry knobs
+    are deliberately excluded from the hash: they change when a response is
+    obtained, never what response the model produces.
     """
 
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     prompt_version: str = PROMPT_VERSION
     taxonomy_version: str = TAXONOMY_VERSION
+    transport_retries: int = DEFAULT_TRANSPORT_RETRIES
+    transport_backoff_seconds: float = DEFAULT_TRANSPORT_BACKOFF_SECONDS
 
 
 @dataclass
@@ -194,22 +274,26 @@ class LLMAttributor:
         self.config = config or AttributorConfig()
         self.cache = cache or AttributionCache()
 
-    def system_prompt(self, grounded: bool) -> str:
+    def system_prompt(self, grounded: bool, aggregated: bool = False) -> str:
         """
         Render the instructions.
 
         The vocabularies are generated from the enums, so the prompt cannot
         drift from the code. The failing-level vocabulary appears only when no
-        sub-verifier supplied it.
+        sub-verifier supplied it, and the evidence-citation demand relaxes when
+        the digest's sub-call table is a per-depth aggregate with no node ids.
         """
         return ATTRIBUTOR_SYSTEM_PROMPT.format(
             taxonomy=render_taxonomy_block(),
             failing_level="" if grounded else "\n" + render_failing_level_block(),
             failing_level_field="" if grounded else FAILING_LEVEL_FIELD,
+            evidence_instruction=(
+                EVIDENCE_INSTRUCTION_AGGREGATE if aggregated else EVIDENCE_INSTRUCTION_TABLE
+            ),
         )
 
-    def prompt_sha256(self, grounded: bool) -> str:
-        return hashlib.sha256(self.system_prompt(grounded).encode("utf-8")).hexdigest()
+    def prompt_sha256(self, grounded: bool, aggregated: bool = False) -> str:
+        return hashlib.sha256(self.system_prompt(grounded, aggregated).encode("utf-8")).hexdigest()
 
     def config_sha256(self) -> str:
         payload = json.dumps(
@@ -219,6 +303,7 @@ class LLMAttributor:
                 "max_attempts": self.config.max_attempts,
                 "prompt_version": self.config.prompt_version,
                 "taxonomy_version": self.config.taxonomy_version,
+                "validator_version": VALIDATOR_VERSION,
             },
             sort_keys=True,
             default=str,
@@ -227,9 +312,35 @@ class LLMAttributor:
 
     def cache_key(self, digest: TraceDigest, grounded: bool, attempt: int) -> str:
         material = (
-            f"{self.prompt_sha256(grounded)}|{digest.sha256}|{self.config_sha256()}|{attempt}"
+            f"{self.prompt_sha256(grounded, digest.aggregated)}|{digest.sha256}|"
+            f"{self.config_sha256()}|{attempt}"
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def _completion_with_retry(
+        self, messages: list[dict[str, str]], attempts: list[AttributionAttempt]
+    ) -> str:
+        """Call the LM, retrying transient failures with exponential backoff.
+
+        Any non-AttributionRejection exception from the client -- network
+        resets, 429s, 5xx errors -- is treated as transient. After the
+        configured retries the failure is converted to AttributionTransportError
+        carrying the audit trail so far, so the caller can checkpoint instead
+        of losing the round.
+        """
+        last_error: Exception | None = None
+        for retry in range(self.config.transport_retries):
+            try:
+                return self.lm.completion(messages)
+            except Exception as exc:
+                last_error = exc
+                if retry + 1 < self.config.transport_retries:
+                    time.sleep(self.config.transport_backoff_seconds * (2**retry))
+        raise AttributionTransportError(
+            f"LM call failed after {self.config.transport_retries} tries: "
+            f"{type(last_error).__name__}: {last_error}",
+            attempts=list(attempts),
+        ) from last_error
 
     def validate(
         self,
@@ -273,19 +384,22 @@ class LLMAttributor:
         root: CallNode,
         verdict: Verdict,
         grounding: GroundingResult,
-    ) -> tuple[FailureSignature, AttributionDetail]:
+    ) -> AttributionResult:
         """
-        Produce a signature for one failed run.
+        Produce a signature for one failed run, with a full per-attempt audit.
 
-        Raises AttributionRejection if no attempt validates. The caller records
-        that as an unattributed record rather than guessing a label, so an
-        unusable response stays visible in the bundle totals.
+        Raises AttributionRejection (carrying the attempts) if no attempt
+        validates -- the caller records that as an unattributed record rather
+        than guessing a label -- and AttributionTransportError if the LM itself
+        stays unreachable after bounded retries, so the caller can checkpoint
+        the round instead of losing it.
         """
         if verdict.passed or verdict.cause is None:
             raise ValueError("Only failed runs are attributed; this verdict passed")
 
-        system = self.system_prompt(grounding.grounded)
+        system = self.system_prompt(grounding.grounded, digest.aggregated)
         rejection = ""
+        attempts: list[AttributionAttempt] = []
 
         for attempt in range(self.config.max_attempts):
             user = digest.text
@@ -298,12 +412,14 @@ class LLMAttributor:
 
             key = self.cache_key(digest, grounding.grounded, attempt)
             response = self.cache.get(key)
+            cached = response is not None
             if response is None:
-                response = self.lm.completion(
+                response = self._completion_with_retry(
                     [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
-                    ]
+                    ],
+                    attempts,
                 )
                 self.cache.put(key, response)
 
@@ -312,8 +428,22 @@ class LLMAttributor:
                 causal_status, mechanism, level, detail = self.validate(payload, root, grounding)
             except AttributionRejection as exc:
                 rejection = str(exc)
+                attempts.append(
+                    AttributionAttempt(
+                        attempt=attempt + 1,
+                        cached=cached,
+                        raw_response=response,
+                        accepted=False,
+                        violation=rejection,
+                    )
+                )
                 continue
 
+            attempts.append(
+                AttributionAttempt(
+                    attempt=attempt + 1, cached=cached, raw_response=response, accepted=True
+                )
+            )
             failing_level = grounding.failing_level if grounding.grounded else level
             assert failing_level is not None  # validate() guarantees one or the other
             signature = FailureSignature(
@@ -322,8 +452,9 @@ class LLMAttributor:
                 causal_status=causal_status,
                 agent_mechanism=mechanism,
             )
-            return signature, detail
+            return AttributionResult(signature=signature, detail=detail, attempts=attempts)
 
         raise AttributionRejection(
-            f"no valid attribution after {self.config.max_attempts} attempts: {rejection}"
+            f"no valid attribution after {self.config.max_attempts} attempts: {rejection}",
+            attempts=attempts,
         )

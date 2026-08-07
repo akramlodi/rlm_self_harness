@@ -77,10 +77,10 @@ class TestBackwardCompatibility:
     def test_record_failure_without_a_verdict_consults_the_verifier(self):
         verifier = CountingVerifier()
         instance, completion = failing_run()
-        record, _, _ = make_miner(verifier).record_failure(instance, completion)
+        outcome = make_miner(verifier).record_failure(instance, completion)
         assert verifier.calls == ["inst-1"]
-        assert record is not None
-        assert record.verdict.cause is VerifierCause.WRONG_VALUE
+        assert outcome.record is not None
+        assert outcome.record.verdict.cause is VerifierCause.WRONG_VALUE
 
 
 class TestPrecomputedVerdicts:
@@ -94,19 +94,17 @@ class TestPrecomputedVerdicts:
             produced="",
             detail="BudgetExceededError: spent $0.002000 of $0.001500 budget",
         )
-        record, _, _ = make_miner(verifier).record_failure(instance, completion, verdict=supplied)
+        outcome = make_miner(verifier).record_failure(instance, completion, verdict=supplied)
         assert verifier.calls == []
-        assert record is not None
-        assert record.verdict is supplied
+        assert outcome.record is not None
+        assert outcome.record.verdict is supplied
 
     def test_a_supplied_passing_verdict_yields_no_record(self):
         verifier = CountingVerifier()
         instance, completion = failing_run()
         supplied = Verdict(passed=True, cause=None, gold="4", produced="4")
-        record, raw, coverage = make_miner(verifier).record_failure(
-            instance, completion, verdict=supplied
-        )
-        assert (record, raw, coverage) == (None, None, 1.0)
+        outcome = make_miner(verifier).record_failure(instance, completion, verdict=supplied)
+        assert (outcome.record, outcome.raw, outcome.coverage) == (None, None, 1.0)
         assert verifier.calls == []
 
     def test_mine_aligns_verdicts_with_runs_and_allows_none_gaps(self):

@@ -15,6 +15,8 @@ Round layout under ``out_dir``::
         instances.jsonl   # the instances verbatim, one JSON object per line
         runs.jsonl        # the manifest: one line per completed run
         runs/<run_id>.json  # RLMChatCompletion.to_dict() of each run's trace
+        digests/<digest_sha256>.txt  # after mine_round: each digest verbatim
+        attributor_prompt.txt        # after mine_round: the rendered system prompt
 
 Each ``runs.jsonl`` line carries: ``run_id``, ``instance_id``, ``attempt``,
 ``passed``, ``cause`` (denormalized from the verdict for scanability),
@@ -79,6 +81,8 @@ HARNESS_FILE = "harness.json"
 INSTANCES_FILE = "instances.jsonl"
 MANIFEST_FILE = "runs.jsonl"
 TRACES_DIR = "runs"
+DIGESTS_DIR = "digests"
+ATTRIBUTOR_PROMPT_FILE = "attributor_prompt.txt"
 
 # Instance ids become file names, so they must be filesystem-safe everywhere.
 _INSTANCE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -476,9 +480,18 @@ def mine_round(
 
     Returns:
         The ``MiningResult`` over exactly the runs the manifest records.
+
+    Besides mining, this persists what the attributor saw: each failure
+    record's digest text lands in ``digests/<digest_sha256>.txt`` (content
+    addressed, so the file's own sha256 is the record's ``digest_sha256``),
+    and the rendered attributor system prompt lands in
+    ``attributor_prompt.txt`` -- or, in the rare round that mixed prompt
+    variants (grounded/ungrounded or aggregate-mode digests), one
+    ``attributor_prompt_<sha16>.txt`` per variant, resolvable through the
+    ``prompt_sha256`` each attributions.jsonl entry carries.
     """
     runs, verdicts, envelope = load_round(out_dir, round_index)
-    return miner.mine(
+    result = miner.mine(
         runs,
         round_index=round_index,
         harness_version=harness_version or str(envelope["hash"]),
@@ -486,6 +499,23 @@ def mine_round(
         created_at=created_at,
         verdicts=verdicts,
     )
+    _persist_mining_artifacts(round_dir(out_dir, round_index), result)
+    return result
+
+
+def _persist_mining_artifacts(path: Path, result: MiningResult) -> None:
+    """Write the digests and rendered prompt(s) a mining pass was built on."""
+    if result.digest_texts:
+        digests_dir = path / DIGESTS_DIR
+        digests_dir.mkdir(parents=True, exist_ok=True)
+        for sha, text in result.digest_texts.items():
+            (digests_dir / f"{sha}.txt").write_text(text)
+
+    if len(result.attributor_prompts) == 1:
+        (path / ATTRIBUTOR_PROMPT_FILE).write_text(next(iter(result.attributor_prompts.values())))
+    else:
+        for sha, text in result.attributor_prompts.items():
+            (path / f"attributor_prompt_{sha[:16]}.txt").write_text(text)
 
 
 __all__ = [

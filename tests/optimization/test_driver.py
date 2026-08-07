@@ -456,6 +456,37 @@ class TestMineRound:
         )
         assert result.bundle.totals.n_unattributed == 2
 
+    def test_mine_round_persists_each_digest_content_addressed(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        result = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier()),
+            split_id="held_in_v1",
+        )
+        digests_dir = round_dir(config.out_dir, config.round_index) / "digests"
+        assert len(result.records) == 2
+        for record in result.records:
+            digest_path = digests_dir / f"{record.digest_sha256}.txt"
+            assert digest_path.is_file()
+            text = digest_path.read_text()
+            # Content-addressed: the file's own sha256 is the record's digest sha.
+            assert hashlib.sha256(text.encode("utf-8")).hexdigest() == record.digest_sha256
+
+    def test_mine_round_persists_the_rendered_attributor_prompt(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        miner = make_miner(BoomVerifier())
+        mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=miner,
+            split_id="held_in_v1",
+        )
+        prompt_path = round_dir(config.out_dir, config.round_index) / "attributor_prompt.txt"
+        assert prompt_path.is_file()
+        # No sub-verifier, narrow trees: the single ungrounded, non-aggregate variant.
+        assert prompt_path.read_text() == miner.attributor.system_prompt(grounded=False)
+
     def test_mine_round_fails_on_tampered_trace(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)
         round_path = round_dir(config.out_dir, config.round_index)

@@ -18,7 +18,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rlm.core.types import RLMChatCompletion
-from shrlm.optimization.attribution import AttributionRejection, LLMAttributor
+from shrlm.optimization.attribution import (
+    AttributionRejection,
+    AttributionTransportError,
+    LLMAttributor,
+)
 from shrlm.optimization.bundle import build_evidence_bundle
 from shrlm.optimization.clustering import (
     ACTIONABILITY_WEIGHTS,
@@ -43,11 +47,41 @@ from shrlm.optimization.walker import walk
 
 @dataclass
 class MiningResult:
-    """The bundle, plus the per-record material behind it."""
+    """The bundle, plus the per-record material behind it.
+
+    ``digest_texts`` maps each failure record's ``digest_sha256`` to the exact
+    digest text the attributor saw, and ``attributor_prompts`` maps prompt
+    sha256 to each rendered system prompt variant used during the round --
+    together they make every attribution replayable from disk, not just
+    hash-checkable. ``errors`` names the runs whose attribution failed at the
+    transport level (LM unreachable after retries): those records are still
+    present, marked unattributed, but the round completed instead of raising.
+    """
 
     bundle: EvidenceBundle
     records: list[FailureRecord] = field(default_factory=list)
     raw_attributions: list[dict[str, Any]] = field(default_factory=list)
+    digest_texts: dict[str, str] = field(default_factory=dict)
+    attributor_prompts: dict[str, str] = field(default_factory=dict)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class FailureOutcome:
+    """What one run contributed to the round.
+
+    ``record`` is None for a passing run. ``transport_error`` is set when the
+    attributor's LM stayed unreachable after bounded retries -- the record is
+    then marked unattributed and ``mine`` checkpoints instead of raising.
+    """
+
+    record: FailureRecord | None
+    raw: dict[str, Any] | None
+    coverage: float
+    digest_text: str | None = None
+    prompt_text: str | None = None
+    prompt_sha256: str | None = None
+    transport_error: str | None = None
 
 
 class WeaknessMiner:
@@ -79,21 +113,25 @@ class WeaknessMiner:
         instance: dict[str, Any],
         completion: RLMChatCompletion,
         verdict: Verdict | None = None,
-    ) -> tuple[FailureRecord | None, dict[str, Any] | None, float]:
+    ) -> FailureOutcome:
         """
         Verify one run and, if it failed, attribute it.
 
-        Returns (record, raw attribution, digest coverage). The record is None
-        for a passing run. When ``verdict`` is supplied it is used as-is and
-        the verifier is not called -- the path a driver takes when replaying
-        persisted verdicts, and the only way a RESOURCE_TERMINATED verdict can
-        enter mining.
+        Returns a ``FailureOutcome``; its record is None for a passing run.
+        When ``verdict`` is supplied it is used as-is and the verifier is not
+        called -- the path a driver takes when replaying persisted verdicts,
+        and the only way a RESOURCE_TERMINATED verdict can enter mining.
+
+        The raw attribution payload is produced for every failure record,
+        including rejected and transport-failed ones, and carries the full
+        per-attempt audit trail: attempt number, raw response, and the named
+        violation each rejected response was re-asked over.
         """
         instance_id = str(instance["id"])
         if verdict is None:
             verdict = self.verifier(instance, completion.response)
         if verdict.passed:
-            return None, None, 1.0
+            return FailureOutcome(record=None, raw=None, coverage=1.0)
 
         root, stats = walk(completion)
         grounding = apply_sub_verifier(instance, root, self.sub_verifier)
@@ -117,26 +155,63 @@ class WeaknessMiner:
             digest_sha256=digest.sha256,
         )
 
-        # The single try in this package. One unusable attribution must not
-        # abort a mining round, but it must remain visible in the totals rather
-        # than being coerced into a label the model did not produce.
+        prompt_text = self.attributor.system_prompt(grounding.grounded, digest.aggregated)
+        prompt_sha = self.attributor.prompt_sha256(grounding.grounded, digest.aggregated)
+        raw: dict[str, Any] = {
+            "instance_id": instance_id,
+            "digest_sha256": digest.sha256,
+            "prompt_sha256": prompt_sha,
+            "level_grounded": grounding.grounded,
+        }
+        outcome = FailureOutcome(
+            record=record,
+            raw=raw,
+            coverage=digest.coverage,
+            digest_text=digest.text,
+            prompt_text=prompt_text,
+            prompt_sha256=prompt_sha,
+        )
+
+        # The only try/except over attribution in this package. One unusable
+        # attribution must not abort a mining round, but it must remain visible
+        # in the totals rather than being coerced into a label the model did
+        # not produce; a transport failure must checkpoint, not raise away the
+        # round's completed records.
         try:
-            signature, detail = self.attributor.attribute(digest, root, verdict, grounding)
+            result = self.attributor.attribute(digest, root, verdict, grounding)
         except AttributionRejection as exc:
             record.attribution_failed = True
             record.attribution_error = str(exc)
-            return record, None, digest.coverage
+            raw.update(
+                signature=None,
+                detail=None,
+                attributed=False,
+                error=str(exc),
+                attempts=[attempt.to_dict() for attempt in exc.attempts],
+            )
+            return outcome
+        except AttributionTransportError as exc:
+            record.attribution_failed = True
+            record.attribution_error = f"transport failure: {exc}"
+            raw.update(
+                signature=None,
+                detail=None,
+                attributed=False,
+                error=record.attribution_error,
+                attempts=[attempt.to_dict() for attempt in exc.attempts],
+            )
+            outcome.transport_error = str(exc)
+            return outcome
 
-        record.signature = signature
-        record.detail = detail
-        raw = {
-            "instance_id": instance_id,
-            "digest_sha256": digest.sha256,
-            "signature": signature.to_dict(),
-            "detail": detail.to_dict(),
-            "level_grounded": grounding.grounded,
-        }
-        return record, raw, digest.coverage
+        record.signature = result.signature
+        record.detail = result.detail
+        raw.update(
+            signature=result.signature.to_dict(),
+            detail=result.detail.to_dict(),
+            attributed=True,
+            attempts=[attempt.to_dict() for attempt in result.attempts],
+        )
+        return outcome
 
     def mine(
         self,
@@ -153,6 +228,11 @@ class WeaknessMiner:
         Verdict replaces the verifier's judgment for that run, and None falls
         back to recomputing it. Omitting the argument keeps the original
         behavior for every existing caller.
+
+        Never raises for an unattributable run: rejected attributions become
+        unattributed records, and transport failures (LM unreachable after
+        bounded retries) additionally land in ``MiningResult.errors`` so the
+        round checkpoints with every completed record intact.
         """
         if verdicts is not None and len(verdicts) != len(runs):
             raise ValueError(
@@ -163,16 +243,31 @@ class WeaknessMiner:
         records: list[FailureRecord] = []
         raw_attributions: list[dict[str, Any]] = []
         coverages: list[float] = []
+        digest_texts: dict[str, str] = {}
+        attributor_prompts: dict[str, str] = {}
+        errors: list[dict[str, Any]] = []
 
         for index, (instance, completion) in enumerate(runs):
             verdict = verdicts[index] if verdicts is not None else None
-            record, raw, coverage = self.record_failure(instance, completion, verdict=verdict)
-            if record is None:
+            outcome = self.record_failure(instance, completion, verdict=verdict)
+            if outcome.record is None:
                 continue
-            records.append(record)
-            coverages.append(coverage)
-            if raw is not None:
-                raw_attributions.append(raw)
+            records.append(outcome.record)
+            coverages.append(outcome.coverage)
+            if outcome.raw is not None:
+                raw_attributions.append(outcome.raw)
+            if outcome.digest_text is not None:
+                digest_texts[outcome.record.digest_sha256] = outcome.digest_text
+            if outcome.prompt_text is not None and outcome.prompt_sha256 is not None:
+                attributor_prompts[outcome.prompt_sha256] = outcome.prompt_text
+            if outcome.transport_error is not None:
+                errors.append(
+                    {
+                        "instance_id": outcome.record.instance_id,
+                        "run_index": index,
+                        "error": outcome.transport_error,
+                    }
+                )
 
         patterns = cluster_failures(records, self.clustering_config)
         marginals = compute_marginals(records)
@@ -216,4 +311,11 @@ class WeaknessMiner:
             created_at=created_at,
         )
 
-        return MiningResult(bundle=bundle, records=records, raw_attributions=raw_attributions)
+        return MiningResult(
+            bundle=bundle,
+            records=records,
+            raw_attributions=raw_attributions,
+            digest_texts=digest_texts,
+            attributor_prompts=attributor_prompts,
+            errors=errors,
+        )
