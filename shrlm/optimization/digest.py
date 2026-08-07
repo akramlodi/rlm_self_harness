@@ -55,8 +55,10 @@ class TraceDigest:
 
     ``aggregated`` records that the sub-call table was collapsed to a per-depth
     aggregate (the wide-tree case), which means the table carries no node ids.
-    The attributor reads this flag to soften its evidence-citation demand, so
-    it must travel with the text rather than being re-derived downstream.
+    ``n_descendants`` records how many nodes beyond the root the tree holds; a
+    zero-descendant run also lists no citable node ids. The attributor reads
+    both to soften its evidence-citation demand, so they must travel with the
+    text rather than being re-derived downstream.
     """
 
     text: str
@@ -65,6 +67,7 @@ class TraceDigest:
     chars_available: int
     chars_kept: int
     aggregated: bool = False
+    n_descendants: int = 0
 
 
 def head_tail(text: str, limit: int) -> str:
@@ -286,4 +289,5 @@ def build_digest(
         chars_available=chars_available,
         chars_kept=chars_kept,
         aggregated=aggregated,
+        n_descendants=stats.n_nodes - 1,
     )

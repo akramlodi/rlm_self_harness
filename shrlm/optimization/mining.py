@@ -157,8 +157,13 @@ class WeaknessMiner:
             digest_sha256=digest.sha256,
         )
 
-        prompt_text = self.attributor.system_prompt(grounding.grounded, digest.aggregated)
-        prompt_sha = self.attributor.prompt_sha256(grounding.grounded, digest.aggregated)
+        no_subcalls = digest.n_descendants == 0
+        prompt_text = self.attributor.system_prompt(
+            grounding.grounded, digest.aggregated, no_subcalls
+        )
+        prompt_sha = self.attributor.prompt_sha256(
+            grounding.grounded, digest.aggregated, no_subcalls
+        )
         raw: dict[str, Any] = {
             "instance_id": instance_id,
             "digest_sha256": digest.sha256,

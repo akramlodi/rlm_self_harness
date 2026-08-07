@@ -39,7 +39,7 @@ from shrlm.optimization.types import (
     iter_nodes,
 )
 
-PROMPT_VERSION = "1.1.0"
+PROMPT_VERSION = "1.2.0"
 
 # Version of the validation logic in this module (validate, parse_enum,
 # extract_json_block). The validator's rejection text seeds re-asks, so a
@@ -102,6 +102,10 @@ EVIDENCE_INSTRUCTION_AGGREGATE = (
     "The sub-call table below is aggregated by depth and lists no node ids. "
     "Cite only node_ids that are visible in the focused sub-call excerpts, or "
     "leave evidence_node_ids as an empty list. Do not invent identifiers."
+)
+EVIDENCE_INSTRUCTION_NO_SUBCALLS = (
+    "This run made no sub-calls, so the run below lists no sub-call node ids. "
+    "Leave evidence_node_ids as an empty list. Do not invent identifiers."
 )
 
 
@@ -274,7 +278,9 @@ class LLMAttributor:
         self.config = config or AttributorConfig()
         self.cache = cache or AttributionCache()
 
-    def system_prompt(self, grounded: bool, aggregated: bool = False) -> str:
+    def system_prompt(
+        self, grounded: bool, aggregated: bool = False, no_subcalls: bool = False
+    ) -> str:
         """
         Render the instructions.
 
@@ -288,12 +294,19 @@ class LLMAttributor:
             failing_level="" if grounded else "\n" + render_failing_level_block(),
             failing_level_field="" if grounded else FAILING_LEVEL_FIELD,
             evidence_instruction=(
-                EVIDENCE_INSTRUCTION_AGGREGATE if aggregated else EVIDENCE_INSTRUCTION_TABLE
+                EVIDENCE_INSTRUCTION_NO_SUBCALLS
+                if no_subcalls
+                else EVIDENCE_INSTRUCTION_AGGREGATE
+                if aggregated
+                else EVIDENCE_INSTRUCTION_TABLE
             ),
         )
 
-    def prompt_sha256(self, grounded: bool, aggregated: bool = False) -> str:
-        return hashlib.sha256(self.system_prompt(grounded, aggregated).encode("utf-8")).hexdigest()
+    def prompt_sha256(
+        self, grounded: bool, aggregated: bool = False, no_subcalls: bool = False
+    ) -> str:
+        rendered = self.system_prompt(grounded, aggregated, no_subcalls)
+        return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
     def config_sha256(self) -> str:
         payload = json.dumps(
@@ -312,7 +325,8 @@ class LLMAttributor:
 
     def cache_key(self, digest: TraceDigest, grounded: bool, attempt: int) -> str:
         material = (
-            f"{self.prompt_sha256(grounded, digest.aggregated)}|{digest.sha256}|"
+            f"{self.prompt_sha256(grounded, digest.aggregated, digest.n_descendants == 0)}"
+            f"|{digest.sha256}|"
             f"{self.config_sha256()}|{attempt}"
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
@@ -397,7 +411,9 @@ class LLMAttributor:
         if verdict.passed or verdict.cause is None:
             raise ValueError("Only failed runs are attributed; this verdict passed")
 
-        system = self.system_prompt(grounding.grounded, digest.aggregated)
+        system = self.system_prompt(
+            grounding.grounded, digest.aggregated, digest.n_descendants == 0
+        )
         rejection = ""
         attempts: list[AttributionAttempt] = []
 

@@ -487,7 +487,9 @@ class TestMineRound:
         prompt_path = round_dir(config.out_dir, config.round_index) / "attributor_prompt.txt"
         assert prompt_path.is_file()
         # No sub-verifier, narrow trees: the single ungrounded, non-aggregate variant.
-        assert prompt_path.read_text() == miner.attributor.system_prompt(grounded=False)
+        assert prompt_path.read_text() == miner.attributor.system_prompt(
+            grounded=False, no_subcalls=True
+        )
 
     def test_every_record_links_to_its_persisted_trace(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)

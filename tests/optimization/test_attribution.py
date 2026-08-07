@@ -315,7 +315,9 @@ class TestMiningAuditSurfaces:
         assert set(result.digest_texts) == {record.digest_sha256}
         assert "instance_id: inst-1" in result.digest_texts[record.digest_sha256]
         (prompt_sha,) = result.attributor_prompts
-        assert result.attributor_prompts[prompt_sha] == miner.attributor.system_prompt(False)
+        assert result.attributor_prompts[prompt_sha] == miner.attributor.system_prompt(
+            False, no_subcalls=True
+        )
         assert result.raw_attributions[0]["prompt_sha256"] == prompt_sha
         assert result.errors == []
 
