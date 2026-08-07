@@ -112,6 +112,46 @@ class UsageSummary:
 
 
 ########################################################
+########   Types for RLM Runtime Seams        #########
+########################################################
+
+# The answer-protocol events recorded in a turn's trace metrics. These cross a
+# module boundary: the runtime writes them, and the harness's acceptance gate
+# reads them back to decide whether a run returned its answer from a REPL
+# variable (invariant I3). They are named here so a rename cannot silently
+# desynchronize the two sides and leave the gate reading an event that is never
+# emitted.
+ANSWER_SUBMITTED = "answer_submitted"
+ANSWER_REDIRECTED = "answer_redirected"
+
+AnswerEvent = Literal["answer_submitted", "answer_redirected"]
+
+
+@dataclass
+class AnswerDecision:
+    """Outcome of the S9 answer middleware for one detected final answer.
+
+    ``accepted=True`` returns ``answer`` to the caller and terminates the loop
+    exactly as the unpatched runtime does. ``accepted=False`` suppresses the
+    answer, injects ``nudge`` as a user message, and continues the loop.
+    """
+
+    accepted: bool
+    answer: str | None = None
+    nudge: str | None = None
+
+    @classmethod
+    def accept(cls, answer: str) -> "AnswerDecision":
+        """Accept ``answer`` (identity behavior)."""
+        return cls(accepted=True, answer=answer)
+
+    @classmethod
+    def redirect(cls, nudge: str) -> "AnswerDecision":
+        """Suppress the answer and push ``nudge`` back to the model."""
+        return cls(accepted=False, answer=None, nudge=nudge)
+
+
+########################################################
 ########   Types for REPL and RLM Iterations   #########
 ########################################################
 @dataclass
@@ -129,6 +169,9 @@ class RLMChatCompletion:
     error: str | None = (
         None  # Set when this single call failed (e.g. in a batch); response is empty.
     )
+    trace_metrics: dict[str, Any] | None = (
+        None  # Per-call trace metrics (cost, syntax-error flag, retries, validity).
+    )
 
     def to_dict(self):
         out = {
@@ -142,6 +185,8 @@ class RLMChatCompletion:
             out["metadata"] = self.metadata
         if self.error is not None:
             out["error"] = self.error
+        if self.trace_metrics is not None:
+            out["trace_metrics"] = self.trace_metrics
         return out
 
     @classmethod
@@ -154,6 +199,7 @@ class RLMChatCompletion:
             execution_time=data.get("execution_time"),
             metadata=data.get("metadata"),
             error=data.get("error"),
+            trace_metrics=data.get("trace_metrics"),
         )
 
 
@@ -212,15 +258,21 @@ class RLMIteration:
     code_blocks: list[CodeBlock]
     final_answer: str | None = None
     iteration_time: float | None = None
+    trace_metrics: dict[str, Any] | None = (
+        None  # Per-turn trace metrics (sub-call count, syntax error, answer/truncation events).
+    )
 
     def to_dict(self):
-        return {
+        out = {
             "prompt": self.prompt,
             "response": self.response,
             "code_blocks": [code_block.to_dict() for code_block in self.code_blocks],
             "final_answer": self.final_answer,
             "iteration_time": self.iteration_time,
         }
+        if self.trace_metrics is not None:
+            out["trace_metrics"] = self.trace_metrics
+        return out
 
 
 ########################################################

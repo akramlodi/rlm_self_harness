@@ -207,6 +207,11 @@ ORCHESTRATOR_ADDENDUM = "\n\n".join(
 
 _DEFAULT_MAX_ITERATIONS = 30
 
+# S6: the stated sub-call capacity. It lives in the metadata user message, which
+# ``custom_system_prompt`` cannot reach, so it is injectable — the stated
+# capacity and the enforced cap come from one place.
+DEFAULT_CAPACITY_SENTENCE = "Each sub-LLM call can handle roughly ~100k tokens at once."
+
 
 def build_rlm_system_prompt(
     system_prompt: str,
@@ -214,6 +219,7 @@ def build_rlm_system_prompt(
     custom_tools: dict[str, Any] | None = None,
     root_prompt: str | None = None,
     orchestrator: bool = True,
+    capacity_sentence: str | None = None,
 ) -> list[dict[str, str]]:
     from rlm.environments.base_env import format_tools_for_prompt
 
@@ -232,7 +238,7 @@ def build_rlm_system_prompt(
     metadata_body = (
         f"Your context is a {query_metadata.context_type} of "
         f"{query_metadata.context_total_length} total characters. "
-        "Each sub-LLM call can handle roughly ~100k tokens at once."
+        f"{capacity_sentence if capacity_sentence is not None else DEFAULT_CAPACITY_SENTENCE}"
     )
     if root_prompt:
         metadata_prompt = f"Answer the following: {root_prompt}\n\n{metadata_body}"
