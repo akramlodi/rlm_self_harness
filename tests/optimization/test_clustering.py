@@ -99,8 +99,50 @@ class TestSupportFloor:
         assert pattern.below_support_floor is True
 
 
+class TestDistinctInstanceSupport:
+    def test_two_attempts_of_one_instance_count_as_one_instance(self):
+        """KTD7/R2: repeated failing attempts of one instance are two runs of
+        evidence but only one distinct instance."""
+        records = [make_record("inst-1"), make_record("inst-1")]
+        (pattern,) = cluster_failures(records)
+        assert pattern.support == 2
+        assert pattern.instance_support == 1
+
+    def test_ordering_is_instance_support_desc_then_actionability(self):
+        # Breadth across instances beats repeated attempts of one instance,
+        # even when run-level support ties; instance_support ties fall back to
+        # actionability.
+        repeated_strong = [make_record("dup-1"), make_record("dup-1")]
+        broad_weak = [
+            make_record(
+                f"broad-{i}",
+                signature=make_signature(
+                    status=CausalStatus.CORRELATED,
+                    mechanism=AgentMechanism.PREMATURE_TERMINATION,
+                ),
+                level_grounded=False,
+            )
+            for i in range(2)
+        ]
+        singleton_weakest = [
+            make_record("solo-1", signature=make_signature(mechanism=AgentMechanism.OTHER))
+        ]
+        patterns = cluster_failures([*repeated_strong, *broad_weak, *singleton_weakest])
+        assert [(p.instance_support, p.support) for p in patterns] == [(2, 2), (1, 2), (1, 1)]
+        assert patterns[0].instance_ids == ["broad-0", "broad-1"]
+        assert patterns[1].instance_ids == ["dup-1", "dup-1"]
+        # The instance_support tie is broken by actionability, not run support.
+        assert patterns[1].actionability > patterns[2].actionability
+
+    def test_instance_support_serializes_into_the_pattern_payload(self):
+        (pattern,) = cluster_failures([make_record("inst-1"), make_record("inst-1")])
+        payload = pattern.to_dict()
+        assert payload["support"] == 2
+        assert payload["instance_support"] == 1
+
+
 class TestRanking:
-    def test_support_dominates_then_actionability_then_signature(self):
+    def test_instance_support_dominates_then_actionability(self):
         weak_pair = [
             make_record(
                 f"run-{i}",

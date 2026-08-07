@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from shrlm.optimization.attribution import LLMAttributor
+from shrlm.optimization.attribution import VALIDATOR_VERSION, LLMAttributor
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
@@ -138,6 +138,71 @@ class TestPrecomputedVerdicts:
                 verdicts=[],
             )
         assert verifier.calls == []
+
+
+@dataclass
+class ConfiguredVerifier(CountingVerifier):
+    """A verifier that also exposes its configuration, GraphWalks-style."""
+
+    threshold: float = 1.0
+
+    def config(self) -> dict[str, Any]:
+        return {"environment": "toy", "pass_f1_threshold": self.threshold}
+
+
+class TestConfigProvenance:
+    def test_verifier_config_flows_from_a_config_bearing_verifier(self):
+        instance, completion = failing_run()
+        result = make_miner(ConfiguredVerifier()).mine(
+            [(instance, completion)],
+            round_index=1,
+            harness_version="H0",
+            split_id="held_in_v1",
+        )
+        assert result.bundle.config.verifier_config == {
+            "environment": "toy",
+            "pass_f1_threshold": 1.0,
+        }
+
+    def test_rounds_differing_only_in_verifier_config_have_different_bundle_ids(self):
+        def bundle_id(threshold: float) -> str:
+            instance, completion = failing_run()
+            return (
+                make_miner(ConfiguredVerifier(threshold=threshold))
+                .mine(
+                    [(instance, completion)],
+                    round_index=1,
+                    harness_version="H0",
+                    split_id="held_in_v1",
+                )
+                .bundle.bundle_id
+            )
+
+        assert bundle_id(1.0) != bundle_id(0.5)
+
+    def test_config_less_verifier_yields_an_empty_verifier_config(self):
+        instance, completion = failing_run()
+        result = make_miner(CountingVerifier()).mine(
+            [(instance, completion)],
+            round_index=1,
+            harness_version="H0",
+            split_id="held_in_v1",
+        )
+        config = result.bundle.config
+        assert config.verifier_config == {}
+        assert config.sampling_seed is None
+        assert config.attribution_cache_path is None
+        assert config.harness_hash == ""
+
+    def test_validator_version_is_recorded(self):
+        instance, completion = failing_run()
+        result = make_miner(CountingVerifier()).mine(
+            [(instance, completion)],
+            round_index=1,
+            harness_version="H0",
+            split_id="held_in_v1",
+        )
+        assert result.bundle.config.validator_version == VALIDATOR_VERSION
 
 
 class TestVerdictRoundTrip:

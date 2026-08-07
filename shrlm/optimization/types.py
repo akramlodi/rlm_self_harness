@@ -308,6 +308,20 @@ class AttributionDetail:
         }
 
 
+@dataclass(frozen=True)
+class RunTraceLink:
+    """Where one run's persisted trace lives: the join from record to disk.
+
+    ``trace_path`` is relative to the round directory and ``trace_sha256`` is
+    over the trace file's bytes, exactly as ``runs.jsonl`` records them, so a
+    bundle reader can resolve and verify every record's raw evidence.
+    """
+
+    run_id: str
+    trace_path: str
+    trace_sha256: str
+
+
 @dataclass
 class FailureRecord:
     """
@@ -317,6 +331,11 @@ class FailureRecord:
     came from checkable sub-verdicts, False when the attributor inferred it.
     Appendix B's sub-verification ablation is exactly a comparison across this
     flag, so nothing else may vary with it.
+
+    ``run_id``, ``trace_path``, and ``trace_sha256`` link the record back to
+    its persisted trace (see ``RunTraceLink``). They are None for legacy
+    callers that mine in-memory completions with no persisted round behind
+    them; ``mine_round`` always populates them from ``runs.jsonl``.
     """
 
     instance_id: str
@@ -329,6 +348,9 @@ class FailureRecord:
     digest_sha256: str = ""
     attribution_failed: bool = False
     attribution_error: str = ""
+    run_id: str | None = None
+    trace_path: str | None = None
+    trace_sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -342,6 +364,9 @@ class FailureRecord:
             "digest_sha256": self.digest_sha256,
             "attribution_failed": self.attribution_failed,
             "attribution_error": self.attribution_error,
+            "run_id": self.run_id,
+            "trace_path": self.trace_path,
+            "trace_sha256": self.trace_sha256,
         }
 
 
@@ -354,12 +379,18 @@ class FailurePattern:
     ``surface`` is a taxonomy fact -- which editable surface this mechanism
     lives on -- and not a recommendation to edit it.
 
+    ``support`` counts member *runs*; ``instance_support`` counts distinct
+    instance ids (KTD7/R2). Repeated failing attempts of one instance are real
+    evidence of the failure but not evidence of breadth, so cluster ordering
+    uses instance_support and ``support`` stays the run count.
+
     ``actionability`` orders the proposer's reading order only. It is not a
     prediction of edit success, and no promotion decision may consume it.
     """
 
     signature: FailureSignature
     support: int
+    instance_support: int
     instance_ids: list[str]
     representatives: list[str]
     shared_symptoms: list[str]
@@ -373,6 +404,7 @@ class FailurePattern:
         return {
             "signature": self.signature.to_dict(),
             "support": self.support,
+            "instance_support": self.instance_support,
             "instance_ids": list(self.instance_ids),
             "representatives": list(self.representatives),
             "shared_symptoms": list(self.shared_symptoms),
@@ -406,6 +438,52 @@ class MiningTotals:
         }
 
 
+@dataclass(frozen=True)
+class SubstrateBias:
+    """A known, code-level measurement bias in the run substrate.
+
+    Named by its residual-review defect id (docs/residual-review-findings/)
+    so a bundle reader can find the full analysis. These are static facts
+    about the substrate the round ran on, not observations about the round;
+    they belong in the bundle because they bias exactly the statistics the
+    bundle reports.
+    """
+
+    defect_id: str
+    summary: str
+    effect: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "defect_id": self.defect_id,
+            "summary": self.summary,
+            "effect": self.effect,
+        }
+
+
+# The substrate biases every bundle must disclose, from the residual review of
+# feature/editable_surfaces. Kept static: they describe the code the runs
+# executed under, and they stay listed until the defects are fixed.
+KNOWN_SUBSTRATE_BIASES: tuple[SubstrateBias, ...] = (
+    SubstrateBias(
+        defect_id="A1",
+        summary="batched sub-calls always record syntax_error=False",
+        effect=(
+            "syntax-error counts are a lower bound: the batched execution paths never "
+            "classify, so syntax-error rate reads artificially low as batching increases"
+        ),
+    ),
+    SubstrateBias(
+        defect_id="A2",
+        summary="retried sub-calls are billed as one call",
+        effect=(
+            "per-run cost is a lower bound: only the last attempt of a retried sub-call "
+            "is recorded, under-pricing retry-heavy behavior"
+        ),
+    ),
+)
+
+
 @dataclass
 class IntegrityReport:
     """
@@ -415,6 +493,12 @@ class IntegrityReport:
     error that was never printed leaves no trace at all. It matters because
     missing child nodes bias failing_level toward ROOT, which is the very
     distinction the sub-verifier grounding exists to establish.
+
+    The ``n_unattributed`` / ``n_ungrounded`` / ``n_resource_terminated`` /
+    ``n_transport_errors`` counts make the round's excluded or weakened
+    evidence visible in the bundle itself, and ``known_substrate_biases``
+    names the code-level defects (by review id) that bias what the traces
+    could record in the first place.
     """
 
     total_suspected_lost_subcalls: int
@@ -422,6 +506,13 @@ class IntegrityReport:
     n_records_unreliable_block_attribution: int
     n_indeterminate_nodes: int
     mean_digest_coverage: float
+    n_unattributed: int
+    n_ungrounded: int
+    n_resource_terminated: int
+    n_transport_errors: int
+    known_substrate_biases: list[SubstrateBias] = field(
+        default_factory=lambda: list(KNOWN_SUBSTRATE_BIASES)
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -430,6 +521,11 @@ class IntegrityReport:
             "n_records_unreliable_block_attribution": (self.n_records_unreliable_block_attribution),
             "n_indeterminate_nodes": self.n_indeterminate_nodes,
             "mean_digest_coverage": self.mean_digest_coverage,
+            "n_unattributed": self.n_unattributed,
+            "n_ungrounded": self.n_ungrounded,
+            "n_resource_terminated": self.n_resource_terminated,
+            "n_transport_errors": self.n_transport_errors,
+            "known_substrate_biases": [bias.to_dict() for bias in self.known_substrate_biases],
         }
 
 
@@ -441,6 +537,26 @@ class MiningConfig:
     Serialized into the bundle and hashed into its id, so a re-run that differs
     in any of these fields is visibly a different bundle rather than a silently
     different one.
+
+    Provenance fields:
+
+    * ``harness_version`` is the caller-facing harness identifier and
+      ``harness_hash`` is the content hash recorded in the round's
+      ``harness.json``. ``mine_round`` sets harness_version to that same hash
+      by default, so the two normally coincide; they stay separate fields
+      because a caller may label the harness ("H0") while the hash remains the
+      checkable identity. ``harness_hash`` is empty only for legacy in-memory
+      callers with no persisted round.
+    * ``verifier_config`` holds the environment verifier's own facts (its
+      ``config()`` payload, e.g. pass threshold and extraction rule) so two
+      rounds judged under different verifier settings can never share a
+      bundle id.
+    * ``sampling_seed`` is the dataset sampling seed carried by the round's
+      instances as provenance; None when the instances carry none.
+    * ``validator_version`` pins the attribution response validator, and
+      ``attribution_cache_path`` (round-dir-relative when set by
+      ``mine_round``) names the cache whose replayed responses made the round
+      reproducible.
     """
 
     round_index: int
@@ -458,6 +574,11 @@ class MiningConfig:
     sub_verifier_enabled: bool
     min_support: int
     actionability_weights: dict[str, float]
+    verifier_config: dict[str, Any] = field(default_factory=dict)
+    sampling_seed: int | None = None
+    validator_version: str = ""
+    attribution_cache_path: str | None = None
+    harness_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -476,6 +597,11 @@ class MiningConfig:
             "sub_verifier_enabled": self.sub_verifier_enabled,
             "min_support": self.min_support,
             "actionability_weights": dict(self.actionability_weights),
+            "verifier_config": dict(self.verifier_config),
+            "sampling_seed": self.sampling_seed,
+            "validator_version": self.validator_version,
+            "attribution_cache_path": self.attribution_cache_path,
+            "harness_hash": self.harness_hash,
         }
 
 

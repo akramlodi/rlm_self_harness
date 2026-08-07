@@ -63,7 +63,7 @@ from rlm.utils.exceptions import (
 from shrlm.harness_identity import harness_hash, write_harness_json
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import Verdict, Verifier
+from shrlm.optimization.types import RunTraceLink, Verdict, Verifier
 from shrlm.rlm_harness import Harness
 from shrlm.runner import build_harnessed_rlm
 
@@ -427,10 +427,17 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
 
 def load_round(
     out_dir: Path | str, round_index: int
-) -> tuple[list[tuple[dict[str, Any], RLMChatCompletion]], list[Verdict], dict[str, Any]]:
+) -> tuple[
+    list[tuple[dict[str, Any], RLMChatCompletion]],
+    list[Verdict],
+    dict[str, Any],
+    list[dict[str, Any]],
+]:
     """Read a persisted round back: (instance, completion) pairs, aligned
-    verdicts, and the harness envelope. Every trace is sha-verified before it
-    is trusted, so mining cannot silently consume a modified file."""
+    verdicts, the harness envelope, and the aligned manifest entries (the
+    source of each run's run_id / trace_path / trace_sha256). Every trace is
+    sha-verified before it is trusted, so mining cannot silently consume a
+    modified file."""
     path = round_dir(out_dir, round_index)
     envelope = json.loads((path / HARNESS_FILE).read_text())
     instances = {
@@ -442,6 +449,7 @@ def load_round(
 
     runs: list[tuple[dict[str, Any], RLMChatCompletion]] = []
     verdicts: list[Verdict] = []
+    entries: list[dict[str, Any]] = []
     for entry in _load_manifest(path):
         trace_path = _verify_trace(path, entry)
         instance_id = str(entry["instance_id"])
@@ -453,7 +461,27 @@ def load_round(
         completion = RLMChatCompletion.from_dict(json.loads(trace_path.read_text()))
         runs.append((instances[instance_id], completion))
         verdicts.append(Verdict.from_dict(entry["verdict"]))
-    return runs, verdicts, envelope
+        entries.append(entry)
+    return runs, verdicts, envelope, entries
+
+
+def _sampling_seed(runs: list[tuple[dict[str, Any], RLMChatCompletion]]) -> int | None:
+    """The dataset sampling seed the instances carry as provenance.
+
+    Environment loaders (see ``graphwalks.row_to_instance``) stamp each
+    sampled instance with its ``sample_seed``. One round samples once, so a
+    mix of seeds means the instance list was assembled from two samplings --
+    that is a provenance contradiction, not something to average away.
+    """
+    seeds = {int(instance["sample_seed"]) for instance, _ in runs if "sample_seed" in instance}
+    if not seeds:
+        return None
+    if len(seeds) > 1:
+        raise RoundPersistenceError(
+            f"instances carry conflicting sample_seed values {sorted(seeds)}; a round's "
+            "instances must come from a single sampling."
+        )
+    return seeds.pop()
 
 
 def mine_round(
@@ -475,7 +503,8 @@ def mine_round(
             exception.
         split_id: The evaluation split identifier recorded in the bundle.
         harness_version: Bundle-facing harness identifier; defaults to the
-            content hash recorded in the round's ``harness.json``.
+            content hash recorded in the round's ``harness.json`` (which is
+            always recorded separately as ``MiningConfig.harness_hash``).
         created_at: Optional bundle timestamp override.
 
     Returns:
@@ -489,8 +518,24 @@ def mine_round(
     variants (grounded/ungrounded or aggregate-mode digests), one
     ``attributor_prompt_<sha16>.txt`` per variant, resolvable through the
     ``prompt_sha256`` each attributions.jsonl entry carries.
+
+    Provenance flows from the round's artifacts into the bundle: every
+    failure record is stamped with its manifest run_id / trace_path /
+    trace_sha256, and the MiningConfig carries the harness hash, the
+    instances' sampling seed, and the attribution cache path relative to the
+    round directory.
     """
-    runs, verdicts, envelope = load_round(out_dir, round_index)
+    runs, verdicts, envelope, entries = load_round(out_dir, round_index)
+    path = round_dir(out_dir, round_index)
+    trace_links = [
+        RunTraceLink(
+            run_id=str(entry["run_id"]),
+            trace_path=str(entry["trace_path"]),
+            trace_sha256=str(entry["trace_sha256"]),
+        )
+        for entry in entries
+    ]
+    cache_path = miner.attributor.cache.path
     result = miner.mine(
         runs,
         round_index=round_index,
@@ -498,8 +543,14 @@ def mine_round(
         split_id=split_id,
         created_at=created_at,
         verdicts=verdicts,
+        trace_links=trace_links,
+        harness_hash=str(envelope["hash"]),
+        sampling_seed=_sampling_seed(runs),
+        attribution_cache_path=(
+            os.path.relpath(cache_path, path) if cache_path is not None else None
+        ),
     )
-    _persist_mining_artifacts(round_dir(out_dir, round_index), result)
+    _persist_mining_artifacts(path, result)
     return result
 
 

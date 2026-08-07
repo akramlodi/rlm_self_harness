@@ -19,6 +19,7 @@ from typing import Any
 
 from rlm.core.types import RLMChatCompletion
 from shrlm.optimization.attribution import (
+    VALIDATOR_VERSION,
     AttributionRejection,
     AttributionTransportError,
     LLMAttributor,
@@ -38,6 +39,7 @@ from shrlm.optimization.types import (
     FailureRecord,
     MiningConfig,
     MiningTotals,
+    RunTraceLink,
     SubVerifier,
     Verdict,
     Verifier,
@@ -221,6 +223,10 @@ class WeaknessMiner:
         split_id: str,
         created_at: str | None = None,
         verdicts: Sequence[Verdict | None] | None = None,
+        trace_links: Sequence[RunTraceLink | None] | None = None,
+        harness_hash: str = "",
+        sampling_seed: int | None = None,
+        attribution_cache_path: str | None = None,
     ) -> MiningResult:
         """Run the full stage over a set of completed runs.
 
@@ -228,6 +234,21 @@ class WeaknessMiner:
         Verdict replaces the verifier's judgment for that run, and None falls
         back to recomputing it. Omitting the argument keeps the original
         behavior for every existing caller.
+
+        ``trace_links`` is likewise aligned index-for-index with ``runs`` and
+        stamps each failure record with the run_id / trace_path / trace_sha256
+        of its persisted trace; ``mine_round`` supplies it from ``runs.jsonl``,
+        and legacy in-memory callers leave records unlinked.
+
+        Provenance: ``harness_hash`` is the round's ``harness.json`` content
+        hash (``harness_version`` stays the caller's label, which
+        ``mine_round`` defaults to that same hash); ``sampling_seed`` is the
+        dataset sampling seed the instances carry; ``attribution_cache_path``
+        overrides the attributor cache's own path (``mine_round`` passes it
+        round-dir-relative), falling back to the cache's configured path. The
+        verifier's ``config()`` payload, when it defines one, is recorded as
+        ``verifier_config``. All of these serialize into the MiningConfig and
+        therefore into the bundle id.
 
         Never raises for an unattributable run: rejected attributions become
         unattributed records, and transport failures (LM unreachable after
@@ -237,6 +258,11 @@ class WeaknessMiner:
         if verdicts is not None and len(verdicts) != len(runs):
             raise ValueError(
                 f"verdicts must align with runs one-to-one: got {len(verdicts)} verdicts "
+                f"for {len(runs)} runs"
+            )
+        if trace_links is not None and len(trace_links) != len(runs):
+            raise ValueError(
+                f"trace_links must align with runs one-to-one: got {len(trace_links)} links "
                 f"for {len(runs)} runs"
             )
 
@@ -252,6 +278,11 @@ class WeaknessMiner:
             outcome = self.record_failure(instance, completion, verdict=verdict)
             if outcome.record is None:
                 continue
+            link = trace_links[index] if trace_links is not None else None
+            if link is not None:
+                outcome.record.run_id = link.run_id
+                outcome.record.trace_path = link.trace_path
+                outcome.record.trace_sha256 = link.trace_sha256
             records.append(outcome.record)
             coverages.append(outcome.coverage)
             if outcome.raw is not None:
@@ -283,6 +314,12 @@ class WeaknessMiner:
             ),
         )
 
+        # The verifier's own configuration is provenance when it exposes one
+        # (duck-typed ``config()``, as GraphWalksVerifier does): two rounds
+        # judged under different verifier settings must not share a bundle id.
+        config_method = getattr(self.verifier, "config", None)
+        verifier_config: dict[str, Any] = dict(config_method()) if callable(config_method) else {}
+
         config = MiningConfig(
             round_index=round_index,
             harness_version=harness_version,
@@ -299,6 +336,15 @@ class WeaknessMiner:
             sub_verifier_enabled=self.sub_verifier is not None,
             min_support=self.clustering_config.min_support,
             actionability_weights=dict(ACTIONABILITY_WEIGHTS),
+            verifier_config=verifier_config,
+            sampling_seed=sampling_seed,
+            validator_version=VALIDATOR_VERSION,
+            attribution_cache_path=(
+                attribution_cache_path
+                if attribution_cache_path is not None
+                else self.attributor.cache.path
+            ),
+            harness_hash=harness_hash,
         )
 
         bundle = build_evidence_bundle(

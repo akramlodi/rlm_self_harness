@@ -398,6 +398,7 @@ def make_record(
     stats: TreeStats | None = None,
     level_grounded: bool = True,
     attribution_failed: bool = False,
+    verdict: Verdict | None = None,
 ) -> FailureRecord:
     if signature is None and not attribution_failed:
         signature = make_signature()
@@ -409,7 +410,7 @@ def make_record(
         )
     return FailureRecord(
         instance_id=instance_id,
-        verdict=make_verdict(),
+        verdict=verdict or make_verdict(),
         stats=stats or make_stats(),
         signature=signature,
         detail=detail,
@@ -442,6 +443,11 @@ def make_config(**overrides: Any) -> MiningConfig:
             "surface": 0.2,
             "homogeneity": 0.1,
         },
+        "verifier_config": {},
+        "sampling_seed": None,
+        "validator_version": "1.0.0",
+        "attribution_cache_path": None,
+        "harness_hash": "",
     }
     values.update(overrides)
     return MiningConfig(**values)

@@ -19,11 +19,12 @@ from shrlm.optimization.types import (
     AttributionDetail,
     CallNode,
     FailureSignature,
+    MiningConfig,
     NodeKind,
     Verdict,
     iter_nodes,
 )
-from tests.optimization.fixtures import make_record, make_signature
+from tests.optimization.fixtures import make_config, make_record, make_signature
 
 
 class TestFailureSignature:
@@ -111,6 +112,29 @@ def leaf(node_id: str, parent_id: str, depth: int) -> CallNode:
         response_chars=1,
         execution_time=0.1,
     )
+
+
+class TestMiningConfigProvenance:
+    def test_round_trips_with_all_provenance_fields(self):
+        config = make_config(
+            verifier_config={"environment": "graphwalks", "pass_f1_threshold": 1.0},
+            sampling_seed=7,
+            validator_version="1.0.0",
+            attribution_cache_path="attribution_cache.jsonl",
+            harness_hash="deadbeefdeadbeef",
+        )
+        assert MiningConfig(**config.to_dict()) == config
+
+    def test_to_dict_carries_every_provenance_field(self):
+        payload = make_config().to_dict()
+        for name in (
+            "verifier_config",
+            "sampling_seed",
+            "validator_version",
+            "attribution_cache_path",
+            "harness_hash",
+        ):
+            assert name in payload
 
 
 class TestIterNodes:

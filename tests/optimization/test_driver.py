@@ -16,6 +16,7 @@ budget accounting stays per-run.
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,8 @@ import pytest
 import rlm.core.rlm as rlm_module
 from rlm.core.types import ModelUsageSummary, RLMChatCompletion, UsageSummary
 from shrlm.harness_identity import harness_hash
-from shrlm.optimization.attribution import LLMAttributor
+from shrlm.optimization.attribution import VALIDATOR_VERSION, AttributionCache, LLMAttributor
+from shrlm.optimization.bundle import write_bundle
 from shrlm.optimization.driver import RoundConfig, mine_round, round_dir, run_round
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
@@ -486,6 +488,107 @@ class TestMineRound:
         assert prompt_path.is_file()
         # No sub-verifier, narrow trees: the single ungrounded, non-aggregate variant.
         assert prompt_path.read_text() == miner.attributor.system_prompt(grounded=False)
+
+    def test_every_record_links_to_its_persisted_trace(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        result = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier()),
+            split_id="held_in_v1",
+        )
+        round_path = round_dir(config.out_dir, config.round_index)
+        manifest = {entry["run_id"]: entry for entry in read_manifest(round_path)}
+        assert len(result.records) == 2
+        for record in result.records:
+            assert record.run_id in manifest
+            assert record.trace_path == manifest[record.run_id]["trace_path"]
+            trace = round_path / record.trace_path
+            assert trace.is_file()
+            assert hashlib.sha256(trace.read_bytes()).hexdigest() == record.trace_sha256
+
+    def test_trace_links_serialize_into_records_jsonl(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        result = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier()),
+            split_id="held_in_v1",
+        )
+        write_bundle(result.bundle, result.records, str(tmp_path / "bundles"))
+        lines = (
+            (tmp_path / "bundles" / f"round_{config.round_index:02d}" / "records.jsonl")
+            .read_text()
+            .splitlines()
+        )
+        for line in lines:
+            payload = json.loads(line)
+            assert payload["run_id"]
+            assert payload["trace_path"]
+            assert payload["trace_sha256"]
+
+    def test_bundle_config_carries_round_provenance(self, tmp_path, monkeypatch):
+        instances = [
+            {"id": "s-fail", "question": "q", "prompt": "ctx", "gold": "RIGHT", "sample_seed": 7},
+            {"id": "s-pass", "question": "q", "prompt": "ctx", "gold": "RIGHT", "sample_seed": 7},
+        ]
+        factory = ClientFactory([final("WRONG"), final("RIGHT")])
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, instances=instances)
+        run_round(config)
+
+        cache_path = tmp_path / "caches" / "attribution.jsonl"
+        lm = MockLM(responses=[CANNED_ATTRIBUTION] * 8)
+        miner = WeaknessMiner(
+            verifier=BoomVerifier(),
+            attributor=LLMAttributor(lm, cache=AttributionCache(path=str(cache_path))),
+        )
+        result = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=miner,
+            split_id="held_in_v1",
+        )
+        bundle_config = result.bundle.config
+        assert bundle_config.harness_hash == harness_hash(H0)
+        # harness_version defaults to the same hash; both stay coherent.
+        assert bundle_config.harness_version == bundle_config.harness_hash
+        assert bundle_config.sampling_seed == 7
+        round_path = round_dir(config.out_dir, config.round_index)
+        assert bundle_config.attribution_cache_path == os.path.relpath(cache_path, round_path)
+        assert bundle_config.validator_version == VALIDATOR_VERSION
+
+    def test_zero_failure_round_mines_to_an_empty_pattern_list(self, tmp_path, monkeypatch):
+        instances = make_instances()[:2]
+        factory = ClientFactory([final("RIGHT"), final("RIGHT")])
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, instances=instances)
+        run_round(config)
+
+        result = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier()),
+            split_id="held_in_v1",
+        )
+        assert result.bundle.totals.n_failures == 0
+        assert result.bundle.patterns == []
+        integrity = result.bundle.integrity
+        assert integrity.n_unattributed == 0
+        assert integrity.n_ungrounded == 0
+        assert integrity.n_resource_terminated == 0
+        assert integrity.n_transport_errors == 0
+        assert [bias.defect_id for bias in integrity.known_substrate_biases] == ["A1", "A2"]
+
+    def test_resource_terminated_run_is_counted_in_integrity(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        result = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier()),
+            split_id="held_in_v1",
+        )
+        assert result.bundle.integrity.n_resource_terminated == 1
 
     def test_mine_round_fails_on_tampered_trace(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)
