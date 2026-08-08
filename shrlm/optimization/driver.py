@@ -52,7 +52,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from rlm.core.types import RLMChatCompletion, UsageSummary
+from rlm.core.types import ModelUsageSummary, RLMChatCompletion, UsageSummary
 from rlm.utils.exceptions import (
     BudgetExceededError,
     ErrorThresholdExceededError,
@@ -286,17 +286,35 @@ def _partial_completion(
 
     The trajectory is whatever the in-memory logger held when the root raised.
     Budget/token/error limits are checked before the terminating iteration is
-    logged, so that iteration is absent; see the module docstring. Usage is
-    empty because the per-completion handler that held it is gone by the time
-    the exception surfaces. Some limit exceptions carry a partial answer;
-    persisting it keeps the trace honest about what the run had produced.
+    logged, so that iteration is absent; see the module docstring. The
+    per-completion handler that held the run's usage is gone by the time the
+    exception surfaces, but ``BudgetExceededError`` carries the figure it
+    tripped on: that ``spent`` amount is persisted as the run's cost so
+    driver-level spend accounting (the validation stage's circuit breaker)
+    never undercounts a paid termination. The other limit exceptions carry no
+    cost, and their usage stays empty. Some limit exceptions carry a partial
+    answer; persisting it keeps the trace honest about what the run had
+    produced.
     """
     partial_answer = getattr(error, "partial_answer", None)
+    spent = getattr(error, "spent", None)
+    usage = UsageSummary(model_usage_summaries={})
+    if isinstance(spent, int | float) and not isinstance(spent, bool):
+        usage = UsageSummary(
+            model_usage_summaries={
+                model_name: ModelUsageSummary(
+                    total_calls=0,
+                    total_input_tokens=0,
+                    total_output_tokens=0,
+                    total_cost=float(spent),
+                )
+            }
+        )
     return RLMChatCompletion(
         root_model=model_name,
         prompt=prompt,
         response=partial_answer or "",
-        usage_summary=UsageSummary(model_usage_summaries={}),
+        usage_summary=usage,
         execution_time=0.0,
         metadata=trajectory,
         error=f"{type(error).__name__}: {error}",
