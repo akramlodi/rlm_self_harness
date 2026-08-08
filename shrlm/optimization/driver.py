@@ -87,8 +87,9 @@ DIGESTS_DIR = "digests"
 # fallback over rounds mined before prompt persistence was content-addressed.
 ATTRIBUTOR_PROMPT_FILE = "attributor_prompt.txt"
 
-# Instance ids become file names, so they must be filesystem-safe everywhere.
-_INSTANCE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# Instance ids become file names (and, in the audit, bundle labels become
+# directory names), so they must be filesystem-safe everywhere.
+FILESYSTEM_SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 # Credentials must come from the environment, never from backend_kwargs: the
 # kwargs are serialized into every trajectory's run_metadata, and the traces
@@ -166,10 +167,10 @@ def _validate_config(config: RoundConfig) -> None:
     seen: set[str] = set()
     for instance in config.instances:
         instance_id = str(instance["id"])
-        if not _INSTANCE_ID_PATTERN.fullmatch(instance_id):
+        if not FILESYSTEM_SAFE_ID_PATTERN.fullmatch(instance_id):
             raise ValueError(
                 f"instance id {instance_id!r} is not filesystem-safe; ids become trace "
-                f"file names and must match {_INSTANCE_ID_PATTERN.pattern}"
+                f"file names and must match {FILESYSTEM_SAFE_ID_PATTERN.pattern}"
             )
         if instance_id in seen:
             raise ValueError(
@@ -582,9 +583,10 @@ def mine_round(
 def _persist_mining_artifacts(path: Path, result: MiningResult) -> None:
     """Write the digests and rendered prompt(s) a mining pass was built on.
 
-    Prompt persistence is content-addressed: every rendered variant lands as
-    ``attributor_prompt_<sha16>.txt`` (the first 16 hex digits of the prompt
-    sha256 it is keyed by), and a file already at that name is trusted as-is,
+    Both artifacts are persisted content-addressed and write-once: each digest
+    lands as ``digests/<digest_sha256>.txt`` and every rendered prompt variant
+    as ``attributor_prompt_<sha16>.txt`` (the first 16 hex digits of the prompt
+    sha256 it is keyed by), and a file already at its name is trusted as-is,
     never rewritten. This is what lets one round be mined more than once --
     e.g. the sub-verification ablation's grounded and ablated passes -- with
     each pass adding its own variants and no pass ever invalidating the
@@ -596,7 +598,9 @@ def _persist_mining_artifacts(path: Path, result: MiningResult) -> None:
         digests_dir = path / DIGESTS_DIR
         digests_dir.mkdir(parents=True, exist_ok=True)
         for sha, text in result.digest_texts.items():
-            (digests_dir / f"{sha}.txt").write_text(text)
+            digest_path = digests_dir / f"{sha}.txt"
+            if not digest_path.exists():
+                digest_path.write_text(text)
 
     for sha, text in result.attributor_prompts.items():
         prompt_path = path / f"attributor_prompt_{sha[:16]}.txt"

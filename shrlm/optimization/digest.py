@@ -26,8 +26,6 @@ from shrlm.optimization.types import CallNode, NodeKind, TreeStats, Verdict, ite
 # that digest's sha256 changes and with it the affected records' cache keys:
 # invalidation rides on the bytes themselves, so records whose rendering is
 # untouched keep their cached attributions across a bump.
-# 1.1.0: per-depth aggregates render sub_verifier_failed=n/a when the tree
-# carries no computed verdicts, instead of a fabricated 0.
 DIGEST_VERSION = "1.1.0"
 
 DEFAULT_CHAR_BUDGET = 12000

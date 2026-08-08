@@ -26,6 +26,7 @@ from shrlm.optimization.attribution import AttributionCache, AttributorConfig, L
 from shrlm.optimization.audit import (
     AuditReport,
     audit_round,
+    bundle_dir_for,
     main,
     run_audited_round,
     stored_harness_hash,
@@ -34,7 +35,6 @@ from shrlm.optimization.driver import mine_round, round_dir
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from tests.mock_lm import MockLM
 from tests.optimization.test_driver import (
-    CANNED_ATTRIBUTION,
     BoomVerifier,
     ClientFactory,
     NoneSubVerifier,
@@ -508,18 +508,6 @@ class TestPromptPersistenceAcrossMines:
 # ---------------------------------------------------------------------------
 
 
-def make_cached_miner(cache_path: Path, sub_verifier: object | None = None) -> WeaknessMiner:
-    """A miner over a file-backed cache, ungrounded or grounded by the stub."""
-    return WeaknessMiner(
-        verifier=BoomVerifier(),
-        attributor=LLMAttributor(
-            MockLM(responses=[CANNED_ATTRIBUTION] * 8),
-            cache=AttributionCache(path=str(cache_path)),
-        ),
-        sub_verifier=sub_verifier,
-    )
-
-
 class TestLabeledBundleDestinations:
     @pytest.fixture
     def dual(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -533,7 +521,7 @@ class TestLabeledBundleDestinations:
 
         result_root, report_root = run_audited_round(
             config,
-            make_cached_miner(cache_path),
+            make_miner(BoomVerifier(), cache=AttributionCache(path=str(cache_path))),
             split_id="held_in_v1",
             created_at="2026-01-01T00:00:00",
         )
@@ -541,7 +529,11 @@ class TestLabeledBundleDestinations:
         monkeypatch.setattr(rlm_module, "get_client", idle)
         result_sub, report_sub = run_audited_round(
             make_round_config(tmp_path),
-            make_cached_miner(cache_path, sub_verifier=NoneSubVerifier()),
+            make_miner(
+                BoomVerifier(),
+                sub_verifier=NoneSubVerifier(),
+                cache=AttributionCache(path=str(cache_path)),
+            ),
             split_id="held_in_v1",
             created_at="2026-02-02T00:00:00",
             bundle_label="grounded",
@@ -554,7 +546,7 @@ class TestLabeledBundleDestinations:
         assert report_root.ok
         assert report_sub.ok
         assert result_root.bundle.bundle_id != result_sub.bundle.bundle_id
-        for triplet_dir in (round_path, round_path / "bundles" / "grounded"):
+        for triplet_dir in (round_path, bundle_dir_for(round_path, "grounded")):
             assert (triplet_dir / "bundle.json").is_file()
             assert (triplet_dir / "records.jsonl").is_file()
             assert (triplet_dir / "attributions.jsonl").is_file()
@@ -584,7 +576,7 @@ class TestLabeledBundleDestinations:
         re-mine reads bundles/grounded/bundle.json, never the root bundle
         (whose created_at differs), so each destination reproduces itself."""
         round_path, _, _, _, _ = dual
-        sub_bundle_path = round_path / "bundles" / "grounded" / "bundle.json"
+        sub_bundle_path = bundle_dir_for(round_path, "grounded") / "bundle.json"
         root_bundle_path = round_path / "bundle.json"
         sub_before = sub_bundle_path.read_bytes()
         root_before = root_bundle_path.read_bytes()
@@ -594,13 +586,17 @@ class TestLabeledBundleDestinations:
         monkeypatch.setattr(rlm_module, "get_client", idle)
         _, report_sub = run_audited_round(
             make_round_config(tmp_path),
-            make_cached_miner(cache_path, sub_verifier=NoneSubVerifier()),
+            make_miner(
+                BoomVerifier(),
+                sub_verifier=NoneSubVerifier(),
+                cache=AttributionCache(path=str(cache_path)),
+            ),
             split_id="held_in_v1",
             bundle_label="grounded",
         )
         _, report_root = run_audited_round(
             make_round_config(tmp_path),
-            make_cached_miner(cache_path),
+            make_miner(BoomVerifier(), cache=AttributionCache(path=str(cache_path))),
             split_id="held_in_v1",
         )
 
@@ -616,7 +612,7 @@ class TestLabeledBundleDestinations:
         assert exit_code == 0
         assert "OK" in out
 
-        (round_path / "bundles" / "grounded" / "bundle.json").unlink()
+        (bundle_dir_for(round_path, "grounded") / "bundle.json").unlink()
         exit_code = main([str(round_path.parent), "1", "--bundle-label", "grounded"])
         out = capsys.readouterr().out
         assert exit_code == 1

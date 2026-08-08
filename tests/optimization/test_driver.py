@@ -211,9 +211,12 @@ def make_miner(
     verifier: Any,
     responses: list[str] | None = None,
     sub_verifier: Any = None,
+    cache: AttributionCache | None = None,
 ) -> WeaknessMiner:
     lm = MockLM(responses=responses if responses is not None else [CANNED_ATTRIBUTION] * 8)
-    return WeaknessMiner(verifier=verifier, attributor=LLMAttributor(lm), sub_verifier=sub_verifier)
+    return WeaknessMiner(
+        verifier=verifier, attributor=LLMAttributor(lm, cache=cache), sub_verifier=sub_verifier
+    )
 
 
 def read_manifest(round_path: Path) -> list[dict[str, Any]]:

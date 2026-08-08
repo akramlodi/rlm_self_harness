@@ -35,16 +35,17 @@ from typing import Any
 import pytest
 
 import rlm.core.rlm as rlm_module
-from shrlm.optimization.attribution import AttributionCache, LLMAttributor
-from shrlm.optimization.audit import AuditReport, audit_round, run_audited_round
+from shrlm.optimization.attribution import AttributionCache
+from shrlm.optimization.audit import AuditReport, audit_round, bundle_dir_for, run_audited_round
 from shrlm.optimization.driver import round_dir
-from shrlm.optimization.mining import MiningResult, WeaknessMiner
+from shrlm.optimization.mining import MiningResult
 from shrlm.optimization.taxonomy import FailingLevel
 from tests.mock_lm import MockLM
 from tests.optimization.test_driver import (
     BoomVerifier,
     ClientFactory,
     final,
+    make_miner,
     make_round_config,
 )
 
@@ -159,7 +160,7 @@ class AblationRound:
 
     @property
     def ablated_dir(self) -> Path:
-        return self.round_path / "bundles" / "ablated"
+        return bundle_dir_for(self.round_path, "ablated")
 
     def bundle_config(self, triplet_dir: Path) -> dict[str, Any]:
         return json.loads((triplet_dir / "bundle.json").read_text())["config"]
@@ -188,12 +189,13 @@ def ablation(tmp_path_factory: pytest.TempPathFactory) -> AblationRound:
         cache_file = round_path / "attribution_cache.jsonl"
 
         # Grounded pass: mines from the fresh round, pays both attribution calls.
-        grounded_lm = MockLM(responses=[GROUNDED_ATTRIBUTION, UNGROUNDED_ATTRIBUTION])
-        grounded_miner = WeaknessMiner(
-            verifier=BoomVerifier(),
-            attributor=LLMAttributor(grounded_lm, cache=AttributionCache(path=str(cache_file))),
+        grounded_miner = make_miner(
+            BoomVerifier(),
+            responses=[GROUNDED_ATTRIBUTION, UNGROUNDED_ATTRIBUTION],
             sub_verifier=MixedSubVerifier(),
+            cache=AttributionCache(path=str(cache_file)),
         )
+        grounded_lm = grounded_miner.attributor.lm
         result_grounded, report_grounded = run_audited_round(
             config, grounded_miner, split_id="held_in_v1", created_at="2026-01-01T00:00:00"
         )
@@ -203,12 +205,12 @@ def ablation(tmp_path_factory: pytest.TempPathFactory) -> AblationRound:
         # whose digest bytes actually changed with the mode.
         idle = ClientFactory([])
         monkeypatch.setattr(rlm_module, "get_client", idle)
-        ablated_lm = MockLM(responses=[UNGROUNDED_ATTRIBUTION])
-        ablated_miner = WeaknessMiner(
-            verifier=BoomVerifier(),
-            attributor=LLMAttributor(ablated_lm, cache=AttributionCache(path=str(cache_file))),
-            sub_verifier=None,
+        ablated_miner = make_miner(
+            BoomVerifier(),
+            responses=[UNGROUNDED_ATTRIBUTION],
+            cache=AttributionCache(path=str(cache_file)),
         )
+        ablated_lm = ablated_miner.attributor.lm
         result_ablated, report_ablated = run_audited_round(
             make_round_config(tmp_path, instances=ablation_instances(), max_budget=None),
             ablated_miner,

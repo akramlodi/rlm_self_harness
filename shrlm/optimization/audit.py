@@ -73,7 +73,6 @@ by side, each auditable against the same shared round artifacts.
 
 import argparse
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -89,6 +88,7 @@ from shrlm.optimization.bundle import (
 from shrlm.optimization.driver import (
     ATTRIBUTOR_PROMPT_FILE,
     DIGESTS_DIR,
+    FILESYSTEM_SAFE_ID_PATTERN,
     HARNESS_FILE,
     INSTANCES_FILE,
     MANIFEST_FILE,
@@ -131,10 +131,6 @@ _TRANSPORT_ERROR_PREFIX = "transport failure"
 # Where labeled secondary bundles live under a round: round_NN/bundles/<label>/.
 BUNDLES_DIR = "bundles"
 
-# Bundle labels become directory names, so they must be filesystem-safe
-# (mirroring the driver's instance-id rule).
-_BUNDLE_LABEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-
 
 def bundle_dir_for(round_path: Path, bundle_label: str | None) -> Path:
     """Resolve where a round's bundle triplet lives.
@@ -148,10 +144,10 @@ def bundle_dir_for(round_path: Path, bundle_label: str | None) -> Path:
     """
     if bundle_label is None:
         return round_path
-    if not _BUNDLE_LABEL_PATTERN.fullmatch(bundle_label):
+    if not FILESYSTEM_SAFE_ID_PATTERN.fullmatch(bundle_label):
         raise ValueError(
             f"bundle label {bundle_label!r} is not filesystem-safe; labels become "
-            f"directory names and must match {_BUNDLE_LABEL_PATTERN.pattern}"
+            f"directory names and must match {FILESYSTEM_SAFE_ID_PATTERN.pattern}"
         )
     return round_path / BUNDLES_DIR / bundle_label
 
