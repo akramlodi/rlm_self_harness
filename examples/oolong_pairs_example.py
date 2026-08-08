@@ -16,10 +16,9 @@ data, parses out the ground-truth labels, and computes gold pairs programmatical
 of the 20 tasks (`examples/oolong_pairs/tasks.py`, verbatim from Appendix D.1). This file
 (Stage 2) is the RLM harness that answers those questions.
 
-Unlike GraphWalks, there is no deterministic algorithm for the underlying operation here --
-mapping a TREC question to one of six semantic categories is a judgment call, not something
-code can verify. So the strategy below has no `verify_child`-style self-verification: the
-root RLM
+Unlike GraphWalks, there is no deterministic algorithm for the underlying *classification*
+here -- mapping a TREC question to one of six semantic categories is a judgment call, not
+something code can compute. The root RLM
 
   1. inspects `context` (the raw, unlabeled entries + the exact task question) with code,
   2. splits the entries into contiguous, configurably-sized chunks,
@@ -30,6 +29,17 @@ root RLM
      wording -- "at least one", "exactly two", a date cutoff, symmetric vs. one-user/
      other-user, etc.) against that mapping in plain Python, and
   6. returns the resulting pairs in the required "(user_id_1, user_id_2)" format.
+
+There IS, however, a deterministic sub-verification signal available for step 3: we (the
+harness, not the model) know the real OOLONG ground-truth labels, so `verify_child`
+(`examples/oolong_pairs/verification.py`) recomputes -- via the SAME task predicate used to
+build the gold answer -- what a chunk's classifications imply about any user that chunk
+happens to fully resolve, and diffs that against ground truth with TP/FP/FN/precision/
+recall/F1, exposed to the root as a custom tool. It's called immediately after every
+`rlm_query()` per the updated TASK_STRATEGY below, purely observationally: the result is
+logged but never changes the child's answer, triggers a retry, or otherwise alters execution
+-- see the module docstring in `verification.py` for the (fairly fundamental) limitation on
+what a single chunk's verification can and can't tell you.
 
 This example downloads the real OOLONG data from Hugging Face (`oolongbench/oolong-synth`),
 samples a handful of `trec_coarse` context windows at small context lengths, runs each
@@ -54,6 +64,7 @@ import sys
 from dotenv import load_dotenv
 
 from examples.oolong_pairs.dataset import ALL_CONTEXT_LENGTHS, generate_oolong_pairs
+from examples.oolong_pairs.verification import verify_child as _verify_child
 from rlm import RLM
 from rlm.logger import RLMLogger
 from rlm.utils.exceptions import (
@@ -91,6 +102,30 @@ def score(predicted: list[tuple[int, int]], golden: list[tuple[int, int]]) -> di
     precision = n_overlap / n_sampled if n_sampled > 0 else 0.0
     f1 = 2 * (recall * precision) / (recall + precision) if (recall + precision) > 0 else 1.0
     return {"precision": precision, "recall": recall, "f1": f1}
+
+
+# =============================================================================
+# Deterministic sub-call verification
+#
+# Exposed to the root RLM's REPL as a custom tool (see `custom_tools=` below) so it can
+# check each rlm_query() classification call against ground truth, instead of trusting it
+# blindly. See examples/oolong_pairs/verification.py for the full explanation of what this
+# can and can't tell you for a given chunk.
+# =============================================================================
+
+
+def _make_verify_child(gold_by_user: dict, task_id: int):
+    """Bind a row's ground truth + task id into a 2-arg tool the model can call directly.
+
+    The model must never see `gold_by_user` itself (that would leak the answer) -- only this
+    closure, which takes just `child_scope` and `child_output` and returns the verification
+    dict, is exposed via `custom_tools`.
+    """
+
+    def verify_child(child_scope: list, child_output: list) -> dict:
+        return _verify_child(child_scope, child_output, gold_by_user, task_id)
+
+    return verify_child
 
 
 # =============================================================================
@@ -132,6 +167,17 @@ Follow this procedure in the REPL:
    parse it directly with `json.loads` (strip code fences defensively if present anyway).
    The child's ONLY job is classification -- it must never filter, count, or pair up users;
    that all happens later, in your own code.
+
+   Immediately after each `rlm_query()` call returns and you've parsed its JSON into
+   `child_output`, call `verify_child(chunk, child_output)` (available in your REPL; `chunk`
+   is that same list of (date, user_id, instance) tuples you just sent). Append the result to
+   a running list, e.g. `verification_log.append(verify_child(chunk, child_output))`, and
+   print a short summary for that chunk: the returned `pass` (True/False/None -- None means
+   this chunk couldn't resolve enough users to judge any pair, which is expected and NOT an
+   error), and if `pass` is False, its `fp`/`fn` pairs. This is purely observational: do NOT
+   change `child_output`, retry the call, or otherwise alter what you do with it based on the
+   verification result -- keep using the child's classifications exactly as returned, and
+   simply carry on to the next chunk.
 4. Collect every child's parsed JSON list and concatenate them into one list covering every
    entry in the dataset. Do NOT deduplicate or collapse per user yet -- keep one record per
    original entry. A user can have several instances, possibly with different labels, and
@@ -148,15 +194,19 @@ Follow this procedure in the REPL:
    Write plain Python code implementing exactly that predicate over `by_user`, then enumerate
    every valid pair of distinct users: no duplicate pairs, lower user id first within each
    pair, and the final list deduplicated and sorted (e.g. `sorted(set(pairs))`).
-6. Only after computing this final pair list, set `answer["content"]` to the pairs in the
+6. Before finalizing, print a one-line summary of `verification_log` (e.g. how many chunks
+   passed / failed / were inconclusive) so it's visible in your trajectory -- this is a
+   record only, not a gate: proceed to submit your answer regardless of what it says.
+7. Only after computing the final pair list, set `answer["content"]` to the pairs in the
    exact required format -- one pair per line, `(user_id_1, user_id_2)`, nothing else (or the
    single line `No valid pairs found.` if the list is empty) -- and set
    `answer["ready"] = True`.
 
 Important: recursive `rlm_query()` calls must ONLY perform semantic classification of the
 entries handed to them. They must never see the task question, and must never filter, count,
-compare dates, or return pairs -- all of that happens in your own REPL code in steps 4-6,
-over the merged mapping.
+compare dates, or return pairs -- all of that happens in your own REPL code in steps 4-5,
+over the merged mapping. `verify_child` is purely observational (step 3) -- it never changes
+what you do with a child's output.
 """
 
 
@@ -186,6 +236,22 @@ def run_example(
         max_iterations=max_iterations,
         logger=RLMLogger(log_dir=log_dir) if log_dir else None,
         verbose=verbose,
+        custom_tools={
+            "verify_child": {
+                "tool": _make_verify_child(row["gold_by_user"], row["task_id"]),
+                "description": (
+                    "verify_child(child_scope, child_output) -> dict. Deterministically "
+                    "checks a chunk's rlm_query() classification output against the real "
+                    "OOLONG ground truth, for whichever users that chunk fully resolves. "
+                    "child_scope: the list of (date, user_id, instance) tuples you sent to "
+                    "the child. child_output: the child's parsed JSON classification list. "
+                    "Returns tp/fp/fn (pairs), precision/recall/f1, and pass (True/False, or "
+                    "None if this chunk didn't resolve enough users to judge any pair -- "
+                    "expected and not an error). Observational only -- use it to log "
+                    "verification results, not to alter what you do with a child's output."
+                ),
+            },
+        },
     )
 
     try:

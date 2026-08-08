@@ -216,6 +216,9 @@ def generate_oolong_pairs(
                     "task_text": task_text,
                     "prompt": _build_prompt(entries, task_text),
                     "gold_pairs": compute_gold_pairs(task_id, by_user),
+                    # Ground truth, for grading and sub-verification only -- never put this
+                    # (or anything derived from it) into `prompt` / the RLM-visible context.
+                    "gold_by_user": by_user,
                     "context_len": window["context_len"],
                     "context_window_id": window["context_window_id"],
                     "num_entries": len(entries),
