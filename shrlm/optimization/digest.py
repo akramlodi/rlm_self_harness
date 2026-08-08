@@ -183,18 +183,20 @@ def render_child_table(root: CallNode, cfg: DigestConfig) -> tuple[str, int, boo
         return "## Sub-calls\n(none)", 0, False
 
     if len(children) > cfg.child_table_threshold:
-        # Tree-level rule: when no node in the tree carries a verdict, no
-        # sub-verifier ran, and the aggregate must say the statistic was never
-        # computed (n/a) rather than assert a 0 indistinguishable from "ran
-        # and all passed". Any verdict set anywhere -- even all-passing --
-        # keeps every depth's count numeric.
-        any_verdicts = any(node.sub_verdict is not None for node in children)
         by_depth: dict[int, list[CallNode]] = {}
         for node in children:
             by_depth.setdefault(node.depth, []).append(node)
         lines = [f"## Sub-calls ({len(children)} total, aggregated by depth)"]
         for depth in sorted(by_depth):
             group = by_depth[depth]
+            # Per-depth rule: a depth group whose children ALL carry
+            # sub_verdict None had no sub-verifier statistic computed over
+            # it, so its aggregate must say so (n/a) rather than assert a 0
+            # indistinguishable from "ran and all passed". Any verdict at
+            # the depth -- even all-passing -- keeps that depth's count
+            # numeric. A tree with no verdicts anywhere renders n/a at every
+            # depth, which subsumes the old tree-level rule.
+            any_verdicts = any(node.sub_verdict is not None for node in group)
             failed = sum(1 for node in group if node.sub_verdict is False)
             lines.append(
                 f"depth {depth}: n={len(group)} "

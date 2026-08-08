@@ -47,7 +47,6 @@ verifier, so the mined round is exactly the round the manifest describes.
 import hashlib
 import json
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,6 +60,7 @@ from rlm.utils.exceptions import (
     TokenLimitExceededError,
 )
 from shrlm.harness_identity import harness_hash, write_harness_json
+from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import RunTraceLink, Verdict, Verifier
@@ -82,14 +82,6 @@ INSTANCES_FILE = "instances.jsonl"
 MANIFEST_FILE = "runs.jsonl"
 TRACES_DIR = "runs"
 DIGESTS_DIR = "digests"
-# The legacy prompt file name. New mines persist only content-addressed
-# ``attributor_prompt_<sha16>.txt`` files; this name survives for the audit's
-# fallback over rounds mined before prompt persistence was content-addressed.
-ATTRIBUTOR_PROMPT_FILE = "attributor_prompt.txt"
-
-# Instance ids become file names (and, in the audit, bundle labels become
-# directory names), so they must be filesystem-safe everywhere.
-FILESYSTEM_SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 # Credentials must come from the environment, never from backend_kwargs: the
 # kwargs are serialized into every trajectory's run_metadata, and the traces
@@ -126,11 +118,6 @@ class RoundConfig:
     max_depth: int | None = None
     max_budget: float | None = None
     max_timeout: float | None = None
-
-
-def round_dir(out_dir: Path | str, round_index: int) -> Path:
-    """The directory holding one round's artifacts: ``<out_dir>/round_NN``."""
-    return Path(out_dir) / f"round_{round_index:02d}"
 
 
 def run_id_for(instance_id: str, attempt: int) -> str:
@@ -542,8 +529,9 @@ def mine_round(
     and every rendered attributor system prompt variant lands in
     ``attributor_prompt_<sha16>.txt`` (content addressed by the rendered
     prompt's sha256, resolvable through the ``prompt_sha256`` each
-    attributions.jsonl entry carries; existing files are never rewritten, so
-    a later mining pass cannot invalidate an earlier bundle's prompt link).
+    attributions.jsonl entry carries; existing files with matching bytes are
+    never rewritten, so a later mining pass cannot invalidate an earlier
+    bundle's prompt link, while mismatched bytes are healed atomically).
 
     Provenance flows from the round's artifacts into the bundle: every
     failure record is stamped with its manifest run_id / trace_path /
@@ -580,32 +568,51 @@ def mine_round(
     return result
 
 
+def _write_content_addressed(target: Path, text: str) -> None:
+    """Write ``text`` to its content-addressed name: atomic and self-healing.
+
+    ``text`` is the file's whole identity -- the name is (derived from) the
+    sha256 of exactly these bytes -- so an existing file is trusted only after
+    its bytes are compared: matching bytes are left untouched (write-once for
+    intact artifacts, so an earlier bundle's audit link is never invalidated),
+    while anything else at the name (a truncated crash write, external
+    tampering) is healed by rewriting the known-correct bytes. The write goes
+    through a same-directory tmp file and ``os.replace``, so a crash mid-write
+    can never leave partial bytes at a content-addressed name.
+    """
+    data = text.encode("utf-8")
+    if target.exists() and target.read_bytes() == data:
+        return
+    tmp_path = target.with_name(target.name + ".tmp")
+    tmp_path.write_bytes(data)
+    os.replace(tmp_path, target)
+
+
 def _persist_mining_artifacts(path: Path, result: MiningResult) -> None:
     """Write the digests and rendered prompt(s) a mining pass was built on.
 
-    Both artifacts are persisted content-addressed and write-once: each digest
-    lands as ``digests/<digest_sha256>.txt`` and every rendered prompt variant
-    as ``attributor_prompt_<sha16>.txt`` (the first 16 hex digits of the prompt
-    sha256 it is keyed by), and a file already at its name is trusted as-is,
-    never rewritten. This is what lets one round be mined more than once --
-    e.g. the sub-verification ablation's grounded and ablated passes -- with
+    Both artifacts are persisted content-addressed: each digest lands as
+    ``digests/<digest_sha256>.txt`` and every rendered prompt variant as
+    ``attributor_prompt_<sha16>.txt`` (the first 16 hex digits of the prompt
+    sha256 it is keyed by). A file whose bytes already match its address is
+    never rewritten -- which is what lets one round be mined more than once,
+    e.g. the sub-verification ablation's grounded and ablated passes, with
     each pass adding its own variants and no pass ever invalidating the
-    ``attribution_prompt`` audit link of a bundle persisted earlier. Legacy
-    rounds that hold only the unsuffixed ``attributor_prompt.txt`` keep
-    resolving through the audit's fallback (see ``audit._resolve_prompt_file``).
+    ``attribution_prompt`` audit link of a bundle persisted earlier. A file
+    whose bytes do NOT match its address is healed rather than trusted (see
+    ``_write_content_addressed``): trusting it would leave the audit's hash
+    link permanently broken. Legacy rounds that hold only the unsuffixed
+    ``attributor_prompt.txt`` keep resolving through the audit's fallback
+    (see ``audit._resolve_prompt_file``).
     """
     if result.digest_texts:
         digests_dir = path / DIGESTS_DIR
         digests_dir.mkdir(parents=True, exist_ok=True)
         for sha, text in result.digest_texts.items():
-            digest_path = digests_dir / f"{sha}.txt"
-            if not digest_path.exists():
-                digest_path.write_text(text)
+            _write_content_addressed(digests_dir / f"{sha}.txt", text)
 
     for sha, text in result.attributor_prompts.items():
-        prompt_path = path / f"attributor_prompt_{sha[:16]}.txt"
-        if not prompt_path.exists():
-            prompt_path.write_text(text)
+        _write_content_addressed(path / f"attributor_prompt_{sha[:16]}.txt", text)
 
 
 __all__ = [

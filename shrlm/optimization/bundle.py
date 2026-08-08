@@ -13,7 +13,9 @@ prose mining itself composes (quoted model output is exempt; see
 import hashlib
 import json
 import os
+import re
 from datetime import datetime
+from pathlib import Path
 
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import (
@@ -44,6 +46,38 @@ PRESCRIPTION_MARKERS: tuple[str, ...] = (
 BUNDLE_FILENAME = "bundle.json"
 RECORDS_FILENAME = "records.jsonl"
 ATTRIBUTIONS_FILENAME = "attributions.jsonl"
+
+# Instance ids become file names (and bundle labels become directory names),
+# so they must be filesystem-safe everywhere.
+FILESYSTEM_SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+# Where labeled secondary bundles live under a round: round_NN/bundles/<label>/.
+BUNDLES_DIR = "bundles"
+
+
+def round_dir(out_dir: Path | str, round_index: int) -> Path:
+    """The directory holding one round's artifacts: ``<out_dir>/round_NN``."""
+    return Path(out_dir) / f"round_{round_index:02d}"
+
+
+def bundle_dir_for(round_path: Path, bundle_label: str | None) -> Path:
+    """Resolve where a round's bundle triplet lives.
+
+    ``None`` is the round root -- exactly the legacy single-bundle layout.
+    A label names a secondary bundle under ``round_NN/bundles/<label>/``,
+    which is how two modes of the sub-verification ablation coexist in one
+    round: only the triplet (``bundle.json``, ``records.jsonl``,
+    ``attributions.jsonl``) lives there, every shared artifact stays at the
+    round root.
+    """
+    if bundle_label is None:
+        return round_path
+    if not FILESYSTEM_SAFE_ID_PATTERN.fullmatch(bundle_label):
+        raise ValueError(
+            f"bundle label {bundle_label!r} is not filesystem-safe; labels become "
+            f"directory names and must match {FILESYSTEM_SAFE_ID_PATTERN.pattern}"
+        )
+    return round_path / BUNDLES_DIR / bundle_label
 
 
 def compute_bundle_id(config: MiningConfig, records: list[FailureRecord]) -> str:
@@ -204,9 +238,7 @@ def write_bundle(
     audited, so it must be an operator's stated intent, never a default.
     """
     destination = (
-        bundle_dir
-        if bundle_dir is not None
-        else os.path.join(out_dir, f"round_{bundle.config.round_index:02d}")
+        bundle_dir if bundle_dir is not None else str(round_dir(out_dir, bundle.config.round_index))
     )
     os.makedirs(destination, exist_ok=True)
 

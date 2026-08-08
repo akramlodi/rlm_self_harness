@@ -43,6 +43,7 @@ from tests.optimization.test_driver import (
     make_instances,
     make_miner,
     make_round_config,
+    run_dual_mined_round,
 )
 
 Mutator = Callable[[Path, MiningResult], None]
@@ -514,32 +515,27 @@ class TestLabeledBundleDestinations:
         """One MockLM round mined twice: ungrounded at the round root,
         grounded (stub sub-verifier) into ``bundles/grounded/``, sharing one
         round-root-relative attribution cache."""
-        factory = ClientFactory(full_script())
-        monkeypatch.setattr(rlm_module, "get_client", factory)
-        config = make_round_config(tmp_path)
         cache_path = tmp_path / "caches" / "attribution.jsonl"
-
-        result_root, report_root = run_audited_round(
-            config,
-            make_miner(BoomVerifier(), cache=AttributionCache(path=str(cache_path))),
-            split_id="held_in_v1",
-            created_at="2026-01-01T00:00:00",
-        )
-        idle = ClientFactory([])
-        monkeypatch.setattr(rlm_module, "get_client", idle)
-        result_sub, report_sub = run_audited_round(
-            make_round_config(tmp_path),
-            make_miner(
+        outcome = run_dual_mined_round(
+            monkeypatch,
+            script=full_script(),
+            first_config=make_round_config(tmp_path),
+            first_miner=make_miner(BoomVerifier(), cache=AttributionCache(path=str(cache_path))),
+            second_config=make_round_config(tmp_path),
+            second_miner_factory=lambda: make_miner(
                 BoomVerifier(),
                 sub_verifier=NoneSubVerifier(),
                 cache=AttributionCache(path=str(cache_path)),
             ),
-            split_id="held_in_v1",
-            created_at="2026-02-02T00:00:00",
-            bundle_label="grounded",
+            second_label="grounded",
         )
-        assert idle.total_calls == 0
-        return round_dir(tmp_path, 1), result_root, report_root, result_sub, report_sub
+        return (
+            round_dir(tmp_path, 1),
+            outcome.first_result,
+            outcome.first_report,
+            outcome.second_result,
+            outcome.second_report,
+        )
 
     def test_both_bundles_coexist_and_audit_clean(self, dual):
         round_path, result_root, report_root, result_sub, report_sub = dual
@@ -640,6 +636,17 @@ class TestCli:
         out = capsys.readouterr().out
         assert exit_code == 1
         assert "record_trace" in out
+
+    def test_bad_bundle_label_exits_two_with_a_one_line_error(self, audited, capsys):
+        """An unsafe --bundle-label is an operator error: one line on stderr
+        and exit code 2, never a raw ValueError traceback."""
+        round_path, _, _ = audited
+        exit_code = main([str(round_path.parent), "1", "--bundle-label", ".hidden"])
+        captured = capsys.readouterr()
+        assert exit_code == 2
+        assert "not filesystem-safe" in captured.err
+        assert len(captured.err.strip().splitlines()) == 1
+        assert "Traceback" not in captured.err + captured.out
 
 
 if __name__ == "__main__":

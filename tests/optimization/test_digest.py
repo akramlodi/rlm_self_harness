@@ -7,8 +7,8 @@ sha256 is what makes the attribution cache meaningful.
 """
 
 import hashlib
+import json
 
-import shrlm.optimization.digest as digest_module
 from shrlm.optimization.attribution import LLMAttributor
 from shrlm.optimization.digest import (
     DIGEST_VERSION,
@@ -206,12 +206,32 @@ class TestAggregateVerdictHonesty:
 
     def test_mixed_verdicts_render_the_failure_count(self):
         # Two failures among a mix of passes and uncheckable Nones: any
-        # verdict set on the tree keeps the count numeric (tree-level rule),
-        # and only explicit False verdicts are counted as failures.
+        # verdict set at a depth keeps that depth's count numeric (per-depth
+        # rule), and only explicit False verdicts are counted as failures.
         verdicts: list[bool | None] = [False, False, None] + [True] * 38
         digest = digest_of_tree(wide_tree(sub_verdicts=verdicts))
         assert "sub_verifier_failed=2" in digest.text
         assert "sub_verifier_failed=n/a" not in digest.text
+
+    def test_mixed_depths_render_na_only_for_the_all_none_depth(self):
+        # The rule is per-depth, not tree-level: depth 1 carries verdicts
+        # (one explicit failure), so its line counts numerically, while the
+        # depth-2 grandchildren are all sub_verdict None -- no sub-verifier
+        # statistic was ever computed there, so that line must say n/a
+        # rather than borrow depth 1's "verdicts exist" and fabricate a 0.
+        root = wide_tree(sub_verdicts=[False] + [True] * 40)
+        root.children[0].children = [
+            call_node(f"r/i0/b0/c0/g{i}", prompt=f"deep {i}", response=f"deep answer {i}", depth=2)
+            for i in range(3)
+        ]
+        digest = digest_of_tree(root)
+        depth_lines = {
+            line.split(":")[0]: line
+            for line in digest.text.splitlines()
+            if line.startswith("depth ")
+        }
+        assert "sub_verifier_failed=1" in depth_lines["depth 1"]
+        assert "sub_verifier_failed=n/a" in depth_lines["depth 2"]
 
     def test_ablated_and_all_passing_digests_have_different_shas(self):
         # The n/a rendering is what separates "never ran" from "ran and all
@@ -240,17 +260,24 @@ class TestDigestVersion:
     def test_version_bumped_for_the_na_rendering(self):
         assert DIGEST_VERSION == "1.1.0"
 
-    def test_attribution_cache_key_does_not_include_digest_version(self, monkeypatch):
+    def test_attribution_cache_key_does_not_include_digest_version(self):
         # DIGEST_VERSION reaches bundle ids via MiningConfig.digest_version
-        # only; it is deliberately NOT part of the attribution cache key
-        # (attribution.config_sha256 hashes model, sampling_args, max_attempts,
-        # prompt_version, taxonomy_version, validator_version). Invalidation
-        # rides on digest bytes instead, so a version bump alone must leave
-        # the cache key of an unchanged digest object untouched.
+        # only; it is deliberately NOT part of the attribution cache key.
+        # Asserted on the hashed material itself (not on a monkeypatched
+        # module attribute, which a from-import would dodge): config_sha256
+        # hashes exactly this key set, and no digest_version is among them,
+        # so no bump -- however imported -- can reach the key. Invalidation
+        # rides on digest bytes instead.
         attributor = LLMAttributor(MockLM())
-        digest = digest_of_nested_run()
-        key_before = attributor.cache_key(digest, grounded=False, attempt=0)
-        config_before = attributor.config_sha256()
-        monkeypatch.setattr(digest_module, "DIGEST_VERSION", "999.0.0")
-        assert attributor.cache_key(digest, grounded=False, attempt=0) == key_before
-        assert attributor.config_sha256() == config_before
+        material = attributor.config_material()
+        assert set(material) == {
+            "model",
+            "sampling_args",
+            "max_attempts",
+            "prompt_version",
+            "taxonomy_version",
+            "validator_version",
+        }
+        # And the material really is what the sha is computed over.
+        payload = json.dumps(material, sort_keys=True, default=str)
+        assert attributor.config_sha256() == hashlib.sha256(payload.encode("utf-8")).hexdigest()

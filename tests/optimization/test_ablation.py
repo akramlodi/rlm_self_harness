@@ -34,19 +34,19 @@ from typing import Any
 
 import pytest
 
-import rlm.core.rlm as rlm_module
 from shrlm.optimization.attribution import AttributionCache
-from shrlm.optimization.audit import AuditReport, audit_round, bundle_dir_for, run_audited_round
+from shrlm.optimization.audit import AuditReport, audit_round, bundle_dir_for
 from shrlm.optimization.driver import round_dir
 from shrlm.optimization.mining import MiningResult
 from shrlm.optimization.taxonomy import FailingLevel
 from tests.mock_lm import MockLM
 from tests.optimization.test_driver import (
+    CANNED_ATTRIBUTION,
     BoomVerifier,
-    ClientFactory,
     final,
     make_miner,
     make_round_config,
+    run_dual_mined_round,
 )
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,9 @@ class MixedSubVerifier:
 
 # The attributor responses. The grounded variant must NOT carry failing_level
 # (validate() never reads it there; the level is the sub-verifier's fact) and
-# the ungrounded variant MUST carry it (validate() rejects its absence).
+# the ungrounded variant MUST carry it (validate() rejects its absence) --
+# CANNED_ATTRIBUTION, the driver tests' canned ungrounded response, serves as
+# the latter.
 GROUNDED_ATTRIBUTION = (
     "```json\n"
     + json.dumps(
@@ -117,20 +119,6 @@ GROUNDED_ATTRIBUTION = (
             "agent_mechanism": "lossy_aggregation",
             "evidence_node_ids": ["r"],
             "symptom_summary": "a sub-call returned a wrong local result",
-        }
-    )
-    + "\n```"
-)
-
-UNGROUNDED_ATTRIBUTION = (
-    "```json\n"
-    + json.dumps(
-        {
-            "causal_status": "causal",
-            "agent_mechanism": "lossy_aggregation",
-            "failing_level": "root",
-            "evidence_node_ids": ["r"],
-            "symptom_summary": "the merge step dropped a sub-result",
         }
     )
     + "\n```"
@@ -180,54 +168,45 @@ def ablation(tmp_path_factory: pytest.TempPathFactory) -> AblationRound:
     """
     tmp_path = tmp_path_factory.mktemp("ablation")
     with pytest.MonkeyPatch.context() as monkeypatch:
-        factory = ClientFactory(ablation_script())
-        monkeypatch.setattr(rlm_module, "get_client", factory)
         config = make_round_config(
             tmp_path, instances=ablation_instances(), max_budget=None, max_iterations=3
         )
         round_path = round_dir(tmp_path, config.round_index)
         cache_file = round_path / "attribution_cache.jsonl"
 
-        # Grounded pass: mines from the fresh round, pays both attribution calls.
+        # Grounded pass first: mines from the fresh round, pays both
+        # attribution calls. The ablated pass may then call out only for the
+        # record whose digest bytes actually changed with the mode.
         grounded_miner = make_miner(
             BoomVerifier(),
-            responses=[GROUNDED_ATTRIBUTION, UNGROUNDED_ATTRIBUTION],
+            responses=[GROUNDED_ATTRIBUTION, CANNED_ATTRIBUTION],
             sub_verifier=MixedSubVerifier(),
             cache=AttributionCache(path=str(cache_file)),
         )
-        grounded_lm = grounded_miner.attributor.lm
-        result_grounded, report_grounded = run_audited_round(
-            config, grounded_miner, split_id="held_in_v1", created_at="2026-01-01T00:00:00"
+        outcome = run_dual_mined_round(
+            monkeypatch,
+            script=ablation_script(),
+            first_config=config,
+            first_miner=grounded_miner,
+            second_config=make_round_config(
+                tmp_path, instances=ablation_instances(), max_budget=None
+            ),
+            second_miner_factory=lambda: make_miner(
+                BoomVerifier(),
+                responses=[CANNED_ATTRIBUTION],
+                cache=AttributionCache(path=str(cache_file)),
+            ),
+            second_label="ablated",
         )
-
-        # Ablated pass: the persisted round is complete, so the runtime seam must
-        # stay silent; only the attributor may call out, and only for the record
-        # whose digest bytes actually changed with the mode.
-        idle = ClientFactory([])
-        monkeypatch.setattr(rlm_module, "get_client", idle)
-        ablated_miner = make_miner(
-            BoomVerifier(),
-            responses=[UNGROUNDED_ATTRIBUTION],
-            cache=AttributionCache(path=str(cache_file)),
-        )
-        ablated_lm = ablated_miner.attributor.lm
-        result_ablated, report_ablated = run_audited_round(
-            make_round_config(tmp_path, instances=ablation_instances(), max_budget=None),
-            ablated_miner,
-            split_id="held_in_v1",
-            created_at="2026-02-02T00:00:00",
-            bundle_label="ablated",
-        )
-        assert idle.total_calls == 0
 
     return AblationRound(
         round_path=round_path,
-        grounded_lm=grounded_lm,
-        ablated_lm=ablated_lm,
-        result_grounded=result_grounded,
-        report_grounded=report_grounded,
-        result_ablated=result_ablated,
-        report_ablated=report_ablated,
+        grounded_lm=grounded_miner.attributor.lm,
+        ablated_lm=outcome.second_miner.attributor.lm,
+        result_grounded=outcome.first_result,
+        report_grounded=outcome.first_report,
+        result_ablated=outcome.second_result,
+        report_ablated=outcome.second_report,
     )
 
 

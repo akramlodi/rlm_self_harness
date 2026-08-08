@@ -73,6 +73,7 @@ by side, each auditable against the same shared round artifacts.
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -81,14 +82,14 @@ from shrlm.harness_identity import hash_of_serialization
 from shrlm.optimization.bundle import (
     ATTRIBUTIONS_FILENAME,
     BUNDLE_FILENAME,
+    BUNDLES_DIR,
     RECORDS_FILENAME,
+    bundle_dir_for,
     compute_bundle_id,
     write_bundle,
 )
 from shrlm.optimization.driver import (
-    ATTRIBUTOR_PROMPT_FILE,
     DIGESTS_DIR,
-    FILESYSTEM_SAFE_ID_PATTERN,
     HARNESS_FILE,
     INSTANCES_FILE,
     MANIFEST_FILE,
@@ -127,29 +128,6 @@ LINK_ORDER: tuple[str, ...] = (
 )
 
 _TRANSPORT_ERROR_PREFIX = "transport failure"
-
-# Where labeled secondary bundles live under a round: round_NN/bundles/<label>/.
-BUNDLES_DIR = "bundles"
-
-
-def bundle_dir_for(round_path: Path, bundle_label: str | None) -> Path:
-    """Resolve where a round's bundle triplet lives.
-
-    ``None`` is the round root -- exactly the legacy single-bundle layout.
-    A label names a secondary bundle under ``round_NN/bundles/<label>/``,
-    which is how two modes of the sub-verification ablation coexist in one
-    round: only the triplet (``bundle.json``, ``records.jsonl``,
-    ``attributions.jsonl``) lives there, every shared artifact stays at the
-    round root.
-    """
-    if bundle_label is None:
-        return round_path
-    if not FILESYSTEM_SAFE_ID_PATTERN.fullmatch(bundle_label):
-        raise ValueError(
-            f"bundle label {bundle_label!r} is not filesystem-safe; labels become "
-            f"directory names and must match {FILESYSTEM_SAFE_ID_PATTERN.pattern}"
-        )
-    return round_path / BUNDLES_DIR / bundle_label
 
 
 @dataclass(frozen=True)
@@ -509,6 +487,13 @@ def _audit_bundle(
                     )
 
 
+# The legacy prompt file name. New mines persist only content-addressed
+# ``attributor_prompt_<sha16>.txt`` files; this name survives for the
+# fallback in ``_resolve_prompt_file`` over rounds mined before prompt
+# persistence was content-addressed.
+ATTRIBUTOR_PROMPT_FILE = "attributor_prompt.txt"
+
+
 def _resolve_prompt_file(path: Path, prompt_sha: str) -> Path | None:
     """Find the persisted prompt file whose bytes hash to ``prompt_sha``.
 
@@ -846,7 +831,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    report = audit_round(args.out_dir, args.round_index, bundle_label=args.bundle_label)
+    try:
+        report = audit_round(args.out_dir, args.round_index, bundle_label=args.bundle_label)
+    except ValueError as error:
+        # A malformed --bundle-label (bundle_dir_for's validation) is an
+        # operator error, not a broken evidence chain: one line, exit 2.
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     print(_format_report(report))
     return 0 if report.ok else 1
 
@@ -856,6 +847,7 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "BUNDLES_DIR",
     "AuditReport",
     "AuditStats",
     "BrokenLink",
