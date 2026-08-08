@@ -70,7 +70,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from shrlm.harness_identity import canonical_json_sha256
+from shrlm.harness_identity import hash_of_serialization
 from shrlm.optimization.bundle import (
     ATTRIBUTIONS_FILENAME,
     BUNDLE_FILENAME,
@@ -228,14 +228,13 @@ def _is_transport_record(record: dict[str, Any]) -> bool:
 def stored_harness_hash(envelope: dict[str, Any]) -> str:
     """Recompute the harness hash from the envelope's *stored* serialization.
 
-    Mirrors ``shrlm.harness_identity.harness_hash`` -- the same
-    ``canonical_json_sha256`` over the serialization minus the informational
-    ``name`` -- but operates on the persisted dict, so the audit needs no live
-    ``Harness`` object.
+    The audit-side entrypoint for hashing a persisted envelope dict: it needs
+    no live ``Harness`` object. Delegates to
+    ``shrlm.harness_identity.hash_of_serialization`` (canonical JSON sha256
+    over the serialization minus the informational ``name``), so the audit can
+    never drift from the hash that minted the envelope.
     """
-    material = dict(envelope["harness"])
-    material.pop("name", None)
-    return canonical_json_sha256(material)
+    return hash_of_serialization(envelope["harness"])
 
 
 # ---------------------------------------------------------------------------

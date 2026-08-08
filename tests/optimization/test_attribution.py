@@ -267,6 +267,17 @@ class TestTransportResilience:
         assert lm._call_count == 3
         assert result.signature is not None
 
+    def test_deterministic_client_bug_propagates_immediately_without_retry(self):
+        # A TypeError out of the client is a programming error, not a flaky
+        # wire: it must surface as itself, after exactly one call.
+        lm = RecordingLM([TypeError("completion() got an unexpected keyword argument")])
+        attributor = LLMAttributor(lm, config=FAST_CONFIG)
+        digest, root, verdict = attribution_inputs()
+
+        with pytest.raises(TypeError, match="unexpected keyword"):
+            attributor.attribute(digest, root, verdict, UNGROUNDED)
+        assert lm._call_count == 1
+
     def test_persistent_failure_raises_a_transport_error_not_a_rejection(self):
         lm = RecordingLM([ConnectionError("reset")] * 3)
         attributor = LLMAttributor(lm, config=FAST_CONFIG)
@@ -301,6 +312,16 @@ class TestTransportResilience:
         ]
         assert "ConnectionError" in result.errors[0]["error"]
         assert result.bundle.totals.n_unattributed == 1
+
+
+class TestAttributorConfigValidation:
+    def test_zero_transport_retries_is_rejected_at_construction(self):
+        with pytest.raises(ValueError, match="transport_retries must be >= 1"):
+            AttributorConfig(transport_retries=0)
+
+    def test_negative_transport_backoff_is_rejected_at_construction(self):
+        with pytest.raises(ValueError, match="transport_backoff_seconds must be >= 0"):
+            AttributorConfig(transport_backoff_seconds=-0.5)
 
 
 class TestMiningAuditSurfaces:

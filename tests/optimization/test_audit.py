@@ -21,8 +21,15 @@ from pathlib import Path
 import pytest
 
 import rlm.core.rlm as rlm_module
+from shrlm.harness_identity import hash_of_serialization
 from shrlm.optimization.attribution import AttributionCache, AttributorConfig, LLMAttributor
-from shrlm.optimization.audit import AuditReport, audit_round, main, run_audited_round
+from shrlm.optimization.audit import (
+    AuditReport,
+    audit_round,
+    main,
+    run_audited_round,
+    stored_harness_hash,
+)
 from shrlm.optimization.driver import round_dir
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from tests.mock_lm import MockLM
@@ -79,6 +86,15 @@ class TestHappyPath:
         round_path, _, _ = audited
         report = audit_round(round_path.parent, 1)
         assert report.ok
+
+    def test_stored_harness_hash_delegates_to_hash_of_serialization(self):
+        # The audit-side entrypoint must agree byte-for-byte with the
+        # canonical hasher that minted the envelope, name field ignored.
+        serialization = {"name": "informational", "orchestrator": True, "surfaces": {"S1": "x"}}
+        envelope = {"harness": serialization}
+        assert stored_harness_hash(envelope) == hash_of_serialization(serialization)
+        renamed = {"harness": {**serialization, "name": "renamed"}}
+        assert stored_harness_hash(renamed) == stored_harness_hash(envelope)
 
     def test_every_named_link_is_reported(self, audited):
         _, _, report = audited

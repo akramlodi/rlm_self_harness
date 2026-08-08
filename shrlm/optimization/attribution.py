@@ -53,6 +53,16 @@ DEFAULT_TRANSPORT_BACKOFF_SECONDS = 0.5
 
 JSON_BLOCK_PATTERN = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
+# Exceptions the transport retry loop must NOT swallow. These are
+# deterministic programming/contract errors -- a client called with the wrong
+# arguments, a missing attribute, a malformed message dict -- so retrying them
+# re-runs the same bug and reclassifying them as transport failures hides it.
+# Network/SDK transport errors are heterogeneous across providers, so an
+# allowlist of retryable exception names would be brittle; this small denylist
+# of definitely-deterministic types is the safer cut: everything else is
+# treated as plausibly transient and retried.
+NON_TRANSPORT_ERRORS = (TypeError, AttributeError, KeyError, ValueError)
+
 ATTRIBUTOR_SYSTEM_PROMPT = """\
 You are analyzing one failed run of a recursive language model, in order to \
 describe *why* it failed in terms that generalize across runs.
@@ -182,6 +192,17 @@ class AttributorConfig:
     taxonomy_version: str = TAXONOMY_VERSION
     transport_retries: int = DEFAULT_TRANSPORT_RETRIES
     transport_backoff_seconds: float = DEFAULT_TRANSPORT_BACKOFF_SECONDS
+
+    def __post_init__(self) -> None:
+        if self.transport_retries < 1:
+            raise ValueError(
+                f"transport_retries must be >= 1 (at least one LM call), "
+                f"got {self.transport_retries}"
+            )
+        if self.transport_backoff_seconds < 0:
+            raise ValueError(
+                f"transport_backoff_seconds must be >= 0, got {self.transport_backoff_seconds}"
+            )
 
 
 @dataclass
@@ -336,16 +357,20 @@ class LLMAttributor:
     ) -> str:
         """Call the LM, retrying transient failures with exponential backoff.
 
-        Any non-AttributionRejection exception from the client -- network
-        resets, 429s, 5xx errors -- is treated as transient. After the
-        configured retries the failure is converted to AttributionTransportError
-        carrying the audit trail so far, so the caller can checkpoint instead
-        of losing the round.
+        Exceptions from the client -- network resets, 429s, 5xx errors -- are
+        treated as transient, except the deterministic programming-error types
+        in ``NON_TRANSPORT_ERRORS``, which propagate immediately: those signal
+        a bug in the caller or client, not a flaky wire. After the configured
+        retries the failure is converted to AttributionTransportError carrying
+        the audit trail so far, so the caller can checkpoint instead of losing
+        the round.
         """
         last_error: Exception | None = None
         for retry in range(self.config.transport_retries):
             try:
                 return self.lm.completion(messages)
+            except NON_TRANSPORT_ERRORS:
+                raise
             except Exception as exc:
                 last_error = exc
                 if retry + 1 < self.config.transport_retries:
