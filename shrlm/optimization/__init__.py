@@ -7,11 +7,14 @@ Self-Harness stages; it deliberately stops short of proposing harness edits.
 """
 
 from shrlm.optimization.taxonomy import (
+    SURFACE_NAME,
+    SURFACE_REACH,
     TAXONOMY_VERSION,
     AgentMechanism,
     CausalStatus,
     EditableSurface,
     FailingLevel,
+    SurfaceReach,
     VerifierCause,
 )
 from shrlm.optimization.types import (
@@ -33,6 +36,9 @@ __all__ = [
     "CallNode",
     "CausalStatus",
     "EditableSurface",
+    "SURFACE_NAME",
+    "SURFACE_REACH",
+    "SurfaceReach",
     "EvidenceBundle",
     "FailingLevel",
     "FailurePattern",

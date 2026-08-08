@@ -6,7 +6,8 @@ It deliberately does not prescribe an edit: it separates verifier-level failure
 from agent-level mechanism so the proposer can target a reusable weakness
 rather than patch a coarse outcome. That property is enforced twice --
 structurally, because no field can hold an edit, and by a lint over the
-free-text fields.
+prose mining itself composes (quoted model output is exempt; see
+``assert_no_prescription``).
 """
 
 import hashlib
@@ -14,7 +15,10 @@ import json
 import os
 from datetime import datetime
 
+from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import (
+    KNOWN_SUBSTRATE_BIASES,
+    AttributionErrorKind,
     EvidenceBundle,
     FailurePattern,
     FailureRecord,
@@ -60,9 +64,26 @@ def compute_bundle_id(config: MiningConfig, records: list[FailureRecord]) -> str
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
+def _is_transport_error(record: FailureRecord) -> bool:
+    """Whether a record's attribution failed at the transport level.
+
+    Reads the typed ``attribution_error_kind`` mining stamps on the record,
+    falling back to the ``transport failure`` prefix of ``attribution_error``
+    for legacy records that predate the field.
+    """
+    if record.attribution_error_kind is not None:
+        return record.attribution_error_kind is AttributionErrorKind.TRANSPORT
+    return record.attribution_error.startswith("transport failure")
+
+
 def build_integrity_report(
     records: list[FailureRecord], digest_coverages: list[float]
 ) -> IntegrityReport:
+    """A pure function of the records: every count is recomputable from
+    records.jsonl. Transport failures are recognized by the typed
+    ``attribution_error_kind`` mining stamps on each record (with a legacy
+    prefix fallback; see ``_is_transport_error``), which keeps the count
+    derivable from the records rather than from process state."""
     return IntegrityReport(
         total_suspected_lost_subcalls=sum(
             record.stats.suspected_lost_subcalls for record in records
@@ -77,6 +98,13 @@ def build_integrity_report(
         mean_digest_coverage=(
             sum(digest_coverages) / len(digest_coverages) if digest_coverages else 1.0
         ),
+        n_unattributed=sum(1 for record in records if record.attribution_failed),
+        n_ungrounded=sum(1 for record in records if not record.level_grounded),
+        n_resource_terminated=sum(
+            1 for record in records if record.verdict.cause is VerifierCause.RESOURCE_TERMINATED
+        ),
+        n_transport_errors=sum(1 for record in records if _is_transport_error(record)),
+        known_substrate_biases=list(KNOWN_SUBSTRATE_BIASES),
     )
 
 
@@ -105,15 +133,22 @@ def build_evidence_bundle(
 
 def assert_no_prescription(bundle: EvidenceBundle) -> None:
     """
-    Reject a bundle whose free text recommends a change.
+    Reject a bundle whose mining-generated prose recommends a change.
 
     The separation between the evaluation system and the optimizer is a claim
     the paper makes about the method; this turns it into something the build
     can check.
+
+    Scope: only text mining itself composes is linted -- today that is
+    ``shared_symptoms``, the arithmetic statements over tree statistics.
+    Fields that quote model output verbatim are exempt: ``verifier_evidence``
+    embeds ``verdict.produced`` / ``verdict.gold``, so a wrong answer that
+    happens to contain "instead of" is evidence to preserve, not a
+    recommendation, and linting it would crash bundle emission on the model's
+    own words.
     """
     for pattern in bundle.patterns:
-        fields = [*pattern.shared_symptoms, *pattern.verifier_evidence]
-        for text in fields:
+        for text in pattern.shared_symptoms:
             lowered = text.lower()
             for marker in PRESCRIPTION_MARKERS:
                 if marker in lowered:
@@ -128,21 +163,77 @@ def write_bundle(
     records: list[FailureRecord],
     out_dir: str,
     raw_attributions: list[dict] | None = None,
+    overwrite: bool = False,
 ) -> str:
     """
-    Write the round's artifacts.
+    Write the round's artifacts, refusing to clobber audited evidence.
 
     The bundle is pretty-printed because it is read by a person and diffed
     across rounds; the records and raw responses are JSONL because they are
-    streamed and appended.
+    streamed and appended. ``bundle.json`` is written atomically (to a
+    same-directory ``.tmp`` file, then ``os.replace``), so a crash mid-write
+    can never leave a truncated bundle behind.
+
+    An existing ``bundle.json`` in the round directory is overwritten only
+    when the new content is byte-identical (an idempotent re-write). A
+    different bundle_id means a different round was already persisted here;
+    the same id with different bytes means a re-mine diverged -- typically a
+    cold attribution cache resampling responses, or a new ``created_at``
+    timestamp (pass the recorded one to reproduce). Both cases raise instead
+    of silently replacing what may already have been audited, as does an
+    existing file that no longer parses as a bundle (corruption from outside
+    this writer).
+
+    ``overwrite=True`` skips the guard entirely and deliberately replaces
+    whatever ``bundle.json`` already holds -- the explicit escape hatch for a
+    poisoned round (e.g. a re-mine after an attributor outage produced
+    divergent content). It replaces evidence that may already have been
+    audited, so it must be an operator's stated intent, never a default.
     """
     round_dir = os.path.join(out_dir, f"round_{bundle.config.round_index:02d}")
     os.makedirs(round_dir, exist_ok=True)
 
     bundle_path = os.path.join(round_dir, BUNDLE_FILENAME)
-    with open(bundle_path, "w") as handle:
-        json.dump(bundle.to_dict(), handle, indent=2, sort_keys=True)
-        handle.write("\n")
+    payload = json.dumps(bundle.to_dict(), indent=2, sort_keys=True) + "\n"
+    if not overwrite and os.path.exists(bundle_path):
+        with open(bundle_path) as handle:
+            existing_text = handle.read()
+        try:
+            existing_payload = json.loads(existing_text)
+            existing_id = str(existing_payload["bundle_id"])
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise ValueError(
+                f"{bundle_path} exists but does not parse as a bundle "
+                f"({type(error).__name__}: {error}); the file is corrupt -- e.g. a "
+                "truncated or interrupted write. Delete the corrupt file (or pass "
+                "overwrite=True) to let a re-mine regenerate it."
+            ) from error
+        if existing_id != bundle.bundle_id:
+            raise ValueError(
+                f"{bundle_path} already holds bundle {existing_id}, which is not "
+                f"bundle {bundle.bundle_id}; refusing to overwrite one round's "
+                "evidence with another's."
+            )
+        if existing_text != payload:
+            timestamp_only = existing_payload == {
+                **bundle.to_dict(),
+                "created_at": existing_payload.get("created_at"),
+            }
+            reason = (
+                "only created_at differs; pass the recorded created_at to reproduce it"
+                if timestamp_only
+                else "a re-mine produced different content (e.g. a cold attribution cache)"
+            )
+            raise ValueError(
+                f"{bundle_path} already holds bundle {bundle.bundle_id} with different "
+                f"bytes -- the rewrite diverges from the persisted evidence ({reason}). "
+                "Refusing to replace audited evidence; pass overwrite=True to replace "
+                "it deliberately."
+            )
+    tmp_path = bundle_path + ".tmp"
+    with open(tmp_path, "w") as handle:
+        handle.write(payload)
+    os.replace(tmp_path, bundle_path)
 
     with open(os.path.join(round_dir, RECORDS_FILENAME), "w") as handle:
         for record in records:

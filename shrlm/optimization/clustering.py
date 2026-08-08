@@ -165,7 +165,8 @@ def select_representatives(records: list[FailureRecord], count: int) -> list[str
 def cluster_failures(
     records: list[FailureRecord], config: ClusteringConfig | None = None
 ) -> list[FailurePattern]:
-    """Group by exact signature agreement, then order by support and actionability."""
+    """Group by exact signature agreement, then order by distinct-instance
+    support and actionability (see ``rank_patterns``)."""
     config = config or ClusteringConfig()
 
     groups: dict[tuple[str, str, str, str], list[FailureRecord]] = {}
@@ -181,6 +182,7 @@ def cluster_failures(
             FailurePattern(
                 signature=signature,
                 support=len(members),
+                instance_support=len({record.instance_id for record in members}),
                 instance_ids=sorted(record.instance_id for record in members),
                 representatives=select_representatives(members, config.n_representatives),
                 shared_symptoms=shared_symptoms(members),
@@ -197,16 +199,18 @@ def cluster_failures(
 
 def rank_patterns(patterns: list[FailurePattern]) -> list[FailurePattern]:
     """
-    Order by support, then actionability, then signature.
+    Order by distinct-instance support, then actionability, then signature.
 
-    Lexicographic rather than a weighted blend of the two: the paper orders by
-    support *and* estimated actionability, and inventing an exchange rate
-    between frequency and tractability would be a modeling choice with no
-    grounding in the evidence.
+    ``instance_support`` rather than run-level ``support`` (KTD7/R2): repeated
+    failing attempts of one instance are corroboration, not breadth, and must
+    not outrank a pattern seen across distinct instances. Lexicographic rather
+    than a weighted blend: the paper orders by support *and* estimated
+    actionability, and inventing an exchange rate between frequency and
+    tractability would be a modeling choice with no grounding in the evidence.
     """
     return sorted(
         patterns,
-        key=lambda p: (-p.support, -p.actionability, p.signature.key()),
+        key=lambda p: (-p.instance_support, -p.actionability, p.signature.key()),
     )
 
 
@@ -216,7 +220,7 @@ def compute_marginals(records: list[FailureRecord]) -> dict[str, dict[str, int]]
 
     The full four-tuple space is large relative to a round's failure count, so
     most clusters will be small. These marginals are the principled backoff:
-    the by-surface view in particular has six buckets and is directly
+    the by-surface view in particular has nine buckets and is directly
     consumable by a proposal stage that must target one surface anyway.
     """
     usable = attributed(records)
