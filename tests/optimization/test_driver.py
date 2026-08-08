@@ -194,9 +194,26 @@ CANNED_ATTRIBUTION = (
 )
 
 
-def make_miner(verifier: Any, responses: list[str] | None = None) -> WeaknessMiner:
+class NoneSubVerifier:
+    """A sub-verifier stub for which no child is checkable (always None).
+
+    Over the narrow MockLM trees the driver tests produce (root only, no
+    sub-calls), ``derive_failing_level`` returns NO_RECURSION, so every record
+    is grounded and the attributor renders the grounded prompt variant -- a
+    second, distinct variant for the very same persisted round.
+    """
+
+    def __call__(self, instance: dict[str, Any], node: Any) -> bool | None:
+        return None
+
+
+def make_miner(
+    verifier: Any,
+    responses: list[str] | None = None,
+    sub_verifier: Any = None,
+) -> WeaknessMiner:
     lm = MockLM(responses=responses if responses is not None else [CANNED_ATTRIBUTION] * 8)
-    return WeaknessMiner(verifier=verifier, attributor=LLMAttributor(lm))
+    return WeaknessMiner(verifier=verifier, attributor=LLMAttributor(lm), sub_verifier=sub_verifier)
 
 
 def read_manifest(round_path: Path) -> list[dict[str, Any]]:
@@ -518,12 +535,17 @@ class TestMineRound:
             miner=miner,
             split_id="held_in_v1",
         )
-        prompt_path = round_dir(config.out_dir, config.round_index) / "attributor_prompt.txt"
+        # No sub-verifier, narrow trees: the single ungrounded, non-aggregate
+        # variant, persisted under its content-addressed (sha-suffixed) name.
+        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
+        round_path = round_dir(config.out_dir, config.round_index)
+        prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
         assert prompt_path.is_file()
-        # No sub-verifier, narrow trees: the single ungrounded, non-aggregate variant.
         assert prompt_path.read_text() == miner.attributor.system_prompt(
             grounded=False, no_subcalls=True
         )
+        # The legacy unsuffixed name is never written by new mines.
+        assert not (round_path / "attributor_prompt.txt").exists()
 
     def test_every_record_links_to_its_persisted_trace(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)
@@ -664,6 +686,62 @@ class TestMineRound:
                 miner=make_miner(BoomVerifier()),
                 split_id="held_in_v1",
             )
+
+
+# ---------------------------------------------------------------------------
+# Content-addressed prompt persistence: a re-mine never clobbers a variant
+# ---------------------------------------------------------------------------
+
+
+class TestPromptPersistence:
+    def test_remine_with_a_different_variant_leaves_both_prompt_files(self, tmp_path, monkeypatch):
+        """Mining the same round twice with different prompt variants must
+        leave both files on disk, each content-addressed by its prompt sha."""
+        config = run_full_round(tmp_path, monkeypatch)
+        result_ungrounded = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier()),
+            split_id="held_in_v1",
+        )
+        result_grounded = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier(), sub_verifier=NoneSubVerifier()),
+            split_id="held_in_v1",
+        )
+
+        ungrounded_shas = set(result_ungrounded.attributor_prompts)
+        grounded_shas = set(result_grounded.attributor_prompts)
+        assert ungrounded_shas and grounded_shas
+        assert ungrounded_shas.isdisjoint(grounded_shas)
+
+        round_path = round_dir(config.out_dir, config.round_index)
+        all_prompts = {**result_ungrounded.attributor_prompts, **result_grounded.attributor_prompts}
+        for sha, text in all_prompts.items():
+            prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
+            assert prompt_path.is_file()
+            assert prompt_path.read_text() == text
+            assert hashlib.sha256(text.encode("utf-8")).hexdigest() == sha
+
+    def test_existing_prompt_file_is_never_rewritten(self, tmp_path, monkeypatch):
+        """Content-addressed means write-once: a file already at the sha-keyed
+        name is trusted as-is, never rewritten."""
+        config = run_full_round(tmp_path, monkeypatch)
+        miner = make_miner(BoomVerifier())
+        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
+        round_path = round_dir(config.out_dir, config.round_index)
+        sentinel_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
+        sentinel_path.write_text("sentinel: pre-existing bytes")
+
+        mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=miner,
+            split_id="held_in_v1",
+        )
+
+        assert sentinel_path.read_text() == "sentinel: pre-existing bytes"
 
 
 if __name__ == "__main__":

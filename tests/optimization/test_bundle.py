@@ -291,6 +291,76 @@ class TestNonClobberingWrites:
         assert list(bundle_path.parent.glob("*.tmp")) == []
 
 
+class TestBundleDestination:
+    def make_other_bundle(self) -> tuple[EvidenceBundle, list[FailureRecord]]:
+        """A second bundle over the same round with a different config, as the
+        sub-verification ablation produces (only the mode flag differs)."""
+        records = make_records()
+        bundle = build_evidence_bundle(
+            config=make_config(sub_verifier_enabled=False),
+            records=records,
+            patterns=cluster_failures(records),
+            marginals=compute_marginals(records),
+            totals=make_totals(records),
+            digest_coverages=[0.8, 1.0],
+            created_at="2026-01-01T00:00:00",
+        )
+        return bundle, records
+
+    def test_bundle_dir_names_the_triplet_directory_directly(self, tmp_path: Path):
+        bundle, records = make_bundle()
+        destination = tmp_path / "round_03" / "bundles" / "ablated"
+        bundle_path = write_bundle(
+            bundle,
+            records,
+            str(tmp_path),
+            raw_attributions=[{"attempt": 1}],
+            bundle_dir=str(destination),
+        )
+        assert Path(bundle_path) == destination / "bundle.json"
+        assert (destination / "bundle.json").is_file()
+        assert (destination / "records.jsonl").is_file()
+        assert (destination / "attributions.jsonl").is_file()
+        # Nothing lands at the round root: the parameter bypasses the
+        # round_NN join entirely.
+        assert not (tmp_path / "round_03" / "bundle.json").exists()
+
+    def test_two_bundles_coexist_in_one_round(self, tmp_path: Path):
+        bundle, records = make_bundle(created_at="2026-01-01T00:00:00")
+        other, other_records = self.make_other_bundle()
+        assert other.bundle_id != bundle.bundle_id
+
+        write_bundle(bundle, records, str(tmp_path))
+        write_bundle(
+            other,
+            other_records,
+            str(tmp_path),
+            bundle_dir=str(tmp_path / "round_03" / "bundles" / "ablated"),
+        )
+
+        round_path = tmp_path / "round_03"
+        assert json.loads((round_path / "bundle.json").read_text()) == bundle.to_dict()
+        ablated = round_path / "bundles" / "ablated"
+        assert json.loads((ablated / "bundle.json").read_text()) == other.to_dict()
+
+    def test_non_clobber_guard_is_independent_per_destination(self, tmp_path: Path):
+        bundle, records = make_bundle(created_at="2026-01-01T00:00:00")
+        other, other_records = self.make_other_bundle()
+        ablated_dir = str(tmp_path / "round_03" / "bundles" / "ablated")
+        write_bundle(bundle, records, str(tmp_path))
+        write_bundle(other, other_records, str(tmp_path), bundle_dir=ablated_dir)
+
+        # The round root still refuses a different bundle...
+        with pytest.raises(ValueError, match="refusing to overwrite"):
+            write_bundle(other, other_records, str(tmp_path))
+        # ...and the subdirectory refuses one too, independently.
+        with pytest.raises(ValueError, match="refusing to overwrite"):
+            write_bundle(bundle, records, str(tmp_path), bundle_dir=ablated_dir)
+        # Byte-identical rewrites stay idempotent within each destination.
+        write_bundle(bundle, records, str(tmp_path))
+        write_bundle(other, other_records, str(tmp_path), bundle_dir=ablated_dir)
+
+
 class TestIntegrityReport:
     def test_counts_are_sums_over_the_records(self):
         records = [

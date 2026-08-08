@@ -30,12 +30,14 @@ from shrlm.optimization.audit import (
     run_audited_round,
     stored_harness_hash,
 )
-from shrlm.optimization.driver import round_dir
+from shrlm.optimization.driver import mine_round, round_dir
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from tests.mock_lm import MockLM
 from tests.optimization.test_driver import (
+    CANNED_ATTRIBUTION,
     BoomVerifier,
     ClientFactory,
+    NoneSubVerifier,
     final,
     full_script,
     make_instances,
@@ -142,7 +144,8 @@ def _delete_harness_json(round_path: Path, result: MiningResult) -> None:
 
 
 def _delete_attributor_prompt(round_path: Path, result: MiningResult) -> None:
-    (round_path / "attributor_prompt.txt").unlink()
+    for prompt_file in round_path.glob("attributor_prompt*.txt"):
+        prompt_file.unlink()
 
 
 def _delete_bundle_json(round_path: Path, result: MiningResult) -> None:
@@ -460,6 +463,164 @@ class TestPipelineSeams:
         assert report.ok
         assert result.bundle.config.attribution_cache_path is None
         assert not cache_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Content-addressed prompts: a re-mine never invalidates an earlier audit
+# ---------------------------------------------------------------------------
+
+
+class TestPromptPersistenceAcrossMines:
+    def test_a_second_mining_pass_keeps_the_first_bundles_prompt_link(self, audited):
+        """The U2 regression: re-mining the same round with a different prompt
+        variant (here grounded, via a stub sub-verifier over trees with no
+        sub-calls) must not clobber the prompt file the first bundle's
+        attributions.jsonl entries hash-link to."""
+        round_path, _, first_report = audited
+        assert first_report.ok
+
+        mine_round(
+            out_dir=round_path.parent,
+            round_index=1,
+            miner=make_miner(BoomVerifier(), sub_verifier=NoneSubVerifier()),
+            split_id="held_in_v1",
+        )
+
+        report = audit_round(round_path.parent, 1)
+        assert "attribution_prompt" not in report.broken_link_names()
+        assert report.ok
+
+    def test_legacy_round_with_only_the_unsuffixed_prompt_still_resolves(self, audited):
+        """Rounds mined before content-addressing persisted one plain
+        attributor_prompt.txt; the resolver's fallback must keep them clean."""
+        round_path, result, _ = audited
+        assert len(result.attributor_prompts) == 1
+        sha, text = next(iter(result.attributor_prompts.items()))
+        (round_path / f"attributor_prompt_{sha[:16]}.txt").unlink()
+        (round_path / "attributor_prompt.txt").write_text(text)
+
+        report = audit_round(round_path.parent, 1)
+        assert report.ok
+
+
+# ---------------------------------------------------------------------------
+# Labeled bundle destinations: two modes' bundles coexist under one round
+# ---------------------------------------------------------------------------
+
+
+def make_cached_miner(cache_path: Path, sub_verifier: object | None = None) -> WeaknessMiner:
+    """A miner over a file-backed cache, ungrounded or grounded by the stub."""
+    return WeaknessMiner(
+        verifier=BoomVerifier(),
+        attributor=LLMAttributor(
+            MockLM(responses=[CANNED_ATTRIBUTION] * 8),
+            cache=AttributionCache(path=str(cache_path)),
+        ),
+        sub_verifier=sub_verifier,
+    )
+
+
+class TestLabeledBundleDestinations:
+    @pytest.fixture
+    def dual(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """One MockLM round mined twice: ungrounded at the round root,
+        grounded (stub sub-verifier) into ``bundles/grounded/``, sharing one
+        round-root-relative attribution cache."""
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path)
+        cache_path = tmp_path / "caches" / "attribution.jsonl"
+
+        result_root, report_root = run_audited_round(
+            config,
+            make_cached_miner(cache_path),
+            split_id="held_in_v1",
+            created_at="2026-01-01T00:00:00",
+        )
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        result_sub, report_sub = run_audited_round(
+            make_round_config(tmp_path),
+            make_cached_miner(cache_path, sub_verifier=NoneSubVerifier()),
+            split_id="held_in_v1",
+            created_at="2026-02-02T00:00:00",
+            bundle_label="grounded",
+        )
+        assert idle.total_calls == 0
+        return round_dir(tmp_path, 1), result_root, report_root, result_sub, report_sub
+
+    def test_both_bundles_coexist_and_audit_clean(self, dual):
+        round_path, result_root, report_root, result_sub, report_sub = dual
+        assert report_root.ok
+        assert report_sub.ok
+        assert result_root.bundle.bundle_id != result_sub.bundle.bundle_id
+        for triplet_dir in (round_path, round_path / "bundles" / "grounded"):
+            assert (triplet_dir / "bundle.json").is_file()
+            assert (triplet_dir / "records.jsonl").is_file()
+            assert (triplet_dir / "attributions.jsonl").is_file()
+
+    def test_subdirectory_bundle_reaudits_from_disk_with_shared_root_artifacts(self, dual):
+        round_path, _, _, result_sub, _ = dual
+        report = audit_round(round_path.parent, 1, bundle_label="grounded")
+        assert report.ok
+        # Every shared link really was checked against round-root artifacts:
+        # manifest runs, traces, digests, prompts, and the shared cache path.
+        checked = {link.link: link.checked for link in report.links}
+        assert checked["record_run"] > 0
+        assert checked["record_digest"] > 0
+        assert checked["attribution_prompt"] > 0
+        assert checked["attribution_cache"] == 1
+        assert result_sub.bundle.config.attribution_cache_path is not None
+
+    def test_root_bundle_audit_is_unchanged_by_the_subdirectory_bundle(self, dual):
+        round_path, result_root, _, _, _ = dual
+        report = audit_round(round_path.parent, 1)
+        assert report.ok
+        bundle = json.loads((round_path / "bundle.json").read_text())
+        assert bundle["bundle_id"] == result_root.bundle.bundle_id
+
+    def test_reinvocation_is_byte_idempotent_per_destination(self, dual, monkeypatch, tmp_path):
+        """created_at reuse keys on the bundle being rewritten: the labeled
+        re-mine reads bundles/grounded/bundle.json, never the root bundle
+        (whose created_at differs), so each destination reproduces itself."""
+        round_path, _, _, _, _ = dual
+        sub_bundle_path = round_path / "bundles" / "grounded" / "bundle.json"
+        root_bundle_path = round_path / "bundle.json"
+        sub_before = sub_bundle_path.read_bytes()
+        root_before = root_bundle_path.read_bytes()
+        cache_path = tmp_path / "caches" / "attribution.jsonl"
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        _, report_sub = run_audited_round(
+            make_round_config(tmp_path),
+            make_cached_miner(cache_path, sub_verifier=NoneSubVerifier()),
+            split_id="held_in_v1",
+            bundle_label="grounded",
+        )
+        _, report_root = run_audited_round(
+            make_round_config(tmp_path),
+            make_cached_miner(cache_path),
+            split_id="held_in_v1",
+        )
+
+        assert report_sub.ok and report_root.ok
+        assert idle.total_calls == 0
+        assert sub_bundle_path.read_bytes() == sub_before
+        assert root_bundle_path.read_bytes() == root_before
+
+    def test_cli_audits_the_labeled_bundle(self, dual, capsys):
+        round_path, _, _, _, _ = dual
+        exit_code = main([str(round_path.parent), "1", "--bundle-label", "grounded"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "OK" in out
+
+        (round_path / "bundles" / "grounded" / "bundle.json").unlink()
+        exit_code = main([str(round_path.parent), "1", "--bundle-label", "grounded"])
+        out = capsys.readouterr().out
+        assert exit_code == 1
+        assert "bundle_file" in out
 
 
 # ---------------------------------------------------------------------------

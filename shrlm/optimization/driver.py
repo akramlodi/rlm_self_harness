@@ -16,7 +16,7 @@ Round layout under ``out_dir``::
         runs.jsonl        # the manifest: one line per completed run
         runs/<run_id>.json  # RLMChatCompletion.to_dict() of each run's trace
         digests/<digest_sha256>.txt  # after mine_round: each digest verbatim
-        attributor_prompt.txt        # after mine_round: the rendered system prompt
+        attributor_prompt_<sha16>.txt  # after mine_round: each rendered prompt variant
 
 Each ``runs.jsonl`` line carries: ``run_id``, ``instance_id``, ``attempt``,
 ``passed``, ``cause`` (denormalized from the verdict for scanability),
@@ -82,6 +82,9 @@ INSTANCES_FILE = "instances.jsonl"
 MANIFEST_FILE = "runs.jsonl"
 TRACES_DIR = "runs"
 DIGESTS_DIR = "digests"
+# The legacy prompt file name. New mines persist only content-addressed
+# ``attributor_prompt_<sha16>.txt`` files; this name survives for the audit's
+# fallback over rounds mined before prompt persistence was content-addressed.
 ATTRIBUTOR_PROMPT_FILE = "attributor_prompt.txt"
 
 # Instance ids become file names, so they must be filesystem-safe everywhere.
@@ -535,11 +538,11 @@ def mine_round(
     Besides mining, this persists what the attributor saw: each failure
     record's digest text lands in ``digests/<digest_sha256>.txt`` (content
     addressed, so the file's own sha256 is the record's ``digest_sha256``),
-    and the rendered attributor system prompt lands in
-    ``attributor_prompt.txt`` -- or, in the rare round that mixed prompt
-    variants (grounded/ungrounded or aggregate-mode digests), one
-    ``attributor_prompt_<sha16>.txt`` per variant, resolvable through the
-    ``prompt_sha256`` each attributions.jsonl entry carries.
+    and every rendered attributor system prompt variant lands in
+    ``attributor_prompt_<sha16>.txt`` (content addressed by the rendered
+    prompt's sha256, resolvable through the ``prompt_sha256`` each
+    attributions.jsonl entry carries; existing files are never rewritten, so
+    a later mining pass cannot invalidate an earlier bundle's prompt link).
 
     Provenance flows from the round's artifacts into the bundle: every
     failure record is stamped with its manifest run_id / trace_path /
@@ -577,18 +580,28 @@ def mine_round(
 
 
 def _persist_mining_artifacts(path: Path, result: MiningResult) -> None:
-    """Write the digests and rendered prompt(s) a mining pass was built on."""
+    """Write the digests and rendered prompt(s) a mining pass was built on.
+
+    Prompt persistence is content-addressed: every rendered variant lands as
+    ``attributor_prompt_<sha16>.txt`` (the first 16 hex digits of the prompt
+    sha256 it is keyed by), and a file already at that name is trusted as-is,
+    never rewritten. This is what lets one round be mined more than once --
+    e.g. the sub-verification ablation's grounded and ablated passes -- with
+    each pass adding its own variants and no pass ever invalidating the
+    ``attribution_prompt`` audit link of a bundle persisted earlier. Legacy
+    rounds that hold only the unsuffixed ``attributor_prompt.txt`` keep
+    resolving through the audit's fallback (see ``audit._resolve_prompt_file``).
+    """
     if result.digest_texts:
         digests_dir = path / DIGESTS_DIR
         digests_dir.mkdir(parents=True, exist_ok=True)
         for sha, text in result.digest_texts.items():
             (digests_dir / f"{sha}.txt").write_text(text)
 
-    if len(result.attributor_prompts) == 1:
-        (path / ATTRIBUTOR_PROMPT_FILE).write_text(next(iter(result.attributor_prompts.values())))
-    else:
-        for sha, text in result.attributor_prompts.items():
-            (path / f"attributor_prompt_{sha[:16]}.txt").write_text(text)
+    for sha, text in result.attributor_prompts.items():
+        prompt_path = path / f"attributor_prompt_{sha[:16]}.txt"
+        if not prompt_path.exists():
+            prompt_path.write_text(text)
 
 
 __all__ = [
