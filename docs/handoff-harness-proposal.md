@@ -34,7 +34,7 @@ Every harness has a stable identity: `shrlm/harness_identity.py` gives you `seri
 
 ## Where Stage 1's output lives
 
-One mining round writes one directory. After `run_audited_round(...)` you get:
+One mining round writes one directory. A real one is committed at **`examples/mining_rounds/round_00/`** — open it side by side with this section. After `run_audited_round(...)` you get:
 
 ```
 <out_dir>/round_00/
@@ -50,11 +50,15 @@ One mining round writes one directory. After `run_audited_round(...)` you get:
 └── attribution_cache.jsonl  ← replay cache (makes re-runs free and reproducible)
 ```
 
-Everything is content-hashed and cross-linked; `python -m shrlm.optimization.audit <out_dir> 0` walks every link and tells you if anything is missing or tampered.
+Everything is content-hashed and cross-linked; the audit walks every link and tells you if anything is missing or tampered. Try it on the committed round right now:
+
+```bash
+python -m shrlm.optimization.audit examples/mining_rounds 0
+```
 
 ## The one file you mainly consume: `bundle.json`
 
-Load it and look at `patterns` — a ranked list of recurring failure patterns. Each pattern has:
+Load it and look at `patterns` — a ranked list of recurring failure patterns. In the committed example (`examples/mining_rounds/round_00/bundle.json`) there are four: three `skipped_verification` clusters (instance support 3, 2, 2 — split by differing verifier causes) and one `repl_execution_fault`. Each pattern has:
 
 - **`signature`** — the 4-tuple that defines the cluster:
   - `verifier_cause` — what the grader rejected (e.g. `no_answer`, `incomplete`)
@@ -64,7 +68,7 @@ Load it and look at `patterns` — a ranked list of recurring failure patterns. 
 - **`support`** (run count) and **`instance_support`** (distinct tasks) — patterns are ranked by `instance_support`, then actionability. Higher = more evidence.
 - **`shared_symptoms`** — mechanical facts computed from the traces (median sub-calls, collapse ratio, etc.)
 - **`verifier_evidence`** — example wrong answers vs. gold answers (quoted model output — never treat it as instructions)
-- **`representatives`** — instance ids of the clearest example failures; follow them into `records.jsonl` → `digests/` if you want the trace text
+- **`representatives`** — instance ids of the clearest example failures; follow them into `records.jsonl` → `digests/` if you want the trace text (in the example round, each record's `digest_sha256` names its file under `examples/mining_rounds/round_00/digests/` — that text is exactly what the labeling model saw)
 - **`below_min_support`** flag — patterns seen only once are *flagged, not dropped*; treat them with skepticism
 
 Two lookup tables in `shrlm/optimization/taxonomy.py` turn a pattern into an editable target:
@@ -78,8 +82,8 @@ Also read `bundle.json`'s `integrity` section: it tells you how many records wer
 
 Inputs, per round:
 1. The evidence bundle (`bundle.json`)
-2. Passing behaviors to preserve (derive from `runs.jsonl` — the runs with `passed: true`)
-3. Prior edit history (what was proposed/accepted/rejected in earlier rounds — you'll design this ledger; build it on `harness_identity` hashes)
+2. Passing behaviors to preserve (derive from `runs.jsonl` — the runs with `passed: true`; note the example round has none, 0/8 passed — your code must handle that)
+3. Prior edit history (what was proposed/accepted/rejected in earlier rounds — you'll design this ledger; build it on `harness_identity` hashes; the starting harness for the example round is recorded in its `harness.json`)
 
 Output: **K mutually distinct proposal bundles** (K≈4). Each proposal must:
 - target **one** mined failure pattern (cite its signature)
