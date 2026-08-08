@@ -117,6 +117,15 @@ class TestBundleIdentity:
             make_config(), records[:1]
         )
 
+    def test_sub_verifier_flip_alone_changes_the_id(self):
+        """R4: the ablation switch is identity-bearing. Two mines of the same
+        round that differ only in ``sub_verifier_enabled`` must mint different
+        bundle ids, or the two modes' evidence could silently collide."""
+        records = make_records()
+        grounded = compute_bundle_id(make_config(sub_verifier_enabled=True), records)
+        ablated = compute_bundle_id(make_config(sub_verifier_enabled=False), records)
+        assert grounded != ablated
+
     def test_verifier_config_changes_the_id(self):
         records = make_records()
         assert compute_bundle_id(make_config(), records) != compute_bundle_id(
@@ -294,10 +303,12 @@ class TestNonClobberingWrites:
 class TestBundleDestination:
     def make_other_bundle(self) -> tuple[EvidenceBundle, list[FailureRecord]]:
         """A second bundle over the same round with a different config, as the
-        sub-verification ablation produces (only the mode flag differs)."""
+        sub-verification ablation produces (only the mode flag differs;
+        ``make_config`` now defaults to the ablated ``False``, so the other
+        mode here is the grounded one)."""
         records = make_records()
         bundle = build_evidence_bundle(
-            config=make_config(sub_verifier_enabled=False),
+            config=make_config(sub_verifier_enabled=True),
             records=records,
             patterns=cluster_failures(records),
             marginals=compute_marginals(records),

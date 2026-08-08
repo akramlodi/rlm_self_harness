@@ -25,7 +25,7 @@ from shrlm.optimization.attribution import (
 from shrlm.optimization.digest import TraceDigest, build_digest
 from shrlm.optimization.grounding import GroundingResult
 from shrlm.optimization.mining import WeaknessMiner
-from shrlm.optimization.taxonomy import VerifierCause
+from shrlm.optimization.taxonomy import FailingLevel, VerifierCause
 from shrlm.optimization.types import AttributionErrorKind, CallNode, Verdict
 from shrlm.optimization.walker import walk
 from tests.mock_lm import MockLM
@@ -69,6 +69,12 @@ OFF_VOCABULARY = (
 )
 
 UNGROUNDED = GroundingResult(failing_level=None, grounded=False, verdicts={})
+
+# A grounded result as a sub-verifier produces it: the level is a checkable
+# fact derived from a child verdict, so the attributor is never asked for it.
+GROUNDED = GroundingResult(
+    failing_level=FailingLevel.CHILD, grounded=True, verdicts={"r/i0/b0/c0": False}
+)
 
 # No backoff sleeps in tests; retry counts are what is under test.
 FAST_CONFIG = AttributorConfig(transport_backoff_seconds=0.0)
@@ -240,6 +246,56 @@ class TestAggregateModeEvidence:
         )
         _, _, _, detail = attributor.validate(payload, root, UNGROUNDED)
         assert detail.evidence_node_ids == []
+
+
+class TestModeSeparation:
+    """The grounded/ungrounded split is the sub-verification ablation's edge:
+    the failing level is either a checkable fact (grounded -- never asked for)
+    or a model judgment (ungrounded -- demanded and validated), and the two
+    modes must never share a cached response for the same digest."""
+
+    def test_grounded_prompt_carries_no_failing_level_vocabulary_or_field(self):
+        attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)
+        prompt = attributor.system_prompt(grounded=True)
+        # The strongest form: the string appears nowhere -- not as the enum
+        # vocabulary block, not as the JSON field the model is asked to fill.
+        assert "failing_level" not in prompt
+
+    def test_ungrounded_prompt_carries_both_the_vocabulary_and_the_field(self):
+        attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)
+        prompt = attributor.system_prompt(grounded=False)
+        assert "failing_level (choose exactly one)" in prompt
+        assert '"failing_level": "<value>"' in prompt
+
+    def test_validate_demands_failing_level_only_when_ungrounded(self):
+        attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)
+        _, root, _ = attribution_inputs()
+        payload = {
+            "causal_status": "causal",
+            "agent_mechanism": "lossy_aggregation",
+            "evidence_node_ids": ["r"],
+            "symptom_summary": "a sub-call returned a wrong local result",
+        }
+
+        with pytest.raises(AttributionRejection, match="failing_level") as excinfo:
+            attributor.validate(payload, root, UNGROUNDED)
+        # The violation is named, so the re-ask tells the model what to fix.
+        assert "failing_level" in str(excinfo.value)
+
+        causal_status, mechanism, level, detail = attributor.validate(payload, root, GROUNDED)
+        # Grounded mode never reads the field: the level slot stays None and
+        # the caller substitutes the sub-verifier-derived level instead.
+        assert level is None
+        assert causal_status.value == "causal"
+        assert mechanism.value == "lossy_aggregation"
+        assert detail.evidence_node_ids == ["r"]
+
+    def test_cache_key_separates_the_modes_for_one_digest(self):
+        attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)
+        digest, _, _ = attribution_inputs()
+        grounded_key = attributor.cache_key(digest, grounded=True, attempt=0)
+        ungrounded_key = attributor.cache_key(digest, grounded=False, attempt=0)
+        assert grounded_key != ungrounded_key
 
 
 class TestValidatorVersionInCacheKey:
