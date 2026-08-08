@@ -45,8 +45,9 @@ in the bundle style, byte-identical rewrites allowed, divergence refused -- so
 the band check (U4) and the ledger (U5) never re-read traces, and the shared
 mining manifest format is never extended.
 
-This module will also grow the promotion half (U4) and the ledger writer (U5);
-the evaluation surface here is what U6's ``validate_round`` composes.
+The promotion half (U4) lives in the sibling ``promotion`` module; this module
+will also grow the ledger writer (U5). The evaluation surface here plus the
+promotion module are what U6's ``validate_round`` composes.
 """
 
 import json
