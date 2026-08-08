@@ -572,10 +572,16 @@ class MiningConfig:
       bundle id.
     * ``sampling_seed`` is the dataset sampling seed carried by the round's
       instances as provenance; None when the instances carry none.
+    * ``prompt_sha256`` pins the attributor system-prompt *template*: the
+      sha256 of the raw ``ATTRIBUTOR_SYSTEM_PROMPT`` constant, before any
+      per-variant rendering. A round renders per-record prompt variants, so
+      the rendered shas live on each ``attributions.jsonl`` entry (audited
+      against the persisted prompt files), not here.
     * ``validator_version`` pins the attribution response validator, and
       ``attribution_cache_path`` (round-dir-relative when set by
       ``mine_round``) names the cache whose replayed responses made the round
-      reproducible.
+      reproducible; it is None when the cache file does not exist at mining
+      time (e.g. an all-pass round that never sampled an attribution).
     """
 
     round_index: int

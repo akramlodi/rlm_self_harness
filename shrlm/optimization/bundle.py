@@ -163,13 +163,16 @@ def write_bundle(
     records: list[FailureRecord],
     out_dir: str,
     raw_attributions: list[dict] | None = None,
+    overwrite: bool = False,
 ) -> str:
     """
     Write the round's artifacts, refusing to clobber audited evidence.
 
     The bundle is pretty-printed because it is read by a person and diffed
     across rounds; the records and raw responses are JSONL because they are
-    streamed and appended.
+    streamed and appended. ``bundle.json`` is written atomically (to a
+    same-directory ``.tmp`` file, then ``os.replace``), so a crash mid-write
+    can never leave a truncated bundle behind.
 
     An existing ``bundle.json`` in the round directory is overwritten only
     when the new content is byte-identical (an idempotent re-write). A
@@ -177,17 +180,34 @@ def write_bundle(
     the same id with different bytes means a re-mine diverged -- typically a
     cold attribution cache resampling responses, or a new ``created_at``
     timestamp (pass the recorded one to reproduce). Both cases raise instead
-    of silently replacing what may already have been audited.
+    of silently replacing what may already have been audited, as does an
+    existing file that no longer parses as a bundle (corruption from outside
+    this writer).
+
+    ``overwrite=True`` skips the guard entirely and deliberately replaces
+    whatever ``bundle.json`` already holds -- the explicit escape hatch for a
+    poisoned round (e.g. a re-mine after an attributor outage produced
+    divergent content). It replaces evidence that may already have been
+    audited, so it must be an operator's stated intent, never a default.
     """
     round_dir = os.path.join(out_dir, f"round_{bundle.config.round_index:02d}")
     os.makedirs(round_dir, exist_ok=True)
 
     bundle_path = os.path.join(round_dir, BUNDLE_FILENAME)
     payload = json.dumps(bundle.to_dict(), indent=2, sort_keys=True) + "\n"
-    if os.path.exists(bundle_path):
+    if not overwrite and os.path.exists(bundle_path):
         with open(bundle_path) as handle:
             existing_text = handle.read()
-        existing_id = str(json.loads(existing_text)["bundle_id"])
+        try:
+            existing_payload = json.loads(existing_text)
+            existing_id = str(existing_payload["bundle_id"])
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise ValueError(
+                f"{bundle_path} exists but does not parse as a bundle "
+                f"({type(error).__name__}: {error}); the file is corrupt -- e.g. a "
+                "truncated or interrupted write. Delete the corrupt file (or pass "
+                "overwrite=True) to let a re-mine regenerate it."
+            ) from error
         if existing_id != bundle.bundle_id:
             raise ValueError(
                 f"{bundle_path} already holds bundle {existing_id}, which is not "
@@ -195,9 +215,9 @@ def write_bundle(
                 "evidence with another's."
             )
         if existing_text != payload:
-            timestamp_only = json.loads(existing_text) == {
+            timestamp_only = existing_payload == {
                 **bundle.to_dict(),
-                "created_at": json.loads(existing_text)["created_at"],
+                "created_at": existing_payload.get("created_at"),
             }
             reason = (
                 "only created_at differs; pass the recorded created_at to reproduce it"
@@ -207,10 +227,13 @@ def write_bundle(
             raise ValueError(
                 f"{bundle_path} already holds bundle {bundle.bundle_id} with different "
                 f"bytes -- the rewrite diverges from the persisted evidence ({reason}). "
-                "Refusing to replace audited evidence."
+                "Refusing to replace audited evidence; pass overwrite=True to replace "
+                "it deliberately."
             )
-    with open(bundle_path, "w") as handle:
+    tmp_path = bundle_path + ".tmp"
+    with open(tmp_path, "w") as handle:
         handle.write(payload)
+    os.replace(tmp_path, bundle_path)
 
     with open(os.path.join(round_dir, RECORDS_FILENAME), "w") as handle:
         for record in records:

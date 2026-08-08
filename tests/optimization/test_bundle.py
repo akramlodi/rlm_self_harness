@@ -244,6 +244,52 @@ class TestNonClobberingWrites:
         round_path = tmp_path / "round_03"
         assert json.loads((round_path / "bundle.json").read_text()) == bundle.to_dict()
 
+    @pytest.mark.parametrize(
+        "corruption",
+        ["truncated", "not-a-bundle"],
+        ids=["truncated json", "parseable but no bundle_id"],
+    )
+    def test_corrupt_existing_bundle_names_the_corruption_and_the_recovery(
+        self, tmp_path: Path, corruption: str
+    ):
+        bundle, records = make_bundle(created_at="2026-01-01T00:00:00")
+        bundle_path = Path(write_bundle(bundle, records, str(tmp_path)))
+        text = bundle_path.read_text()
+        bundle_path.write_text(text[: len(text) // 2] if corruption == "truncated" else "{}")
+
+        with pytest.raises(ValueError, match="corrupt") as excinfo:
+            write_bundle(bundle, records, str(tmp_path))
+        # The error names the recovery step instead of a bare traceback.
+        assert "Delete" in str(excinfo.value)
+
+    def test_overwrite_replaces_divergent_content_deliberately(self, tmp_path: Path):
+        bundle, records = make_bundle(created_at="2026-01-01T00:00:00")
+        write_bundle(bundle, records, str(tmp_path))
+
+        divergent, _ = make_bundle(created_at="2026-01-01T00:00:00")
+        divergent.patterns[0] = dataclasses.replace(
+            divergent.patterns[0], shared_symptoms=["median iterations: 9"]
+        )
+        with pytest.raises(ValueError, match="diverge"):
+            write_bundle(divergent, records, str(tmp_path))
+
+        bundle_path = Path(write_bundle(divergent, records, str(tmp_path), overwrite=True))
+        assert json.loads(bundle_path.read_text()) == divergent.to_dict()
+
+    def test_overwrite_also_replaces_a_corrupt_bundle(self, tmp_path: Path):
+        bundle, records = make_bundle(created_at="2026-01-01T00:00:00")
+        bundle_path = Path(write_bundle(bundle, records, str(tmp_path)))
+        bundle_path.write_text("{ truncated")
+
+        write_bundle(bundle, records, str(tmp_path), overwrite=True)
+        assert json.loads(bundle_path.read_text()) == bundle.to_dict()
+
+    def test_atomic_write_leaves_no_tmp_file_on_success(self, tmp_path: Path):
+        bundle, records = make_bundle()
+        bundle_path = Path(write_bundle(bundle, records, str(tmp_path)))
+        assert bundle_path.is_file()
+        assert list(bundle_path.parent.glob("*.tmp")) == []
+
 
 class TestIntegrityReport:
     def test_counts_are_sums_over_the_records(self):

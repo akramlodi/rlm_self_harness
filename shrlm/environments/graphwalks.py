@@ -34,8 +34,12 @@ DATASET_FILE = "graphwalks_128k_and_shorter.parquet"
 
 # One directed edge as the dataset renders it: "a1b2 -> c3d4".
 _EDGE_RE = re.compile(r"(\w+)\s*->\s*(\w+)")
-# The bracketed list inside a "Final Answer: [...]" line.
-_ANSWER_LIST_RE = re.compile(r"\[(.*)\]")
+# The bracketed list inside a "Final Answer: [...]" line. Non-greedy so the
+# FIRST bracket pair on the line is the answer list, per the dataset card's
+# "Final Answer: [n1, n2, ...]" format: a greedy match would swallow any later
+# bracketed text (e.g. "Final Answer: [a, b] (excluding [c])") into the list
+# and grade a correct answer wrong.
+_ANSWER_LIST_RE = re.compile(r"\[(.*?)\]")
 # The operation line of a dataset prompt, used as the instance's question.
 _QUESTION_RE = re.compile(r"^\s*(Perform a BFS\b.*|Find the parents\b.*)$", re.MULTILINE)
 
@@ -64,6 +68,13 @@ def extract_answer_nodes(response: str) -> list[str] | None:
     Verifier maps no-parse to WRONG_FORMAT but a parsed ``[]`` against a
     non-empty gold to NO_ANSWER, and the SubVerifier treats an unparseable
     child response as uncheckable rather than wrong.
+
+    The FIRST bracket pair on the line is the answer list; anything after its
+    closing bracket (e.g. a parenthetical "(excluding [c])") is commentary and
+    ignored. Redundantly nested brackets like "Final Answer: [[a, b]]" are
+    tolerated by stripping stray bracket characters from each item -- node ids
+    are ``\\w+`` and can never legitimately contain brackets -- so that parse
+    yields ``["a", "b"]``.
     """
     line = response.strip().split("\n")[-1]
     if "Final Answer:" not in line:
@@ -71,7 +82,8 @@ def extract_answer_nodes(response: str) -> list[str] | None:
     match = _ANSWER_LIST_RE.search(line)
     if match is None:
         return None
-    return [item.strip() for item in match.group(1).split(",") if item.strip()]
+    items = (item.strip().strip("[]").strip() for item in match.group(1).split(","))
+    return [item for item in items if item]
 
 
 def score(predicted: list[str], golden: list[str]) -> dict[str, float]:
@@ -155,15 +167,29 @@ def sample_rows(
     With a limit and more than one problem type, an equal share is drawn per
     type so a small sample still exercises both operations; otherwise a plain
     seeded shuffle-and-truncate. Deterministic for a given (rows, seed).
+
+    The per-type share alone can undershoot the limit -- a limit that is not a
+    multiple of the type count leaves a remainder, and a type whose pool is
+    smaller than its share leaves a shortfall -- so the balanced draw is topped
+    up from the leftover rows with the same seeded RNG. Exactly
+    ``min(limit, available)`` rows are always returned, where ``available``
+    counts the rows of the requested types, with the per-type balance kept as
+    close as the pools allow.
     """
     rng = random.Random(seed)
     if limit is not None and len(problem_types) > 1:
         per_type = max(1, limit // len(problem_types))
         picked: list[dict[str, Any]] = []
+        leftover: list[dict[str, Any]] = []
         for problem_type in problem_types:
             pool = [row for row in rows if row["problem_type"] == problem_type]
             rng.shuffle(pool)
             picked.extend(pool[:per_type])
+            leftover.extend(pool[per_type:])
+        shortfall = min(limit, len(picked) + len(leftover)) - len(picked)
+        if shortfall > 0:
+            rng.shuffle(leftover)
+            picked.extend(leftover[:shortfall])
         rng.shuffle(picked)
         return picked[:limit]
 

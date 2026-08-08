@@ -146,12 +146,21 @@ class AuditStats:
     ``pass_rate`` is None when the manifest holds no runs; ``grounding_coverage``
     is None when there are no failure records (see the module docstring for its
     derivation from ``sub_verdicts``).
+
+    ``n_unattributed`` and ``n_transport_errors`` are derived from
+    ``records.jsonl`` (the typed ``attribution_error_kind`` field, with the
+    legacy ``transport failure`` prefix fallback). Unattributed records are
+    legitimate evidence and never flip the audit to broken -- but a round
+    mined with the attributor LM completely down would otherwise present as a
+    clean zero-signature bundle, and these counts make that visible.
     """
 
     n_runs: int
     n_passed: int
     pass_rate: float | None
     n_records: int
+    n_unattributed: int
+    n_transport_errors: int
     n_patterns: int
     grounding_coverage: float | None
 
@@ -201,6 +210,19 @@ class _Walk:
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _is_transport_record(record: dict[str, Any]) -> bool:
+    """Whether a persisted record's attribution failed at the transport level.
+
+    Reads the typed ``attribution_error_kind`` field, falling back to the
+    ``transport failure`` prefix of ``attribution_error`` for legacy records
+    that predate the field (mirroring ``bundle._is_transport_error``).
+    """
+    kind = record.get("attribution_error_kind")
+    if kind is not None:
+        return kind == AttributionErrorKind.TRANSPORT.value
+    return str(record.get("attribution_error", "")).startswith(_TRANSPORT_ERROR_PREFIX)
 
 
 def stored_harness_hash(envelope: dict[str, Any]) -> str:
@@ -268,29 +290,52 @@ def _audit_harness(path: Path, walk: _Walk) -> str | None:
 
 
 def _audit_manifest(path: Path, walk: _Walk) -> list[dict[str, Any]]:
-    """Verify the manifest parses, repeats no run id, and every trace matches."""
+    """Verify the manifest parses, repeats no run id, and every trace matches.
+
+    A line missing a required key is a broken link naming the line, never an
+    exception: the audit's job is to report a damaged chain, not crash on it.
+    """
     entries = _load_jsonl_file(path / MANIFEST_FILE, "manifest_file", walk)
     if entries is None:
         return []
     seen: set[str] = set()
-    for entry in entries:
-        run_id = str(entry["run_id"])
-        if run_id in seen:
-            walk.fail("manifest_file", run_id, f"{MANIFEST_FILE} lists run id {run_id!r} twice")
-        seen.add(run_id)
+    for index, entry in enumerate(entries):
+        raw_run_id = entry.get("run_id")
+        subject = str(raw_run_id) if raw_run_id is not None else f"line {index + 1}"
+        if raw_run_id is None:
+            walk.fail(
+                "manifest_file", subject, f"{MANIFEST_FILE} line {index + 1} carries no run_id"
+            )
+        else:
+            run_id = str(raw_run_id)
+            if run_id in seen:
+                walk.fail("manifest_file", run_id, f"{MANIFEST_FILE} lists run id {run_id!r} twice")
+            seen.add(run_id)
 
         walk.check("manifest_trace")
-        trace_path = path / str(entry["trace_path"])
+        trace_rel = entry.get("trace_path")
+        if trace_rel is None:
+            walk.fail(
+                "manifest_trace", subject, f"{MANIFEST_FILE} line {index + 1} carries no trace_path"
+            )
+            continue
+        trace_path = path / str(trace_rel)
         if not trace_path.is_file():
-            walk.fail("manifest_trace", run_id, f"trace file {entry['trace_path']} is missing")
+            walk.fail("manifest_trace", subject, f"trace file {trace_rel} is missing")
             continue
         actual = sha256_file(trace_path)
-        if actual != str(entry["trace_sha256"]):
+        recorded_sha = entry.get("trace_sha256")
+        if recorded_sha is None:
             walk.fail(
                 "manifest_trace",
-                run_id,
-                f"trace {entry['trace_path']} hashes to {actual}, manifest records "
-                f"{entry['trace_sha256']}",
+                subject,
+                f"{MANIFEST_FILE} line {index + 1} carries no trace_sha256",
+            )
+        elif actual != str(recorded_sha):
+            walk.fail(
+                "manifest_trace",
+                subject,
+                f"trace {trace_rel} hashes to {actual}, manifest records {recorded_sha}",
             )
     return entries
 
@@ -346,12 +391,14 @@ def _audit_records(
                         f"{record.get('trace_sha256')}",
                     )
                 manifest_entry = manifest_by_run_id.get(str(run_id))
-                if manifest_entry is not None and actual != str(manifest_entry["trace_sha256"]):
+                manifest_sha = (
+                    manifest_entry.get("trace_sha256") if manifest_entry is not None else None
+                )
+                if manifest_sha is not None and actual != str(manifest_sha):
                     walk.fail(
                         "record_trace",
                         str(run_id),
-                        f"trace {trace_rel} hashes to {actual}, manifest says "
-                        f"{manifest_entry['trace_sha256']}",
+                        f"trace {trace_rel} hashes to {actual}, manifest says {manifest_sha}",
                     )
 
         walk.check("record_instance")
@@ -381,7 +428,10 @@ def _audit_bundle(
         except (KeyError, TypeError) as error:
             walk.fail("bundle_id", bundle_id, f"config does not reconstruct: {error}")
         else:
-            refs = [_InstanceRef(str(record["instance_id"])) for record in records]
+            # A record missing instance_id contributes "" here: the recompute
+            # then visibly diverges (and record_instance names the record)
+            # instead of the walk crashing on the malformed line.
+            refs = [_InstanceRef(str(record.get("instance_id", ""))) for record in records]
             recomputed = compute_bundle_id(config, cast("list[FailureRecord]", refs))
             if recomputed != bundle_id:
                 walk.fail(
@@ -412,7 +462,7 @@ def _audit_bundle(
             )
 
     if records is not None:
-        record_ids = {str(record["instance_id"]) for record in records}
+        record_ids = {str(record.get("instance_id", "")) for record in records}
         for pattern in bundle.get("patterns", []):
             walk.check("pattern_instances")
             signature = json.dumps(pattern.get("signature", {}), sort_keys=True)
@@ -529,10 +579,22 @@ def audit_round(out_dir: Path | str, round_index: int) -> AuditReport:
     envelope_hash = _audit_harness(path, walk)
 
     instances = _load_jsonl_file(path / INSTANCES_FILE, "instances_file", walk)
-    instance_ids = {str(instance["id"]) for instance in instances} if instances else set()
+    instance_ids: set[str] = set()
+    if instances is not None:
+        for index, instance in enumerate(instances):
+            if "id" in instance:
+                instance_ids.add(str(instance["id"]))
+            else:
+                walk.fail(
+                    "instances_file",
+                    f"line {index + 1}",
+                    f"{INSTANCES_FILE} line {index + 1} carries no 'id'",
+                )
 
     manifest = _audit_manifest(path, walk)
-    manifest_by_run_id = {str(entry["run_id"]): entry for entry in manifest}
+    manifest_by_run_id = {
+        str(entry["run_id"]): entry for entry in manifest if entry.get("run_id") is not None
+    }
 
     records = _load_jsonl_file(path / RECORDS_FILENAME, "records_file", walk)
     if records is not None:
@@ -549,6 +611,8 @@ def audit_round(out_dir: Path | str, round_index: int) -> AuditReport:
     n_runs = len(manifest)
     n_passed = sum(1 for entry in manifest if entry.get("passed"))
     n_records = len(records) if records is not None else 0
+    n_unattributed = 0
+    n_transport_errors = 0
     grounding_coverage: float | None = None
     if records:
         grounded = sum(
@@ -557,12 +621,20 @@ def audit_round(out_dir: Path | str, round_index: int) -> AuditReport:
             if any(v is not None for v in (record.get("sub_verdicts") or {}).values())
         )
         grounding_coverage = grounded / len(records)
+        n_unattributed = sum(1 for record in records if record.get("attribution_failed"))
+        n_transport_errors = sum(
+            1
+            for record in records
+            if record.get("attribution_failed") and _is_transport_record(record)
+        )
 
     stats = AuditStats(
         n_runs=n_runs,
         n_passed=n_passed,
         pass_rate=n_passed / n_runs if n_runs else None,
         n_records=n_records,
+        n_unattributed=n_unattributed,
+        n_transport_errors=n_transport_errors,
         n_patterns=len(bundle.get("patterns", [])) if bundle is not None else 0,
         grounding_coverage=grounding_coverage,
     )
@@ -582,6 +654,7 @@ def run_audited_round(
     split_id: str,
     harness_version: str | None = None,
     created_at: str | None = None,
+    overwrite_bundle: bool = False,
 ) -> tuple[MiningResult, AuditReport]:
     """Run, mine, bundle, and audit one round: the whole pipeline in one call.
 
@@ -591,6 +664,20 @@ def run_audited_round(
     on: the caller (the live capstone script) decides what a broken link
     means for the session.
 
+    Re-invocation over the same ``out_dir`` is idempotent: completed runs are
+    resumed from the manifest, and when ``round_NN/bundle.json`` already
+    exists its recorded ``created_at`` is reused (unless the caller supplies
+    one), so an identical re-mine reproduces the persisted bundle byte for
+    byte and the no-clobber guard passes.
+
+    A clean audit is not proof the mining signal exists: a round mined with
+    the attributor LM unreachable completes with every record unattributed
+    and zero signatures, and still audits ok because unattributed records are
+    legitimate evidence. Callers must check ``MiningResult.errors`` (the runs
+    whose attribution failed at the transport level) and the report's
+    ``n_unattributed`` / ``n_transport_errors`` stats before treating the
+    bundle as usable signal.
+
     Args:
         config: The round to run (see ``RoundConfig``).
         miner: The configured ``WeaknessMiner`` for the mining phase.
@@ -598,11 +685,31 @@ def run_audited_round(
         harness_version: Optional bundle-facing harness label; defaults to the
             recorded harness hash (see ``mine_round``).
         created_at: Optional bundle timestamp override, for reproducing a
-            previously persisted bundle byte-for-byte.
+            previously persisted bundle byte-for-byte; defaults to the
+            timestamp already recorded in ``round_NN/bundle.json`` when that
+            file exists and parses.
+        overwrite_bundle: Explicitly replace a divergent ``bundle.json``
+            (see ``write_bundle``). This deliberately replaces evidence that
+            may already have been audited -- the escape hatch for a poisoned
+            round (e.g. a re-mine after an attributor outage), never a
+            default.
 
     Returns:
         The ``MiningResult`` and the ``AuditReport`` over the finished round.
     """
+    if created_at is None:
+        bundle_path = round_dir(config.out_dir, config.round_index) / BUNDLE_FILENAME
+        if bundle_path.is_file():
+            try:
+                existing = json.loads(bundle_path.read_text())
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Corrupt bundle.json: leave created_at fresh and let
+                # write_bundle raise its clear corruption error (or replace
+                # the file when overwrite_bundle is set).
+                existing = None
+            if isinstance(existing, dict) and isinstance(existing.get("created_at"), str):
+                created_at = existing["created_at"]
+
     run_round(config)
     result = mine_round(
         out_dir=config.out_dir,
@@ -617,6 +724,7 @@ def run_audited_round(
         result.records,
         str(config.out_dir),
         raw_attributions=result.raw_attributions,
+        overwrite=overwrite_bundle,
     )
     report = audit_round(config.out_dir, config.round_index)
     return result, report
@@ -641,9 +749,15 @@ def _format_report(report: AuditReport) -> str:
     coverage = f"{stats.grounding_coverage:.3f}" if stats.grounding_coverage is not None else "n/a"
     lines.append(
         f"stats: n_runs={stats.n_runs} n_passed={stats.n_passed} pass_rate={pass_rate} "
-        f"n_records={stats.n_records} n_patterns={stats.n_patterns} "
+        f"n_records={stats.n_records} n_unattributed={stats.n_unattributed} "
+        f"n_transport_errors={stats.n_transport_errors} n_patterns={stats.n_patterns} "
         f"grounding_coverage={coverage}"
     )
+    if stats.n_records and stats.n_unattributed == stats.n_records:
+        lines.append(
+            "warning: every failure record is unattributed -- the bundle carries no "
+            "signatures (was the attributor LM reachable?)"
+        )
     verdict = (
         "OK: every audit link verified"
         if report.ok

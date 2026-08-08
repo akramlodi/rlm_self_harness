@@ -337,6 +337,39 @@ class TestResume:
         assert len(entries) == 3
         assert idle.total_calls == 0
 
+    def test_complete_round_resumes_without_the_backend_credential(self, tmp_path, monkeypatch):
+        """A fully persisted round makes zero calls, so it must be resumable
+        (as a no-op) on a machine that holds no credential at all."""
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        run_round(make_round_config(tmp_path, backend="openrouter"))
+
+        monkeypatch.delenv("OPENROUTER_API_KEY")
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        entries = run_round(make_round_config(tmp_path, backend="openrouter"))
+        assert len(entries) == 3
+        assert idle.total_calls == 0
+
+    def test_incomplete_round_still_demands_the_credential_before_any_run(
+        self, tmp_path, monkeypatch
+    ):
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        run_round(make_round_config(tmp_path, backend="openrouter"), stop_after=2)
+
+        monkeypatch.delenv("OPENROUTER_API_KEY")
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
+            run_round(make_round_config(tmp_path, backend="openrouter"))
+        assert idle.total_calls == 0
+        # The two paid runs stay persisted, untouched by the refused resume.
+        entries = read_manifest(round_dir(tmp_path, 1))
+        assert len(entries) == 2
+
     def test_trace_sha_mismatch_fails_loudly_without_overwrite(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)
         round_path = round_dir(config.out_dir, config.round_index)
@@ -560,6 +593,32 @@ class TestMineRound:
         round_path = round_dir(config.out_dir, config.round_index)
         assert bundle_config.attribution_cache_path == os.path.relpath(cache_path, round_path)
         assert bundle_config.validator_version == VALIDATOR_VERSION
+
+    def test_all_pass_round_stamps_no_path_for_a_never_created_cache_file(
+        self, tmp_path, monkeypatch
+    ):
+        """put() never runs on an all-pass round, so the file-backed cache is
+        never created; stamping its path would be a broken audit link."""
+        factory = ClientFactory([final("RIGHT"), final("RIGHT")])
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, instances=make_instances()[:2])
+        run_round(config)
+
+        cache_path = tmp_path / "caches" / "attribution.jsonl"
+        miner = WeaknessMiner(
+            verifier=BoomVerifier(),
+            attributor=LLMAttributor(
+                MockLM(responses=[]), cache=AttributionCache(path=str(cache_path))
+            ),
+        )
+        result = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=miner,
+            split_id="held_in_v1",
+        )
+        assert result.bundle.config.attribution_cache_path is None
+        assert not cache_path.exists()
 
     def test_zero_failure_round_mines_to_an_empty_pattern_list(self, tmp_path, monkeypatch):
         instances = make_instances()[:2]

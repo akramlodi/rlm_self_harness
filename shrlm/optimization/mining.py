@@ -13,12 +13,15 @@ string, never an exception -- passes it through instead and the verifier is not
 consulted for that run.
 """
 
+import hashlib
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from rlm.core.types import RLMChatCompletion
 from shrlm.optimization.attribution import (
+    ATTRIBUTOR_SYSTEM_PROMPT,
     VALIDATOR_VERSION,
     AttributionRejection,
     AttributionTransportError,
@@ -255,7 +258,11 @@ class WeaknessMiner:
         ``mine_round`` defaults to that same hash); ``sampling_seed`` is the
         dataset sampling seed the instances carry; ``attribution_cache_path``
         overrides the attributor cache's own path (``mine_round`` passes it
-        round-dir-relative), falling back to the cache's configured path. The
+        round-dir-relative), falling back to the cache's configured path --
+        but either value is stamped into the config only when the cache file
+        actually exists once mining finishes, since an all-pass round never
+        writes one and a stamped path to a nonexistent file would break the
+        audit's ``attribution_cache`` link on a perfectly clean round. The
         verifier's ``config()`` payload, when it defines one, is recorded as
         ``verifier_config``. All of these serialize into the MiningConfig and
         therefore into the bundle id.
@@ -330,6 +337,17 @@ class WeaknessMiner:
         config_method = getattr(self.verifier, "config", None)
         verifier_config: dict[str, Any] = dict(config_method()) if callable(config_method) else {}
 
+        # Stamp the cache path only when the cache file exists now that every
+        # attribution has run: an all-pass round never calls put(), so the
+        # file is never created and a stamped path would be a broken link the
+        # audit rightly rejects.
+        cache_path = self.attributor.cache.path
+        stamped_cache_path = (
+            attribution_cache_path if attribution_cache_path is not None else cache_path
+        )
+        if cache_path is not None and not os.path.exists(cache_path):
+            stamped_cache_path = None
+
         config = MiningConfig(
             round_index=round_index,
             harness_version=harness_version,
@@ -337,7 +355,12 @@ class WeaknessMiner:
             taxonomy_version=TAXONOMY_VERSION,
             prompt_version=self.attributor.config.prompt_version,
             digest_version=DIGEST_VERSION,
-            prompt_sha256=self.attributor.prompt_sha256(self.sub_verifier is not None),
+            # The TEMPLATE pin: the sha256 of the raw system-prompt template,
+            # before any per-variant rendering. Records render per-variant
+            # prompts, so no single rendered variant can speak for the round;
+            # the rendered shas live on each attributions.jsonl entry, which
+            # the audit resolves against the persisted prompt files.
+            prompt_sha256=hashlib.sha256(ATTRIBUTOR_SYSTEM_PROMPT.encode("utf-8")).hexdigest(),
             attributor_model=self.attributor.lm.model_name,
             attributor_sampling_args=dict(self.attributor.lm.sampling_args),
             digest_char_budget=self.digest_config.char_budget,
@@ -349,11 +372,7 @@ class WeaknessMiner:
             verifier_config=verifier_config,
             sampling_seed=sampling_seed,
             validator_version=VALIDATOR_VERSION,
-            attribution_cache_path=(
-                attribution_cache_path
-                if attribution_cache_path is not None
-                else self.attributor.cache.path
-            ),
+            attribution_cache_path=stamped_cache_path,
             harness_hash=harness_hash,
         )
 

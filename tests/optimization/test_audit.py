@@ -21,13 +21,17 @@ from pathlib import Path
 import pytest
 
 import rlm.core.rlm as rlm_module
+from shrlm.optimization.attribution import AttributionCache, AttributorConfig, LLMAttributor
 from shrlm.optimization.audit import AuditReport, audit_round, main, run_audited_round
 from shrlm.optimization.driver import round_dir
-from shrlm.optimization.mining import MiningResult
+from shrlm.optimization.mining import MiningResult, WeaknessMiner
+from tests.mock_lm import MockLM
 from tests.optimization.test_driver import (
     BoomVerifier,
     ClientFactory,
+    final,
     full_script,
+    make_instances,
     make_miner,
     make_round_config,
 )
@@ -220,6 +224,226 @@ class TestBreakage:
         assert record.run_id in subjects
         messages = " ".join(broken.message for broken in report.broken)
         assert record.trace_path in messages
+
+
+# ---------------------------------------------------------------------------
+# Malformed artifacts: missing required keys are broken links, not crashes
+# ---------------------------------------------------------------------------
+
+
+def _drop_jsonl_key(path: Path, index: int, key: str) -> None:
+    lines = path.read_text().splitlines()
+    payload = json.loads(lines[index])
+    del payload[key]
+    lines[index] = json.dumps(payload, sort_keys=True)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _drop_manifest_run_id(round_path: Path, result: MiningResult) -> None:
+    _drop_jsonl_key(round_path / "runs.jsonl", 0, "run_id")
+
+
+def _drop_manifest_trace_path(round_path: Path, result: MiningResult) -> None:
+    _drop_jsonl_key(round_path / "runs.jsonl", 0, "trace_path")
+
+
+def _drop_manifest_trace_sha(round_path: Path, result: MiningResult) -> None:
+    _drop_jsonl_key(round_path / "runs.jsonl", 0, "trace_sha256")
+
+
+def _drop_instance_id(round_path: Path, result: MiningResult) -> None:
+    _drop_jsonl_key(round_path / "instances.jsonl", 0, "id")
+
+
+def _drop_record_instance_id(round_path: Path, result: MiningResult) -> None:
+    _drop_jsonl_key(round_path / "records.jsonl", 0, "instance_id")
+
+
+def _drop_bundle_config(round_path: Path, result: MiningResult) -> None:
+    bundle_path = round_path / "bundle.json"
+    payload = json.loads(bundle_path.read_text())
+    del payload["config"]
+    bundle_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+MALFORMED: list[tuple[str, Mutator, str]] = [
+    ("manifest line missing run_id", _drop_manifest_run_id, "manifest_file"),
+    ("manifest line missing trace_path", _drop_manifest_trace_path, "manifest_trace"),
+    ("manifest line missing trace_sha256", _drop_manifest_trace_sha, "manifest_trace"),
+    ("instance line missing id", _drop_instance_id, "instances_file"),
+    ("record missing instance_id", _drop_record_instance_id, "record_instance"),
+    ("bundle missing config", _drop_bundle_config, "bundle_id"),
+]
+
+
+class TestMalformedArtifacts:
+    @pytest.mark.parametrize(
+        ("label", "mutate", "expected_link"),
+        MALFORMED,
+        ids=[label for label, _, _ in MALFORMED],
+    )
+    def test_missing_required_key_is_a_named_broken_link(
+        self, audited, label, mutate, expected_link
+    ):
+        round_path, result, _ = audited
+        mutate(round_path, result)
+
+        report = audit_round(round_path.parent, 1)  # must report, never raise
+
+        assert not report.ok
+        assert expected_link in report.broken_link_names()
+
+    def test_malformed_manifest_line_names_the_line(self, audited):
+        round_path, result, _ = audited
+        _drop_manifest_run_id(round_path, result)
+
+        report = audit_round(round_path.parent, 1)
+
+        broken = [b for b in report.broken if b.link == "manifest_file"]
+        assert broken and broken[0].subject == "line 1"
+        assert "run_id" in broken[0].message
+
+    def test_malformed_manifest_still_exits_one_from_the_cli(self, audited, capsys):
+        round_path, result, _ = audited
+        _drop_manifest_trace_path(round_path, result)
+        exit_code = main([str(round_path.parent), "1"])
+        out = capsys.readouterr().out
+        assert exit_code == 1
+        assert "manifest_trace" in out
+
+
+# ---------------------------------------------------------------------------
+# Pipeline seams: re-invocation, operational visibility, cache stamping
+# ---------------------------------------------------------------------------
+
+
+def make_transport_down_miner() -> WeaknessMiner:
+    """A miner whose attributor LM raises on every call: pure transport failure."""
+    return WeaknessMiner(
+        verifier=BoomVerifier(),
+        attributor=LLMAttributor(
+            MockLM(responses=[]),  # every completion raises IndexError
+            config=AttributorConfig(transport_backoff_seconds=0.0),
+        ),
+    )
+
+
+class TestPipelineSeams:
+    def test_run_audited_round_is_reinvocable_over_the_same_out_dir(self, tmp_path, monkeypatch):
+        """A second identical invocation reuses the persisted created_at, so
+        the re-mined bundle is byte-identical and the no-clobber guard passes."""
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path)
+        result1, report1 = run_audited_round(
+            config, make_miner(BoomVerifier()), split_id="held_in_v1"
+        )
+        assert report1.ok
+        bundle_path = round_dir(config.out_dir, config.round_index) / "bundle.json"
+        before = bundle_path.read_bytes()
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        result2, report2 = run_audited_round(
+            make_round_config(tmp_path), make_miner(BoomVerifier()), split_id="held_in_v1"
+        )
+
+        assert report2.ok
+        assert idle.total_calls == 0
+        assert result2.bundle.created_at == result1.bundle.created_at
+        assert bundle_path.read_bytes() == before
+
+    def test_overwrite_bundle_is_the_explicit_escape_for_a_divergent_remine(
+        self, tmp_path, monkeypatch
+    ):
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path)
+        run_audited_round(config, make_miner(BoomVerifier()), split_id="held_in_v1")
+
+        divergent = (
+            "```json\n"
+            + json.dumps(
+                {
+                    "causal_status": "causal",
+                    "agent_mechanism": "premature_termination",
+                    "failing_level": "root",
+                    "evidence_node_ids": ["r"],
+                    "symptom_summary": "stopped before checking the answer",
+                }
+            )
+            + "\n```"
+        )
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        with pytest.raises(ValueError, match="diverge"):
+            run_audited_round(
+                make_round_config(tmp_path),
+                make_miner(BoomVerifier(), responses=[divergent] * 8),
+                split_id="held_in_v1",
+            )
+
+        result, report = run_audited_round(
+            make_round_config(tmp_path),
+            make_miner(BoomVerifier(), responses=[divergent] * 8),
+            split_id="held_in_v1",
+            overwrite_bundle=True,
+        )
+        assert report.ok
+        mechanisms = {pattern.signature.agent_mechanism.value for pattern in result.bundle.patterns}
+        assert "premature_termination" in mechanisms
+
+    def test_all_transport_failure_round_surfaces_the_counts(self, tmp_path, monkeypatch, capsys):
+        """A round mined with the LM down still audits ok (unattributed records
+        are legitimate evidence) but the zero-signature outcome must be visible
+        in the stats and in MiningResult.errors, never silent."""
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path)
+
+        result, report = run_audited_round(
+            config, make_transport_down_miner(), split_id="held_in_v1"
+        )
+
+        assert report.ok
+        assert report.stats.n_records == 2
+        assert report.stats.n_patterns == 0
+        assert report.stats.n_unattributed == 2
+        assert report.stats.n_transport_errors == 2
+        assert len(result.errors) == 2
+        assert result.bundle.patterns == []
+
+        exit_code = main([str(config.out_dir), "1"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "n_unattributed=2" in out
+        assert "n_transport_errors=2" in out
+        assert "every failure record is unattributed" in out
+
+    def test_clean_round_reports_zero_unattributed(self, audited):
+        _, _, report = audited
+        assert report.stats.n_unattributed == 0
+        assert report.stats.n_transport_errors == 0
+
+    def test_all_pass_round_with_file_backed_cache_audits_clean(self, tmp_path, monkeypatch):
+        """put() never runs on an all-pass round: no cache file, no stamped
+        path, and the audit's attribution_cache link stays unbroken."""
+        factory = ClientFactory([final("RIGHT"), final("RIGHT")])
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, instances=make_instances()[:2])
+
+        cache_path = tmp_path / "caches" / "attribution.jsonl"
+        miner = WeaknessMiner(
+            verifier=BoomVerifier(),
+            attributor=LLMAttributor(
+                MockLM(responses=[]), cache=AttributionCache(path=str(cache_path))
+            ),
+        )
+        result, report = run_audited_round(config, miner, split_id="held_in_v1")
+
+        assert report.ok
+        assert result.bundle.config.attribution_cache_path is None
+        assert not cache_path.exists()
 
 
 # ---------------------------------------------------------------------------

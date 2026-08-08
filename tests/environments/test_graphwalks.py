@@ -87,6 +87,16 @@ class TestExtractAnswerNodes:
         assert extract_answer_nodes("Final Answer: [x]\njust kidding") is None
         assert extract_answer_nodes("some text\nFinal Answer: [b, c]") == ["b", "c"]
 
+    def test_first_bracket_pair_wins_over_trailing_commentary(self):
+        # A greedy parse would swallow "] (excluding [c" into the item list
+        # and grade a correct answer wrong.
+        assert extract_answer_nodes("Final Answer: [a, b] (excluding [c])") == ["a", "b"]
+
+    def test_redundantly_nested_brackets_parse_to_the_inner_items(self):
+        # Stray bracket characters are stripped per item: node ids are \w+
+        # and can never legitimately contain brackets.
+        assert extract_answer_nodes("Final Answer: [[a, b]]") == ["a", "b"]
+
 
 class TestRowToInstance:
     def test_id_is_content_derived_and_seed_independent(self):
@@ -163,6 +173,35 @@ class TestSampleRows:
         pool = self.make_pool()
         assert len(sample_rows(pool, ("bfs", "parents"), limit=None, seed=0)) == len(pool)
 
+    def test_odd_limit_returns_exactly_limit_rows(self):
+        # limit=5 over 2 types: the balanced draw yields 2 per type and the
+        # remainder is topped up, never silently dropped.
+        picked = sample_rows(self.make_pool(), ("bfs", "parents"), limit=5, seed=0)
+        assert len(picked) == 5
+        types = [row["problem_type"] for row in picked]
+        assert sorted([types.count("bfs"), types.count("parents")]) == [2, 3]
+
+    def test_limit_beyond_availability_returns_all_rows(self):
+        pool = self.make_pool()
+        picked = sample_rows(pool, ("bfs", "parents"), limit=len(pool) + 5, seed=0)
+        assert len(picked) == len(pool)
+
+    def test_exhausted_type_is_topped_up_from_the_other(self):
+        pool = [
+            make_row(prompt=f"{BFS_PROMPT}\nvariant {i}", problem_type="bfs") for i in range(10)
+        ]
+        pool.append(make_row(prompt=PARENTS_PROMPT, problem_type="parents"))
+        picked = sample_rows(pool, ("bfs", "parents"), limit=6, seed=0)
+        types = [row["problem_type"] for row in picked]
+        assert len(picked) == 6
+        assert types.count("parents") == 1 and types.count("bfs") == 5
+
+    def test_topped_up_sample_is_deterministic(self):
+        pool = self.make_pool()
+        first = sample_rows(pool, ("bfs", "parents"), limit=5, seed=2)
+        second = sample_rows(pool, ("bfs", "parents"), limit=5, seed=2)
+        assert [row["prompt"] for row in first] == [row["prompt"] for row in second]
+
 
 class TestGraphWalksVerifier:
     def instance(self, answer_nodes: tuple[str, ...] = ("b", "c")) -> dict[str, Any]:
@@ -172,6 +211,10 @@ class TestGraphWalksVerifier:
         verdict = GraphWalksVerifier()(self.instance(), "reasoning\nFinal Answer: [c, b]")
         assert verdict.passed is True
         assert verdict.cause is None
+
+    def test_trailing_bracketed_commentary_does_not_corrupt_the_answer(self):
+        verdict = GraphWalksVerifier()(self.instance(), "Final Answer: [b, c] (visited [a])")
+        assert verdict.passed is True
 
     def test_gold_and_produced_are_sorted(self):
         verdict = GraphWalksVerifier()(

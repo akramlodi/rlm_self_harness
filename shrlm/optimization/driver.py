@@ -187,6 +187,15 @@ def _validate_config(config: RoundConfig) -> None:
                 "through the environment instead."
             )
 
+
+def _require_backend_credential(config: RoundConfig) -> None:
+    """Demand the backend's environment credential.
+
+    Called only once at least one run remains to execute: a fully persisted
+    round must be resumable as a no-op on a machine without the credential,
+    while a round with pending runs still fails fast before any run is paid
+    for.
+    """
     env_key = _BACKEND_ENV_KEYS.get(config.backend)
     if env_key is not None and not os.environ.get(env_key):
         raise RuntimeError(
@@ -356,7 +365,9 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
     Raises:
         ValueError: On a misconfigured round (bad attempts, duplicate or unsafe
             instance ids, credential material in backend_kwargs).
-        RuntimeError: When the backend's environment credential is missing.
+        RuntimeError: When the backend's environment credential is missing and
+            at least one run remains to execute. A fully persisted round needs
+            no credential: it resumes as a no-op straight from the manifest.
         RoundPersistenceError: When persisted state contradicts the
             configuration or a recorded trace no longer matches its sha256.
     """
@@ -367,6 +378,20 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
     for entry in existing:
         _verify_trace(path, entry)
     done = {str(entry["run_id"]) for entry in existing}
+
+    pending = [
+        (instance, attempt)
+        for instance in config.instances
+        for attempt in range(1, config.attempts + 1)
+        if run_id_for(str(instance["id"]), attempt) not in done
+    ]
+    entries = list(existing)
+    if not pending:
+        return entries
+
+    # The credential is demanded only now that a run must actually execute,
+    # so a complete round stays resumable on a machine without the key.
+    _require_backend_credential(config)
 
     rlm_kwargs: dict[str, Any] = {"max_iterations": config.max_iterations}
     for name in ("max_depth", "max_budget", "max_timeout"):
@@ -384,39 +409,35 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
         raise RuntimeError("harnessed RLM carries no logger; partial traces would be lost")
     model_name = str(config.backend_kwargs.get("model_name", "unknown"))
 
-    entries = list(existing)
     executed = 0
-    for instance in config.instances:
+    for instance, attempt in pending:
+        if stop_after is not None and executed >= stop_after:
+            return entries
         instance_id = str(instance["id"])
-        for attempt in range(1, config.attempts + 1):
-            run_id = run_id_for(instance_id, attempt)
-            if run_id in done:
-                continue
-            if stop_after is not None and executed >= stop_after:
-                return entries
+        run_id = run_id_for(instance_id, attempt)
 
-            prompt = instance["prompt"]
-            try:
-                run = harnessed.completion(prompt)
-                completion = run.completion
-                verdict = config.verifier(instance, completion.response)
-            except ROOT_LIMIT_EXCEPTIONS as error:
-                completion = _partial_completion(
-                    prompt=prompt,
-                    trajectory=harnessed.logger.get_trajectory(),
-                    model_name=model_name,
-                    error=error,
-                )
-                verdict = Verdict(
-                    passed=False,
-                    cause=VerifierCause.RESOURCE_TERMINATED,
-                    gold="",
-                    produced=completion.response,
-                    detail=f"{type(error).__name__}: {error}",
-                )
+        prompt = instance["prompt"]
+        try:
+            run = harnessed.completion(prompt)
+            completion = run.completion
+            verdict = config.verifier(instance, completion.response)
+        except ROOT_LIMIT_EXCEPTIONS as error:
+            completion = _partial_completion(
+                prompt=prompt,
+                trajectory=harnessed.logger.get_trajectory(),
+                model_name=model_name,
+                error=error,
+            )
+            verdict = Verdict(
+                passed=False,
+                cause=VerifierCause.RESOURCE_TERMINATED,
+                gold="",
+                produced=completion.response,
+                detail=f"{type(error).__name__}: {error}",
+            )
 
-            entries.append(_persist_run(path, run_id, instance_id, attempt, completion, verdict))
-            executed += 1
+        entries.append(_persist_run(path, run_id, instance_id, attempt, completion, verdict))
+        executed += 1
 
     return entries
 
