@@ -1,12 +1,6 @@
 # Handoff: Building Harness Proposal (Stage 2) on top of Weakness Mining
 
-Welcome! This doc explains what the Weakness Mining stage (merged in this PR) produces, where to find it on disk, and exactly what your stage needs to consume. You don't need to have read the papers to start — the short version is below.
-
-## The big picture (60 seconds)
-
-We're building a loop where a language model improves its own *harness* (the scaffolding of prompts and policies around it) instead of its weights. Each round has three stages:
-
-1. **Weakness Mining** (✅ done, this PR) — run the model on tasks, collect failures, and cluster them into recurring failure patterns with evidence.
+1. **Weakness Mining** (✅ done) — run the model on tasks, collect failures, and cluster them into recurring failure patterns with evidence.
 2. **Harness Proposal** (⬅️ **you are building this**) — show the model its own failure patterns and ask it to propose a small number of *minimal, targeted edits* to the harness.
 3. **Proposal Validation** (later) — test each candidate edit and only keep the ones that don't regress.
 
