@@ -130,6 +130,26 @@ result, report = run_audited_round(config, miner, split_id="dev")
 
 Costs about a cent for 6 small instances. Re-running is nearly free (runs resume from disk, attributions replay from cache). For unit tests, don't call the model at all — `tests/mock_lm.py::MockLM` plus the fixture builders in `tests/optimization/fixtures.py` are how every existing test does it; `tests/optimization/test_audit.py::run_full_round`-style helpers show a complete offline round.
 
+## The sub-verification ablation (you'll see two bundles per round)
+
+The paper's key ablation asks: does checkable child-level evidence actually make the mined attributions better? To answer it, the same round can be mined **twice** — once with the sub-verifier and once without (`WeaknessMiner(sub_verifier=None)`) — and the two evidence bundles sit side by side:
+
+```
+round_00/
+├── bundle.json              ← one mode's bundle (e.g. grounded), at the round root
+└── bundles/ablated/         ← the other mode's full triplet
+    ├── bundle.json
+    ├── records.jsonl
+    └── attributions.jsonl
+```
+
+Produce and audit them with `run_audited_round(..., bundle_label="ablated")` and `python -m shrlm.optimization.audit <out_dir> 0 --bundle-label ablated`. The two bundles' configs differ in exactly one field — `sub_verifier_enabled` — which is what makes the comparison controlled (a test pins this).
+
+What this means for your stage-2 code:
+- A record's `level_grounded` tells you whether its failing level is a *checked fact* (sub-verifier verified at least one child) or the labeling model's *judgment* (ablated mode, or no checkable children). Treat ungrounded levels with proportionate skepticism.
+- Your proposer may receive a bundle from either mode — don't assume `sub_verdicts` are populated.
+- Digest texts in ablated mode say `sub_verifier_failed=n/a`, never a fake `0` — "didn't run" is distinguishable from "ran and all passed".
+
 ## Gotchas we already hit (so you don't)
 
 - **Sparse H0 barely recurses.** Most failures are `no_recursion` / `whole_input_subcall_collapse`, and grounding coverage is ~0 until edits make the model actually decompose. That's expected — it's the starting condition the loop is supposed to fix.
