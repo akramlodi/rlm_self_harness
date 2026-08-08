@@ -17,6 +17,7 @@ budget accounting stays per-run.
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,9 +28,10 @@ import rlm.core.rlm as rlm_module
 from rlm.core.types import ModelUsageSummary, RLMChatCompletion, UsageSummary
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.attribution import VALIDATOR_VERSION, AttributionCache, LLMAttributor
+from shrlm.optimization.audit import AuditReport, run_audited_round
 from shrlm.optimization.bundle import write_bundle
 from shrlm.optimization.driver import RoundConfig, mine_round, round_dir, run_round
-from shrlm.optimization.mining import WeaknessMiner
+from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
 from shrlm.rlm_harness import H0
@@ -194,9 +196,29 @@ CANNED_ATTRIBUTION = (
 )
 
 
-def make_miner(verifier: Any, responses: list[str] | None = None) -> WeaknessMiner:
+class NoneSubVerifier:
+    """A sub-verifier stub for which no child is checkable (always None).
+
+    Over the narrow MockLM trees the driver tests produce (root only, no
+    sub-calls), ``derive_failing_level`` returns NO_RECURSION, so every record
+    is grounded and the attributor renders the grounded prompt variant -- a
+    second, distinct variant for the very same persisted round.
+    """
+
+    def __call__(self, instance: dict[str, Any], node: Any) -> bool | None:
+        return None
+
+
+def make_miner(
+    verifier: Any,
+    responses: list[str] | None = None,
+    sub_verifier: Any = None,
+    cache: AttributionCache | None = None,
+) -> WeaknessMiner:
     lm = MockLM(responses=responses if responses is not None else [CANNED_ATTRIBUTION] * 8)
-    return WeaknessMiner(verifier=verifier, attributor=LLMAttributor(lm))
+    return WeaknessMiner(
+        verifier=verifier, attributor=LLMAttributor(lm, cache=cache), sub_verifier=sub_verifier
+    )
 
 
 def read_manifest(round_path: Path) -> list[dict[str, Any]]:
@@ -210,6 +232,65 @@ def run_full_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RoundConf
     config = make_round_config(tmp_path)
     run_round(config)
     return config
+
+
+@dataclass
+class DualMineOutcome:
+    """What ``run_dual_mined_round`` hands back from its two mining passes."""
+
+    first_result: MiningResult
+    first_report: AuditReport
+    second_miner: WeaknessMiner
+    second_result: MiningResult
+    second_report: AuditReport
+
+
+def run_dual_mined_round(
+    monkeypatch: pytest.MonkeyPatch,
+    script: list[str],
+    first_config: RoundConfig,
+    first_miner: WeaknessMiner,
+    second_config: RoundConfig,
+    second_miner_factory: Callable[[], WeaknessMiner],
+    second_label: str,
+) -> DualMineOutcome:
+    """The dual-mine core shared by the ablation and labeled-destination tests.
+
+    One scripted round is run and mined into the round root, then the
+    now-complete persisted round is mined a second time into
+    ``bundles/<second_label>/``. The runtime seam is silenced for the second
+    pass and asserted silent: a complete round resumes as a no-op, so only
+    the attributor may call out. ``second_miner_factory`` is called only
+    after the first pass finishes, so a file-backed ``AttributionCache`` it
+    constructs loads the entries the first pass persisted -- the shared-cache
+    semantics both callers test. The materially different parts (scripts,
+    instances, each pass's mining mode) stay at the call sites.
+    """
+    factory = ClientFactory(script)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    first_result, first_report = run_audited_round(
+        first_config, first_miner, split_id="held_in_v1", created_at="2026-01-01T00:00:00"
+    )
+
+    idle = ClientFactory([])
+    monkeypatch.setattr(rlm_module, "get_client", idle)
+    second_miner = second_miner_factory()
+    second_result, second_report = run_audited_round(
+        second_config,
+        second_miner,
+        split_id="held_in_v1",
+        created_at="2026-02-02T00:00:00",
+        bundle_label=second_label,
+    )
+    assert idle.total_calls == 0
+
+    return DualMineOutcome(
+        first_result=first_result,
+        first_report=first_report,
+        second_miner=second_miner,
+        second_result=second_result,
+        second_report=second_report,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -518,12 +599,17 @@ class TestMineRound:
             miner=miner,
             split_id="held_in_v1",
         )
-        prompt_path = round_dir(config.out_dir, config.round_index) / "attributor_prompt.txt"
+        # No sub-verifier, narrow trees: the single ungrounded, non-aggregate
+        # variant, persisted under its content-addressed (sha-suffixed) name.
+        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
+        round_path = round_dir(config.out_dir, config.round_index)
+        prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
         assert prompt_path.is_file()
-        # No sub-verifier, narrow trees: the single ungrounded, non-aggregate variant.
         assert prompt_path.read_text() == miner.attributor.system_prompt(
             grounded=False, no_subcalls=True
         )
+        # The legacy unsuffixed name is never written by new mines.
+        assert not (round_path / "attributor_prompt.txt").exists()
 
     def test_every_record_links_to_its_persisted_trace(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)
@@ -664,6 +750,116 @@ class TestMineRound:
                 miner=make_miner(BoomVerifier()),
                 split_id="held_in_v1",
             )
+
+
+# ---------------------------------------------------------------------------
+# Content-addressed prompt persistence: a re-mine never clobbers a variant
+# ---------------------------------------------------------------------------
+
+
+class TestPromptPersistence:
+    def test_remine_with_a_different_variant_leaves_both_prompt_files(self, tmp_path, monkeypatch):
+        """Mining the same round twice with different prompt variants must
+        leave both files on disk, each content-addressed by its prompt sha."""
+        config = run_full_round(tmp_path, monkeypatch)
+        result_ungrounded = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier()),
+            split_id="held_in_v1",
+        )
+        result_grounded = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier(), sub_verifier=NoneSubVerifier()),
+            split_id="held_in_v1",
+        )
+
+        ungrounded_shas = set(result_ungrounded.attributor_prompts)
+        grounded_shas = set(result_grounded.attributor_prompts)
+        assert ungrounded_shas and grounded_shas
+        assert ungrounded_shas.isdisjoint(grounded_shas)
+
+        round_path = round_dir(config.out_dir, config.round_index)
+        all_prompts = {**result_ungrounded.attributor_prompts, **result_grounded.attributor_prompts}
+        for sha, text in all_prompts.items():
+            prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
+            assert prompt_path.is_file()
+            assert prompt_path.read_text() == text
+            assert hashlib.sha256(text.encode("utf-8")).hexdigest() == sha
+
+    def test_existing_prompt_file_with_correct_bytes_is_never_rewritten(
+        self, tmp_path, monkeypatch
+    ):
+        """Content-addressed means write-once for intact artifacts: a file
+        whose bytes already hash to its address is skipped, not rewritten."""
+        config = run_full_round(tmp_path, monkeypatch)
+        miner = make_miner(BoomVerifier())
+        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
+        text = miner.attributor.system_prompt(grounded=False, no_subcalls=True)
+        round_path = round_dir(config.out_dir, config.round_index)
+        prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
+        prompt_path.write_text(text)
+        mtime_before = os.stat(prompt_path).st_mtime_ns
+
+        mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=miner,
+            split_id="held_in_v1",
+        )
+
+        assert prompt_path.read_text() == text
+        assert os.stat(prompt_path).st_mtime_ns == mtime_before
+
+    def test_existing_prompt_file_with_wrong_bytes_is_healed(self, tmp_path, monkeypatch):
+        """A file at the sha-keyed name whose bytes do NOT hash to it (a
+        truncated crash write, tampering) is healed with the correct bytes:
+        trusting it would permanently break the audit's prompt hash link."""
+        config = run_full_round(tmp_path, monkeypatch)
+        miner = make_miner(BoomVerifier())
+        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
+        round_path = round_dir(config.out_dir, config.round_index)
+        prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
+        prompt_path.write_text("sentinel: bytes that do not hash to the file's name")
+
+        mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=miner,
+            split_id="held_in_v1",
+        )
+
+        healed = prompt_path.read_text()
+        assert healed == miner.attributor.system_prompt(grounded=False, no_subcalls=True)
+        assert hashlib.sha256(healed.encode("utf-8")).hexdigest() == sha
+
+    def test_truncated_digest_file_is_healed_on_remine(self, tmp_path, monkeypatch):
+        """A digest file truncated after persistence (e.g. a crash mid-write
+        under the old non-atomic writer) is restored by the next mining pass,
+        so the record's digest_sha256 audit link works again."""
+        config = run_full_round(tmp_path, monkeypatch)
+        result = mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier()),
+            split_id="held_in_v1",
+        )
+        round_path = round_dir(config.out_dir, config.round_index)
+        record = result.records[0]
+        digest_path = round_path / "digests" / f"{record.digest_sha256}.txt"
+        full_text = digest_path.read_text()
+        digest_path.write_text(full_text[: len(full_text) // 2])
+
+        mine_round(
+            out_dir=config.out_dir,
+            round_index=config.round_index,
+            miner=make_miner(BoomVerifier()),
+            split_id="held_in_v1",
+        )
+
+        assert digest_path.read_text() == full_text
+        assert hashlib.sha256(digest_path.read_bytes()).hexdigest() == record.digest_sha256
 
 
 if __name__ == "__main__":

@@ -20,7 +20,13 @@ from dataclasses import dataclass
 
 from shrlm.optimization.types import CallNode, NodeKind, TreeStats, Verdict, iter_nodes
 
-DIGEST_VERSION = "1.0.0"
+# Version of the digest rendering scheme. This constant reaches bundle ids
+# via ``MiningConfig.digest_version`` only -- it is deliberately NOT part of
+# the attribution cache key. When a rendering change alters a digest's bytes,
+# that digest's sha256 changes and with it the affected records' cache keys:
+# invalidation rides on the bytes themselves, so records whose rendering is
+# untouched keep their cached attributions across a bump.
+DIGEST_VERSION = "1.1.0"
 
 DEFAULT_CHAR_BUDGET = 12000
 DEFAULT_FOCUS_K = 4
@@ -183,12 +189,20 @@ def render_child_table(root: CallNode, cfg: DigestConfig) -> tuple[str, int, boo
         lines = [f"## Sub-calls ({len(children)} total, aggregated by depth)"]
         for depth in sorted(by_depth):
             group = by_depth[depth]
+            # Per-depth rule: a depth group whose children ALL carry
+            # sub_verdict None had no sub-verifier statistic computed over
+            # it, so its aggregate must say so (n/a) rather than assert a 0
+            # indistinguishable from "ran and all passed". Any verdict at
+            # the depth -- even all-passing -- keeps that depth's count
+            # numeric. A tree with no verdicts anywhere renders n/a at every
+            # depth, which subsumes the old tree-level rule.
+            any_verdicts = any(node.sub_verdict is not None for node in group)
             failed = sum(1 for node in group if node.sub_verdict is False)
             lines.append(
                 f"depth {depth}: n={len(group)} "
                 f"kinds={sorted({node.kind.value for node in group})} "
                 f"mean_prompt_chars={sum(n.prompt_chars for n in group) // len(group)} "
-                f"sub_verifier_failed={failed}"
+                f"sub_verifier_failed={failed if any_verdicts else 'n/a'}"
             )
         return "\n".join(lines), available, True
 
@@ -214,6 +228,13 @@ def select_focus_nodes(root: CallNode, focus_k: int) -> list[CallNode]:
     A fixed priority, so the selection is reproducible: sub-calls the
     sub-verifier rejected, then errored ones, then the largest by prompt size
     (the natural place a whole-input collapse shows up).
+
+    The verdict-aware first tier is a DESIGNED mode-visible signal, not a
+    leak: it is part of the sub-verdict evidence the digest deliberately
+    surfaces to the attributor (alongside the per-call verdict column), so a
+    grounded and an ablated digest of the same tree may excerpt different
+    nodes. Neutralizing it would hide exactly the grounding signal the
+    sub-verification ablation measures.
     """
     children = [node for node in iter_nodes(root) if node.node_id != root.node_id]
     failed = sorted(

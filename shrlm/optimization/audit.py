@@ -41,10 +41,10 @@ The links, in walk order:
   ``representatives`` resolve to records in ``records.jsonl``.
 * ``attributions_file`` / ``attribution_digest`` / ``attribution_prompt`` /
   ``attribution_attempts`` -- every ``attributions.jsonl`` entry resolves its
-  digest and its rendered prompt (``attributor_prompt.txt`` for the usual
-  single-variant round, ``attributor_prompt_<sha16>.txt`` when the round
-  mixed variants; either way the file's bytes must hash to the entry's
-  ``prompt_sha256``), and every unattributed entry carries a non-empty
+  digest and its rendered prompt (content-addressed
+  ``attributor_prompt_<sha16>.txt``, or the plain ``attributor_prompt.txt``
+  a legacy round persisted; either way the file's bytes must hash to the
+  entry's ``prompt_sha256``), and every unattributed entry carries a non-empty
   per-attempt audit trail whose rejected attempts name their violations.
   Transport-failed entries (``attribution_error_kind`` of ``transport``, or
   for legacy entries an ``error`` prefixed ``transport failure:``) are exempt
@@ -62,10 +62,18 @@ child verdict involved.
 ``run_audited_round`` composes the whole pipeline -- ``run_round`` ->
 ``mine_round`` -> ``write_bundle`` -> ``audit_round`` -- into one call so a
 live capstone script stays trivial.
+
+One round can hold more than one bundle. The default layout keeps the triplet
+(``bundle.json``, ``records.jsonl``, ``attributions.jsonl``) at the round
+root; a ``bundle_label`` puts a second mode's triplet under
+``round_NN/bundles/<label>/`` (see ``bundle_dir_for``), which is what lets
+the sub-verification ablation persist its grounded and ablated bundles side
+by side, each auditable against the same shared round artifacts.
 """
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -74,12 +82,13 @@ from shrlm.harness_identity import hash_of_serialization
 from shrlm.optimization.bundle import (
     ATTRIBUTIONS_FILENAME,
     BUNDLE_FILENAME,
+    BUNDLES_DIR,
     RECORDS_FILENAME,
+    bundle_dir_for,
     compute_bundle_id,
     write_bundle,
 )
 from shrlm.optimization.driver import (
-    ATTRIBUTOR_PROMPT_FILE,
     DIGESTS_DIR,
     HARNESS_FILE,
     INSTANCES_FILE,
@@ -478,13 +487,21 @@ def _audit_bundle(
                     )
 
 
+# The legacy prompt file name. New mines persist only content-addressed
+# ``attributor_prompt_<sha16>.txt`` files; this name survives for the
+# fallback in ``_resolve_prompt_file`` over rounds mined before prompt
+# persistence was content-addressed.
+ATTRIBUTOR_PROMPT_FILE = "attributor_prompt.txt"
+
+
 def _resolve_prompt_file(path: Path, prompt_sha: str) -> Path | None:
     """Find the persisted prompt file whose bytes hash to ``prompt_sha``.
 
-    ``mine_round`` writes ``attributor_prompt.txt`` for the usual
-    single-variant round and ``attributor_prompt_<sha16>.txt`` per variant
-    when a round mixed prompt variants; either name is acceptable as long as
-    the content hashes to the entry's recorded sha.
+    ``mine_round`` persists every rendered variant content-addressed as
+    ``attributor_prompt_<sha16>.txt``; legacy rounds mined before that hold a
+    single plain ``attributor_prompt.txt``, which stays acceptable as the
+    fallback. Either name resolves as long as the content hashes to the
+    entry's recorded sha.
     """
     candidates = (
         path / f"attributor_prompt_{prompt_sha[:16]}.txt",
@@ -547,7 +564,9 @@ def _audit_attributions(path: Path, entries: list[dict[str, Any]], walk: _Walk) 
 # ---------------------------------------------------------------------------
 
 
-def audit_round(out_dir: Path | str, round_index: int) -> AuditReport:
+def audit_round(
+    out_dir: Path | str, round_index: int, bundle_label: str | None = None
+) -> AuditReport:
     """Walk one completed round's directory and verify every audit link.
 
     All failures are collected -- the walk never stops at the first broken
@@ -560,6 +579,16 @@ def audit_round(out_dir: Path | str, round_index: int) -> AuditReport:
     Args:
         out_dir: The experiment directory the round was persisted into.
         round_index: Which round to audit.
+        bundle_label: Audit the labeled secondary bundle under
+            ``round_NN/bundles/<label>/`` instead of the round-root bundle.
+            Only the triplet (``bundle.json``, ``records.jsonl``,
+            ``attributions.jsonl``) resolves against that directory; every
+            shared round artifact -- the harness envelope, instances, the
+            manifest and traces, the content-addressed digests, the persisted
+            attributor prompts, and ``config.attribution_cache_path`` (which
+            stays round-root-relative in both modes) -- resolves against the
+            round root exactly as in the default walk, under the same link
+            names.
 
     Returns:
         An ``AuditReport`` with the per-link results, the broken links, and
@@ -567,11 +596,14 @@ def audit_round(out_dir: Path | str, round_index: int) -> AuditReport:
 
     Raises:
         FileNotFoundError: If the round directory itself does not exist --
-            there is no evidence chain to walk at all.
+            there is no evidence chain to walk at all. A missing *labeled
+            bundle directory* is not this case: the round exists, so its
+            absent triplet is reported as broken links instead.
     """
     path = round_dir(out_dir, round_index)
     if not path.is_dir():
         raise FileNotFoundError(f"round directory {path} does not exist")
+    triplet_dir = bundle_dir_for(path, bundle_label)
 
     walk = _Walk()
 
@@ -595,15 +627,17 @@ def audit_round(out_dir: Path | str, round_index: int) -> AuditReport:
         str(entry["run_id"]): entry for entry in manifest if entry.get("run_id") is not None
     }
 
-    records = _load_jsonl_file(path / RECORDS_FILENAME, "records_file", walk)
+    # The triplet lives in the bundle directory; every join it asserts is
+    # still checked against the shared artifacts at the round root.
+    records = _load_jsonl_file(triplet_dir / RECORDS_FILENAME, "records_file", walk)
     if records is not None:
         _audit_records(path, records, manifest_by_run_id, instance_ids, walk)
 
-    bundle = _load_json_file(path / BUNDLE_FILENAME, "bundle_file", walk)
+    bundle = _load_json_file(triplet_dir / BUNDLE_FILENAME, "bundle_file", walk)
     if bundle is not None:
         _audit_bundle(path, bundle, records, envelope_hash, walk)
 
-    attributions = _load_jsonl_file(path / ATTRIBUTIONS_FILENAME, "attributions_file", walk)
+    attributions = _load_jsonl_file(triplet_dir / ATTRIBUTIONS_FILENAME, "attributions_file", walk)
     if attributions is not None:
         _audit_attributions(path, attributions, walk)
 
@@ -654,20 +688,24 @@ def run_audited_round(
     harness_version: str | None = None,
     created_at: str | None = None,
     overwrite_bundle: bool = False,
+    bundle_label: str | None = None,
 ) -> tuple[MiningResult, AuditReport]:
     """Run, mine, bundle, and audit one round: the whole pipeline in one call.
 
     The bundle triplet is written into the same ``round_NN`` directory the
-    driver persisted into, so a single directory holds the round's complete,
-    auditable evidence chain. The audit result is returned rather than raised
-    on: the caller (the live capstone script) decides what a broken link
-    means for the session.
+    driver persisted into -- or, when ``bundle_label`` is given, into
+    ``round_NN/bundles/<label>/`` -- so one round directory holds the round's
+    complete, auditable evidence chain (and can hold a second mode's bundle
+    beside the first, as the sub-verification ablation requires). The audit
+    result is returned rather than raised on: the caller (the live capstone
+    script) decides what a broken link means for the session.
 
-    Re-invocation over the same ``out_dir`` is idempotent: completed runs are
-    resumed from the manifest, and when ``round_NN/bundle.json`` already
-    exists its recorded ``created_at`` is reused (unless the caller supplies
-    one), so an identical re-mine reproduces the persisted bundle byte for
-    byte and the no-clobber guard passes.
+    Re-invocation over the same ``out_dir`` is idempotent per destination:
+    completed runs are resumed from the manifest, and when the destination's
+    own ``bundle.json`` already exists its recorded ``created_at`` is reused
+    (unless the caller supplies one) -- never another destination's, so each
+    mode reproduces its own persisted bundle byte for byte and the no-clobber
+    guard passes.
 
     A clean audit is not proof the mining signal exists: a round mined with
     the attributor LM unreachable completes with every record unattributed
@@ -692,12 +730,20 @@ def run_audited_round(
             may already have been audited -- the escape hatch for a poisoned
             round (e.g. a re-mine after an attributor outage), never a
             default.
+        bundle_label: Write and audit the bundle triplet under
+            ``round_NN/bundles/<label>/`` instead of the round root (see
+            ``bundle_dir_for`` / ``audit_round``); shared round artifacts stay
+            at the round root either way. Default None keeps today's layout.
 
     Returns:
         The ``MiningResult`` and the ``AuditReport`` over the finished round.
     """
+    destination = bundle_dir_for(round_dir(config.out_dir, config.round_index), bundle_label)
     if created_at is None:
-        bundle_path = round_dir(config.out_dir, config.round_index) / BUNDLE_FILENAME
+        # created_at reuse keys on the bundle being rewritten: read only the
+        # destination's own bundle.json, never another destination's, so each
+        # mode is byte-idempotent on re-invocation.
+        bundle_path = destination / BUNDLE_FILENAME
         if bundle_path.is_file():
             try:
                 existing = json.loads(bundle_path.read_text())
@@ -724,8 +770,9 @@ def run_audited_round(
         str(config.out_dir),
         raw_attributions=result.raw_attributions,
         overwrite=overwrite_bundle,
+        bundle_dir=str(destination),
     )
-    report = audit_round(config.out_dir, config.round_index)
+    report = audit_round(config.out_dir, config.round_index, bundle_label=bundle_label)
     return result, report
 
 
@@ -773,9 +820,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("out_dir", type=Path, help="the experiment directory holding round_NN/")
     parser.add_argument("round_index", type=int, help="which round to audit")
+    parser.add_argument(
+        "--bundle-label",
+        default=None,
+        help=(
+            "audit the labeled secondary bundle under round_NN/bundles/<label>/ "
+            "instead of the round-root bundle (shared artifacts still resolve "
+            "against the round root)"
+        ),
+    )
     args = parser.parse_args(argv)
 
-    report = audit_round(args.out_dir, args.round_index)
+    try:
+        report = audit_round(args.out_dir, args.round_index, bundle_label=args.bundle_label)
+    except ValueError as error:
+        # A malformed --bundle-label (bundle_dir_for's validation) is an
+        # operator error, not a broken evidence chain: one line, exit 2.
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     print(_format_report(report))
     return 0 if report.ok else 1
 
@@ -785,11 +847,13 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "BUNDLES_DIR",
     "AuditReport",
     "AuditStats",
     "BrokenLink",
     "LinkResult",
     "audit_round",
+    "bundle_dir_for",
     "main",
     "run_audited_round",
     "stored_harness_hash",

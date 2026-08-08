@@ -13,7 +13,9 @@ prose mining itself composes (quoted model output is exempt; see
 import hashlib
 import json
 import os
+import re
 from datetime import datetime
+from pathlib import Path
 
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import (
@@ -44,6 +46,38 @@ PRESCRIPTION_MARKERS: tuple[str, ...] = (
 BUNDLE_FILENAME = "bundle.json"
 RECORDS_FILENAME = "records.jsonl"
 ATTRIBUTIONS_FILENAME = "attributions.jsonl"
+
+# Instance ids become file names (and bundle labels become directory names),
+# so they must be filesystem-safe everywhere.
+FILESYSTEM_SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+# Where labeled secondary bundles live under a round: round_NN/bundles/<label>/.
+BUNDLES_DIR = "bundles"
+
+
+def round_dir(out_dir: Path | str, round_index: int) -> Path:
+    """The directory holding one round's artifacts: ``<out_dir>/round_NN``."""
+    return Path(out_dir) / f"round_{round_index:02d}"
+
+
+def bundle_dir_for(round_path: Path, bundle_label: str | None) -> Path:
+    """Resolve where a round's bundle triplet lives.
+
+    ``None`` is the round root -- exactly the legacy single-bundle layout.
+    A label names a secondary bundle under ``round_NN/bundles/<label>/``,
+    which is how two modes of the sub-verification ablation coexist in one
+    round: only the triplet (``bundle.json``, ``records.jsonl``,
+    ``attributions.jsonl``) lives there, every shared artifact stays at the
+    round root.
+    """
+    if bundle_label is None:
+        return round_path
+    if not FILESYSTEM_SAFE_ID_PATTERN.fullmatch(bundle_label):
+        raise ValueError(
+            f"bundle label {bundle_label!r} is not filesystem-safe; labels become "
+            f"directory names and must match {FILESYSTEM_SAFE_ID_PATTERN.pattern}"
+        )
+    return round_path / BUNDLES_DIR / bundle_label
 
 
 def compute_bundle_id(config: MiningConfig, records: list[FailureRecord]) -> str:
@@ -164,6 +198,7 @@ def write_bundle(
     out_dir: str,
     raw_attributions: list[dict] | None = None,
     overwrite: bool = False,
+    bundle_dir: str | None = None,
 ) -> str:
     """
     Write the round's artifacts, refusing to clobber audited evidence.
@@ -174,7 +209,19 @@ def write_bundle(
     same-directory ``.tmp`` file, then ``os.replace``), so a crash mid-write
     can never leave a truncated bundle behind.
 
-    An existing ``bundle.json`` in the round directory is overwritten only
+    ``bundle_dir``, when given, names the directory the triplet
+    (``bundle.json``, ``records.jsonl``, ``attributions.jsonl``) lands in
+    DIRECTLY -- unlike ``out_dir``, which is an experiment directory that
+    internally appends ``round_NN``. This is how two bundles coexist under
+    one round (the sub-verification ablation writes its second mode into
+    ``round_NN/bundles/<label>/``); only the triplet moves, every shared
+    round artifact (manifest, traces, digests, prompts, the attribution
+    cache) stays at the round root. The default keeps today's layout: the
+    triplet lands at ``<out_dir>/round_NN``. The non-clobber guard below is
+    applied within whichever destination is used, so each destination's
+    evidence is protected independently.
+
+    An existing ``bundle.json`` in the destination directory is overwritten only
     when the new content is byte-identical (an idempotent re-write). A
     different bundle_id means a different round was already persisted here;
     the same id with different bytes means a re-mine diverged -- typically a
@@ -190,10 +237,12 @@ def write_bundle(
     divergent content). It replaces evidence that may already have been
     audited, so it must be an operator's stated intent, never a default.
     """
-    round_dir = os.path.join(out_dir, f"round_{bundle.config.round_index:02d}")
-    os.makedirs(round_dir, exist_ok=True)
+    destination = (
+        bundle_dir if bundle_dir is not None else str(round_dir(out_dir, bundle.config.round_index))
+    )
+    os.makedirs(destination, exist_ok=True)
 
-    bundle_path = os.path.join(round_dir, BUNDLE_FILENAME)
+    bundle_path = os.path.join(destination, BUNDLE_FILENAME)
     payload = json.dumps(bundle.to_dict(), indent=2, sort_keys=True) + "\n"
     if not overwrite and os.path.exists(bundle_path):
         with open(bundle_path) as handle:
@@ -235,13 +284,13 @@ def write_bundle(
         handle.write(payload)
     os.replace(tmp_path, bundle_path)
 
-    with open(os.path.join(round_dir, RECORDS_FILENAME), "w") as handle:
+    with open(os.path.join(destination, RECORDS_FILENAME), "w") as handle:
         for record in records:
             json.dump(record.to_dict(), handle, sort_keys=True, default=str)
             handle.write("\n")
 
     if raw_attributions is not None:
-        with open(os.path.join(round_dir, ATTRIBUTIONS_FILENAME), "w") as handle:
+        with open(os.path.join(destination, ATTRIBUTIONS_FILENAME), "w") as handle:
             for entry in raw_attributions:
                 json.dump(entry, handle, sort_keys=True, default=str)
                 handle.write("\n")

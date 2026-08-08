@@ -329,19 +329,26 @@ class LLMAttributor:
         rendered = self.system_prompt(grounded, aggregated, no_subcalls)
         return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
+    def config_material(self) -> dict[str, Any]:
+        """The exact material ``config_sha256`` hashes, as a dict.
+
+        Everything that changes what the attributor produces -- and nothing
+        else -- belongs here. Notably absent by design: ``DIGEST_VERSION``
+        (invalidation rides on digest bytes, see ``digest.DIGEST_VERSION``)
+        and the transport retry knobs (they change when a response is
+        obtained, never what response the model produces).
+        """
+        return {
+            "model": self.lm.model_name,
+            "sampling_args": self.lm.sampling_args,
+            "max_attempts": self.config.max_attempts,
+            "prompt_version": self.config.prompt_version,
+            "taxonomy_version": self.config.taxonomy_version,
+            "validator_version": VALIDATOR_VERSION,
+        }
+
     def config_sha256(self) -> str:
-        payload = json.dumps(
-            {
-                "model": self.lm.model_name,
-                "sampling_args": self.lm.sampling_args,
-                "max_attempts": self.config.max_attempts,
-                "prompt_version": self.config.prompt_version,
-                "taxonomy_version": self.config.taxonomy_version,
-                "validator_version": VALIDATOR_VERSION,
-            },
-            sort_keys=True,
-            default=str,
-        )
+        payload = json.dumps(self.config_material(), sort_keys=True, default=str)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def cache_key(self, digest: TraceDigest, grounded: bool, attempt: int) -> str:

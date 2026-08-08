@@ -221,7 +221,7 @@ We adapt the \sh{} framework of \citet{zhang2026selfharness} to \rlms. The model
 \subsubsection{Weakness Mining}
 \label{sec:weakness-mining}
 
-Weakness mining runs the current harness on short held-in instances from a source environment, recording the verifier outcome and full recursive execution trace of every run, including runs terminated by resource limits. Each recorded sub-call is then scored post hoc by the environment's synthesized sub-verifier; because sub-problems are authored by the model itself, a sub-call may be correct, incorrect, or uncheckable, and the level at which the error signal first appears is treated as a checked fact only when at least one sub-call was checkable. Records with no checkable sub-call are marked ungrounded and their failing level falls to the model's judgment, the distinction exercised by the ablation of \cref{app:ablations}. Each failure is converted into a structured record: the verifier-level cause and the failing level are derived from the verifier and sub-verifier, while the causal status of the associated agent behavior and the implicated mechanism are judged by the same fixed model from a bounded, mechanically compressed digest of the trace. These judgments are validated against a closed vocabulary of mechanisms, each mapping to exactly one editable surface, and a judgment that never validates is recorded as unattributed rather than coerced. Failures are then clustered by exact agreement on the verifier-grounded signature
+Weakness mining runs the current harness on short held-in instances from a source environment, recording the verifier outcome and full recursive execution trace of every run, including runs terminated by resource limits. Each recorded sub-call is then scored post hoc by the environment's synthesized sub-verifier; because sub-problems are authored by the model itself, a sub-call may be correct, incorrect, or uncheckable, and the level at which the error signal first appears is treated as a checked fact only when at least one sub-call was checkable. Records with no checkable sub-call are marked ungrounded and their failing level falls to the model's judgment. Mining runs in both conditions — with the sub-verifier and with it withheld, in which case every record is ungrounded — and because sub-verification is applied post hoc to recorded traces, both conditions can mine the same runs, holding execution fixed while only the grounding signal varies; the comparison is the ablation of \cref{app:ablations}. Each failure is converted into a structured record: the verifier-level cause and the failing level are derived from the verifier and sub-verifier, while the causal status of the associated agent behavior and the implicated mechanism are judged by the same fixed model from a bounded, mechanically compressed digest of the trace. These judgments are validated against a closed vocabulary of mechanisms, each mapping to exactly one editable surface, and a judgment that never validates is recorded as unattributed rather than coerced. Failures are then clustered by exact agreement on the verifier-grounded signature
 \begin{equation*}
 \phi(r_i)=(\text{verifier cause},\ \text{failing level},\ \text{causal status},\ \text{agent mechanism}),
 \end{equation*}
@@ -402,7 +402,11 @@ the full optimization run with the sub-verifier signal removed, giving the
 proposer root outcomes and traces alone, and compare the resulting frozen harness
 against SH-RLM on all four test sets. The comparison asks whether checkable
 child-level evidence is what makes mined failure attributions actionable, or
-whether the proposer recovers the same edits from traces without it. Because this
+whether the proposer recovers the same edits from traces without it. Because
+sub-verification is post hoc, the same recorded runs can additionally be mined
+under both conditions within a round, yielding paired evidence bundles that
+differ only in the grounding signal; this trace-level comparison costs no extra
+execution and complements the loop-level ablation. Because the full repeat
 doubles optimization cost, it is a preregistered secondary run on the source
 environment, contingent on the pilot's cost estimate holding.
 

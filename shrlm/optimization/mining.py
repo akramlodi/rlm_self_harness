@@ -97,7 +97,9 @@ class WeaknessMiner:
     ``sub_verifier`` is the single ablation switch. Supplying one makes the
     failing level a checkable fact derived from per-sub-call outcomes;
     withholding it hands that judgment to the attributor and marks every record
-    ungrounded. Nothing else in the pipeline varies with the choice.
+    ungrounded. Nothing besides the checkability of the failing level and the
+    sub-verdict evidence the digest deliberately surfaces (the per-call verdict
+    column and verdict-aware focus-excerpt selection) varies with the choice.
     """
 
     def __init__(

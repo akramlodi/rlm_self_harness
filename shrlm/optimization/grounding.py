@@ -3,8 +3,10 @@ Derive the failing level from checkable per-sub-call outcomes.
 
 This module is the sub-verification ablation switch. With a SubVerifier the
 failing level is a checkable fact; without one it is a language-model judgment,
-and the record says which. Nothing else in the pipeline may vary with that
-choice, or the ablation would be comparing two things at once.
+and the record says which. Nothing besides the checkability of the failing
+level and the sub-verdict evidence the digest deliberately surfaces -- the
+per-call verdict column and the verdict-aware focus-excerpt selection -- may
+vary with that choice, or the ablation would be comparing two things at once.
 
 The distinction being established is the one the project rests on: a root
 failure means correct sub-results were aggregated into a wrong answer, while a

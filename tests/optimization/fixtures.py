@@ -26,6 +26,7 @@ Four canonical runs are provided:
 from typing import Any
 
 from rlm.core.types import RLMChatCompletion, UsageSummary
+from shrlm.optimization.digest import DIGEST_VERSION
 from shrlm.optimization.taxonomy import (
     AgentMechanism,
     CausalStatus,
@@ -422,20 +423,24 @@ def make_record(
 
 
 def make_config(**overrides: Any) -> MiningConfig:
+    """A MiningConfig whose defaults describe the mode the fixture rounds
+    actually run: no sub-verifier (``sub_verifier_enabled=False`` -- the
+    records ``make_record`` builds come from ablated-style mining), and the
+    live ``DIGEST_VERSION`` rather than a stale pin. Both stay overridable."""
     values: dict[str, Any] = {
         "round_index": 3,
         "harness_version": "H0",
         "split_id": "held_in_v1",
         "taxonomy_version": "1.0.0",
         "prompt_version": "1.0.0",
-        "digest_version": "1.0.0",
+        "digest_version": DIGEST_VERSION,
         "prompt_sha256": "a" * 64,
         "attributor_model": ROOT_MODEL,
         "attributor_sampling_args": {"temperature": 0.0},
         "digest_char_budget": 12000,
         "digest_focus_k": 4,
         "max_attempts": 3,
-        "sub_verifier_enabled": True,
+        "sub_verifier_enabled": False,
         "min_support": 2,
         "actionability_weights": {
             "causal": 0.4,
