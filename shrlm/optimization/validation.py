@@ -45,9 +45,18 @@ in the bundle style, byte-identical rewrites allowed, divergence refused -- so
 the band check (U4) and the ledger (U5) never re-read traces, and the shared
 mining manifest format is never extended.
 
-The promotion half (U4) lives in the sibling ``promotion`` module; this module
-will also grow the ledger writer (U5). The evaluation surface here plus the
-promotion module are what U6's ``validate_round`` composes.
+The promotion half (U4) lives in the sibling ``promotion`` module; the ledger
+writer (U5) lives here: ``write_promotion_ledger`` persists one
+``promotions.jsonl`` record per candidate (loader-rejected and over-budget ones
+included, with their structured reasons) plus one for a re-evaluated merged
+harness, and a ``decision.json`` naming the promoted harness hash or "no
+promotion" (R8). Every record links -- by paths relative to the round
+directory, in ``audit.py``'s walkable style -- to the subject's summary, split
+round directories, and ``harness.json`` identities, so an audit can walk ledger
+-> round dirs -> sha-verified traces. Both files are non-clobbering in the
+bundle style: byte-identical rewrites are no-ops, divergence is refused. The
+evaluation surface here plus the promotion module are what U6's
+``validate_round`` composes.
 """
 
 import json
@@ -55,7 +64,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
@@ -68,11 +77,14 @@ from shrlm.optimization.costs import (
     governed_limits,
     run_governed_round,
 )
-from shrlm.optimization.driver import RoundConfig, load_round
+from shrlm.optimization.driver import HARNESS_FILE, RoundConfig, load_round
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verifier
 from shrlm.rlm_harness import Harness
 from shrlm.runner import run_metrics
+
+if TYPE_CHECKING:  # promotion imports this module, so its types are annotations only
+    from shrlm.optimization.promotion import CandidateDecision, PromotionPlan
 
 # The incumbent's directory name under a validation round; reserved, so no
 # candidate may claim it.
@@ -87,6 +99,18 @@ EVAL_ROUND_INDEX = 0
 
 SUMMARY_FILENAME = "summary.json"
 SUMMARY_FORMAT = "shrlm-validation-summary/v1"
+
+# The promotion ledger (U5): one JSONL record per candidate (and per merged
+# harness) under the round directory, plus the round's decision summary.
+PROMOTIONS_FILENAME = "promotions.jsonl"
+DECISION_FILENAME = "decision.json"
+LEDGER_RECORD_FORMAT = "shrlm-promotion-record/v1"
+DECISION_FORMAT = "shrlm-promotion-decision/v1"
+
+# Merge participation roles a ledger record can carry: a constituent of the
+# round's merge plan, or the merged harness's own re-evaluation record.
+ROLE_CONSTITUENT = "constituent"
+ROLE_MERGED = "merged"
 
 
 def _canonical(instance: dict[str, Any]) -> str:
@@ -257,6 +281,24 @@ def load_summary(subject_path: Path | str) -> dict[str, Any]:
     return payload
 
 
+def _persist_once(path: Path, text: str, diverging: str) -> None:
+    """Write ``text`` exactly once, in the bundle's non-clobbering style.
+
+    A byte-identical rewrite is an idempotent no-op; different bytes raise
+    ``diverging`` instead of silently replacing what may already have been
+    audited. The write goes through a same-directory tmp file and
+    ``os.replace``, so a crash mid-write never leaves a truncated file.
+    """
+    if path.exists():
+        if path.read_text() == text:
+            return
+        raise ValueError(diverging)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(text)
+    os.replace(tmp_path, path)
+
+
 def _write_summary(path: Path, payload: dict[str, Any]) -> None:
     """Persist one subject's summary, refusing to clobber a diverging one.
 
@@ -266,24 +308,16 @@ def _write_summary(path: Path, payload: dict[str, Any]) -> None:
     mean the configuration changed under an already-summarized subject (e.g. a
     raised budget re-running a previously over-budget candidate); that summary
     may already have fed a promotion decision, so the rewrite is refused and
-    the operator must delete the stale file deliberately. The write goes
-    through a same-directory tmp file and ``os.replace`` (the bundle pattern),
-    so a crash mid-write never leaves a truncated summary.
+    the operator must delete the stale file deliberately.
     """
-    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    if path.exists():
-        if path.read_text() == text:
-            return
-        raise ValueError(
-            f"{path} already holds a diverging summary; the evaluation configuration "
-            "changed under an already-summarized subject. Refusing to overwrite an "
-            "aggregate the promotion decision may already cite -- delete the stale "
-            "summary deliberately to re-aggregate."
-        )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(text)
-    os.replace(tmp_path, path)
+    _persist_once(
+        path,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        f"{path} already holds a diverging summary; the evaluation configuration "
+        "changed under an already-summarized subject. Refusing to overwrite an "
+        "aggregate the promotion decision may already cite -- delete the stale "
+        "summary deliberately to re-aggregate.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -423,21 +457,263 @@ def evaluate_validation_round(
     )
 
 
+# ---------------------------------------------------------------------------
+# The promotion ledger (U5): every candidate's outcome, auditable and linkable
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PromotionLedger:
+    """One round's persisted ledger: where it lives and what it holds.
+
+    ``records`` are the ``promotions.jsonl`` lines in file order; ``decision``
+    is the ``decision.json`` payload.
+    """
+
+    round_path: Path
+    ledger_path: Path
+    decision_path: Path
+    records: list[dict[str, Any]]
+    decision: dict[str, Any]
+
+
+def _subject_links(evaluation: SubjectEvaluation) -> dict[str, Any]:
+    """One evaluated subject's audit links, relative to the ledger's directory.
+
+    Built from the persisted summary alone: each split's ``round_path`` tail is
+    recorded relative to the subject directory, so prefixing the subject id
+    yields the round-relative path the audit walk resolves. Links exist even
+    for an over-budget subject -- its split rounds were prepared (harness
+    identity and all) before the breaker tripped.
+    """
+    splits: dict[str, Any] = {}
+    for split_id, split_summary in evaluation.summary["splits"].items():
+        nested = f"{evaluation.subject_id}/{split_summary['round_path']}"
+        splits[split_id] = {"round_dir": nested, "harness": f"{nested}/{HARNESS_FILE}"}
+    return {"summary": f"{evaluation.subject_id}/{SUMMARY_FILENAME}", "splits": splits}
+
+
+def _ledger_record(
+    decision: "CandidateDecision",
+    subject: SubjectEvaluation | CandidateRejection,
+    role: str | None,
+    constituent_ids: tuple[str, ...],
+    excluded_reason: str | None,
+) -> dict[str, Any]:
+    """One ``promotions.jsonl`` line: the decision, merge participation, links.
+
+    A ``CandidateRejection`` subject never touched disk, so its ``links`` are
+    None -- what exists (the gate, the violation, the proposal path) is already
+    in the decision's ``upstream``. An evaluated subject links to everything
+    the audit walk needs.
+    """
+    return {
+        "format": LEDGER_RECORD_FORMAT,
+        **decision.to_dict(),
+        "merge": {
+            "role": role,
+            "constituent_ids": list(constituent_ids) if role is not None else None,
+        },
+        "selection_excluded": excluded_reason,
+        "links": _subject_links(subject) if isinstance(subject, SubjectEvaluation) else None,
+    }
+
+
+def write_promotion_ledger(
+    evaluation: RoundEvaluation,
+    decisions: Iterable["CandidateDecision"],
+    plan: "PromotionPlan",
+    *,
+    loader_rejections: Iterable[CandidateRejection] = (),
+    merge_evaluation: "SubjectEvaluation | CandidateRejection | None" = None,
+    merge_decision: "CandidateDecision | None" = None,
+) -> PromotionLedger:
+    """Persist one round's promotion ledger and decision summary (R8).
+
+    Writes ``promotions.jsonl`` (one record per candidate: loader rejections
+    first, then the round's candidates in evaluation order, then the merged
+    harness's record when the plan merged) and ``decision.json`` (the promoted
+    harness hash, or "no promotion") into ``evaluation.round_path``. Both
+    payloads are pure functions of the inputs -- no timestamps -- so re-running
+    the same round rewrites identical bytes (a no-op), while a divergent
+    rewrite is refused in the bundle's non-clobbering style.
+
+    Args:
+        evaluation: The round's evaluations (U3's ``RoundEvaluation``).
+        decisions: One ``CandidateDecision`` per candidate -- covering every
+            loader rejection and every evaluated candidate exactly, with any
+            promotion / merge-failure re-marking already applied.
+        plan: The round's ``PromotionPlan``.
+        loader_rejections: Candidates the U1 loader refused; they never reached
+            evaluation, and are ledgered with their structured reasons.
+        merge_evaluation: The merged harness's evaluation (or its caps
+            rejection); required with ``merge_decision`` exactly when the plan
+            is a merge.
+        merge_decision: The merged harness's decision record, after
+            ``apply_merge_verdict``.
+
+    Returns:
+        The ``PromotionLedger`` with both persisted payloads.
+
+    Raises:
+        ValueError: If decisions do not cover the candidates exactly, the
+            merge leg is missing or spurious for the plan kind, more than one
+            record is promoted, the promoted hash contradicts the plan, or an
+            existing ledger diverges from this one.
+    """
+    # promotion imports this module, so its vocabulary is imported at call time.
+    from shrlm.optimization.promotion import DECISION_PROMOTED, PLAN_MERGE
+
+    subjects: list[SubjectEvaluation | CandidateRejection] = [
+        *loader_rejections,
+        *evaluation.candidates,
+    ]
+    subject_ids = [
+        subject.subject_id if isinstance(subject, SubjectEvaluation) else subject.candidate_id
+        for subject in subjects
+    ]
+    if len(set(subject_ids)) != len(subject_ids):
+        raise ValueError(f"duplicate ledger subject ids in {subject_ids}")
+    by_id: dict[str, CandidateDecision] = {}
+    for decision in decisions:
+        if decision.subject_id in by_id:
+            raise ValueError(f"duplicate decision for subject {decision.subject_id!r}")
+        by_id[decision.subject_id] = decision
+    if set(by_id) != set(subject_ids):
+        missing = sorted(set(subject_ids) - set(by_id))
+        extra = sorted(set(by_id) - set(subject_ids))
+        raise ValueError(
+            f"decisions must cover the round's candidates exactly: missing {missing}, "
+            f"extra {extra}; the ledger records every candidate, never a subset"
+        )
+
+    if (merge_decision is None) != (merge_evaluation is None):
+        raise ValueError("merge_decision and merge_evaluation must be given together")
+    if (plan.kind == PLAN_MERGE) != (merge_decision is not None):
+        raise ValueError(
+            f"a {PLAN_MERGE!r} plan requires the merge re-evaluation leg (and only a merge "
+            f"plan may carry one); plan kind is {plan.kind!r}"
+        )
+
+    constituents = set(plan.constituent_ids) if plan.kind == PLAN_MERGE else set()
+    records = [
+        _ledger_record(
+            by_id[subject_id],
+            subject,
+            ROLE_CONSTITUENT if subject_id in constituents else None,
+            plan.constituent_ids,
+            plan.excluded.get(subject_id),
+        )
+        for subject_id, subject in zip(subject_ids, subjects, strict=True)
+    ]
+    if merge_decision is not None and merge_evaluation is not None:
+        records.append(
+            _ledger_record(
+                merge_decision, merge_evaluation, ROLE_MERGED, plan.constituent_ids, None
+            )
+        )
+
+    promoted = [record for record in records if record["decision"] == DECISION_PROMOTED]
+    if len(promoted) > 1:
+        ids = ", ".join(record["subject_id"] for record in promoted)
+        raise ValueError(f"a round promotes at most one harness; got promoted records for {ids}")
+    promoted_record = promoted[0] if promoted else None
+    if promoted_record is not None and promoted_record["harness_hash"] != plan.harness_hash:
+        raise ValueError(
+            f"promoted record {promoted_record['subject_id']!r} carries harness hash "
+            f"{promoted_record['harness_hash']}, but the plan built {plan.harness_hash}; "
+            "the ledger must name the artifact the plan promoted"
+        )
+
+    decision_payload = {
+        "format": DECISION_FORMAT,
+        "plan": plan.kind,
+        "constituent_ids": list(plan.constituent_ids),
+        "excluded": dict(plan.excluded),
+        "promoted": promoted_record is not None,
+        "promoted_subject_id": promoted_record["subject_id"] if promoted_record else None,
+        "promoted_harness_hash": promoted_record["harness_hash"] if promoted_record else None,
+        "baseline": {
+            "subject_id": evaluation.baseline.subject_id,
+            "harness_hash": evaluation.baseline.harness_hash,
+            "links": _subject_links(evaluation.baseline),
+        },
+        "n_candidates": len(subjects),
+        "ledger": PROMOTIONS_FILENAME,
+    }
+
+    ledger_path = evaluation.round_path / PROMOTIONS_FILENAME
+    _persist_once(
+        ledger_path,
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
+        f"{ledger_path} already holds a diverging promotion ledger; the round's decisions "
+        "changed under an already-ledgered round. Refusing to rewrite audit history -- "
+        "delete the stale ledger deliberately to re-ledger.",
+    )
+    decision_path = evaluation.round_path / DECISION_FILENAME
+    _persist_once(
+        decision_path,
+        json.dumps(decision_payload, indent=2, sort_keys=True) + "\n",
+        f"{decision_path} already holds a diverging promotion decision; the round's outcome "
+        "changed under an already-ledgered round. Refusing to rewrite audit history -- "
+        "delete the stale decision deliberately to re-ledger.",
+    )
+    return PromotionLedger(
+        round_path=evaluation.round_path,
+        ledger_path=ledger_path,
+        decision_path=decision_path,
+        records=records,
+        decision=decision_payload,
+    )
+
+
+def load_promotion_ledger(round_path: Path | str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read one round's persisted ledger back, checking both formats.
+
+    Returns ``(records, decision)``: the ``promotions.jsonl`` lines in file
+    order and the ``decision.json`` payload -- the shape stage 2 consumes as
+    prior-edit history.
+    """
+    path = Path(round_path)
+    ledger_path = path / PROMOTIONS_FILENAME
+    records = [json.loads(line) for line in ledger_path.read_text().splitlines() if line.strip()]
+    for record in records:
+        if record.get("format") != LEDGER_RECORD_FORMAT:
+            raise ValueError(
+                f"{ledger_path} holds a record for {record.get('subject_id')!r} that is not "
+                f"a {LEDGER_RECORD_FORMAT} record"
+            )
+    decision_path = path / DECISION_FILENAME
+    decision = json.loads(decision_path.read_text())
+    if decision.get("format") != DECISION_FORMAT:
+        raise ValueError(f"{decision_path} is not a {DECISION_FORMAT} decision summary")
+    return records, decision
+
+
 __all__ = [
     "BASELINE_ID",
+    "DECISION_FILENAME",
+    "DECISION_FORMAT",
     "EVAL_ROUND_INDEX",
+    "LEDGER_RECORD_FORMAT",
+    "PROMOTIONS_FILENAME",
+    "ROLE_CONSTITUENT",
+    "ROLE_MERGED",
     "SPLIT_HELDIN",
     "SPLIT_HELDOUT",
     "SUMMARY_FILENAME",
     "SUMMARY_FORMAT",
     "EvaluationConfig",
+    "PromotionLedger",
     "RoundEvaluation",
     "SubjectEvaluation",
     "ValidationSplits",
     "evaluate_subject",
     "evaluate_validation_round",
+    "load_promotion_ledger",
     "load_summary",
     "split_aggregate",
     "split_dir",
     "subject_dir",
+    "write_promotion_ledger",
 ]

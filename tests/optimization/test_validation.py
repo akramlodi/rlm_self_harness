@@ -22,19 +22,41 @@ import pytest
 import rlm.core.rlm as rlm_module
 from rlm.core.types import ModelUsageSummary, UsageSummary
 from shrlm.harness_identity import harness_hash
-from shrlm.optimization.candidates import GATE_CAPS, CandidateRejection, LoadedCandidate
+from shrlm.optimization.candidates import (
+    GATE_CAPS,
+    GATE_SCHEMA,
+    CandidateRejection,
+    LoadedCandidate,
+)
 from shrlm.optimization.costs import (
     OUTCOME_COMPLETED,
     OUTCOME_OVER_BUDGET,
     ValidationCaps,
     governed_limits,
 )
-from shrlm.optimization.driver import RoundConfig, run_round
+from shrlm.optimization.driver import RoundConfig, run_round, sha256_file
+from shrlm.optimization.promotion import (
+    DECISION_OVER_BUDGET,
+    DECISION_PROMOTED,
+    DECISION_REJECTED,
+    MERGED_SUBJECT_ID,
+    PLAN_MERGE,
+    PLAN_NONE,
+    PLAN_SINGLE,
+    PromotionConfig,
+    apply_merge_verdict,
+    assess_round,
+    decide_subject,
+    plan_promotion,
+    promote_decision,
+)
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
 from shrlm.optimization.validation import (
     BASELINE_ID,
+    DECISION_FILENAME,
     EVAL_ROUND_INDEX,
+    PROMOTIONS_FILENAME,
     SPLIT_HELDIN,
     SPLIT_HELDOUT,
     SUMMARY_FILENAME,
@@ -43,10 +65,12 @@ from shrlm.optimization.validation import (
     ValidationSplits,
     evaluate_subject,
     evaluate_validation_round,
+    load_promotion_ledger,
     load_summary,
     split_aggregate,
     split_dir,
     subject_dir,
+    write_promotion_ledger,
 )
 from shrlm.rlm_harness import H0, build_runtime_policy
 from tests.mock_lm import MockLM
@@ -178,12 +202,12 @@ def candidate_harness(tag: str) -> Any:
     return replace(H0, decomposition_instruction=H0.decomposition_instruction + f"\n[{tag}]")
 
 
-def fake_candidate(candidate_id: str, harness: Any) -> LoadedCandidate:
+def fake_candidate(candidate_id: str, harness: Any, surface: str = "S2") -> LoadedCandidate:
     """A ``LoadedCandidate`` as the U1 loader would hand it over, sans gates."""
     return LoadedCandidate(
         candidate_id=candidate_id,
         path=Path("/nonexistent/proposal.json"),
-        surface="S2",
+        surface=surface,
         proposal={},
         harness=harness,
         harness_hash=harness_hash(harness),
@@ -549,6 +573,305 @@ class TestSummaryPersistence:
         with pytest.raises(ValueError, match="summary"):
             evaluate_subject(BASELINE_ID, H0, config)
         assert idle.total_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# The promotion ledger (U5): every candidate recorded, every link resolvable
+# ---------------------------------------------------------------------------
+
+# Per-run budget 0.0015 terminates a two-call burn run at cost 0.002; a
+# candidate budget of 0.005 lets a four-run subject complete at 0.004 while
+# three burn runs (0.006) trip the breaker mid-held-out.
+LEDGER_CAPS = ValidationCaps(
+    max_depth=2,
+    max_iterations=3,
+    max_budget=0.0015,
+    max_timeout=60.0,
+    candidate_budget=0.005,
+)
+
+BURN = "Scanning the document, no answer yet."
+
+
+def loader_rejection() -> CandidateRejection:
+    """A candidate the U1 loader refused before anything touched disk."""
+    return CandidateRejection(
+        candidate_id="cand-bad",
+        gate=GATE_SCHEMA,
+        reason="proposal.json unreadable: boom",
+        path="proposals/cand-bad/proposal.json",
+    )
+
+
+def single_promotion_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A full round: one promoted single, one over-budget, one loader-rejected.
+
+    Baseline passes 1/2 on each split; cand-a passes 2/2 on both (accepted,
+    the single winner); cand-burn burns its per-run budget on every run and
+    trips the candidate breaker before its second held-out run.
+    """
+    script = (
+        [final("RIGHT"), final("WRONG"), final("RIGHT"), final("WRONG")]
+        + [final("RIGHT")] * 4
+        + [BURN] * 6
+    )
+    factory = ClientFactory(script)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    config = make_config(tmp_path, caps=LEDGER_CAPS, repetitions=1)
+    cand_a = fake_candidate("cand-a", candidate_harness("cand-a"))
+    cand_burn = fake_candidate("cand-burn", candidate_harness("burn"))
+    evaluation = evaluate_validation_round(H0, [cand_a, cand_burn], config)
+
+    rejection = loader_rejection()
+    pconfig = PromotionConfig()
+    decisions = [decide_subject(evaluation.baseline.summary, rejection, pconfig)]
+    decisions += assess_round(evaluation, pconfig)
+    plan = plan_promotion(H0, decisions, [cand_a, cand_burn])
+    assert plan.kind == PLAN_SINGLE
+    decisions = [promote_decision(d) if d.accepted else d for d in decisions]
+    return {
+        "config": config,
+        "evaluation": evaluation,
+        "rejection": rejection,
+        "decisions": decisions,
+        "plan": plan,
+        "cand_a": cand_a,
+    }
+
+
+def merge_promotion_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A round whose two disjoint-surface winners merge, re-evaluate, and promote."""
+    script = (
+        [final("RIGHT"), final("WRONG"), final("RIGHT"), final("WRONG")]  # baseline 1/2, 1/2
+        + [final("RIGHT"), final("RIGHT"), final("RIGHT"), final("WRONG")]  # cand-s2 2/2, 1/2
+        + [final("RIGHT"), final("WRONG"), final("RIGHT"), final("RIGHT")]  # cand-s3 1/2, 2/2
+        + [final("RIGHT")] * 4  # merged 2/2, 2/2
+    )
+    factory = ClientFactory(script)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    config = make_config(tmp_path, caps=LEDGER_CAPS, repetitions=1)
+    cand_s2 = fake_candidate("cand-s2", candidate_harness("s2"))
+    cand_s3 = fake_candidate(
+        "cand-s3",
+        replace(H0, execution_instruction=H0.execution_instruction + "\n[s3]"),
+        surface="S3",
+    )
+    evaluation = evaluate_validation_round(H0, [cand_s2, cand_s3], config)
+
+    pconfig = PromotionConfig()
+    decisions = assess_round(evaluation, pconfig)
+    plan = plan_promotion(H0, decisions, [cand_s2, cand_s3])
+    assert plan.kind == PLAN_MERGE
+    merged_eval = evaluate_subject(MERGED_SUBJECT_ID, plan.harness, config)
+    assert isinstance(merged_eval, SubjectEvaluation)
+    merge_decision = decide_subject(evaluation.baseline.summary, merged_eval, pconfig)
+    final_merge, final_decisions = apply_merge_verdict(plan, merge_decision, decisions)
+    return {
+        "evaluation": evaluation,
+        "decisions": final_decisions,
+        "plan": plan,
+        "merge_evaluation": merged_eval,
+        "merge_decision": final_merge,
+    }
+
+
+def assert_subject_links_resolve(
+    round_path: Path, links: dict[str, Any], expected_hash: str
+) -> None:
+    """One subject's ledger links, walked audit-style down to sha-verified traces."""
+    assert (round_path / links["summary"]).is_file()
+    assert set(links["splits"]) == {SPLIT_HELDIN, SPLIT_HELDOUT}
+    for split_links in links["splits"].values():
+        nested = round_path / split_links["round_dir"]
+        harness_file = round_path / split_links["harness"]
+        assert nested.is_dir()
+        assert harness_file.is_file()
+        assert json.loads(harness_file.read_text())["hash"] == expected_hash
+        for entry in read_manifest(nested):
+            trace = nested / entry["trace_path"]
+            assert trace.is_file()
+            assert sha256_file(trace) == entry["trace_sha256"]
+
+
+class TestPromotionLedger:
+    def test_ledger_records_every_candidate_with_reasons(self, tmp_path, monkeypatch):
+        pieces = single_promotion_round(tmp_path, monkeypatch)
+        write_promotion_ledger(
+            pieces["evaluation"],
+            pieces["decisions"],
+            pieces["plan"],
+            loader_rejections=[pieces["rejection"]],
+        )
+
+        records, _decision = load_promotion_ledger(pieces["evaluation"].round_path)
+        assert [record["subject_id"] for record in records] == ["cand-bad", "cand-a", "cand-burn"]
+        by_id = {record["subject_id"]: record for record in records}
+
+        bad = by_id["cand-bad"]
+        assert bad["decision"] == DECISION_REJECTED
+        assert bad["upstream"] == pieces["rejection"].to_dict()
+        assert "gate schema" in bad["reasons"][0]
+        assert bad["links"] is None  # never evaluated: nothing on disk to link
+
+        promoted = by_id["cand-a"]
+        assert promoted["decision"] == DECISION_PROMOTED
+        assert promoted["rule"][SPLIT_HELDIN]["delta"] == 1
+        assert promoted["rule"][SPLIT_HELDOUT]["delta"] == 1
+        assert promoted["band"]["mean_cost"]["within"] is True
+        assert promoted["harness_hash"] == pieces["cand_a"].harness_hash
+
+        burn = by_id["cand-burn"]
+        assert burn["decision"] == DECISION_OVER_BUDGET
+        assert "over budget" in burn["reasons"][0]
+        assert burn["rule"] is None
+        assert burn["links"] is not None  # partial evaluations still link
+
+    def test_decision_json_names_the_single_promotion(self, tmp_path, monkeypatch):
+        pieces = single_promotion_round(tmp_path, monkeypatch)
+        ledger = write_promotion_ledger(
+            pieces["evaluation"],
+            pieces["decisions"],
+            pieces["plan"],
+            loader_rejections=[pieces["rejection"]],
+        )
+
+        decision = ledger.decision
+        assert decision["plan"] == PLAN_SINGLE
+        assert decision["promoted"] is True
+        assert decision["promoted_subject_id"] == "cand-a"
+        assert decision["promoted_harness_hash"] == pieces["cand_a"].harness_hash
+        assert decision["constituent_ids"] == ["cand-a"]
+        assert decision["baseline"]["harness_hash"] == harness_hash(H0)
+        assert decision["ledger"] == PROMOTIONS_FILENAME
+        assert (pieces["evaluation"].round_path / DECISION_FILENAME).is_file()
+
+    def test_ledger_links_resolve_down_to_sha_verified_traces(self, tmp_path, monkeypatch):
+        pieces = single_promotion_round(tmp_path, monkeypatch)
+        write_promotion_ledger(
+            pieces["evaluation"],
+            pieces["decisions"],
+            pieces["plan"],
+            loader_rejections=[pieces["rejection"]],
+        )
+
+        round_path = pieces["evaluation"].round_path
+        records, decision = load_promotion_ledger(round_path)
+        linked = [record for record in records if record["links"] is not None]
+        assert len(linked) == 2  # cand-a and cand-burn; cand-bad has nothing on disk
+        for record in linked:
+            assert_subject_links_resolve(round_path, record["links"], record["harness_hash"])
+        assert_subject_links_resolve(
+            round_path, decision["baseline"]["links"], decision["baseline"]["harness_hash"]
+        )
+
+    def test_rewrite_is_idempotent_and_divergence_refused(self, tmp_path, monkeypatch):
+        pieces = single_promotion_round(tmp_path, monkeypatch)
+        args = (pieces["evaluation"], pieces["decisions"], pieces["plan"])
+        first = write_promotion_ledger(*args, loader_rejections=[pieces["rejection"]])
+        before = first.ledger_path.read_bytes()
+
+        second = write_promotion_ledger(*args, loader_rejections=[pieces["rejection"]])
+        assert second.records == first.records
+        assert second.decision == first.decision
+        assert first.ledger_path.read_bytes() == before
+
+        # A re-decide under different preregistered thresholds is a divergent
+        # rewrite of audit history, and is refused.
+        pconfig = PromotionConfig(tau_regression=1.0)
+        diverged = [
+            decide_subject(pieces["evaluation"].baseline.summary, pieces["rejection"], pconfig)
+        ]
+        diverged += assess_round(pieces["evaluation"], pconfig)
+        diverged = [promote_decision(d) if d.accepted else d for d in diverged]
+        with pytest.raises(ValueError, match="diverging"):
+            write_promotion_ledger(
+                pieces["evaluation"],
+                diverged,
+                pieces["plan"],
+                loader_rejections=[pieces["rejection"]],
+            )
+
+    def test_merged_promotion_is_named_and_linked(self, tmp_path, monkeypatch):
+        pieces = merge_promotion_round(tmp_path, monkeypatch)
+        ledger = write_promotion_ledger(
+            pieces["evaluation"],
+            pieces["decisions"],
+            pieces["plan"],
+            merge_evaluation=pieces["merge_evaluation"],
+            merge_decision=pieces["merge_decision"],
+        )
+
+        round_path = pieces["evaluation"].round_path
+        records, decision = load_promotion_ledger(round_path)
+        assert [record["subject_id"] for record in records] == [
+            "cand-s2",
+            "cand-s3",
+            MERGED_SUBJECT_ID,
+        ]
+        by_id = {record["subject_id"]: record for record in records}
+
+        merged = by_id[MERGED_SUBJECT_ID]
+        assert merged["decision"] == DECISION_PROMOTED
+        assert merged["harness_hash"] == pieces["plan"].harness_hash
+        assert merged["merge"] == {
+            "role": "merged",
+            "constituent_ids": ["cand-s2", "cand-s3"],
+        }
+        assert_subject_links_resolve(round_path, merged["links"], merged["harness_hash"])
+        for constituent_id in ("cand-s2", "cand-s3"):
+            assert by_id[constituent_id]["merge"]["role"] == "constituent"
+
+        assert decision["plan"] == PLAN_MERGE
+        assert decision["promoted"] is True
+        assert decision["promoted_subject_id"] == MERGED_SUBJECT_ID
+        assert decision["promoted_harness_hash"] == pieces["plan"].harness_hash
+        assert decision["constituent_ids"] == ["cand-s2", "cand-s3"]
+        assert ledger.decision == decision
+
+    def test_no_promotion_round_still_ledgers(self, tmp_path, monkeypatch):
+        # Baseline all-pass; the lone candidate regresses on both splits.
+        script = [final("RIGHT")] * 4 + [
+            final("RIGHT"),
+            final("WRONG"),
+            final("RIGHT"),
+            final("WRONG"),
+        ]
+        factory = ClientFactory(script)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, caps=LEDGER_CAPS, repetitions=1)
+        cand_a = fake_candidate("cand-a", candidate_harness("cand-a"))
+        evaluation = evaluate_validation_round(H0, [cand_a], config)
+
+        pconfig = PromotionConfig()
+        decisions = assess_round(evaluation, pconfig)
+        plan = plan_promotion(H0, decisions, [cand_a])
+        assert plan.kind == PLAN_NONE
+        write_promotion_ledger(evaluation, decisions, plan)
+
+        records, decision = load_promotion_ledger(evaluation.round_path)
+        assert [record["subject_id"] for record in records] == ["cand-a"]
+        assert records[0]["decision"] == DECISION_REJECTED
+        assert records[0]["reasons"]
+        assert decision["plan"] == PLAN_NONE
+        assert decision["promoted"] is False
+        assert decision["promoted_subject_id"] is None
+        assert decision["promoted_harness_hash"] is None
+
+    def test_writer_demands_exact_decision_coverage(self, tmp_path, monkeypatch):
+        pieces = single_promotion_round(tmp_path, monkeypatch)
+        missing = [d for d in pieces["decisions"] if d.subject_id != "cand-burn"]
+        with pytest.raises(ValueError, match="cand-burn"):
+            write_promotion_ledger(
+                pieces["evaluation"],
+                missing,
+                pieces["plan"],
+                loader_rejections=[pieces["rejection"]],
+            )
+
+    def test_writer_demands_a_merge_leg_exactly_for_merge_plans(self, tmp_path, monkeypatch):
+        pieces = merge_promotion_round(tmp_path, monkeypatch)
+        with pytest.raises(ValueError, match="merge"):
+            write_promotion_ledger(pieces["evaluation"], pieces["decisions"], pieces["plan"])
 
 
 if __name__ == "__main__":
