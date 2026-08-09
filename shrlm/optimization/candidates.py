@@ -50,6 +50,7 @@ import ast
 import hashlib
 import importlib.util
 import json
+import math
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -304,7 +305,7 @@ def _schema_violation(payload: Any) -> str | None:
     if not isinstance(payload.get("base_harness_hash"), str):
         return "base_harness_hash must be a string"
     surface = payload.get("surface")
-    if surface not in SURFACE_SERIALIZATION_KEYS:
+    if not isinstance(surface, str) or surface not in SURFACE_SERIALIZATION_KEYS:
         return f"surface must be one of {sorted(SURFACE_SERIALIZATION_KEYS)}, got {surface!r}"
     signature = payload.get("target_signature")
     if not isinstance(signature, dict):
@@ -374,6 +375,12 @@ def cap_violations(policy: dict[str, Any], caps: dict[str, int | float]) -> list
             continue
         if isinstance(value, bool) or not isinstance(value, int | float):
             violations.append(f"S6 {key}={value!r} is not numeric, so it cannot honor the cap")
+        elif not math.isfinite(value) or value <= 0:
+            # NaN slips past any ``>`` comparison and inf/non-positive values
+            # would crash or nullify the runner's limit plumbing; the cap side
+            # is trusted (ValidationCaps validates positive finite), the
+            # candidate side is not.
+            violations.append(f"S6 {key}={value!r} must be a positive finite number")
         elif value > caps[key]:
             violations.append(f"S6 {key}={value} exceeds the experiment-owned cap {caps[key]}")
     return violations
@@ -626,6 +633,12 @@ def _run_gate_subprocess(proposal_path: Path, timeout_seconds: float) -> dict[st
             "reason": f"materialization/check timed out after {timeout_seconds}s of wall clock; "
             "candidate source must not block",
         }
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as error:
+        return {
+            "ok": False,
+            "gate": GATE_MATERIALIZATION,
+            "reason": f"gate subprocess could not run: {type(error).__name__}: {error}",
+        }
     stderr_tail = process.stderr[-500:] if process.stderr else ""
     if process.returncode != 0:
         return {
@@ -793,6 +806,31 @@ def load_candidate(
     )
 
 
+def _declared_id_mismatch(proposal_path: Path, directory_name: str) -> CandidateRejection | None:
+    """A text-level rejection when the declared id contradicts the directory.
+
+    Runs before ``load_candidate`` so an id mismatch — an auditability hole,
+    since the ledger links candidates by id — is refused on the JSON alone: no
+    candidate code runs and no ``surfaces.py`` is written. An unreadable or
+    non-object file returns None and falls through to ``load_candidate``'s own
+    schema rejections.
+    """
+    try:
+        payload = json.loads(proposal_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    declared = payload.get("candidate_id") if isinstance(payload, dict) else None
+    if isinstance(declared, str) and declared != directory_name:
+        return CandidateRejection(
+            candidate_id=directory_name,
+            gate=GATE_SCHEMA,
+            reason=f"candidate_id {declared!r} does not match its directory name "
+            f"{directory_name!r}",
+            path=str(proposal_path),
+        )
+    return None
+
+
 def load_candidates(
     proposals_dir: Path | str,
     incumbent: Harness,
@@ -805,8 +843,11 @@ def load_candidates(
     Each immediate subdirectory is one candidate and must hold a
     ``proposal.json`` whose ``candidate_id`` equals the directory name — the
     ledger links candidates by id, so a mismatch is an auditability hole and is
-    rejected rather than repaired. Nothing is silently dropped: a directory
-    without a proposal file is itself a rejection.
+    rejected rather than repaired, at the text level before any candidate code
+    runs. Nothing is silently dropped: a directory without a proposal file is
+    itself a rejection. Every rejection is keyed by the (unique) directory
+    name, so two malformed proposals declaring the same id cannot collide in
+    the ledger; a different declared id survives in the reason text.
 
     Returns:
         ``(loaded, rejections)`` covering every candidate directory exactly
@@ -829,6 +870,10 @@ def load_candidates(
                 )
             )
             continue
+        mismatch = _declared_id_mismatch(proposal_path, entry.name)
+        if mismatch is not None:
+            rejections.append(mismatch)
+            continue
         result = load_candidate(
             proposal_path,
             incumbent,
@@ -836,7 +881,17 @@ def load_candidates(
             timeout_seconds=timeout_seconds,
             incumbent_serialization=incumbent_serialization,
         )
+        if isinstance(result, CandidateRejection) and result.candidate_id != entry.name:
+            # Defensive: ledger subjects must be unique, and directory names
+            # are unique by construction; keep the declared id in the reason.
+            result = replace(
+                result,
+                candidate_id=entry.name,
+                reason=f"{result.reason} (declared candidate_id {result.candidate_id!r})",
+            )
         if isinstance(result, LoadedCandidate) and result.candidate_id != entry.name:
+            # Defensive: the pre-check above rejects mismatches before
+            # materialization; this only fires if the file changed mid-load.
             result = CandidateRejection(
                 candidate_id=entry.name,
                 gate=GATE_SCHEMA,

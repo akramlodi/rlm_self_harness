@@ -305,6 +305,18 @@ def test_policy_above_caps_rejected_below_accepted(tmp_path):
     assert isinstance(loaded, LoadedCandidate), loaded
 
 
+@pytest.mark.parametrize("bad_depth", [float("nan"), float("inf"), -1], ids=["nan", "inf", "neg"])
+def test_non_finite_policy_values_rejected_at_caps_gate(tmp_path, bad_depth):
+    payload = proposal_payload(
+        s6_candidate(max_depth=bad_depth), "S6", candidate_id="cand-nonfinite"
+    )
+    result = load_candidate(write_payload(tmp_path, payload), H0, caps={"max_depth": 2})
+    assert isinstance(result, CandidateRejection), result
+    assert result.gate == "caps"
+    assert "max_depth" in result.reason
+    assert "positive finite" in result.reason
+
+
 def test_text_gates_execute_no_candidate_code(tmp_path, monkeypatch):
     payload = proposal_payload(s9_candidate(), "S9")
     payload["harness"]["hash"] = "0" * 64  # tampered
@@ -330,6 +342,7 @@ def test_text_gates_execute_no_candidate_code(tmp_path, monkeypatch):
     [
         ({"format": "shrlm-proposal/v2"}, "format"),
         ({"surface": "S10"}, "surface"),
+        ({"surface": ["S2"]}, "surface"),
         ({"predicted_effect": ""}, "predicted_effect"),
         (
             {"target_signature": {**TARGET_SIGNATURE, "verifier_cause": "not_a_cause"}},
@@ -394,6 +407,21 @@ def test_hanging_candidate_source_times_out(tmp_path):
     assert "timed out" in result.reason
 
 
+def test_gate_subprocess_launch_failure_is_a_structured_rejection(tmp_path, monkeypatch):
+    payload = proposal_payload(s9_candidate(), "S9")
+    path = write_payload(tmp_path, payload)
+
+    def refuse_to_spawn(*args, **kwargs):
+        raise OSError("cannot spawn a child process")
+
+    monkeypatch.setattr(candidates_module.subprocess, "run", refuse_to_spawn)
+    result = load_candidate(path, H0)
+    assert isinstance(result, CandidateRejection), result
+    assert result.gate == "materialization"
+    assert "OSError" in result.reason
+    assert "cannot spawn" in result.reason
+
+
 def test_check_harness_failure_carries_the_runner_message(tmp_path):
     payload = proposal_payload(s7_candidate(unbounded_metadata), "S7")
     result = load_candidate(write_payload(tmp_path, payload), H0)
@@ -443,6 +471,48 @@ def test_load_candidates_partitions_and_enforces_directory_names(tmp_path):
     assert gates["cand-tampered"] == "envelope_hash"
     assert gates["cand-dir"] == "schema"
     assert gates["cand-empty"] == "schema"
+    # The id mismatch is a text-level rejection: no candidate code ran, so no
+    # surface module was ever written for it.
+    assert not (tmp_path / "cand-dir" / MODULE_FILENAME).exists()
+
+
+def test_directory_id_mismatch_rejected_before_any_candidate_code(tmp_path, monkeypatch):
+    payload = proposal_payload(s9_candidate(), "S9", candidate_id="cand-elsewhere")
+    path = write_payload(tmp_path, payload, candidate_id="cand-dir")
+
+    def forbid_subprocess(*args, **kwargs):
+        raise AssertionError("the gate subprocess must not run for an id-mismatch rejection")
+
+    monkeypatch.setattr(candidates_module, "_run_gate_subprocess", forbid_subprocess)
+    loaded, rejections = load_candidates(tmp_path, H0)
+    assert loaded == []
+    assert len(rejections) == 1
+    rejection = rejections[0]
+    assert rejection.candidate_id == "cand-dir"
+    assert rejection.gate == "schema"
+    assert "cand-elsewhere" in rejection.reason
+    assert not (path.parent / MODULE_FILENAME).exists()
+
+
+def test_duplicate_declared_ids_keyed_by_distinct_directory_names(tmp_path):
+    # Two malformed proposals declaring the same candidate_id must come back as
+    # two rejections keyed by their (unique) directory names, or the ledger's
+    # duplicate-subject guard would abort after paid evaluation.
+    for dirname in ("cand-dup", "cand-other"):
+        payload = proposal_payload(s2_candidate(), "S2", candidate_id="cand-dup")
+        payload["format"] = "shrlm-proposal/v0"  # schema-invalid
+        write_payload(tmp_path, payload, candidate_id=dirname)
+
+    loaded, rejections = load_candidates(tmp_path, H0)
+    assert loaded == []
+    assert sorted(rejection.candidate_id for rejection in rejections) == [
+        "cand-dup",
+        "cand-other",
+    ]
+    by_id = {rejection.candidate_id: rejection for rejection in rejections}
+    assert all(rejection.gate == "schema" for rejection in rejections)
+    # The mismatched directory's rejection preserves the declared id in text.
+    assert "cand-dup" in by_id["cand-other"].reason
 
 
 def test_load_candidates_on_an_empty_directory(tmp_path):

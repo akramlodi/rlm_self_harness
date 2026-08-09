@@ -328,6 +328,21 @@ class TestBand:
             assert set(record) >= {"baseline", "candidate", "lower", "upper", "within"}
             assert record["within"] is True
 
+    def test_unconstrained_bounds_are_recorded_as_null(self):
+        # math.inf has no RFC-8259 JSON rendering, so the default (infinite)
+        # upper bound lands in the record as None: a null bound means
+        # unconstrained. Band itself keeps math.inf for its arithmetic.
+        decision = score(3, 3)
+        for metric in ("mean_cost", "mean_sub_calls"):
+            assert decision.band[metric]["lower"] == 0.0
+            assert decision.band[metric]["upper"] is None
+
+    def test_finite_bounds_are_recorded_as_numbers(self):
+        config = PromotionConfig(cost_band=Band(0.5, 1.5))
+        decision = score(3, 3, config)
+        assert decision.band["mean_cost"]["lower"] == 0.5
+        assert decision.band["mean_cost"]["upper"] == 1.5
+
     def test_invalid_band_bounds_are_rejected(self):
         with pytest.raises(ValueError, match="lower"):
             Band(-0.1, 1.0)

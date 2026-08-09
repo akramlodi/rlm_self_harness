@@ -63,9 +63,12 @@ loaded candidate, applies the U4 rule and band, re-evaluates a merged plan's
 harness through the same evaluation path and rule before promotion is final
 (R7), and persists the U5 ledger. A round with zero loadable candidates
 short-circuits before the baseline runs -- no model calls are ever made for a
-round with nothing to compare -- and therefore writes no ledger (there is no
-evaluation directory to anchor audit links); the loader rejections and their
-decision records come back on the ``ValidationRound`` result instead.
+round with nothing to compare -- but R8 still demands every candidate's
+outcome on disk: when the loader rejected at least one candidate, the round
+directory gets a rejection-only ledger (upstream reasons, null ``links``, a
+``decision.json`` with plan "none" and a null ``baseline``). Only a proposals
+directory with zero candidates altogether stays a clean no-op that creates no
+round directory at all.
 """
 
 import json
@@ -328,7 +331,7 @@ def _write_summary(path: Path, payload: dict[str, Any]) -> None:
     """
     _persist_once(
         path,
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n",
         f"{path} already holds a diverging summary; the evaluation configuration "
         "changed under an already-summarized subject. Refusing to overwrite an "
         "aggregate the promotion decision may already cite -- delete the stale "
@@ -538,10 +541,11 @@ def _ledger_record(
 
 
 def write_promotion_ledger(
-    evaluation: RoundEvaluation,
+    evaluation: "RoundEvaluation | None",
     decisions: Iterable["CandidateDecision"],
     plan: "PromotionPlan",
     *,
+    round_path: Path | None = None,
     loader_rejections: Iterable[CandidateRejection] = (),
     merge_evaluation: "SubjectEvaluation | CandidateRejection | None" = None,
     merge_decision: "CandidateDecision | None" = None,
@@ -551,17 +555,28 @@ def write_promotion_ledger(
     Writes ``promotions.jsonl`` (one record per candidate: loader rejections
     first, then the round's candidates in evaluation order, then the merged
     harness's record when the plan merged) and ``decision.json`` (the promoted
-    harness hash, or "no promotion") into ``evaluation.round_path``. Both
-    payloads are pure functions of the inputs -- no timestamps -- so re-running
-    the same round rewrites identical bytes (a no-op), while a divergent
-    rewrite is refused in the bundle's non-clobbering style.
+    harness hash, or "no promotion") into the round directory. Both payloads
+    are pure functions of the inputs -- no timestamps -- so re-running the
+    same round rewrites identical bytes (a no-op), while a divergent rewrite
+    is refused in the bundle's non-clobbering style.
+
+    A round whose every candidate was rejected by the loader never evaluates
+    anything, but R8 still demands its outcomes on disk: pass
+    ``evaluation=None`` with an explicit ``round_path`` and the rejections,
+    and the ledger holds their records (upstream reasons, null ``links``)
+    plus a ``decision.json`` whose ``baseline`` is null -- there was no
+    evaluated incumbent to name or link.
 
     Args:
-        evaluation: The round's evaluations (U3's ``RoundEvaluation``).
+        evaluation: The round's evaluations (U3's ``RoundEvaluation``), or
+            None for a loader-rejection-only round.
         decisions: One ``CandidateDecision`` per candidate -- covering every
             loader rejection and every evaluated candidate exactly, with any
             promotion / merge-failure re-marking already applied.
         plan: The round's ``PromotionPlan``.
+        round_path: Where the ledger lands when ``evaluation`` is None; the
+            two are mutually exclusive (an evaluated round anchors its own
+            directory).
         loader_rejections: Candidates the U1 loader refused; they never reached
             evaluation, and are ledgered with their structured reasons.
         merge_evaluation: The merged harness's evaluation (or its caps
@@ -574,17 +589,39 @@ def write_promotion_ledger(
         The ``PromotionLedger`` with both persisted payloads.
 
     Raises:
-        ValueError: If decisions do not cover the candidates exactly, the
-            merge leg is missing or spurious for the plan kind, more than one
-            record is promoted, the promoted hash contradicts the plan, or an
-            existing ledger diverges from this one.
+        ValueError: If neither or both of ``evaluation`` and ``round_path``
+            are given, a rejection-only ledger holds no rejections or a plan
+            other than "none", decisions do not cover the candidates exactly,
+            the merge leg is missing or spurious for the plan kind, more than
+            one record is promoted, the promoted hash contradicts the plan, or
+            an existing ledger diverges from this one.
     """
     # promotion imports this module, so its vocabulary is imported at call time.
-    from shrlm.optimization.promotion import DECISION_PROMOTED, PLAN_MERGE
+    from shrlm.optimization.promotion import DECISION_PROMOTED, PLAN_MERGE, PLAN_NONE
+
+    if (evaluation is None) == (round_path is None):
+        raise ValueError(
+            "pass exactly one round anchor: an evaluated round's RoundEvaluation, or an "
+            "explicit round_path for a loader-rejection-only round"
+        )
+    rejections = list(loader_rejections)
+    if evaluation is None:
+        if not rejections:
+            raise ValueError(
+                "a rejection-only ledger needs at least one loader rejection; a round "
+                "with zero candidates has nothing to record and writes no ledger"
+            )
+        if plan.kind != PLAN_NONE:
+            raise ValueError(
+                f"a round with no evaluations cannot plan {plan.kind!r}; only a "
+                f"{PLAN_NONE!r} plan may be ledgered without an evaluated round"
+            )
+    ledger_root = evaluation.round_path if evaluation is not None else round_path
+    assert ledger_root is not None  # exactly one anchor, checked above
 
     subjects: list[SubjectEvaluation | CandidateRejection] = [
-        *loader_rejections,
-        *evaluation.candidates,
+        *rejections,
+        *(evaluation.candidates if evaluation is not None else ()),
     ]
     subject_ids = [
         subject.subject_id if isinstance(subject, SubjectEvaluation) else subject.candidate_id
@@ -651,33 +688,40 @@ def write_promotion_ledger(
         "promoted": promoted_record is not None,
         "promoted_subject_id": promoted_record["subject_id"] if promoted_record else None,
         "promoted_harness_hash": promoted_record["harness_hash"] if promoted_record else None,
+        # Null exactly when the round evaluated nothing (loader-rejection-only):
+        # there is no incumbent evaluation to name or link.
         "baseline": {
             "subject_id": evaluation.baseline.subject_id,
             "harness_hash": evaluation.baseline.harness_hash,
             "links": _subject_links(evaluation.baseline),
-        },
+        }
+        if evaluation is not None
+        else None,
         "n_candidates": len(subjects),
         "ledger": PROMOTIONS_FILENAME,
     }
 
-    ledger_path = evaluation.round_path / PROMOTIONS_FILENAME
+    ledger_path = ledger_root / PROMOTIONS_FILENAME
     _persist_once(
         ledger_path,
-        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
+        # allow_nan=False: bare Infinity/NaN tokens are not RFC-8259 JSON, so a
+        # non-finite value anywhere in a record fails loudly instead of
+        # persisting an unparseable ledger.
+        "".join(json.dumps(record, sort_keys=True, allow_nan=False) + "\n" for record in records),
         f"{ledger_path} already holds a diverging promotion ledger; the round's decisions "
         "changed under an already-ledgered round. Refusing to rewrite audit history -- "
         "delete the stale ledger deliberately to re-ledger.",
     )
-    decision_path = evaluation.round_path / DECISION_FILENAME
+    decision_path = ledger_root / DECISION_FILENAME
     _persist_once(
         decision_path,
-        json.dumps(decision_payload, indent=2, sort_keys=True) + "\n",
+        json.dumps(decision_payload, indent=2, sort_keys=True, allow_nan=False) + "\n",
         f"{decision_path} already holds a diverging promotion decision; the round's outcome "
         "changed under an already-ledgered round. Refusing to rewrite audit history -- "
         "delete the stale decision deliberately to re-ledger.",
     )
     return PromotionLedger(
-        round_path=evaluation.round_path,
+        round_path=ledger_root,
         ledger_path=ledger_path,
         decision_path=decision_path,
         records=records,
@@ -717,11 +761,14 @@ def load_promotion_ledger(round_path: Path | str) -> tuple[list[dict[str, Any]],
 class ValidationRound:
     """One completed ``validate_round``: every stage output, ready for audit.
 
-    ``evaluation`` and ``ledger`` are None exactly when the loader admitted no
-    candidate: the round short-circuited before the baseline ran (zero model
-    calls) and nothing exists on disk, so ``round_path`` is where the round
-    *would* have lived. ``merge_evaluation``/``merge_decision`` are populated
-    exactly when the plan was a merge -- the R7 re-evaluation leg.
+    ``evaluation`` is None exactly when the loader admitted no candidate: the
+    round short-circuited before the baseline ran (zero model calls) and no
+    evaluation directories exist. Such a round still persists a rejection-only
+    ledger when the loader rejected at least one candidate (R8); ``ledger`` is
+    None only when the proposals directory held no candidates at all, in which
+    case nothing exists on disk and ``round_path`` is where the round *would*
+    have lived. ``merge_evaluation``/``merge_decision`` are populated exactly
+    when the plan was a merge -- the R7 re-evaluation leg.
     """
 
     round_path: Path
@@ -764,8 +811,12 @@ def validate_round(
        gated against the incumbent (with the caps' S6 comparison); rejections
        are carried through to the ledger, never dropped. When *nothing* loads,
        the round short-circuits: the baseline is never evaluated (no model
-       calls), nothing touches disk, and the result carries the rejections and
-       their decision records with ``evaluation`` and ``ledger`` both None.
+       calls) and no evaluation directories are created, but any loader
+       rejections still persist as a rejection-only ledger in the round
+       directory (R8) -- ``evaluation`` is None and ``ledger`` carries their
+       records with a null baseline. Only an empty proposals directory (zero
+       candidates, zero rejections) leaves nothing on disk, with ``ledger``
+       also None.
     2. **Evaluation (U3).** The baseline and every loaded candidate run over
        both splits under the caps and per-candidate breakers.
     3. **Promotion (U4).** Loader rejections become decision records, the
@@ -829,19 +880,31 @@ def validate_round(
             )
 
     if not loaded:
-        # Nothing to compare: never run the baseline, never touch disk. The
-        # ledger writer needs an evaluated round to anchor audit links, so the
-        # rejections and their decisions travel on the result instead.
+        # Nothing to compare: never run the baseline, make zero model calls.
+        # R8 still demands every candidate's outcome in a persisted ledger, so
+        # a round with at least one loader rejection writes a rejection-only
+        # ledger (upstream reasons, null links, a null baseline) into the
+        # round directory. Only a truly empty proposals directory -- zero
+        # candidates, zero rejections -- stays a clean no-op that creates no
+        # round directory at all.
         decisions = [decide_subject({}, rejection, pconfig) for rejection in rejections]
+        plan = PromotionPlan(kind=PLAN_NONE, constituent_ids=(), harness=None, harness_hash=None)
+        ledger = (
+            write_promotion_ledger(
+                None, decisions, plan, round_path=round_path, loader_rejections=rejections
+            )
+            if rejections
+            else None
+        )
         return ValidationRound(
             round_path=round_path,
             loader_rejections=rejections,
             evaluation=None,
             decisions=decisions,
-            plan=PromotionPlan(kind=PLAN_NONE, constituent_ids=(), harness=None, harness_hash=None),
+            plan=plan,
             merge_evaluation=None,
             merge_decision=None,
-            ledger=None,
+            ledger=ledger,
         )
 
     evaluation = evaluate_validation_round(incumbent, loaded, config)

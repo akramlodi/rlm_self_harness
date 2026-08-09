@@ -160,9 +160,10 @@ class CandidateDecision:
     """One subject's promotion decision, in the shape the ledger serializes.
 
     ``rule`` carries per-split pass counts and deltas, ``band`` the per-metric
-    baseline/candidate means and bounds; both are None exactly when the
-    subject was never scored (rejected upstream or over budget, in which case
-    ``upstream`` or ``reasons`` say why). The thresholds are recorded on every
+    baseline/candidate means and bounds (a null bound means unconstrained:
+    ``math.inf`` has no JSON rendering, so it never enters this shape); both
+    are None exactly when the subject was never scored (rejected upstream or
+    over budget, in which case ``upstream`` or ``reasons`` say why). The thresholds are recorded on every
     record, scored or not -- they are round-level preregistration, and a
     ledger row must be interpretable without the config that produced it.
     """
@@ -263,6 +264,16 @@ def _overall_mean(summary: dict[str, Any], total_key: str) -> float:
     return total / runs
 
 
+def _recorded_bound(bound: float) -> float | None:
+    """A band bound as the decision record carries it: None when non-finite.
+
+    ``Band`` keeps ``math.inf`` for its in-memory arithmetic, but the record
+    is what the ledger serializes, and bare ``Infinity`` is not RFC-8259
+    JSON -- so an unconstrained bound is recorded as null.
+    """
+    return bound if math.isfinite(bound) else None
+
+
 def score_candidate(
     baseline_summary: dict[str, Any],
     candidate_summary: dict[str, Any],
@@ -325,8 +336,8 @@ def score_candidate(
         band[metric] = {
             "baseline": baseline_mean,
             "candidate": candidate_mean,
-            "lower": metric_band.lower,
-            "upper": metric_band.upper,
+            "lower": _recorded_bound(metric_band.lower),
+            "upper": _recorded_bound(metric_band.upper),
             "within": within,
         }
         if not within:

@@ -28,7 +28,8 @@ One candidate = one directory = one `proposal.json`:
 
 - The **directory name must equal the `candidate_id`** inside the file; the
   promotion ledger links candidates by id, so a mismatch is rejected, not
-  repaired.
+  repaired — at the text level (`schema` gate), before any candidate code runs
+  or `surfaces.py` is written.
 - `candidate_id` must be filesystem-safe: `[A-Za-z0-9][A-Za-z0-9._-]*`.
 - The loader writes one generated file, `surfaces.py`, into the candidate's
   directory when it materializes callable surfaces. Do not create or edit that
@@ -156,7 +157,7 @@ candidate, including the ones that never ran.
 | 2 | `envelope_hash` | Recomputed serialization hash equals the declared one | No |
 | 3 | `base_hash` | `base_harness_hash` is the incumbent's hash | No |
 | 4 | `surface_diff` | Exactly one surface differs, and it is the declared one; `orchestrator` untouched | No |
-| 5 | `caps` | An *enabled* S6 policy may not exceed any experiment-owned cap (e.g. `max_depth`); comparison only — the tighten-only merge lives in the cost governor | No |
+| 5 | `caps` | An *enabled* S6 policy may not exceed any experiment-owned cap (e.g. `max_depth`), and every capped value must be a positive finite number (NaN/inf rejected); comparison only — the tighten-only merge lives in the cost governor | No |
 | 6 | `materialization` | Source parses, writes to `surfaces.py`, imports — in a subprocess under a wall-clock timeout | Subprocess only |
 | 7 | `harness_check` | `shrlm.runner.check_harness`: invariant probes (I1 boundedness, S9 signature/return type, S6 field vocabulary, plumbing, stated limits) — same subprocess | Subprocess only |
 | 8 | `round_trip` | The materialized harness re-serializes byte-identically to the envelope | Subprocess only |
@@ -166,7 +167,10 @@ A candidate that survives is returned as a `LoadedCandidate`: the live
 own object), the edited surface id, the envelope hash, and the parsed proposal
 — ready for the evaluation driver. Load a whole proposals directory with
 `load_candidates(proposals_dir, incumbent)`; it returns
-`(loaded, rejections)` covering every candidate directory exactly once.
+`(loaded, rejections)` covering every candidate directory exactly once. Every
+rejection from a directory load is keyed by the (unique) directory name, so
+two malformed proposals declaring the same id cannot collide in the ledger; a
+different declared id is preserved in the rejection reason.
 
 ## Practical notes for the stage-2 developer
 

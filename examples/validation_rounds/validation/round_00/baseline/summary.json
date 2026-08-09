@@ -3,11 +3,11 @@
   "harness_hash": "95a4ed2e9f7cb574ae1eda24b22b02a816bbf139878f4a3f84fc7f2585cf2c35",
   "outcome": "completed",
   "repetitions": 1,
-  "spent": 0.00051644465,
+  "spent": 0.0005796592999999999,
   "splits": {
     "heldin": {
       "harness_hash": "95a4ed2e9f7cb574ae1eda24b22b02a816bbf139878f4a3f84fc7f2585cf2c35",
-      "mean_cost": 0.000118124925,
+      "mean_cost": 0.000126436925,
       "mean_sub_calls": 0.0,
       "n_instances": 2,
       "n_resource_terminated": 0,
@@ -17,12 +17,12 @@
       "pass_rate": 1.0,
       "round_path": "heldin/round_00",
       "skipped_run_ids": [],
-      "total_cost": 0.00023624985,
+      "total_cost": 0.00025287385,
       "total_sub_calls": 0
     },
     "heldout": {
       "harness_hash": "95a4ed2e9f7cb574ae1eda24b22b02a816bbf139878f4a3f84fc7f2585cf2c35",
-      "mean_cost": 0.0001400974,
+      "mean_cost": 0.000163392725,
       "mean_sub_calls": 0.0,
       "n_instances": 2,
       "n_resource_terminated": 0,
@@ -32,7 +32,7 @@
       "pass_rate": 1.0,
       "round_path": "heldout/round_00",
       "skipped_run_ids": [],
-      "total_cost": 0.0002801948,
+      "total_cost": 0.00032678545,
       "total_sub_calls": 0
     }
   },

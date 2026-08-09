@@ -10,8 +10,10 @@ regressing, one over-budget -- plus one loader-rejected proposal, asserting
 that the merged harness is what promotes and that the ledger records every
 candidate. Variants pin the merge-failure (promotes nothing, constituents
 ``merged_failed``), the single-winner path (promoted without re-evaluation),
-the degenerate rounds (zero loadable candidates -> no model calls, no ledger),
-and idempotent re-invocation (same ledger, zero new model calls).
+the degenerate rounds (zero loadable candidates -> no model calls; an
+all-rejected round still persists a rejection-only ledger, while an empty
+proposals directory leaves nothing on disk), and idempotent re-invocation
+(same ledger, zero new model calls).
 """
 
 from dataclasses import replace
@@ -271,12 +273,13 @@ class TestSinglePromotion:
 
 
 # ---------------------------------------------------------------------------
-# Degenerate rounds: nothing loadable means no model calls and no ledger
+# Degenerate rounds: nothing loadable means no model calls; rejections still
+# persist a rejection-only ledger (R8)
 # ---------------------------------------------------------------------------
 
 
 class TestDegenerateRounds:
-    def test_all_candidates_loader_rejected_makes_no_model_calls(self, tmp_path, monkeypatch):
+    def test_all_rejected_round_ledgers_without_model_calls(self, tmp_path, monkeypatch):
         proposals_dir = tmp_path / "proposals"
         write_candidate(
             proposals_dir,
@@ -293,8 +296,6 @@ class TestDegenerateRounds:
 
         assert idle.total_calls == 0  # evaluation (baseline included) never ran
         assert result.evaluation is None
-        assert result.ledger is None
-        assert not result.round_path.exists()
         assert result.plan.kind == PLAN_NONE
         assert not result.promoted
         assert result.promoted_harness is None
@@ -303,6 +304,28 @@ class TestDegenerateRounds:
         ]
         assert [decision.subject_id for decision in result.decisions] == ["cand-aaa-bad"]
         assert result.decisions[0].decision == DECISION_REJECTED
+
+        # R8: the rejection still lands in a persisted ledger -- but only the
+        # ledger pair; no evaluation directory was ever created.
+        assert result.ledger is not None
+        records, decision = load_promotion_ledger(result.round_path)
+        assert [record["subject_id"] for record in records] == ["cand-aaa-bad"]
+        assert records[0]["decision"] == DECISION_REJECTED
+        assert records[0]["reasons"]
+        assert records[0]["upstream"]["gate"] == GATE_BASE_HASH
+        assert records[0]["links"] is None
+        assert decision["plan"] == PLAN_NONE
+        assert decision["promoted"] is False
+        assert decision["baseline"] is None  # nothing evaluated: no incumbent to link
+        assert decision["n_candidates"] == 1
+        assert not (result.round_path / BASELINE_ID).exists()
+
+        # Re-invoking replays the same rejection-only ledger: still zero model
+        # calls, byte-identical files (the non-clobbering no-op).
+        second = validate_round(H0, proposals_dir, config)
+        assert idle.total_calls == 0
+        assert second.ledger is not None
+        assert second.ledger.records == records
 
     def test_empty_proposals_dir_is_a_clean_no_promotion_round(self, tmp_path, monkeypatch):
         proposals_dir = tmp_path / "proposals"
@@ -314,7 +337,10 @@ class TestDegenerateRounds:
 
         assert idle.total_calls == 0
         assert result.evaluation is None
+        # Zero candidates and zero rejections: nothing to record, so no ledger
+        # and no round directory at all.
         assert result.ledger is None
+        assert not result.round_path.exists()
         assert result.plan.kind == PLAN_NONE
         assert result.loader_rejections == []
         assert result.decisions == []

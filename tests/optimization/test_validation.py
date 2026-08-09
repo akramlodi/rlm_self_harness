@@ -44,6 +44,7 @@ from shrlm.optimization.promotion import (
     PLAN_NONE,
     PLAN_SINGLE,
     PromotionConfig,
+    PromotionPlan,
     apply_merge_verdict,
     assess_round,
     decide_subject,
@@ -856,6 +857,73 @@ class TestPromotionLedger:
         assert decision["promoted"] is False
         assert decision["promoted_subject_id"] is None
         assert decision["promoted_harness_hash"] is None
+
+    def test_ledger_json_is_strict_rfc8259(self, tmp_path, monkeypatch):
+        # The default PromotionConfig carries unconstrained (math.inf) bands;
+        # the persisted ledger must still parse under a strict JSON reader
+        # that refuses Infinity/NaN tokens -- null bounds mean unconstrained.
+        pieces = single_promotion_round(tmp_path, monkeypatch)
+        ledger = write_promotion_ledger(
+            pieces["evaluation"],
+            pieces["decisions"],
+            pieces["plan"],
+            loader_rejections=[pieces["rejection"]],
+        )
+
+        def refuse(token: str) -> None:
+            raise AssertionError(f"non-RFC-8259 constant {token!r} in persisted ledger")
+
+        records = [
+            json.loads(line, parse_constant=refuse)
+            for line in ledger.ledger_path.read_text().splitlines()
+        ]
+        decision = json.loads(ledger.decision_path.read_text(), parse_constant=refuse)
+        assert decision["promoted"] is True
+        promoted = next(record for record in records if record["subject_id"] == "cand-a")
+        for metric in ("mean_cost", "mean_sub_calls"):
+            assert promoted["band"][metric]["lower"] == 0.0
+            assert promoted["band"][metric]["upper"] is None  # null: unconstrained
+
+    def test_rejection_only_round_ledgers_without_an_evaluation(self, tmp_path):
+        # R8: a round whose every candidate was loader-rejected still persists
+        # its outcomes -- no evaluation, no model calls, but a full ledger pair.
+        rejection = loader_rejection()
+        decisions = [decide_subject({}, rejection, PromotionConfig())]
+        plan = PromotionPlan(kind=PLAN_NONE, constituent_ids=(), harness=None, harness_hash=None)
+        round_path = tmp_path / "validation" / "round_00"
+
+        ledger = write_promotion_ledger(
+            None, decisions, plan, round_path=round_path, loader_rejections=[rejection]
+        )
+
+        records, decision = load_promotion_ledger(round_path)
+        assert records == ledger.records
+        assert [record["subject_id"] for record in records] == ["cand-bad"]
+        assert records[0]["decision"] == DECISION_REJECTED
+        assert records[0]["upstream"] == rejection.to_dict()
+        assert records[0]["links"] is None  # never evaluated: nothing on disk to link
+        assert decision["plan"] == PLAN_NONE
+        assert decision["promoted"] is False
+        assert decision["baseline"] is None  # nothing ran: no incumbent to name or link
+        assert decision["n_candidates"] == 1
+
+    def test_writer_demands_exactly_one_round_anchor(self, tmp_path, monkeypatch):
+        pieces = single_promotion_round(tmp_path, monkeypatch)
+        with pytest.raises(ValueError, match="anchor"):
+            write_promotion_ledger(
+                pieces["evaluation"],
+                pieces["decisions"],
+                pieces["plan"],
+                round_path=tmp_path / "elsewhere",
+                loader_rejections=[pieces["rejection"]],
+            )
+        with pytest.raises(ValueError, match="anchor"):
+            write_promotion_ledger(None, pieces["decisions"], pieces["plan"])
+
+    def test_rejection_only_ledger_demands_a_rejection(self, tmp_path):
+        plan = PromotionPlan(kind=PLAN_NONE, constituent_ids=(), harness=None, harness_hash=None)
+        with pytest.raises(ValueError, match="rejection"):
+            write_promotion_ledger(None, [], plan, round_path=tmp_path / "round_00")
 
     def test_writer_demands_exact_decision_coverage(self, tmp_path, monkeypatch):
         pieces = single_promotion_round(tmp_path, monkeypatch)
