@@ -115,7 +115,6 @@ def fake_evaluation(summary: dict[str, Any]) -> SubjectEvaluation:
     subject_path = Path("/nonexistent") / summary["subject_id"]
     return SubjectEvaluation(
         subject_id=summary["subject_id"],
-        harness_hash=summary["harness_hash"],
         path=subject_path,
         summary_path=subject_path / "summary.json",
         summary=summary,

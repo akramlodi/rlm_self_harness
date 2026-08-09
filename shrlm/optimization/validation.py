@@ -75,7 +75,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shrlm.harness_identity import harness_hash
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
 from shrlm.optimization.candidates import (
     DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
@@ -210,10 +209,13 @@ class SubjectEvaluation:
     """
 
     subject_id: str
-    harness_hash: str
     path: Path
     summary_path: Path
     summary: dict[str, Any]
+
+    @property
+    def harness_hash(self) -> str:
+        return str(self.summary["harness_hash"])
 
     @property
     def outcome(self) -> str:
@@ -401,10 +403,13 @@ def evaluate_subject(
             **split_aggregate(split_path),
         }
 
+    # Both splits' aggregates carry the hash their persisted harness.json
+    # recorded for this same harness, so reuse it rather than paying for a
+    # second full serialization here.
     summary = {
         "format": SUMMARY_FORMAT,
         "subject_id": subject_id,
-        "harness_hash": harness_hash(harness),
+        "harness_hash": next(iter(split_summaries.values()))["harness_hash"],
         "repetitions": config.repetitions,
         "outcome": OUTCOME_OVER_BUDGET if breaker.tripped else OUTCOME_COMPLETED,
         "spent": breaker.spent,
@@ -414,7 +419,6 @@ def evaluate_subject(
     _write_summary(summary_path, summary)
     return SubjectEvaluation(
         subject_id=subject_id,
-        harness_hash=str(summary["harness_hash"]),
         path=subject_path,
         summary_path=summary_path,
         summary=summary,

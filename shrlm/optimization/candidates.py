@@ -59,6 +59,7 @@ from typing import Any
 
 from shrlm.harness_identity import (
     HarnessSerializationError,
+    canonical_json,
     hash_of_serialization,
     serialize_harness,
 )
@@ -209,7 +210,7 @@ class _CallableSlot:
 
 def _canonical(value: Any) -> str:
     """Canonical JSON text, the byte form every comparison here runs on."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return canonical_json(value)
 
 
 # ---------------------------------------------------------------------------
@@ -260,10 +261,15 @@ def _surfaces_violation(surfaces: Any) -> str | None:
     return None
 
 
+def _unwrap_tool(entry: dict[str, Any]) -> Any:
+    """The helper payload, read through an optional ``tool`` wrapper."""
+    return entry.get("tool") if "tool" in entry else entry
+
+
 def _helper_entry_violation(label: str, entry: Any) -> str | None:
     if not isinstance(entry, dict):
         return f"{label} must be a dict"
-    inner = entry.get("tool") if "tool" in entry else entry
+    inner = _unwrap_tool(entry)
     if not isinstance(inner, dict):
         return f"{label}['tool'] must be a dict"
     kind = inner.get("kind")
@@ -379,7 +385,7 @@ def cap_violations(policy: dict[str, Any], caps: dict[str, int | float]) -> list
 
 
 def _helper_callable_source(entry: dict[str, Any]) -> str | None:
-    inner = entry.get("tool") if "tool" in entry else entry
+    inner = _unwrap_tool(entry)
     if isinstance(inner, dict) and inner.get("kind") == "callable":
         return inner["source"]
     return None
@@ -652,6 +658,7 @@ def load_candidate(
     *,
     caps: dict[str, int | float] | None = None,
     timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
+    incumbent_serialization: dict[str, Any] | None = None,
 ) -> LoadedCandidate | CandidateRejection:
     """Gate one ``proposal.json`` against the incumbent, KTD2 order.
 
@@ -663,6 +670,9 @@ def load_candidate(
             an enabled candidate policy may not exceed any of them.
         timeout_seconds: Wall-clock bound on the materialization/check
             subprocess.
+        incumbent_serialization: ``serialize_harness(incumbent)``, when the
+            caller already has it -- ``load_candidates`` computes it once per
+            round instead of once per candidate. Defaults to recomputing.
 
     Returns:
         A ``LoadedCandidate`` (live harness, edited surface, envelope hash) or
@@ -701,7 +711,8 @@ def load_candidate(
             f"{recomputed}; the envelope was tampered with or built inconsistently",
         )
 
-    incumbent_serialization = serialize_harness(incumbent)
+    if incumbent_serialization is None:
+        incumbent_serialization = serialize_harness(incumbent)
     incumbent_hash = hash_of_serialization(incumbent_serialization)
     if payload["base_harness_hash"] != incumbent_hash:
         return rejection(
@@ -803,6 +814,7 @@ def load_candidates(
     """
     loaded: list[LoadedCandidate] = []
     rejections: list[CandidateRejection] = []
+    incumbent_serialization = serialize_harness(incumbent)
     for entry in sorted(Path(proposals_dir).iterdir()):
         if not entry.is_dir():
             continue
@@ -818,7 +830,11 @@ def load_candidates(
             )
             continue
         result = load_candidate(
-            proposal_path, incumbent, caps=caps, timeout_seconds=timeout_seconds
+            proposal_path,
+            incumbent,
+            caps=caps,
+            timeout_seconds=timeout_seconds,
+            incumbent_serialization=incumbent_serialization,
         )
         if isinstance(result, LoadedCandidate) and result.candidate_id != entry.name:
             result = CandidateRejection(
