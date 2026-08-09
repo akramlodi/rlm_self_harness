@@ -11,6 +11,60 @@ Stage 3 is built, which pins down both of your boundaries:
 - **Your output format is specified**: one directory per candidate holding a `proposal.json` in the versioned `shrlm-proposal/v1` format. **`docs/harness-proposal-interface.md` is the contract** — field by field, with every loader gate (schema, envelope hash, base hash, one-surface diff, caps, materialization, invariants, round trip) and its rejection reason. The enforcing loader is `shrlm/optimization/candidates.py`; its tests (`tests/optimization/test_candidates.py`) double as worked examples of building conforming proposals.
 - **Your prior-edit history is the promotion ledger**: each validation round writes `validation/round_NN/promotions.jsonl` (one auditable record per candidate — including yours that were rejected, and why) plus `decision.json` (the promoted harness hash, or "no promotion"). Read them back with `shrlm.optimization.validation.load_promotion_ledger(round_path)`. This is the "previously attempted edits" input the papers feed the proposer each round — you consume it, you don't design it.
 
+## The Stage 3 code that consumes your output (a map)
+
+Stage 3 lives in four modules under `shrlm/optimization/`, composed by one entry point,
+`validation.validate_round(incumbent, proposals_dir, config, promotion_config)`. What happens
+to a proposals directory you hand it:
+
+1. **Loader — `candidates.py`.** Every candidate directory is gated in a fixed order:
+   text-level gates first (schema, envelope-hash recompute, base-hash-matches-incumbent,
+   exactly-one-surface diff, S6-within-caps) with **zero candidate code executed**, then
+   materialization + `check_harness` inside a subprocess with a wall-clock timeout and a
+   credential-stripped environment. Survivors become live `Harness` objects whose
+   serialization round-trips byte-identically to your envelope. Failures become structured
+   `CandidateRejection` values (never exceptions) that land in the ledger with the gate name
+   and reason — so a malformed proposal from you is recorded, not crashed on.
+2. **Cost governor — `costs.py`.** Evaluation caps (`ValidationCaps`: max depth, iterations,
+   per-run budget/timeout, per-candidate cumulative budget) are experiment-owned and bind at
+   the RLM constructor. Your candidate's S6 `runtime_policy` may *tighten* them but can never
+   raise them — by design, since S6 is an editable surface. A per-candidate spend breaker
+   accumulates persisted run costs and aborts the candidate's remaining runs when tripped
+   (outcome `over_budget`, never silently dropped), and a hard wall-clock backstop terminates
+   a candidate whose code hangs mid-evaluation.
+3. **Evaluation — `validation.py`.** The incumbent (baseline) and every loaded candidate run
+   on a held-in and a disjoint held-out split with repetition, through the same persist-first
+   round infrastructure as mining: every run persisted with verdict, sha-linked trace, and
+   cost under `validation/round_NN/<candidate_id|baseline>/<heldin|heldout>/round_00/`, plus a
+   per-subject `summary.json`. Crashed rounds resume; only missing runs re-execute.
+4. **Promotion — `promotion.py`.** Pure offline math over the persisted summaries: accepted
+   only if the candidate degrades neither split beyond `tau_regression` and improves at least
+   one beyond `tau_improvement` (defaults 0 = the paper's strict rule), **and** its mean cost
+   and sub-call count stay inside the preregistered band relative to baseline. Accepted
+   candidates with disjoint surfaces are merged and the merged harness is re-evaluated under
+   the same rule before promotion; a failed merge promotes nothing (constituents are ledgered
+   `merged_failed`). Same-surface winners: higher held-out delta wins.
+5. **Ledger — back in `validation.py`.** Every candidate's outcome — including
+   loader-rejected and over-budget ones — is written to `promotions.jsonl` + `decision.json`
+   (strict RFC-8259 JSON, non-clobbering writes, links that resolve down to sha-verified
+   traces). `decision.json.promoted_harness_hash` names the new incumbent your *next* round's
+   proposals must declare as `base_harness_hash`; a rejection-only round still persists a
+   ledger so your history is never silent.
+
+Practical consequences for your proposer:
+
+- **Test your output against the real gate, offline.** `load_candidates(proposals_dir, incumbent)`
+  runs every gate without any model calls; `tests/optimization/test_candidates.py` builds
+  conforming proposals from scratch (see `proposal_payload`/`write_payload`) and
+  `tests/optimization/test_validation_e2e.py` fabricates whole rounds under `MockLM`.
+- **A complete live validation round is committed** at `examples/validation_rounds/`
+  (one hand-written S2 candidate vs. `H0`, 8 runs, ~$0.001): `proposals/` shows a valid
+  proposal directory in the flesh, and `validation/round_00/` shows exactly what your ledger
+  history will look like — including a `decision.json` for a no-promotion round.
+- **One surface per candidate, K distinct candidates, minimal edits** — the loader enforces
+  the first mechanically (byte-diff against the incumbent's serialization), and the promotion
+  band punishes edits that blow up cost or sub-call count even when they improve pass rates.
+
 ## What is a "harness" here, concretely?
 
 A `Harness` is a frozen dataclass in `shrlm/rlm_harness.py` with **nine editable surfaces** — think of them as nine named slots:
@@ -162,4 +216,4 @@ What this means for your stage-2 code:
 - **Don't parse prose out of `verifier_evidence`** — it's quoted model output. The structured fields (signature, symptoms, support) are the evidence; the quotes are illustration.
 - **Everything you produce should be auditable too.** Stage 1's standard: every LLM call cached and replayable, every artifact content-hashed, every decision recorded with the attempts that led to it. Match it — Stage 3 and the paper's analysis depend on it.
 
-Questions: the module docstrings in `shrlm/optimization/` are written as documentation — `README.md` in that directory is the map. The plan that produced this PR is `docs/plans/2026-08-07-001-feat-weakness-mining-completion-plan.md`.
+Questions: the module docstrings in `shrlm/optimization/` are written as documentation — `README.md` in that directory is the map. The plan that produced the mining stage is `docs/plans/2026-08-07-001-feat-weakness-mining-completion-plan.md`; the plan that produced the validation stage (loader, cost governor, evaluation, promotion, ledger) is `docs/plans/2026-08-08-002-feat-proposal-validation-plan.md`.
