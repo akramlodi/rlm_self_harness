@@ -58,6 +58,14 @@ def hanging_middleware(answer, repl_inventory):
         pass
 
 
+def env_probing_middleware(answer, repl_inventory):
+    """S9 candidate that raises if the host's API key leaks into the gate child."""
+    leaked = __import__("os").environ.get("OPENROUTER_API_KEY")
+    if leaked is not None:
+        raise RuntimeError(f"OPENROUTER_API_KEY leaked into the gate subprocess: {leaked}")
+    return AnswerDecision.accept(answer)
+
+
 def unbounded_metadata(stdout, repl_inventory):
     """S7 candidate violating I1: output grows with the REPL state."""
     return stdout
@@ -420,6 +428,18 @@ def test_gate_subprocess_launch_failure_is_a_structured_rejection(tmp_path, monk
     assert result.gate == "materialization"
     assert "OSError" in result.reason
     assert "cannot spawn" in result.reason
+
+
+def test_gate_subprocess_env_drops_host_secrets(tmp_path, monkeypatch):
+    # The gate child runs candidate (model-authored) code, so the host's
+    # credentials must never reach it. The candidate's S9 source raises when
+    # the key is visible, so a successful load proves the child's environment
+    # lacked it (``test_source_raising_at_probe_is_a_structured_rejection``
+    # proves the probe really executes S9 source).
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sekrit")
+    payload = proposal_payload(s9_candidate(env_probing_middleware), "S9")
+    loaded = load_candidate(write_payload(tmp_path, payload), H0)
+    assert isinstance(loaded, LoadedCandidate), loaded
 
 
 def test_check_harness_failure_carries_the_runner_message(tmp_path):

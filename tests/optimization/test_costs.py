@@ -15,6 +15,8 @@ reports no cost, and the breaker prices runs from persisted costs alone).
 """
 
 import json
+import signal
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,7 @@ from typing import Any
 import pytest
 
 import rlm.core.rlm as rlm_module
+import shrlm.optimization.costs as costs_module
 import shrlm.runner as runner_module
 from rlm.core.types import ModelUsageSummary, UsageSummary
 from shrlm.optimization.candidates import GATE_CAPS, CandidateRejection
@@ -29,9 +32,11 @@ from shrlm.optimization.costs import (
     OUTCOME_COMPLETED,
     OUTCOME_OVER_BUDGET,
     CandidateSpendBreaker,
+    HardDeadlineExceeded,
     ValidationCaps,
     breaker_run_cost,
     governed_limits,
+    hard_deadline_seconds,
     run_governed_round,
 )
 from shrlm.optimization.driver import RoundConfig, round_dir, run_round
@@ -98,16 +103,44 @@ class ScriptedLM(MockLM):
         )
 
 
+# A script turn that makes ``HangingScriptLM`` block forever: the offline
+# stand-in for candidate code hanging inside a live call in the host loop.
+HANG = "__HANG__"
+
+
+class HangingScriptLM(ScriptedLM):
+    """A ``ScriptedLM`` whose ``HANG`` turns never return.
+
+    The sleep loop is interruptible Python bytecode, exactly like a candidate
+    middleware's ``while True``: only a signal-raised exception (the hard
+    deadline backstop) can break it -- the runtime's own between-iteration
+    timeout check is never reached.
+    """
+
+    def completion(self, prompt: str | dict[str, Any]) -> str:
+        turn = super().completion(prompt)
+        if turn == HANG:
+            while True:
+                time.sleep(0.01)
+        return turn
+
+
 class ClientFactory:
     """Stands in for ``get_client``: fresh client per call, one shared script."""
 
-    def __init__(self, script: list[str], cost_per_call: float = COST_PER_CALL):
+    def __init__(
+        self,
+        script: list[str],
+        cost_per_call: float = COST_PER_CALL,
+        client_cls: type[ScriptedLM] = ScriptedLM,
+    ):
         self.script = list(script)
         self.cost_per_call = cost_per_call
+        self.client_cls = client_cls
         self.clients: list[ScriptedLM] = []
 
     def __call__(self, backend: str, backend_kwargs: dict[str, Any] | None) -> ScriptedLM:
-        client = ScriptedLM(self.script, self.cost_per_call)
+        client = self.client_cls(self.script, self.cost_per_call)
         self.clients.append(client)
         return client
 
@@ -444,6 +477,135 @@ class TestGovernedRound:
         assert result.outcome == OUTCOME_OVER_BUDGET
         assert result.skipped_run_ids == ["inst-2__a01"]
         assert result.spent == pytest.approx(2 * COST_PER_CALL)
+
+
+# ---------------------------------------------------------------------------
+# The hard wall-clock backstop: a hung candidate call can never block the host
+# ---------------------------------------------------------------------------
+
+
+class TestHardDeadlineBackstop:
+    def _tight_deadline(self, monkeypatch: pytest.MonkeyPatch) -> ValidationCaps:
+        """Caps whose backstop fires in well under a second (0.05 * 1.5 + 0.5)."""
+        monkeypatch.setattr(costs_module, "HARD_DEADLINE_GRACE_SECONDS", 0.5)
+        return replace(CAPS, max_timeout=0.05)
+
+    def test_deadline_derivation_and_opt_out(self):
+        assert hard_deadline_seconds(None) is None
+        assert hard_deadline_seconds(60.0) == pytest.approx(
+            60.0 * costs_module.HARD_DEADLINE_FACTOR + costs_module.HARD_DEADLINE_GRACE_SECONDS
+        )
+
+    def test_hung_run_terminates_persists_charges_and_the_round_continues(
+        self, tmp_path, monkeypatch
+    ):
+        # Run 1 hangs inside its live call; the backstop interrupts it, the
+        # driver persists it as an ordinary RESOURCE_TERMINATED run, the
+        # breaker charges the cost-less termination at the per-run ceiling,
+        # and runs 2 and 3 proceed normally.
+        caps = self._tight_deadline(monkeypatch)
+        factory = ClientFactory([HANG, final("RIGHT"), final("RIGHT")], client_cls=HangingScriptLM)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, caps=caps)
+
+        start = time.monotonic()
+        result = run_governed_round(config, CandidateSpendBreaker(caps))
+        assert time.monotonic() - start < 5.0  # returned instead of hanging
+
+        assert result.outcome == OUTCOME_COMPLETED
+        assert [entry["run_id"] for entry in result.entries] == [
+            "inst-1__a01",
+            "inst-2__a01",
+            "inst-3__a01",
+        ]
+        hung = result.entries[0]
+        assert hung["cause"] == VerifierCause.RESOURCE_TERMINATED.value
+        assert "HardDeadlineExceeded" in hung["verdict"]["detail"]
+        assert "hard wall-clock deadline" in hung["verdict"]["detail"]
+        assert hung["cost"] is None
+        assert not result.entries[1]["cause"] and not result.entries[2]["cause"]
+        # The persist-first contract: the terminated run is on disk like any other.
+        manifest = read_manifest(round_dir(tmp_path, 1))
+        assert [entry["run_id"] for entry in manifest] == [
+            entry["run_id"] for entry in result.entries
+        ]
+        assert result.skipped_run_ids == []
+        assert result.spent == pytest.approx(caps.max_budget + 2 * COST_PER_CALL)
+
+    def test_hung_run_charge_trips_the_breaker_and_skips_the_rest(self, tmp_path, monkeypatch):
+        # The ceiling charge for the hung run (max_budget) exceeds the
+        # candidate budget: the remaining runs are skipped per budget, exactly
+        # like an ordinary budget termination.
+        caps = replace(self._tight_deadline(monkeypatch), candidate_budget=0.001)
+        factory = ClientFactory([HANG], client_cls=HangingScriptLM)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+
+        result = run_governed_round(make_config(tmp_path, caps=caps), CandidateSpendBreaker(caps))
+
+        assert result.outcome == OUTCOME_OVER_BUDGET
+        assert [entry["run_id"] for entry in result.entries] == ["inst-1__a01"]
+        assert result.skipped_run_ids == ["inst-2__a01", "inst-3__a01"]
+        assert result.spent == pytest.approx(caps.max_budget)
+
+    def test_escaped_deadline_synthesizes_and_persists_the_in_flight_run(
+        self, tmp_path, monkeypatch
+    ):
+        # Simulate the interrupt escaping run_round's per-run handler (e.g. a
+        # hang during harness construction): every execution slice raises, and
+        # run_governed_round must synthesize each in-flight run's terminated
+        # manifest line itself, charge it, and keep the breaker in control.
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory([]))
+        real_run_round = costs_module.run_round
+
+        def escaping_run_round(config, *, stop_after=None):
+            if stop_after == 0:
+                return real_run_round(config, stop_after=0)
+            raise HardDeadlineExceeded(1.0)
+
+        monkeypatch.setattr(costs_module, "run_round", escaping_run_round)
+        # Two ceiling charges (0.003) cross the candidate budget; run 3 skips.
+        caps = replace(CAPS, candidate_budget=0.002)
+
+        result = run_governed_round(make_config(tmp_path, caps=caps), CandidateSpendBreaker(caps))
+
+        assert result.outcome == OUTCOME_OVER_BUDGET
+        assert [entry["run_id"] for entry in result.entries] == ["inst-1__a01", "inst-2__a01"]
+        manifest = read_manifest(round_dir(tmp_path, 1))
+        assert [entry["run_id"] for entry in manifest] == ["inst-1__a01", "inst-2__a01"]
+        for entry in manifest:
+            assert entry["cause"] == VerifierCause.RESOURCE_TERMINATED.value
+            assert "HardDeadlineExceeded" in entry["verdict"]["detail"]
+            assert entry["cost"] is None
+        assert result.skipped_run_ids == ["inst-3__a01"]
+        assert result.spent == pytest.approx(2 * caps.max_budget)
+
+    def test_alarm_state_is_restored_after_a_normal_round(self, tmp_path, monkeypatch):
+        factory = ClientFactory([final("RIGHT")] * 3)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+
+        def sentinel(signum: int, frame: Any) -> None:  # pragma: no cover - never fired
+            raise AssertionError("sentinel SIGALRM handler should never fire")
+
+        previous = signal.signal(signal.SIGALRM, sentinel)
+        try:
+            result = run_governed_round(make_config(tmp_path), CandidateSpendBreaker(CAPS))
+            assert result.outcome == OUTCOME_COMPLETED
+            assert signal.getsignal(signal.SIGALRM) is sentinel
+            assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+
+    def test_without_sigalrm_support_the_round_runs_unguarded(self, tmp_path, monkeypatch):
+        # Platform guard: no SIGALRM (or not the main thread) means no
+        # backstop, not a crash -- the round still runs to completion.
+        monkeypatch.setattr(costs_module, "_alarm_available", lambda: False)
+        factory = ClientFactory([final("RIGHT")] * 3)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+
+        result = run_governed_round(make_config(tmp_path), CandidateSpendBreaker(CAPS))
+
+        assert result.outcome == OUTCOME_COMPLETED
+        assert len(result.entries) == 3
 
 
 if __name__ == "__main__":

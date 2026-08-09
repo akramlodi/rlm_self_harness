@@ -354,6 +354,60 @@ def _persist_run(
     return entry
 
 
+def load_manifest(out_dir: Path | str, round_index: int) -> list[dict[str, Any]]:
+    """The round's persisted manifest lines, in file order; ``[]`` before any run.
+
+    A read-only view for callers that must inspect persisted state without
+    executing anything -- in particular without ``run_round``'s harness build,
+    which runs candidate code and is therefore not safe to invoke while
+    recovering from a hung candidate call.
+    """
+    return _load_manifest(round_dir(out_dir, round_index))
+
+
+def persist_interrupted_run(config: RoundConfig, error: Exception) -> dict[str, Any] | None:
+    """Persist the round's first pending run as a RESOURCE_TERMINATED run.
+
+    The recovery path for a limit exception that escaped ``run_round``'s
+    per-run handler -- e.g. a hard wall-clock interrupt (see
+    ``costs.HardDeadlineExceeded``) that fired during harness construction or
+    between a run's completion and its persistence. Nothing was recorded for
+    the in-flight run, so its terminated manifest line is synthesized here:
+    the same ``_partial_completion`` trace and failing verdict a caught limit
+    exception persists, except with no trajectory (the in-memory logger was
+    lost when the exception escaped).
+
+    Returns:
+        The newly appended manifest entry, or ``None`` when every configured
+        run is already persisted (nothing was in flight).
+    """
+    _validate_config(config)
+    path = _prepare_round_dir(config)
+    done = {str(entry["run_id"]) for entry in _load_manifest(path)}
+    model_name = str(config.backend_kwargs.get("model_name", "unknown"))
+    for instance in config.instances:
+        for attempt in range(1, config.attempts + 1):
+            instance_id = str(instance["id"])
+            run_id = run_id_for(instance_id, attempt)
+            if run_id in done:
+                continue
+            completion = _partial_completion(
+                prompt=instance["prompt"],
+                trajectory=None,
+                model_name=model_name,
+                error=error,
+            )
+            verdict = Verdict(
+                passed=False,
+                cause=VerifierCause.RESOURCE_TERMINATED,
+                gold="",
+                produced=completion.response,
+                detail=f"{type(error).__name__}: {error}",
+            )
+            return _persist_run(path, run_id, instance_id, attempt, completion, verdict)
+    return None
+
+
 def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dict[str, Any]]:
     """Execute a round's runs under the configured harness, persist-first.
 
@@ -637,8 +691,10 @@ __all__ = [
     "ROOT_LIMIT_EXCEPTIONS",
     "RoundConfig",
     "RoundPersistenceError",
+    "load_manifest",
     "load_round",
     "mine_round",
+    "persist_interrupted_run",
     "round_dir",
     "run_id_for",
     "run_round",

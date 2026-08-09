@@ -162,6 +162,12 @@ candidate, including the ones that never ran.
 | 7 | `harness_check` | `shrlm.runner.check_harness`: invariant probes (I1 boundedness, S9 signature/return type, S6 field vocabulary, plumbing, stated limits) — same subprocess | Subprocess only |
 | 8 | `round_trip` | The materialized harness re-serializes byte-identically to the envelope | Subprocess only |
 
+The gate subprocess runs with a stripped environment: the child inherits only a
+small allowlist (`PATH`, `PYTHONPATH`, `HOME`, `TMPDIR`, and locale variables),
+and it re-scrubs itself after import so values re-loaded from a `.env` file are
+dropped too — API keys and every other host secret are gone before candidate
+code runs.
+
 A candidate that survives is returned as a `LoadedCandidate`: the live
 `Harness` (edited surface materialized, every unchanged surface the incumbent's
 own object), the edited surface id, the envelope hash, and the parsed proposal

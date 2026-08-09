@@ -40,10 +40,15 @@ vocabulary candidate source may reference; it is a legibility contract and
 defense-in-depth, not a security boundary — the REPL already executes
 model-written code by design.
 
-Rejections are values, never exceptions: expected-invalid input comes back as a
-``CandidateRejection`` naming the gate and the violation, in the style of
-``attribution.py``'s validate-with-named-violation loop, so the promotion
-ledger can record every candidate including the ones that never ran.
+Rejections are values, never exceptions — for expected-invalid candidate
+input. Every gate failure comes back as a ``CandidateRejection`` naming the
+gate and the violation, in the style of ``attribution.py``'s
+validate-with-named-violation loop, so the promotion ledger can record every
+candidate including the ones that never ran. The boundary is precise: once the
+subprocess has vetted a candidate, a host-side failure while rebuilding the
+same harness is a bug in this module, not stage-2 input, and it raises loudly
+(the round-trip hash comparison after it stays a structured rejection because
+it checks the candidate's envelope, not our own code).
 """
 
 import ast
@@ -51,6 +56,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -621,11 +627,34 @@ def run_subprocess_gate(proposal_path: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+# The entire environment the gate subprocess inherits (plus any ``LC_*``
+# locale variables). The child runs candidate (model-authored) code and needs
+# no credentials — only what it takes to launch ``sys.executable -m
+# shrlm.optimization.candidates`` survives; every API key, token, and secret
+# in the host environment is dropped.
+_GATE_ENV_ALLOWLIST = ("PATH", "PYTHONPATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT")
+
+
+def _gate_environment() -> dict[str, str]:
+    """The curated environment for the gate subprocess: allowlist plus LC_*."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key in _GATE_ENV_ALLOWLIST or key.startswith("LC_")
+    }
+
+
 def _run_gate_subprocess(proposal_path: Path, timeout_seconds: float) -> dict[str, Any]:
     """Host-side wrapper: run the gate in a child under a wall-clock timeout."""
     command = [sys.executable, "-m", "shrlm.optimization.candidates", str(proposal_path)]
     try:
-        process = subprocess.run(command, capture_output=True, text=True, timeout=timeout_seconds)
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=_gate_environment(),
+        )
     except subprocess.TimeoutExpired:
         return {
             "ok": False,
@@ -778,15 +807,13 @@ def load_candidate(
 
     # The subprocess vetted materialization and invariants; now build the live
     # harness the evaluation will run: edited surface from the envelope,
-    # unchanged surfaces the incumbent's own objects (KTD2).
+    # unchanged surfaces the incumbent's own objects (KTD2). A failure here is
+    # a host-side bug, not expected-invalid input, so it raises (fail fast).
     module_path = proposal_path.parent / MODULE_FILENAME
-    try:
-        module = import_surface_module(module_path) if surface_id in ("S7", "S8", "S9") else None
-        fields = surface_field_values(serialization, surface_id, module)
-        harness = replace(incumbent, name=serialization["name"], **fields)
-        materialized_hash = hash_of_serialization(serialize_harness(harness))
-    except Exception as error:  # defensive: the subprocess already vetted this path
-        return rejection(candidate_id, GATE_MATERIALIZATION, f"{type(error).__name__}: {error}")
+    module = import_surface_module(module_path) if surface_id in ("S7", "S8", "S9") else None
+    fields = surface_field_values(serialization, surface_id, module)
+    harness = replace(incumbent, name=serialization["name"], **fields)
+    materialized_hash = hash_of_serialization(serialize_harness(harness))
     if materialized_hash != envelope["hash"]:
         return rejection(
             candidate_id,
@@ -907,6 +934,13 @@ def load_candidates(
 
 
 if __name__ == "__main__":
+    # The host already launches this child with the curated environment, but
+    # the imports above re-populate secrets from any ``.env`` file
+    # (``rlm.clients`` calls ``load_dotenv`` at import time). Scrub back down
+    # to the allowlist before a byte of candidate code runs.
+    for _key in list(os.environ):
+        if _key not in _GATE_ENV_ALLOWLIST and not _key.startswith("LC_"):
+            del os.environ[_key]
     print(json.dumps(run_subprocess_gate(sys.argv[1])))
 
 
