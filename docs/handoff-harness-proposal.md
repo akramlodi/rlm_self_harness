@@ -2,9 +2,14 @@
 
 1. **Weakness Mining** (✅ done) — run the model on tasks, collect failures, and cluster them into recurring failure patterns with evidence.
 2. **Harness Proposal** (⬅️ **you are building this**) — show the model its own failure patterns and ask it to propose a small number of *minimal, targeted edits* to the harness.
-3. **Proposal Validation** (later) — test each candidate edit and only keep the ones that don't regress.
+3. **Proposal Validation** (✅ done) — test each candidate edit and only keep the ones that don't regress.
 
 Your job: read the evidence Stage 1 wrote to disk, and produce candidate harness edits.
+
+Stage 3 is built, which pins down both of your boundaries:
+
+- **Your output format is specified**: one directory per candidate holding a `proposal.json` in the versioned `shrlm-proposal/v1` format. **`docs/harness-proposal-interface.md` is the contract** — field by field, with every loader gate (schema, envelope hash, base hash, one-surface diff, caps, materialization, invariants, round trip) and its rejection reason. The enforcing loader is `shrlm/optimization/candidates.py`; its tests (`tests/optimization/test_candidates.py`) double as worked examples of building conforming proposals.
+- **Your prior-edit history is the promotion ledger**: each validation round writes `validation/round_NN/promotions.jsonl` (one auditable record per candidate — including yours that were rejected, and why) plus `decision.json` (the promoted harness hash, or "no promotion"). Read them back with `shrlm.optimization.validation.load_promotion_ledger(round_path)`. This is the "previously attempted edits" input the papers feed the proposer each round — you consume it, you don't design it.
 
 ## What is a "harness" here, concretely?
 
@@ -77,9 +82,9 @@ Also read `bundle.json`'s `integrity` section: it tells you how many records wer
 Inputs, per round:
 1. The evidence bundle (`bundle.json`)
 2. Passing behaviors to preserve (derive from `runs.jsonl` — the runs with `passed: true`; note the example round has none, 0/8 passed — your code must handle that)
-3. Prior edit history (what was proposed/accepted/rejected in earlier rounds — you'll design this ledger; build it on `harness_identity` hashes; the starting harness for the example round is recorded in its `harness.json`)
+3. Prior edit history — stage 3's promotion ledger (`validation/round_NN/promotions.jsonl` + `decision.json`, via `load_promotion_ledger`; see the top of this doc). It is keyed on `harness_identity` hashes; the starting harness for the example round is recorded in its `harness.json`, and each round's `decision.json` names the incumbent your next proposals must target as `base_harness_hash`.
 
-Output: **K mutually distinct proposal bundles** (K≈4). Each proposal must:
+Output: **K mutually distinct proposal bundles** (K≈4), one `proposal.json` per candidate directory in the `shrlm-proposal/v1` format (`docs/harness-proposal-interface.md`). Each proposal must:
 - target **one** mined failure pattern (cite its signature)
 - modify **one** declared surface (the one its mechanism maps to)
 - be *minimal* — change only what's needed for that mechanism, no broad rewrites

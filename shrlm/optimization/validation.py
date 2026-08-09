@@ -54,9 +54,18 @@ promotion" (R8). Every record links -- by paths relative to the round
 directory, in ``audit.py``'s walkable style -- to the subject's summary, split
 round directories, and ``harness.json`` identities, so an audit can walk ledger
 -> round dirs -> sha-verified traces. Both files are non-clobbering in the
-bundle style: byte-identical rewrites are no-ops, divergence is refused. The
-evaluation surface here plus the promotion module are what U6's
-``validate_round`` composes.
+bundle style: byte-identical rewrites are no-ops, divergence is refused.
+
+``validate_round`` (U6) is the stage as one call: loader -> evaluation ->
+promotion -> merged re-evaluation -> ledger. It gates a proposals directory
+with the U1 loader under the round's caps, evaluates the baseline and every
+loaded candidate, applies the U4 rule and band, re-evaluates a merged plan's
+harness through the same evaluation path and rule before promotion is final
+(R7), and persists the U5 ledger. A round with zero loadable candidates
+short-circuits before the baseline runs -- no model calls are ever made for a
+round with nothing to compare -- and therefore writes no ledger (there is no
+evaluation directory to anchor audit links); the loader rejections and their
+decision records come back on the ``ValidationRound`` result instead.
 """
 
 import json
@@ -68,7 +77,12 @@ from typing import TYPE_CHECKING, Any
 
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
-from shrlm.optimization.candidates import CandidateRejection, LoadedCandidate
+from shrlm.optimization.candidates import (
+    DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
+    CandidateRejection,
+    LoadedCandidate,
+    load_candidates,
+)
 from shrlm.optimization.costs import (
     OUTCOME_COMPLETED,
     OUTCOME_OVER_BUDGET,
@@ -84,7 +98,7 @@ from shrlm.rlm_harness import Harness
 from shrlm.runner import run_metrics
 
 if TYPE_CHECKING:  # promotion imports this module, so its types are annotations only
-    from shrlm.optimization.promotion import CandidateDecision, PromotionPlan
+    from shrlm.optimization.promotion import CandidateDecision, PromotionConfig, PromotionPlan
 
 # The incumbent's directory name under a validation round; reserved, so no
 # candidate may claim it.
@@ -690,6 +704,185 @@ def load_promotion_ledger(round_path: Path | str) -> tuple[list[dict[str, Any]],
     return records, decision
 
 
+# ---------------------------------------------------------------------------
+# The whole stage as one call (U6)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ValidationRound:
+    """One completed ``validate_round``: every stage output, ready for audit.
+
+    ``evaluation`` and ``ledger`` are None exactly when the loader admitted no
+    candidate: the round short-circuited before the baseline ran (zero model
+    calls) and nothing exists on disk, so ``round_path`` is where the round
+    *would* have lived. ``merge_evaluation``/``merge_decision`` are populated
+    exactly when the plan was a merge -- the R7 re-evaluation leg.
+    """
+
+    round_path: Path
+    loader_rejections: list[CandidateRejection]
+    evaluation: RoundEvaluation | None
+    decisions: list["CandidateDecision"]
+    plan: "PromotionPlan"
+    merge_evaluation: SubjectEvaluation | CandidateRejection | None
+    merge_decision: "CandidateDecision | None"
+    ledger: PromotionLedger | None
+
+    @property
+    def promoted(self) -> bool:
+        """Whether this round promoted a harness (final, after any merge leg)."""
+        return self.ledger is not None and bool(self.ledger.decision["promoted"])
+
+    @property
+    def promoted_harness(self) -> Harness | None:
+        """The promoted live harness -- the plan's artifact -- or None."""
+        return self.plan.harness if self.promoted else None
+
+    @property
+    def promoted_harness_hash(self) -> str | None:
+        return str(self.ledger.decision["promoted_harness_hash"]) if self.promoted else None
+
+
+def validate_round(
+    incumbent: Harness,
+    proposals_dir: Path | str,
+    config: EvaluationConfig,
+    promotion: "PromotionConfig | None" = None,
+    *,
+    loader_timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
+) -> ValidationRound:
+    """Run one whole validation round: load, evaluate, decide, ledger (R9).
+
+    The composition, in order:
+
+    1. **Loader (U1).** Every candidate directory under ``proposals_dir`` is
+       gated against the incumbent (with the caps' S6 comparison); rejections
+       are carried through to the ledger, never dropped. When *nothing* loads,
+       the round short-circuits: the baseline is never evaluated (no model
+       calls), nothing touches disk, and the result carries the rejections and
+       their decision records with ``evaluation`` and ``ledger`` both None.
+    2. **Evaluation (U3).** The baseline and every loaded candidate run over
+       both splits under the caps and per-candidate breakers.
+    3. **Promotion (U4).** Loader rejections become decision records, the
+       evaluated candidates are scored by the rule and band, and the accepted
+       set resolves to a plan.
+    4. **The merge leg (R7).** A ``merge`` plan's harness is re-evaluated
+       through the same U3 path (under ``MERGED_SUBJECT_ID``) and the same
+       rule; ``apply_merge_verdict`` turns that into the round's outcome -- a
+       failed merge promotes nothing and re-marks its constituents
+       ``merged_failed``. A ``single`` plan promotes its already-evaluated
+       winner directly, never re-running it.
+    5. **Ledger (U5).** ``write_promotion_ledger`` persists every candidate's
+       record and the round decision, non-clobbering.
+
+    Idempotent end to end: re-invoking with the same inputs replays persisted
+    runs (zero new model calls), recomputes identical summaries and decisions,
+    and rewrites the ledger byte-identically (a no-op).
+
+    Args:
+        incumbent: The harness the round defends.
+        proposals_dir: Stage 2's candidate directories (``shrlm-proposal/v1``).
+        config: The round's evaluation config (splits, verifier, caps, out
+            dir, round index, repetitions, backend).
+        promotion: The preregistered thresholds and bands; defaults to the
+            paper's exact rule with unconstrained bands.
+        loader_timeout_seconds: Wall-clock bound on each candidate's
+            materialization/check subprocess.
+
+    Returns:
+        The ``ValidationRound`` with every intermediate the audit needs.
+
+    Raises:
+        ValueError: If a loaded candidate claims a reserved subject id
+            (``baseline``, ``merged``) -- a directory collision, not an
+            expected-invalid proposal.
+    """
+    from shrlm.optimization.promotion import (
+        MERGED_SUBJECT_ID,
+        PLAN_MERGE,
+        PLAN_NONE,
+        PLAN_SINGLE,
+        PromotionConfig,
+        PromotionPlan,
+        apply_merge_verdict,
+        assess_round,
+        decide_subject,
+        plan_promotion,
+        promote_decision,
+    )
+
+    pconfig = promotion if promotion is not None else PromotionConfig()
+    round_path = round_dir(config.out_dir, config.round_index)
+    loaded, rejections = load_candidates(
+        proposals_dir, incumbent, caps=config.caps.s6_caps(), timeout_seconds=loader_timeout_seconds
+    )
+    for candidate in loaded:
+        if candidate.candidate_id == MERGED_SUBJECT_ID:
+            raise ValueError(
+                f"candidate id {MERGED_SUBJECT_ID!r} is reserved for the merged harness's "
+                "re-evaluation directory"
+            )
+
+    if not loaded:
+        # Nothing to compare: never run the baseline, never touch disk. The
+        # ledger writer needs an evaluated round to anchor audit links, so the
+        # rejections and their decisions travel on the result instead.
+        decisions = [decide_subject({}, rejection, pconfig) for rejection in rejections]
+        return ValidationRound(
+            round_path=round_path,
+            loader_rejections=rejections,
+            evaluation=None,
+            decisions=decisions,
+            plan=PromotionPlan(kind=PLAN_NONE, constituent_ids=(), harness=None, harness_hash=None),
+            merge_evaluation=None,
+            merge_decision=None,
+            ledger=None,
+        )
+
+    evaluation = evaluate_validation_round(incumbent, loaded, config)
+    decisions = [
+        decide_subject(evaluation.baseline.summary, rejection, pconfig) for rejection in rejections
+    ]
+    decisions += assess_round(evaluation, pconfig)
+    plan = plan_promotion(incumbent, decisions, loaded)
+
+    merge_evaluation: SubjectEvaluation | CandidateRejection | None = None
+    merge_decision: CandidateDecision | None = None
+    if plan.kind == PLAN_SINGLE:
+        # The winner's own evaluation already is the evidence; single winners
+        # promote directly, never re-run (U4's contract).
+        winner_id = plan.constituent_ids[0]
+        decisions = [
+            promote_decision(decision) if decision.subject_id == winner_id else decision
+            for decision in decisions
+        ]
+    elif plan.kind == PLAN_MERGE:
+        assert plan.harness is not None  # a merge plan always carries its artifact
+        merge_evaluation = evaluate_subject(MERGED_SUBJECT_ID, plan.harness, config)
+        merge_decision = decide_subject(evaluation.baseline.summary, merge_evaluation, pconfig)
+        merge_decision, decisions = apply_merge_verdict(plan, merge_decision, decisions)
+
+    ledger = write_promotion_ledger(
+        evaluation,
+        decisions,
+        plan,
+        loader_rejections=rejections,
+        merge_evaluation=merge_evaluation,
+        merge_decision=merge_decision,
+    )
+    return ValidationRound(
+        round_path=evaluation.round_path,
+        loader_rejections=rejections,
+        evaluation=evaluation,
+        decisions=decisions,
+        plan=plan,
+        merge_evaluation=merge_evaluation,
+        merge_decision=merge_decision,
+        ledger=ledger,
+    )
+
+
 __all__ = [
     "BASELINE_ID",
     "DECISION_FILENAME",
@@ -707,6 +900,7 @@ __all__ = [
     "PromotionLedger",
     "RoundEvaluation",
     "SubjectEvaluation",
+    "ValidationRound",
     "ValidationSplits",
     "evaluate_subject",
     "evaluate_validation_round",
@@ -715,5 +909,6 @@ __all__ = [
     "split_aggregate",
     "split_dir",
     "subject_dir",
+    "validate_round",
     "write_promotion_ledger",
 ]
