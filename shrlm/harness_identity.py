@@ -174,14 +174,18 @@ def serialize_harness(harness: Harness) -> dict[str, Any]:
     }
 
 
-def canonical_json_sha256(material: dict[str, Any]) -> str:
-    """Sha256 over the canonical JSON rendering of ``material``.
+def canonical_json(material: Any) -> str:
+    """The canonical JSON rendering every comparison and hash runs on.
 
-    Canonical means sorted keys, compact separators, ASCII, so the hash is
+    Canonical means sorted keys, compact separators, ASCII, so the text is
     stable across processes and dict insertion orders.
     """
-    canonical = json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def canonical_json_sha256(material: dict[str, Any]) -> str:
+    """Sha256 over the canonical JSON rendering of ``material``."""
+    return hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
 
 
 def hash_of_serialization(serialization: dict[str, Any]) -> str:

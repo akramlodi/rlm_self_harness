@@ -320,8 +320,11 @@ class TestPersistFirst:
         assert terminated["cause"] == VerifierCause.RESOURCE_TERMINATED.value
         assert terminated["verdict"]["cause"] == VerifierCause.RESOURCE_TERMINATED.value
         assert "BudgetExceededError" in terminated["verdict"]["detail"]
-        # The runtime raised before any usage summary existed for the run.
-        assert terminated["cost"] is None
+        # The per-completion usage summary is gone when the root raises, but
+        # the exception carries what the run spent; the driver persists that
+        # figure so the validation stage's spend accounting never undercounts
+        # a paid termination.
+        assert terminated["cost"] == pytest.approx(2 * COST_PER_CALL)
 
     def test_pass_rate_is_recomputable_from_the_manifest_alone(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)

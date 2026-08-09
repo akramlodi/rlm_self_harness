@@ -1,0 +1,40 @@
+{
+  "format": "shrlm-validation-summary/v1",
+  "harness_hash": "5c9d66f0ad2328882c68e497ad3014b47f71154ecf788af79db3428fb05b8b4a",
+  "outcome": "completed",
+  "repetitions": 1,
+  "spent": 0.0006388786,
+  "splits": {
+    "heldin": {
+      "harness_hash": "5c9d66f0ad2328882c68e497ad3014b47f71154ecf788af79db3428fb05b8b4a",
+      "mean_cost": 0.0001541055,
+      "mean_sub_calls": 0.0,
+      "n_instances": 2,
+      "n_resource_terminated": 0,
+      "n_runs": 2,
+      "outcome": "completed",
+      "pass_count": 2,
+      "pass_rate": 1.0,
+      "round_path": "heldin/round_00",
+      "skipped_run_ids": [],
+      "total_cost": 0.000308211,
+      "total_sub_calls": 0
+    },
+    "heldout": {
+      "harness_hash": "5c9d66f0ad2328882c68e497ad3014b47f71154ecf788af79db3428fb05b8b4a",
+      "mean_cost": 0.00016533379999999999,
+      "mean_sub_calls": 0.0,
+      "n_instances": 2,
+      "n_resource_terminated": 0,
+      "n_runs": 2,
+      "outcome": "completed",
+      "pass_count": 2,
+      "pass_rate": 1.0,
+      "round_path": "heldout/round_00",
+      "skipped_run_ids": [],
+      "total_cost": 0.00033066759999999997,
+      "total_sub_calls": 0
+    }
+  },
+  "subject_id": "smoke-s2-restate"
+}
