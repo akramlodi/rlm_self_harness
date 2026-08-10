@@ -122,13 +122,18 @@ longer than any seen during optimization and in new target environments. Results
 \end{abstract}
 
 \section{Introduction}
-Recursive language models (\rlms) reframe inference as a program in which a language
-model inspects its own context, decomposes it, and invokes fresh copies of itself on the
-pieces~\citep{zhang2025rlm}. Every call stays inside the native context window, letting a
-bounded-context model reason over prompts one to two orders of magnitude larger than that
-window. The mechanism behind these gains is distributional rather than architectural:
-the harness shapes each call so that a task which is out-of-distribution as a whole is
-handled through calls that are individually in-distribution~\citep{zhang2026harness}.
+Frontier language models are bounded by a fixed context window, and quality degrades well
+before that limit is reached: even models with windows in the hundreds of thousands of
+tokens exhibit \emph{context rot}, a steady decline in accuracy as the prompt
+lengthens~\citep{hong2025contextrot}. Recursive language models (\rlms) address this by
+scaling inference-time compute rather than the context window itself~\citep{snell2024scaling}:
+they reframe inference as a program in which a language model inspects its own context,
+decomposes it, and invokes fresh copies of itself on the pieces~\citep{zhang2025rlm}. Every
+call stays inside the native context window, letting a bounded-context model reason over
+prompts one to two orders of magnitude larger than that window. The mechanism behind these
+gains is distributional rather than architectural: the harness shapes each call so that a
+task which is out-of-distribution as a whole is handled through calls that are individually
+in-distribution~\citep{zhang2026harness}.
 
 Performance therefore depends not only on the model but on the harness that determines
 when and how recursion occurs. However, the RLM harness grants the capacity to recurse without
@@ -136,16 +141,35 @@ guaranteeing good recursion. Documented failures are recurring and model-specifi
 policies collapse the entire problem into a single sub-call~\citep{zhang2026harness},
 deeper recursion degrades accuracy while inflating cost~\citep{wang2026overthink}, and
 recursion halts by heuristic rather than by evidence that further work would not
-help~\citep{guha2026termination}. Yet today, models are fine-tuned to function within
-the RLM harness more effectively~\citep{zhang2026harness,yang2026recursive}, or the RLM
-harness is engineered by hand~\citep{alizadeh2026srlm,roy2026ycombinator,lumer2026rah}.
-An alternative is to let the harness optimize itself: the model inspects its own
-execution trajectories and proposes edits to the scaffold that produced
-them~\citep{weng2026harness,lee2026rhi,zhang2026selfharness}. Because the evidence
+help~\citep{guha2026termination}. Each failure implicates the harness rather than the
+model: the same backbone recurses well or poorly depending on the decomposition,
+termination, and recovery instructions it is given, so repairing one instance of a
+failure without addressing its harness-level cause leaves the underlying mechanism free
+to recur on the next task.
+
+Two remedies dominate current practice. Models are fine-tuned to function within the RLM
+harness more effectively~\citep{zhang2026harness,yang2026recursive}, which ties any gain
+to a specific checkpoint and requires weight access and training compute that a harness
+edit does not. Or the RLM harness is engineered by
+hand~\citep{alizadeh2026srlm,roy2026ycombinator,lumer2026rah}, which requires an expert to
+read traces, hypothesize a mechanism, and encode a fix, a cycle that a new model family can
+outpace before it completes. An alternative is to let the harness optimize itself: the
+model inspects its own execution trajectories and proposes edits to the scaffold that
+produced them~\citep{weng2026harness,lee2026rhi,zhang2026selfharness}. Because the evidence
 driving each edit comes from the deployed model on the deployed task distribution, the
 resulting harness can adapt both to the structure of the task and to model-specific
 capabilities, a fit that no single hand-designed harness appears to provide
 universally~\citep{zhang2026selfharness,lee2026rhi,gupta2026nosuperior}.
+
+\rlms are a natural setting in which to test this alternative, and one the self-harness
+literature has not yet examined. Their documented failures are not only recurring but
+individually checkable: a decomposed sub-problem either admits a verifiable local answer
+or it does not, so a failure attribution can be grounded in the outcome of the call tree
+rather than in a proposer's reading of the trace alone. Self-Harness has so far been
+demonstrated on a single family of agentic coding tasks with a flat, tool-based action
+space~\citep{zhang2026selfharness}; whether the same propose-validate-promote loop
+transfers to a harness whose editable surfaces are keyed to the phases of a recursive
+control loop, rather than to a fixed system prompt and tool list, is untested.
 
 We ask whether a fixed language model can instead improve its own RLM harness from
 evidence produced during execution:
