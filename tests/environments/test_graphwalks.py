@@ -1,16 +1,21 @@
 """Tests for the GraphWalks environment: loader transform, Verifier, SubVerifier.
 
 Everything runs offline against small fixture graphs. The only network-touching
-function, ``load_graphwalks``, is a thin composition of ``sample_rows`` and
-``row_to_instance``, both of which are covered directly here.
+seam, ``fetch_rows``, is monkeypatched with fixture rows so ``load_graphwalks``
+is exercised end to end -- file routing, char-window filtering, and revision
+plumbing -- without pyarrow, huggingface_hub, or the network.
 """
 
 from typing import Any
 
+import shrlm.environments.graphwalks as graphwalks
 from shrlm.environments.graphwalks import (
+    DATASET_FILE,
+    DATASET_REPO,
     GraphWalksSubVerifier,
     GraphWalksVerifier,
     extract_answer_nodes,
+    load_graphwalks,
     parse_subproblem,
     row_to_instance,
     sample_rows,
@@ -42,12 +47,13 @@ def make_row(
     prompt: str = BFS_PROMPT,
     problem_type: str = "bfs",
     answer_nodes: tuple[str, ...] = ("b", "c"),
+    prompt_chars: int | None = None,
 ) -> dict[str, Any]:
     return {
         "prompt": prompt,
         "problem_type": problem_type,
         "answer_nodes": list(answer_nodes),
-        "prompt_chars": len(prompt),
+        "prompt_chars": len(prompt) if prompt_chars is None else prompt_chars,
     }
 
 
@@ -201,6 +207,79 @@ class TestSampleRows:
         first = sample_rows(pool, ("bfs", "parents"), limit=5, seed=2)
         second = sample_rows(pool, ("bfs", "parents"), limit=5, seed=2)
         assert [row["prompt"] for row in first] == [row["prompt"] for row in second]
+
+
+class TestLoadGraphwalks:
+    """``load_graphwalks`` over a monkeypatched ``fetch_rows`` seam: dataset
+    file routing, the [min_chars, max_chars] window, and revision plumbing."""
+
+    def make_pool(self) -> list[dict[str, Any]]:
+        rows = []
+        for index in range(4):
+            rows.append(
+                make_row(
+                    prompt=f"{BFS_PROMPT}\nshort variant {index}",
+                    problem_type="bfs",
+                    prompt_chars=1_000 + index,
+                )
+            )
+            rows.append(
+                make_row(
+                    prompt=f"{PARENTS_PROMPT}\nlong variant {index}",
+                    problem_type="parents",
+                    prompt_chars=300_000 + index,
+                )
+            )
+        return rows
+
+    def patch_fetch(self, monkeypatch, rows: list[dict[str, Any]]) -> list[tuple[str, str, Any]]:
+        calls: list[tuple[str, str, Any]] = []
+
+        def fake_fetch(dataset_repo: str, dataset_file: str, revision: str | None):
+            calls.append((dataset_repo, dataset_file, revision))
+            return [dict(row) for row in rows]
+
+        monkeypatch.setattr(graphwalks, "fetch_rows", fake_fetch)
+        return calls
+
+    def test_defaults_preserve_today_s_behavior(self, monkeypatch):
+        # Default call: 128k-and-shorter file, unpinned revision, <= 128k cap,
+        # no lower bound -- exactly what the hardcoded loader did.
+        calls = self.patch_fetch(monkeypatch, self.make_pool())
+        instances = load_graphwalks()
+        assert calls == [(DATASET_REPO, DATASET_FILE, None)]
+        assert len(instances) == 4
+        assert {instance["problem_type"] for instance in instances} == {"bfs"}
+
+    def test_long_split_routes_to_the_long_file_and_respects_the_floor(self, monkeypatch):
+        calls = self.patch_fetch(monkeypatch, self.make_pool())
+        instances = load_graphwalks(
+            dataset_file="graphwalks_256k_to_1mil.parquet",
+            min_chars=300_000,
+            max_chars=None,
+            revision="pinned-sha",
+        )
+        assert calls == [(DATASET_REPO, "graphwalks_256k_to_1mil.parquet", "pinned-sha")]
+        assert len(instances) == 4
+        assert {instance["problem_type"] for instance in instances} == {"parents"}
+
+    def test_min_chars_floor_is_inclusive(self, monkeypatch):
+        self.patch_fetch(monkeypatch, self.make_pool())
+        instances = load_graphwalks(min_chars=1_003, max_chars=128_000)
+        assert len(instances) == 1
+        assert instances[0]["problem_type"] == "bfs"
+
+    def test_dataset_repo_is_parameterized(self, monkeypatch):
+        calls = self.patch_fetch(monkeypatch, self.make_pool())
+        load_graphwalks(dataset_repo="someone-else/graphwalks")
+        assert calls == [("someone-else/graphwalks", DATASET_FILE, None)]
+
+    def test_instances_carry_seed_provenance(self, monkeypatch):
+        self.patch_fetch(monkeypatch, self.make_pool())
+        instances = load_graphwalks(seed=7, limit=2)
+        assert len(instances) == 2
+        assert all(instance["sample_seed"] == 7 for instance in instances)
+        assert sorted(instance["sample_index"] for instance in instances) == [0, 1]
 
 
 class TestGraphWalksVerifier:

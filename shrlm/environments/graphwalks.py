@@ -198,17 +198,16 @@ def sample_rows(
     return pool[:limit] if limit is not None else pool
 
 
-def load_graphwalks(
-    problem_types: tuple[str, ...] = ("bfs", "parents"),
-    max_chars: int = 128_000,
-    limit: int | None = None,
-    seed: int = 0,
-) -> list[dict[str, Any]]:
-    """
-    Download the parquet from Hugging Face, filter, sample, and build instances.
+def fetch_rows(dataset_repo: str, dataset_file: str, revision: str | None) -> list[dict[str, Any]]:
+    """Download one dataset parquet from Hugging Face and read it into rows.
+
+    ``revision=None`` follows the repo's default branch; a pinned commit sha
+    freezes the rows against upstream edits (the dataset shipped a ground-truth
+    correction on 2026-02-27, so unpinned loads can silently drift).
 
     The imports live inside the function so the module imports without the
-    ``graphwalks`` extra; only actually loading the dataset requires it.
+    ``graphwalks`` extra; only actually loading the dataset requires it. This
+    is also the loader's only network-touching seam, monkeypatched in tests.
     """
     try:
         import pyarrow.parquet as pq
@@ -219,12 +218,40 @@ def load_graphwalks(
             '    uv pip install -e ".[graphwalks]"'
         ) from exc
 
-    path = hf_hub_download(repo_id=DATASET_REPO, repo_type="dataset", filename=DATASET_FILE)
-    rows = pq.read_table(path).to_pylist()
+    path = hf_hub_download(
+        repo_id=dataset_repo, repo_type="dataset", filename=dataset_file, revision=revision
+    )
+    return pq.read_table(path).to_pylist()
+
+
+def load_graphwalks(
+    problem_types: tuple[str, ...] = ("bfs", "parents"),
+    max_chars: int | None = 128_000,
+    limit: int | None = None,
+    seed: int = 0,
+    dataset_repo: str = DATASET_REPO,
+    dataset_file: str = DATASET_FILE,
+    min_chars: int = 0,
+    revision: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Download a GraphWalks parquet, filter, sample, and build instances.
+
+    The defaults reproduce the original hardcoded behavior exactly: the
+    128k-and-shorter file at the repo's default revision, capped at 128k
+    prompt chars with no lower bound. The long split is the same code under
+    different arguments -- ``dataset_file="graphwalks_256k_to_1mil.parquet"``
+    with a ``min_chars`` floor and ``max_chars=None`` (the file's own 256k-1M
+    range is the only upper bound; there is no configured long cap to apply).
+    Both bounds are inclusive.
+    """
+    rows = fetch_rows(dataset_repo, dataset_file, revision)
     rows = [
         row
         for row in rows
-        if row["prompt_chars"] <= max_chars and row["problem_type"] in problem_types
+        if row["prompt_chars"] >= min_chars
+        and (max_chars is None or row["prompt_chars"] <= max_chars)
+        and row["problem_type"] in problem_types
     ]
     selected = sample_rows(rows, problem_types, limit, seed)
     return [
