@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.environments.graphwalks import load_graphwalks
+from shrlm.environments.oolong_pairs import load_oolong_pairs_from_config
 from shrlm.experiment.config import ExperimentConfig
 
 SPLITS_DIR = "splits"
@@ -76,9 +77,20 @@ def load_graphwalks_split(
     )
 
 
+def load_oolong_pairs_split(
+    config: ExperimentConfig, length: str, limit: int, seed: int
+) -> list[dict[str, Any]]:
+    """The OOLONG-Pairs loader wiring: config -> ``load_oolong_pairs`` arguments."""
+    env = config.environments.oolong_pairs
+    if length not in LENGTHS:
+        raise ValueError(f"unknown split length {length!r}; expected one of {LENGTHS}")
+    context_length = env.context_length_short if length == "short" else env.context_length_long
+    return load_oolong_pairs_from_config(env, n=limit, seed=seed, context_lengths=(context_length,))
+
+
 DEFAULT_LOADERS: dict[str, LoaderFn] = {
     "graphwalks": load_graphwalks_split,
-    # OOLONG-Pairs (U3) registers here: "oolong_pairs": load_oolong_pairs_split,
+    "oolong_pairs": load_oolong_pairs_split,
 }
 
 
