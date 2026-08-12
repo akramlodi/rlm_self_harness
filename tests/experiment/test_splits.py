@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 import shrlm.environments.graphwalks as graphwalks
+import shrlm.environments.oolong_pairs as oolong_pairs
 from shrlm.experiment.config import ExperimentConfig, load_config
 from shrlm.experiment.splits import (
     MANIFEST_FILE,
@@ -75,6 +76,33 @@ def fetch_calls(monkeypatch, config: ExperimentConfig) -> list[tuple[str, str, s
         return [dict(row) for row in pool]
 
     monkeypatch.setattr(graphwalks, "fetch_rows", fake_fetch)
+
+    def oolong_entry(user_id: int, question: str, label: str) -> str:
+        return f"Date: Feb 02, 2023 || User: {user_id} || Instance: {question} || Label: {label}"
+
+    def oolong_row(window_id: str, context_len: int) -> dict[str, Any]:
+        lines = [
+            oolong_entry(101, "How many moons does Mars have ?", "numeric value"),
+            oolong_entry(202, "Where is the Eiffel Tower located ?", "location"),
+            oolong_entry(303, "What does TNT stand for ?", "abbreviation"),
+        ]
+        return {
+            "dataset": config.environments.oolong_pairs.subset,
+            "context_len": context_len,
+            "context_window_id": window_id,
+            "context_window_text_with_labels": "\n".join(lines),
+        }
+
+    short_len = config.environments.oolong_pairs.context_length_short
+    long_len = config.environments.oolong_pairs.context_length_long
+    oolong_rows = [oolong_row(f"s{i}", short_len) for i in range(4)] + [
+        oolong_row(f"l{i}", long_len) for i in range(10)
+    ]
+
+    def fake_iter(split: str, revision: str | None):
+        return iter([dict(row) for row in oolong_rows])
+
+    monkeypatch.setattr(oolong_pairs, "iter_dataset_rows", fake_iter)
     return calls
 
 
