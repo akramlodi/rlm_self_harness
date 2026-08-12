@@ -22,8 +22,12 @@ Each ``runs.jsonl`` line carries: ``run_id``, ``instance_id``, ``attempt``,
 ``passed``, ``cause`` (denormalized from the verdict for scanability),
 ``verdict`` (the full ``Verdict.to_dict()``), ``trace_path`` (relative to the
 round directory), ``trace_sha256`` (over the trace file's bytes), ``cost``
-(``usage_summary.total_cost`` when the backend reported one), and
-``timestamp`` (UTC ISO-8601).
+(``usage_summary.total_cost`` when the backend reported one), the U4 usage
+keys ``input_tokens``, ``output_tokens``, ``execution_time``, and
+``usage_lower_bound`` (additive, KTD4; the flag marks terminated runs whose
+persisted figures are lower bounds on true usage), and ``timestamp`` (UTC
+ISO-8601). Lines persisted before U4 lack the usage keys; readers must treat
+them as optional.
 
 Resource terminations are runs, not crashes. The four root-level limit
 exceptions (budget, timeout, tokens, error threshold) are caught per run and
@@ -47,6 +51,7 @@ verifier, so the mined round is exactly the round the manifest describes.
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -281,6 +286,7 @@ def _partial_completion(
     trajectory: dict[str, Any] | None,
     model_name: str,
     error: Exception,
+    elapsed_seconds: float,
 ) -> RLMChatCompletion:
     """A trace for a run the runtime terminated at a resource limit.
 
@@ -292,7 +298,12 @@ def _partial_completion(
     tripped on: that ``spent`` amount is persisted as the run's cost so
     driver-level spend accounting (the validation stage's circuit breaker)
     never undercounts a paid termination. The other limit exceptions carry no
-    cost, and their usage stays empty. Some limit exceptions carry a partial
+    cost, and their usage stays empty; token counts are genuinely unknown and
+    stay zero -- the manifest line's ``usage_lower_bound`` flag (see
+    ``_persist_run``) marks them as lower bounds, never as free runs.
+    ``elapsed_seconds`` is the driver-observed wall clock around the
+    terminated completion call (zero when nothing was timed, as in
+    ``persist_interrupted_run``). Some limit exceptions carry a partial
     answer; persisting it keeps the trace honest about what the run had
     produced.
     """
@@ -315,7 +326,7 @@ def _partial_completion(
         prompt=prompt,
         response=partial_answer or "",
         usage_summary=usage,
-        execution_time=0.0,
+        execution_time=elapsed_seconds,
         metadata=trajectory,
         error=f"{type(error).__name__}: {error}",
     )
@@ -328,11 +339,19 @@ def _persist_run(
     attempt: int,
     completion: RLMChatCompletion,
     verdict: Verdict,
+    *,
+    usage_lower_bound: bool = False,
 ) -> dict[str, Any]:
     """Write the trace file, then append the manifest line. Order matters:
     a crash between the two leaves an orphan trace that the next invocation
     simply overwrites, whereas the reverse order could record a sha for bytes
-    that never hit the disk."""
+    that never hit the disk.
+
+    ``usage_lower_bound`` marks a terminated run whose persisted usage figures
+    (tokens, time, cost) are lower bounds on what was actually consumed --
+    observed values are persisted as-is, and only genuinely unknown fields
+    stay zero -- so the most expensive runs are never read back as free (R5).
+    """
     trace_rel = f"{TRACES_DIR}/{run_id}.json"
     trace_path = path / trace_rel
     trace_path.write_text(json.dumps(completion.to_dict(), sort_keys=True) + "\n")
@@ -347,6 +366,10 @@ def _persist_run(
         "trace_path": trace_rel,
         "trace_sha256": sha256_file(trace_path),
         "cost": completion.usage_summary.total_cost,
+        "input_tokens": completion.usage_summary.total_input_tokens,
+        "output_tokens": completion.usage_summary.total_output_tokens,
+        "execution_time": completion.execution_time,
+        "usage_lower_bound": usage_lower_bound,
         "timestamp": _utc_now(),
     }
     with open(path / MANIFEST_FILE, "a") as handle:
@@ -396,6 +419,7 @@ def persist_interrupted_run(config: RoundConfig, error: Exception) -> dict[str, 
                 trajectory=None,
                 model_name=model_name,
                 error=error,
+                elapsed_seconds=0.0,
             )
             verdict = Verdict(
                 passed=False,
@@ -404,7 +428,9 @@ def persist_interrupted_run(config: RoundConfig, error: Exception) -> dict[str, 
                 produced=completion.response,
                 detail=f"{type(error).__name__}: {error}",
             )
-            return _persist_run(path, run_id, instance_id, attempt, completion, verdict)
+            return _persist_run(
+                path, run_id, instance_id, attempt, completion, verdict, usage_lower_bound=True
+            )
     return None
 
 
@@ -480,6 +506,8 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
         run_id = run_id_for(instance_id, attempt)
 
         prompt = instance["prompt"]
+        run_started = time.perf_counter()
+        usage_lower_bound = False
         try:
             run = harnessed.completion(prompt)
             completion = run.completion
@@ -490,6 +518,7 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
                 trajectory=harnessed.logger.get_trajectory(),
                 model_name=model_name,
                 error=error,
+                elapsed_seconds=time.perf_counter() - run_started,
             )
             verdict = Verdict(
                 passed=False,
@@ -498,8 +527,19 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
                 produced=completion.response,
                 detail=f"{type(error).__name__}: {error}",
             )
+            usage_lower_bound = True
 
-        entries.append(_persist_run(path, run_id, instance_id, attempt, completion, verdict))
+        entries.append(
+            _persist_run(
+                path,
+                run_id,
+                instance_id,
+                attempt,
+                completion,
+                verdict,
+                usage_lower_bound=usage_lower_bound,
+            )
+        )
         executed += 1
 
     return entries

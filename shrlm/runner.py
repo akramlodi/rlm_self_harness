@@ -547,7 +547,9 @@ def run_metrics(completion: RLMChatCompletion) -> dict[str, Any]:
             always attaches one).
 
     Returns:
-        The per-run summary, including ``cost`` -- the per-run cost total.
+        The per-run summary, including ``cost`` -- the per-run cost total --
+        plus the U4 usage keys ``input_tokens``, ``output_tokens``, and
+        ``execution_time`` (all carried by the completion; additive, KTD4).
 
     Raises:
         ValueError: If the completion carries no trajectory, which means no logger
@@ -568,6 +570,9 @@ def run_metrics(completion: RLMChatCompletion) -> dict[str, Any]:
         "answer_events": [turn["answer_event"] for turn in per_turn if turn["answer_event"]],
         "answer_from_variable": any(turn["answer_event"] == ANSWER_SUBMITTED for turn in per_turn),
         "cost": completion.usage_summary.total_cost,
+        "input_tokens": completion.usage_summary.total_input_tokens,
+        "output_tokens": completion.usage_summary.total_output_tokens,
+        "execution_time": completion.execution_time,
         "per_turn": per_turn,
     }
 
