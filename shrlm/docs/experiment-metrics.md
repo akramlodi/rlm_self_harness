@@ -55,13 +55,7 @@ The following are **not** captured, or not captured at the grain the analysis ne
 
 - Fraction of the nine declared surfaces the promoted lineage actually modifies.
 - Harness complexity growth: lines, characters, and tokens introduced by the promoted edits, tracked across the lineage rather than only at the endpoints.
-- Harness performance at each optimization step, on held-out short and long.
-
-## Two things to resolve, not implement
-
-The per-step held-out **long** measurement conflicts with the preregistration: the source-long split is held out from optimization in its entirety until the harness is frozen. Measuring it every round is a design change to the protocol, not an instrumentation task. Decide what it means — a separate post-hoc replay against archived harness lineage states would preserve the preregistration; live per-round evaluation would not — and get that agreed before building it.
-
-Second: several of these want per-run grain that currently only exists inside trace bodies. Promoting a field into the durable manifest versus running a post-hoc pass over traces before deletion is a real trade-off in cost, disk, and reproducibility. Make that call deliberately; it determines whether a metric survives the full run.
+- Harness performance at each optimization step on held-out short.
 
 ## Definition of done
 
