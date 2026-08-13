@@ -220,3 +220,13 @@ docs/internals/
 # Claude - local progress
 CLAUDE.md
 
+
+# Live experiment run artifacts (examples/experiment_smoke.py --live, and any
+# other --out-dir). A trace body embeds the full prompt it ran on, so one long
+# run is tens of MB; the 39-run smoke came to 362 MB. The summaries that anyone
+# actually reads -- report.json, report_full_profile.md, stage_usage.jsonl,
+# eval_summary.json, config.json -- are a few KB and stay tracked.
+experiment_smoke/**/runs/
+experiment_smoke/**/instances.jsonl
+experiment_smoke/**/digests/
+experiment_smoke/**/*.txt

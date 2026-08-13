@@ -198,20 +198,59 @@ def sample_rows(
     return pool[:limit] if limit is not None else pool
 
 
-def load_graphwalks(
-    problem_types: tuple[str, ...] = ("bfs", "parents"),
-    max_chars: int = 128_000,
-    limit: int | None = None,
-    seed: int = 0,
+# Default bound applied by ``fetch_rows`` below; see that function's docstring
+# for exactly what it does and does not cover.
+DEFAULT_DOWNLOAD_TIMEOUT_SECONDS: float = 60.0
+
+
+def fetch_rows(
+    dataset_repo: str,
+    dataset_file: str,
+    revision: str | None,
+    download_timeout_seconds: float = DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
 ) -> list[dict[str, Any]]:
-    """
-    Download the parquet from Hugging Face, filter, sample, and build instances.
+    """Download one dataset parquet from Hugging Face and read it into rows.
+
+    ``revision=None`` follows the repo's default branch; a pinned commit sha
+    freezes the rows against upstream edits (the dataset shipped a ground-truth
+    correction on 2026-02-27, so unpinned loads can silently drift).
+
+    This is the loader's only network-touching seam, monkeypatched in tests,
+    and it runs inside ``materialize_splits`` on the unattended
+    ``examples/experiment_smoke.py --live`` path -- outside the SIGALRM
+    hard-deadline backstop, which only bounds run execution, not split
+    materialization. Without a bound here, a stalled Hugging Face connection
+    hangs the whole invocation forever with no failure signal. (Note this is
+    unrelated to ``config.operational.loader_timeout_seconds``, which bounds a
+    candidate-materialization subprocess in the validation path -- see
+    ``shrlm/optimization/validation.py`` -- and is not reused here.)
+
+    ``download_timeout_seconds`` is applied two ways, both via
+    ``huggingface_hub``:
+
+    * as ``hf_hub_download``'s ``etag_timeout``, bounding the initial
+      metadata (HEAD) request that resolves the revision to a concrete file;
+    * as the ``HF_HUB_DOWNLOAD_TIMEOUT`` setting (mutated on
+      ``huggingface_hub.constants`` for the duration of this call and
+      restored after), bounding every read of the actual parquet transfer
+      that follows.
+
+    Both are PER-OPERATION timeouts applied by the underlying HTTP client,
+    not a cap on total wall-clock duration: a connection that goes fully
+    silent for longer than ``download_timeout_seconds`` raises loudly, but
+    one that keeps dribbling at least one byte within every window does not
+    trip this bound and could still run arbitrarily long. That is the failure
+    mode this guards against -- a hung connection, not a slow one. It also
+    only covers the plain-HTTP download path; if the optional ``hf_xet``
+    accelerator package is installed, ``huggingface_hub`` may use a separate
+    client that this constant does not govern.
 
     The imports live inside the function so the module imports without the
     ``graphwalks`` extra; only actually loading the dataset requires it.
     """
     try:
         import pyarrow.parquet as pq
+        from huggingface_hub import constants as hf_constants
         from huggingface_hub import hf_hub_download
     except ImportError as exc:
         raise ImportError(
@@ -219,12 +258,49 @@ def load_graphwalks(
             '    uv pip install -e ".[graphwalks]"'
         ) from exc
 
-    path = hf_hub_download(repo_id=DATASET_REPO, repo_type="dataset", filename=DATASET_FILE)
-    rows = pq.read_table(path).to_pylist()
+    previous_timeout = hf_constants.HF_HUB_DOWNLOAD_TIMEOUT
+    hf_constants.HF_HUB_DOWNLOAD_TIMEOUT = download_timeout_seconds
+    try:
+        path = hf_hub_download(
+            repo_id=dataset_repo,
+            repo_type="dataset",
+            filename=dataset_file,
+            revision=revision,
+            etag_timeout=download_timeout_seconds,
+        )
+    finally:
+        hf_constants.HF_HUB_DOWNLOAD_TIMEOUT = previous_timeout
+    return pq.read_table(path).to_pylist()
+
+
+def load_graphwalks(
+    problem_types: tuple[str, ...] = ("bfs", "parents"),
+    max_chars: int | None = 128_000,
+    limit: int | None = None,
+    seed: int = 0,
+    dataset_repo: str = DATASET_REPO,
+    dataset_file: str = DATASET_FILE,
+    min_chars: int = 0,
+    revision: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Download a GraphWalks parquet, filter, sample, and build instances.
+
+    The defaults reproduce the original hardcoded behavior exactly: the
+    128k-and-shorter file at the repo's default revision, capped at 128k
+    prompt chars with no lower bound. The long split is the same code under
+    different arguments -- ``dataset_file="graphwalks_256k_to_1mil.parquet"``
+    with a ``min_chars`` floor and ``max_chars=None`` (the file's own 256k-1M
+    range is the only upper bound; there is no configured long cap to apply).
+    Both bounds are inclusive.
+    """
+    rows = fetch_rows(dataset_repo, dataset_file, revision)
     rows = [
         row
         for row in rows
-        if row["prompt_chars"] <= max_chars and row["problem_type"] in problem_types
+        if row["prompt_chars"] >= min_chars
+        and (max_chars is None or row["prompt_chars"] <= max_chars)
+        and row["problem_type"] in problem_types
     ]
     selected = sample_rows(rows, problem_types, limit, seed)
     return [

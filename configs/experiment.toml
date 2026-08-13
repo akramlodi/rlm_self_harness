@@ -1,0 +1,191 @@
+# =============================================================================
+# configs/experiment.toml -- the single source of truth for every Self-Harness
+# experiment parameter (docs/plans/experiments_draft.md, section 3.10).
+#
+# Edit values here; scaffold code never hardcodes an experiment parameter (R1).
+# Load with shrlm.experiment.config.load_config(profile="full" | "smoke").
+# The [smoke] table at the bottom overrides scale counts only (instance
+# counts, repetitions, candidate width, rounds, spend caps); every other
+# semantic is identical between profiles (R2).
+# =============================================================================
+
+[decoding]
+# Qwen3-30B-A3B-Instruct-2507 model-card defaults (non-thinking mode), applied
+# identically to root and sub-calls per the section 3.0 invariant. top_k and
+# min_p are routed through sampling_args["extra_body"]; max_output_tokens is
+# passed as sampling_args["max_tokens"] -- the OpenAI client itself renames it
+# to max_completion_tokens, so the rename must never happen in config code.
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.0
+max_output_tokens = 4096 # pilot tuning range 2048-8192 (section 3.10 row 3)
+
+[splits]
+# Source-environment (GraphWalks) split definitions, section 3.1.
+n_in = 24 # held-in: weakness mining + one arm of validation
+n_ho = 40 # held-out: validation only, never mined
+test_short = 40 # source-short test, untouched until the harness is frozen
+test_long = 150 # source-long test, untouched until the harness is frozen
+seed = 0 # seeded partition of the source-short pool
+
+[loop]
+# Optimization-loop counts, section 3.2.
+m = 2 # mining repetitions per held-in instance
+v = 4 # validation repetitions per instance per subject
+k = 4 # candidate edits proposed per round
+t = 15 # maximum optimization rounds
+patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
+
+[promotion]
+# Preregistered promotion rule, sections 3.2 and 3.10 rows 6-7. Zero
+# thresholds reproduce the strict non-regression rule of Zhang et al.; the
+# pilot replaces them before optimization starts. Bands are inclusive
+# multipliers on the baseline's mean.
+tau_regression = 0.0
+tau_improvement = 0.0
+cost_band = [0.5, 2.0]
+# sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
+
+[caps]
+# Experiment-owned per-run limits (KTD3). max_budget, max_timeout, and
+# candidate_budget are mandatory: the loader raises immediately when one is
+# missing (R12). candidate_budget is the cumulative circuit-breaker budget
+# across all of one candidate's validation runs.
+attempts = 1 # default per-round attempts; stages override with m / v / eval_repetitions
+max_iterations = 30
+max_depth = 1
+max_budget = 5.0 # USD per run
+max_timeout = 1800.0 # seconds per run
+candidate_budget = 60.0 # USD across all of one candidate's runs
+
+[environments.graphwalks]
+# Source environment, section 3.1.
+dataset_repo = "openai/graphwalks"
+dataset_file_short = "graphwalks_128k_and_shorter.parquet"
+dataset_file_long = "graphwalks_256k_to_1mil.parquet"
+dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead" # HF main, pinned 2026-08-12
+max_chars = 128000 # inclusive upper bound on prompt_chars for the short split
+min_chars = 0 # inclusive lower bound on prompt_chars
+problem_types = ["bfs", "parents"]
+
+[environments.oolong_pairs]
+# Target environment, held out from optimization in its entirety, section 3.1.
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-12
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192 # tokens; 32x pairing per section 3.10 row 4
+context_length_long = 262144
+max_scan = 50000 # cap on raw dataset rows streamed while collecting windows
+n_short = 40 # target-short test size
+n_long = 150 # target-long test size
+
+[backends.runner]
+backend = "openrouter"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+
+[backends.attributor]
+backend = "openrouter"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+
+[backends.proposer]
+backend = "openrouter"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+
+[backends.openrouter]
+# Provider routing, sent as sampling_args["extra_body"]["provider"]. An empty
+# order list means no restriction; the pilot pins the serving provider before
+# the main run so quantization cannot drift mid-experiment.
+provider_order = []
+allow_fallbacks = true
+
+[pricing.promo]
+# OpenRouter promotional rate for qwen/qwen3-30b-a3b-instruct-2507, USD per
+# 1M tokens (read 2026-08-12; refresh before the main run).
+input_per_million = 0.08
+output_per_million = 0.29
+
+[pricing.list_price]
+# Non-promotional list rate, same units and provenance.
+input_per_million = 0.10
+output_per_million = 0.30
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true # eligible for the recommendation (rate and throughput are sourced)
+sensitivity_range = [1.99, 3.49] # USD/hour band for the sensitivity analysis
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+# Aggregate decode throughput by context bucket, single GPU, tokens/second.
+short = 2400.0 # contexts <= 32k tokens
+long = 700.0 # contexts >= 128k tokens
+
+[[gpu_scenarios]]
+name = "2x_a100_tp2_rented"
+hourly_rate_usd = 2.58 # 2 GPUs x $1.29/h
+provenance = "Unvalidated estimate from A100 80GB marketplace rates 2026-08; BF16 needs 2xA100 at 262k (weights ~61GB + KV ~24.6GB/seq)"
+provenance_validated = false # scenario-only until the rate and throughput are measured
+sensitivity_range = [0.94, 4.12]
+precision_note = "bf16 weights, tensor-parallel 2, vLLM serving"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2000.0
+long = 500.0
+
+[[gpu_scenarios]]
+name = "1x_a100_int4"
+hourly_rate_usd = 1.29
+provenance = "Unvalidated estimate; AWQ/GPTQ-INT4 weights ~17GB fit 262k KV on one A100 80GB"
+provenance_validated = false # scenario-only until the rate and throughput are measured
+sensitivity_range = [0.47, 2.06]
+precision_note = "INT4 quantized weights change model numerics; measurements and comparability do not transfer (report prefers precision-preserving scenarios)"
+changes_numerics = true # INT4: a candidate only when quantization is explicitly accepted
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 1800.0
+long = 450.0
+
+[report]
+p_merge = 0.5 # assumed fraction of rounds ending in a promotion + merge re-evaluation
+eval_conditions = 3 # B1, H1, SH-RLM: the full-experiment evaluation grid (section 3.5)
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals.jsonl"
+eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
+
+# -----------------------------------------------------------------------------
+# Smoke profile: scale counts only. Any key here outside the loader's
+# smoke-overridable set is rejected at load time.
+# -----------------------------------------------------------------------------
+
+[smoke.splits]
+n_in = 3
+n_ho = 3
+test_short = 4
+test_long = 2
+
+[smoke.loop]
+m = 1
+v = 1
+k = 2
+t = 1
+
+[smoke.caps]
+max_budget = 0.5
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+
+[smoke.environments.oolong_pairs]
+n_short = 4
+n_long = 2

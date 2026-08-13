@@ -1,0 +1,153 @@
+{
+  "bundle_id": "e2f4abc1a8b24a3e",
+  "config": {
+    "actionability_weights": {
+      "causal": 0.4,
+      "grounded": 0.3,
+      "homogeneity": 0.1,
+      "surface": 0.2
+    },
+    "attribution_cache_path": "../../../../.cache/shrlm/attribution.jsonl",
+    "attributor_model": "qwen/qwen3-30b-a3b-instruct-2507",
+    "attributor_sampling_args": {
+      "extra_body": {
+        "min_p": 0.0,
+        "top_k": 20
+      },
+      "max_tokens": 4096,
+      "temperature": 0.7,
+      "top_p": 0.8
+    },
+    "digest_char_budget": 12000,
+    "digest_focus_k": 4,
+    "digest_version": "1.1.0",
+    "harness_hash": "95a4ed2e9f7cb574ae1eda24b22b02a816bbf139878f4a3f84fc7f2585cf2c35",
+    "harness_version": "95a4ed2e9f7cb574ae1eda24b22b02a816bbf139878f4a3f84fc7f2585cf2c35",
+    "max_attempts": 3,
+    "min_support": 2,
+    "prompt_sha256": "4c8b24f629b4bb593604e2c0c8f34ebbc94857c309a22745b0b9a22a78dfe0ea",
+    "prompt_version": "1.2.0",
+    "round_index": 1,
+    "sampling_seed": 0,
+    "split_id": "graphwalks_short_held_in",
+    "sub_verifier_enabled": false,
+    "taxonomy_version": "2.0.0",
+    "validator_version": "1.0.0",
+    "verifier_config": {
+      "environment": "graphwalks",
+      "extraction_rule": "trailing-final-answer-line",
+      "gold_ordering": "sorted",
+      "pass_f1_threshold": 1.0
+    }
+  },
+  "created_at": "2026-08-12T23:13:58.134538",
+  "integrity": {
+    "known_substrate_biases": [
+      {
+        "defect_id": "A1",
+        "effect": "syntax-error counts are a lower bound: the batched execution paths never classify, so syntax-error rate reads artificially low as batching increases",
+        "summary": "batched sub-calls always record syntax_error=False"
+      },
+      {
+        "defect_id": "A2",
+        "effect": "per-run cost is a lower bound: only the last attempt of a retried sub-call is recorded, under-pricing retry-heavy behavior",
+        "summary": "retried sub-calls are billed as one call"
+      }
+    ],
+    "mean_digest_coverage": 0.5698415087227265,
+    "n_indeterminate_nodes": 0,
+    "n_records_unreliable_block_attribution": 0,
+    "n_records_with_lost_subcalls": 0,
+    "n_resource_terminated": 0,
+    "n_transport_errors": 0,
+    "n_unattributed": 0,
+    "n_ungrounded": 2,
+    "total_suspected_lost_subcalls": 0
+  },
+  "marginals": {
+    "by_causal_status": {
+      "causal": 2
+    },
+    "by_cause": {
+      "mixed_set_error": 2
+    },
+    "by_level": {
+      "root": 2
+    },
+    "by_mechanism": {
+      "premature_termination": 1,
+      "skipped_verification": 1
+    },
+    "by_surface": {
+      "S4": 2
+    }
+  },
+  "patterns": [
+    {
+      "actionability": 0.7000000000000001,
+      "below_support_floor": true,
+      "grounded_fraction": 0.0,
+      "instance_ids": [
+        "bfs-a0f4465d9b7f0d93"
+      ],
+      "instance_support": 1,
+      "representatives": [
+        "bfs-a0f4465d9b7f0d93"
+      ],
+      "shared_symptoms": [
+        "median sub-calls per run: 0",
+        "median iterations: 5",
+        "median observed depth: 0",
+        "no sub-calls issued at all in 1/1 runs"
+      ],
+      "signature": {
+        "agent_mechanism": "premature_termination",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "mixed_set_error"
+      },
+      "support": 1,
+      "surface": "S4",
+      "verifier_evidence": [
+        "bfs-a0f4465d9b7f0d93: expected '[1f0e3dad99, 37693cfc74, 3c59dc048e, 4e732ced34, 6512bd43d9, 8e296a067a, aab3238922, c81e728d9d, c9f0f895fb, e4da3b7fbb, eccbc87e4b]', produced \"['1f0e3dad99', '37693cfc74', '3c59dc048e', '4e732ced34', '6512bd43d9', '8e296a067a', 'aab3238922', 'c81e728d9d', 'c9f0f895fb', 'e4da3b7fbb', 'eccbc87e4b']\""
+      ]
+    },
+    {
+      "actionability": 0.7000000000000001,
+      "below_support_floor": true,
+      "grounded_fraction": 0.0,
+      "instance_ids": [
+        "parents-ac3723f36c1616c1"
+      ],
+      "instance_support": 1,
+      "representatives": [
+        "parents-ac3723f36c1616c1"
+      ],
+      "shared_symptoms": [
+        "median sub-calls per run: 0",
+        "median iterations: 3",
+        "median observed depth: 0",
+        "no sub-calls issued at all in 1/1 runs"
+      ],
+      "signature": {
+        "agent_mechanism": "skipped_verification",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "mixed_set_error"
+      },
+      "support": 1,
+      "surface": "S4",
+      "verifier_evidence": [
+        "parents-ac3723f36c1616c1: expected '[c20ad4d76f, eccbc87e4b]', produced \"['c20ad4d76f', 'eccbc87e4b']\""
+      ]
+    }
+  ],
+  "totals": {
+    "n_attributed": 2,
+    "n_degraded_trees": 0,
+    "n_failures": 2,
+    "n_grounded": 0,
+    "n_runs": 3,
+    "n_unattributed": 0
+  }
+}

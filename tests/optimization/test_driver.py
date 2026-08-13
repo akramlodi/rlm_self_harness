@@ -30,7 +30,7 @@ from shrlm.harness_identity import harness_hash
 from shrlm.optimization.attribution import VALIDATOR_VERSION, AttributionCache, LLMAttributor
 from shrlm.optimization.audit import AuditReport, run_audited_round
 from shrlm.optimization.bundle import write_bundle
-from shrlm.optimization.driver import RoundConfig, mine_round, round_dir, run_round
+from shrlm.optimization.driver import RoundConfig, load_round, mine_round, round_dir, run_round
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
@@ -359,6 +359,62 @@ class TestPersistFirst:
         entries = read_manifest(round_dir(config.out_dir, config.round_index))
         assert entries[0]["cost"] == pytest.approx(COST_PER_CALL)
         assert entries[1]["cost"] == pytest.approx(COST_PER_CALL)
+
+
+# ---------------------------------------------------------------------------
+# U4 manifest usage keys: tokens, wall time, lower-bound flag (R4)
+# ---------------------------------------------------------------------------
+
+
+class TestManifestUsageKeys:
+    def test_successful_line_carries_tokens_time_and_legacy_cost(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        entries = read_manifest(round_dir(config.out_dir, config.round_index))
+        # Run 1 is a single scripted call; ScriptedLM reports 10 tokens per
+        # call in each direction.
+        assert entries[0]["input_tokens"] == 10
+        assert entries[0]["output_tokens"] == 10
+        assert entries[0]["execution_time"] > 0.0
+        assert entries[0]["usage_lower_bound"] is False
+        assert entries[0]["cost"] == pytest.approx(COST_PER_CALL)
+
+    def test_terminated_line_preserves_observed_usage_as_lower_bound(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        entries = read_manifest(round_dir(config.out_dir, config.round_index))
+        terminated = entries[2]
+        # The per-completion usage handle is gone when the root raises, so the
+        # token counts are genuinely unknown -- persisted as zero but flagged,
+        # never mistaken for a free run. The observed cost (the figure the
+        # budget breaker tripped on) and the driver-observed wall time are
+        # real measurements and must survive.
+        assert terminated["usage_lower_bound"] is True
+        assert terminated["cost"] == pytest.approx(2 * COST_PER_CALL)
+        assert terminated["execution_time"] > 0.0
+        assert terminated["input_tokens"] == 0
+        assert terminated["output_tokens"] == 0
+
+    def test_old_format_manifest_lines_still_load_through_load_round(self, tmp_path, monkeypatch):
+        """Manifest lines persisted before U4 carry no token/time keys; they
+        must keep loading (backward compatibility, KTD4 additive-only)."""
+        config = run_full_round(tmp_path, monkeypatch)
+        round_path = round_dir(config.out_dir, config.round_index)
+        stripped = [
+            {
+                key: value
+                for key, value in entry.items()
+                if key
+                not in ("input_tokens", "output_tokens", "execution_time", "usage_lower_bound")
+            }
+            for entry in read_manifest(round_path)
+        ]
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in stripped)
+        )
+
+        runs, verdicts, _envelope, entries = load_round(config.out_dir, config.round_index)
+        assert len(runs) == 3
+        assert len(verdicts) == 3
+        assert all("input_tokens" not in entry for entry in entries)
 
 
 # ---------------------------------------------------------------------------
