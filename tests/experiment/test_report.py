@@ -14,11 +14,22 @@ so every short bucket has a per-run mean of 1000 in / 100 out and every long
 bucket 10000 in / 500 out, whichever way the buckets are pooled.
 
 Full-profile config arithmetic (m=2, n_in=24, v=4, K=4, n_ho=40, p_merge=0.5,
-T=15, eval_conditions=3, test_short=40, test_long=150, eval_repetitions=3):
+T=15, eval_conditions=3, eval_repetitions=3). The evaluation grid covers both
+configured environments: source GraphWalks (test_short=40, test_long=150) and
+target OOLONG-Pairs (n_short=40, n_long=150), so each length's eval run count
+sums both environments' test-role size, not GraphWalks alone (see
+``shrlm.experiment.report.eval_test_sizes``):
 
     runs/round = 2*24 + 4*5*64 + 0.5*4*64 = 48 + 1280 + 128 = 1456
     optimization runs = 1456 * 15 = 21840
-    eval runs = 3 * (40 + 150) * 3 = 1710  (360 short + 1350 long)
+    eval short size = 40 (graphwalks) + 40 (oolong_pairs) = 80
+    eval long size  = 150 (graphwalks) + 150 (oolong_pairs) = 300
+    eval runs = 3 * (80 + 300) * 3 = 3420  (720 short + 2,700 long)
+
+720 short / 2,700 long matches the feasibility numbers in
+``paper/proposal.tex`` (Section: Feasibility and Cost): "3 conditions x 2
+environments x (40 short + 150 long) x 3 repetitions = 720 short and 2,700
+long runs."
 """
 
 import json
@@ -37,6 +48,7 @@ from shrlm.experiment.report import (
     STATUS_RECOMMENDED,
     build_report,
     render_markdown,
+    run_counts,
     write_report,
 )
 
@@ -45,8 +57,8 @@ FIXTURE = Path(__file__).parent / "fixtures" / "report_experiment"
 # Hand-computed from the fixture + full-profile config (see module docstring).
 RUNS_PER_ROUND = 1456.0
 OPTIMIZATION_RUNS = 21840.0
-EVAL_SHORT_RUNS = 360.0
-EVAL_LONG_RUNS = 1350.0
+EVAL_SHORT_RUNS = 720.0
+EVAL_LONG_RUNS = 2700.0
 
 SHORT_MEAN_INPUT = 1000.0
 SHORT_MEAN_OUTPUT = 100.0
@@ -57,12 +69,12 @@ POINT_INPUT_TOKENS = (
     OPTIMIZATION_RUNS * SHORT_MEAN_INPUT
     + EVAL_SHORT_RUNS * SHORT_MEAN_INPUT
     + EVAL_LONG_RUNS * LONG_MEAN_INPUT
-)  # 35_700_000
+)  # 49_560_000
 POINT_OUTPUT_TOKENS = (
     OPTIMIZATION_RUNS * SHORT_MEAN_OUTPUT
     + EVAL_SHORT_RUNS * SHORT_MEAN_OUTPUT
     + EVAL_LONG_RUNS * LONG_MEAN_OUTPUT
-)  # 2_895_000
+)  # 3_606_000
 
 
 @pytest.fixture
@@ -199,6 +211,19 @@ class TestRunCounts:
         assert counts.rounds == loop.t
         assert counts.optimization_runs == OPTIMIZATION_RUNS
 
+    def test_shipped_config_eval_projection_matches_the_paper(self, config):
+        """Pins the full-experiment evaluation projection so an omitted
+        environment cannot silently regress it. The eval grid covers BOTH
+        configured environments -- source GraphWalks and target OOLONG-Pairs
+        -- not the source split alone: 3 conditions x 2 environments x
+        (40 short + 150 long) x 3 repetitions = 720 short and 2,700 long
+        runs, matching paper/proposal.tex's Feasibility and Cost section.
+        """
+        counts = run_counts(config)
+
+        assert counts.eval_short_runs == 720.0
+        assert counts.eval_long_runs == 2700.0
+
     def test_eval_grid_uses_configured_conditions_not_measured_conditions(self, config, experiment):
         report = build_report(config, experiment)
 
@@ -277,7 +302,7 @@ class TestGpuScenarios:
             + long_tokens / profile.throughput_tokens_per_second["long"]
         ) / 3600.0
 
-        assert hours == pytest.approx(8.451388888888889)
+        assert hours == pytest.approx(14.122222222222222)
         assert scenario.detail["gpu_hours_point"] == pytest.approx(hours)
         assert scenario.usd_point == pytest.approx(hours * profile.hourly_rate_usd)
         assert scenario.detail["usd_point_low"] == pytest.approx(

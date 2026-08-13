@@ -8,6 +8,13 @@ experiment state; the report is a pure function of persisted bytes plus the
 configuration, emitted as markdown on stdout and as ``report.json`` in the
 experiment directory.
 
+This module holds measurement, run counts, and the projections built from
+them. Scenario pricing (API tiers, GPU-hour projections) and the
+recommendation policy live in ``shrlm.experiment.scenarios``; markdown
+rendering lives in ``shrlm.experiment.render``. Both are re-exported here so
+``build_report``, ``write_report``, ``render_markdown``, and the CLI stay
+importable from this module exactly as before the split.
+
 Measured section
     A per-stage table (runs, tokens in/out, wall time, USD, cache hits,
     lower-bound and resumed annotations) aggregated from ``stage_usage.jsonl``
@@ -21,16 +28,22 @@ Extrapolation (KTD6)
     Run counts are derived from config, never hardcoded::
 
         runs/round = m*n_in + v(K+1)(n_in+n_ho) + p_merge*v(n_in+n_ho)
-        eval runs  = eval_conditions * (test_short + test_long) * eval_repetitions
+        eval runs at a length = eval_conditions
+            * sum(env test-role size at that length, from splits.split_plan)
+            * eval_repetitions
 
     ``report.eval_conditions`` is the FULL-experiment grid (B1, H1, SH-RLM)
     and is deliberately independent of how many conditions the scaffold
-    actually evaluated. Those counts multiply measured per-run means *at each
-    length* -- long-run cost is superlinear in context length, so a scaled
-    smoke total would understate it. The optimization leg and the short
-    evaluation leg use the short buckets; the long evaluation leg uses the
-    long buckets. A missing long bucket is never a zero: the projection is
-    labeled short-only and the unprojected long runs are named in a warning.
+    actually evaluated. The experiment evaluates every configured
+    environment -- source GraphWalks and target OOLONG-Pairs -- so each
+    eval leg sums the test-role size across every environment at that
+    length rather than the source split alone. Those counts multiply
+    measured per-run means *at each length* -- long-run cost is superlinear
+    in context length, so a scaled smoke total would understate it. The
+    optimization leg and the short evaluation leg use the short buckets; the
+    long evaluation leg uses the long buckets. A missing long bucket is never
+    a zero: the projection is labeled short-only and the unprojected long
+    runs are named in a warning.
 
 Pessimistic scenario
     Promotion admits a candidate costing up to ``promotion.cost_band[1]`` x
@@ -41,24 +54,10 @@ Pessimistic scenario
     evaluation legs are unscaled: they run one frozen harness, not a chain of
     promotions.
 
-Recommendation policy (explicit and tested)
-    Recommend the cheapest scenario that passes validity:
-
-    1. no lower-bound flag on any contributing long-run mean,
-    2. long coverage present for every configured environment,
-    3. GPU scenarios eligible only when their throughput input carries
-       validated provenance -- a profile declaring
-       ``provenance_validated = false`` is scenario-only and can never be the
-       recommendation.
-
-    Otherwise the comparison is still emitted, labeled provisional, naming
-    each failing gate. Scenarios declaring ``changes_numerics = true``
-    (INT4-style) are surfaced with that flag and deprioritized -- excluded
-    from candidacy unless quantization is explicitly accepted, never silently
-    dropped from the table. Both gates read the profile's declared booleans,
-    never its free-text ``provenance`` / ``precision_note``: those are the
-    human-readable justification the report prints, and editing a
-    justification must not move a decision.
+Recommendation policy
+    See ``shrlm.experiment.scenarios`` for the full policy (validity gates,
+    quantization deprioritization, and how a scenario becomes the
+    recommendation or a labeled provisional comparison).
 
 Thin and lower-bound inputs are flagged, not hidden: fewer than
 ``MIN_LONG_RUN_SAMPLES`` measured long runs in a bucket, or any terminated run
@@ -69,19 +68,12 @@ import argparse
 import json
 import sys
 from collections import Counter
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field, fields
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from shrlm.experiment.config import (
-    CONFIG_PATH,
-    ExperimentConfig,
-    GpuScenario,
-    PricingTier,
-    load_config,
-)
-from shrlm.experiment.errors import ExperimentError
+from shrlm.experiment.config import CONFIG_PATH, ExperimentConfig, load_config
 from shrlm.experiment.evaluation import EVAL_DIR, EVAL_SUMMARY_FILENAME, STAGE_EVAL
 from shrlm.experiment.orchestrator import (
     MINING_DIR,
@@ -94,7 +86,19 @@ from shrlm.experiment.orchestrator import (
     STAGE_VALIDATION,
     VALIDATION_DIR,
 )
-from shrlm.experiment.splits import LENGTHS
+from shrlm.experiment.render import render_markdown
+from shrlm.experiment.scenarios import (
+    STATUS_PROVISIONAL,
+    STATUS_RECOMMENDED,
+    Recommendation,
+    ReportInputError,
+    Scenario,
+    build_scenarios,
+    gpu_hours,
+    recommend,
+    validity_gates,
+)
+from shrlm.experiment.splits import LENGTHS, split_plan
 from shrlm.experiment.usage import (
     STAGE_USAGE_FILE,
     UsageTotals,
@@ -124,19 +128,6 @@ LEG_EVAL_LONG = "eval_long"
 LABEL_POINT = "point"
 LABEL_PESSIMISTIC = "pessimistic"
 
-KIND_API = "api"
-KIND_GPU = "gpu"
-
-SCENARIO_API_PROMO = "api_promo"
-SCENARIO_API_LIST = "api_list"
-
-STATUS_RECOMMENDED = "recommended"
-STATUS_PROVISIONAL = "provisional"
-
-GATE_LONG_LOWER_BOUND = "long_run_lower_bound"
-GATE_LONG_COVERAGE = "long_coverage"
-GATE_NO_ELIGIBLE_SCENARIO = "no_eligible_scenario"
-
 # Presentation order for the measured stage table; a stage outside this tuple
 # sorts after it by name (the report renders whatever the sidecar holds).
 STAGE_ORDER: tuple[str, ...] = (
@@ -146,13 +137,6 @@ STAGE_ORDER: tuple[str, ...] = (
     STAGE_VALIDATION,
     STAGE_EVAL,
 )
-
-SECONDS_PER_HOUR = 3600.0
-TOKENS_PER_PRICE_UNIT = 1e6
-
-
-class ReportInputError(ExperimentError):
-    """The experiment directory does not hold the measurements a report needs."""
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +448,19 @@ class RunCounts:
         }
 
 
+def eval_test_sizes(config: ExperimentConfig) -> dict[str, int]:
+    """Test-role instance count at each length, summed across every environment.
+
+    The experiment evaluates every configured environment -- source
+    GraphWalks and target OOLONG-Pairs -- so the eval run count is not the
+    source split's ``test_short``/``test_long`` alone; it is each
+    environment's ``test`` role from ``splits.split_plan``, summed per
+    length.
+    """
+    plan = split_plan(config)
+    return {length: sum(roles[length]["test"] for roles in plan.values()) for length in LENGTHS}
+
+
 def run_counts(config: ExperimentConfig) -> RunCounts:
     """``m*n_in + v(K+1)(n_in+n_ho) + p_merge*v(n_in+n_ho)`` per round, plus the grid.
 
@@ -471,7 +468,9 @@ def run_counts(config: ExperimentConfig) -> RunCounts:
     harness over both splits, up to ``v(n_in+n_ho)`` further runs, assumed to
     happen in a ``report.p_merge`` fraction of rounds. The evaluation grid uses
     ``report.eval_conditions`` -- the FULL experiment's condition count (B1,
-    H1, SH-RLM) -- not however many conditions this scaffold measured.
+    H1, SH-RLM) -- not however many conditions this scaffold measured -- times
+    the test-role instance count summed across every configured environment
+    (see ``eval_test_sizes``), not the source split alone.
     """
     loop, splits = config.loop, config.splits
     subjects = splits.n_in + splits.n_ho
@@ -482,13 +481,14 @@ def run_counts(config: ExperimentConfig) -> RunCounts:
     )
     conditions = config.report.eval_conditions
     repetitions = config.operational.eval_repetitions
+    eval_sizes = eval_test_sizes(config)
     return RunCounts(
         runs_per_round=float(per_round),
         rounds=loop.t,
         optimization_runs=float(per_round) * loop.t,
         eval_conditions=conditions,
-        eval_short_runs=float(conditions * splits.test_short * repetitions),
-        eval_long_runs=float(conditions * splits.test_long * repetitions),
+        eval_short_runs=float(conditions * eval_sizes[SHORT] * repetitions),
+        eval_long_runs=float(conditions * eval_sizes[LONG] * repetitions),
     )
 
 
@@ -636,235 +636,6 @@ def pessimistic_multiplier(config: ExperimentConfig) -> float:
     """``sum(ceiling**i for i in range(T))``: the cost band compounding over rounds."""
     ceiling = config.promotion.cost_band[1]
     return float(sum(ceiling**index for index in range(config.loop.t)))
-
-
-# ---------------------------------------------------------------------------
-# Scenarios
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Scenario:
-    """One priced way to buy the full experiment's tokens."""
-
-    name: str
-    kind: str
-    usd_point: float
-    usd_pessimistic: float
-    eligible: bool
-    ineligible_reason: str | None
-    changes_numerics: bool
-    provenance: str
-    detail: dict[str, Any]
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "kind": self.kind,
-            "usd_point": self.usd_point,
-            "usd_pessimistic": self.usd_pessimistic,
-            "eligible": self.eligible,
-            "ineligible_reason": self.ineligible_reason,
-            "changes_numerics": self.changes_numerics,
-            "provenance": self.provenance,
-            "detail": self.detail,
-        }
-
-
-def api_usd(tier: PricingTier, projection: Projection) -> float:
-    return (
-        projection.input_tokens / TOKENS_PER_PRICE_UNIT * tier.input_per_million
-        + projection.output_tokens / TOKENS_PER_PRICE_UNIT * tier.output_per_million
-    )
-
-
-def gpu_hours(profile: GpuScenario, projection: Projection) -> float:
-    """Tokens divided by the context-bucketed throughput, in hours."""
-    seconds = 0.0
-    for context, tokens in projection.tokens_by_context().items():
-        if tokens == 0.0:
-            continue
-        if context not in profile.throughput_tokens_per_second:
-            raise ReportInputError(
-                f"gpu scenario {profile.name!r} has no {context!r} throughput; every "
-                f"scenario must declare throughput_tokens_per_second for {list(LENGTHS)}"
-            )
-        seconds += tokens / profile.throughput_tokens_per_second[context]
-    return seconds / SECONDS_PER_HOUR
-
-
-def api_scenario(
-    name: str, tier: PricingTier, point: Projection, pessimistic: Projection
-) -> Scenario:
-    return Scenario(
-        name=name,
-        kind=KIND_API,
-        usd_point=api_usd(tier, point),
-        usd_pessimistic=api_usd(tier, pessimistic),
-        eligible=True,
-        ineligible_reason=None,
-        changes_numerics=False,
-        provenance=(
-            f"configured pricing tier: ${tier.input_per_million}/1M in, "
-            f"${tier.output_per_million}/1M out"
-        ),
-        detail={
-            "input_per_million": tier.input_per_million,
-            "output_per_million": tier.output_per_million,
-        },
-    )
-
-
-def gpu_scenario(profile: GpuScenario, point: Projection, pessimistic: Projection) -> Scenario:
-    hours_point = gpu_hours(profile, point)
-    hours_pessimistic = gpu_hours(profile, pessimistic)
-    validated = profile.provenance_validated
-    return Scenario(
-        name=profile.name,
-        kind=KIND_GPU,
-        usd_point=hours_point * profile.hourly_rate_usd,
-        usd_pessimistic=hours_pessimistic * profile.hourly_rate_usd,
-        eligible=validated,
-        ineligible_reason=(
-            None
-            if validated
-            else (
-                "provenance is marked unvalidated, so its throughput input cannot support a "
-                "recommendation; this profile is scenario-only"
-            )
-        ),
-        changes_numerics=profile.changes_numerics,
-        provenance=profile.provenance,
-        detail={
-            "hourly_rate_usd": profile.hourly_rate_usd,
-            "gpu_hours_point": hours_point,
-            "gpu_hours_pessimistic": hours_pessimistic,
-            "usd_point_low": hours_point * profile.sensitivity_range[0],
-            "usd_point_high": hours_point * profile.sensitivity_range[1],
-            "sensitivity_range": list(profile.sensitivity_range),
-            "precision_note": profile.precision_note,
-            "throughput_tokens_per_second": dict(profile.throughput_tokens_per_second),
-        },
-    )
-
-
-def build_scenarios(
-    config: ExperimentConfig, point: Projection, pessimistic: Projection
-) -> list[Scenario]:
-    """Both API tiers plus every configured GPU profile, cheapest first."""
-    scenarios = [
-        api_scenario(SCENARIO_API_PROMO, config.pricing.promo, point, pessimistic),
-        api_scenario(SCENARIO_API_LIST, config.pricing.list_price, point, pessimistic),
-        *(gpu_scenario(profile, point, pessimistic) for profile in config.gpu_scenarios),
-    ]
-    return sorted(scenarios, key=lambda scenario: (scenario.usd_point, scenario.name))
-
-
-# ---------------------------------------------------------------------------
-# Recommendation policy
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Recommendation:
-    """The verdict: a named scenario, or a provisional comparison plus gaps."""
-
-    status: str
-    scenario: str | None
-    usd: float | None
-    failing_gates: list[dict[str, str]]
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "scenario": self.scenario,
-            "usd": self.usd,
-            "failing_gates": self.failing_gates,
-        }
-
-
-def configured_environments(config: ExperimentConfig) -> tuple[str, ...]:
-    """The environment names the config declares, in declaration order."""
-    return tuple(field.name for field in fields(config.environments))
-
-
-def validity_gates(config: ExperimentConfig, buckets: Sequence[RunBucket]) -> list[dict[str, str]]:
-    """Every failing validity gate, in policy order (see the module docstring)."""
-    gates: list[dict[str, str]] = []
-    for bucket in buckets:
-        if bucket.length == LONG and bucket.lower_bound:
-            gates.append(
-                {
-                    "gate": GATE_LONG_LOWER_BOUND,
-                    "detail": (
-                        f"the {bucket.environment}/{bucket.length} per-run mean is a lower "
-                        "bound (terminated runs contributed to it), so every extrapolation "
-                        "resting on it understates the long-context cost"
-                    ),
-                }
-            )
-    measured_long = {bucket.environment for bucket in buckets if bucket.length == LONG}
-    for environment in configured_environments(config):
-        if environment not in measured_long:
-            gates.append(
-                {
-                    "gate": GATE_LONG_COVERAGE,
-                    "detail": (
-                        f"no measured {LONG} runs for environment {environment!r}; long "
-                        "coverage is required for every configured environment before a "
-                        "recommendation can be made"
-                    ),
-                }
-            )
-    return gates
-
-
-def recommend(
-    scenarios: Sequence[Scenario],
-    gates: Sequence[dict[str, str]],
-    *,
-    accept_quantization: bool,
-) -> Recommendation:
-    """The decision function: gates first, then cheapest eligible scenario.
-
-    Inputs: the priced scenarios, the failing validity gates, and whether
-    quantization is explicitly accepted. Verdict: ``provisional`` with the
-    failing gates named whenever any gate fails or no scenario is eligible;
-    otherwise ``recommended`` naming the cheapest scenario that is eligible
-    (validated provenance) and precision-preserving (or quantization-accepted).
-    """
-    failing = list(gates)
-    if failing:
-        return Recommendation(
-            status=STATUS_PROVISIONAL, scenario=None, usd=None, failing_gates=failing
-        )
-    candidates = [
-        scenario
-        for scenario in scenarios
-        if scenario.eligible and (accept_quantization or not scenario.changes_numerics)
-    ]
-    if not candidates:
-        return Recommendation(
-            status=STATUS_PROVISIONAL,
-            scenario=None,
-            usd=None,
-            failing_gates=[
-                {
-                    "gate": GATE_NO_ELIGIBLE_SCENARIO,
-                    "detail": (
-                        "every scenario is either unvalidated or changes model numerics; "
-                        "validate a profile's throughput or accept quantization explicitly"
-                    ),
-                }
-            ],
-        )
-    cheapest = min(candidates, key=lambda scenario: (scenario.usd_point, scenario.name))
-    return Recommendation(
-        status=STATUS_RECOMMENDED,
-        scenario=cheapest.name,
-        usd=cheapest.usd_point,
-        failing_gates=[],
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1060,164 +831,6 @@ def write_report(report: CostReport) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Markdown rendering
-# ---------------------------------------------------------------------------
-
-
-def usd(value: float) -> str:
-    return f"${value:,.2f}" if abs(value) >= 0.01 else f"${value:.6f}"
-
-
-def count(value: float) -> str:
-    return f"{value:,.0f}"
-
-
-def table(header: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
-    lines = ["| " + " | ".join(header) + " |", "|" + "|".join(["---"] * len(header)) + "|"]
-    lines.extend("| " + " | ".join(row) + " |" for row in rows)
-    return lines
-
-
-def render_markdown(report: CostReport) -> str:
-    """The whole report as markdown, for stdout and for pasting into the paper."""
-    lines: list[str] = [
-        f"# Cost/time report -- {report.out_dir} (profile: {report.profile})",
-        "",
-        "## Measured",
-        "",
-    ]
-    lines += table(
-        ("stage", "runs", "input tok", "output tok", "USD", "wall s", "cache hits", "flags"),
-        (
-            (
-                stage.stage,
-                count(stage.runs),
-                count(stage.input_tokens),
-                count(stage.output_tokens),
-                usd(stage.cost),
-                f"{stage.wall_seconds:,.1f}",
-                count(stage.cache_hits),
-                " ".join(
-                    flag
-                    for flag, active in (
-                        ("lower-bound", stage.lower_bound),
-                        (f"resumed x{stage.resumed_attempts}", stage.resumed_attempts > 0),
-                    )
-                    if active
-                )
-                or "-",
-            )
-            for stage in report.stages
-        ),
-    )
-    lines += ["", "### Per-run means (the extrapolation basis)", ""]
-    lines += table(
-        ("environment", "length", "runs", "mean in", "mean out", "mean USD", "mean s", "flags"),
-        (
-            (
-                bucket.environment,
-                bucket.length,
-                count(bucket.n_runs),
-                f"{bucket.mean_input_tokens:,.1f}",
-                f"{bucket.mean_output_tokens:,.1f}",
-                usd(bucket.mean_cost),
-                f"{bucket.mean_wall_seconds:,.1f}",
-                " ".join(
-                    flag
-                    for flag, active in (
-                        ("lower-bound", bucket.lower_bound),
-                        ("thin", bucket.thin),
-                    )
-                    if active
-                )
-                or "-",
-            )
-            for bucket in report.buckets
-        ),
-    )
-    disk = report.disk
-    lines += [
-        "",
-        f"Disk: {disk['measured_bytes']:,.0f} B over {disk['measured_runs']:,.0f} run(s) "
-        f"= {disk['bytes_per_run']:,.0f} B/run; projected "
-        f"{disk['projected_bytes'] / 1e9:,.3f} GB for the full experiment.",
-        "",
-        "## Extrapolation",
-        "",
-        f"Runs/round = {count(report.run_counts.runs_per_round)} "
-        f"(m*n_in + v(K+1)(n_in+n_ho) + p_merge*v(n_in+n_ho)); "
-        f"{report.run_counts.rounds} round(s) = "
-        f"{count(report.run_counts.optimization_runs)} optimization runs. "
-        f"Eval grid = {report.run_counts.eval_conditions} condition(s) x "
-        f"(short + long) x repetitions = {count(report.run_counts.eval_runs)} runs.",
-        "",
-    ]
-    for projection in (report.point, report.pessimistic):
-        lines += [f"### {projection.label} projection", ""]
-        lines += table(
-            ("leg", "context", "runs", "input tok", "output tok", "basis"),
-            (
-                (
-                    leg.name,
-                    leg.context,
-                    count(leg.runs),
-                    count(leg.input_tokens),
-                    count(leg.output_tokens),
-                    leg.basis,
-                )
-                for leg in projection.legs
-            ),
-        )
-        lines += [
-            "",
-            f"Total: {count(projection.input_tokens)} in / "
-            f"{count(projection.output_tokens)} out"
-            + ("" if projection.long_measured else "  **(short-only: long unmeasured)**"),
-            "",
-        ]
-    lines += ["## Scenarios", ""]
-    lines += table(
-        ("scenario", "kind", "USD (point)", "USD (pessimistic)", "eligible", "notes"),
-        (
-            (
-                scenario.name,
-                scenario.kind,
-                usd(scenario.usd_point),
-                usd(scenario.usd_pessimistic),
-                "yes" if scenario.eligible else "no",
-                "; ".join(
-                    note
-                    for note in (
-                        scenario.ineligible_reason,
-                        "changes model numerics" if scenario.changes_numerics else None,
-                        scenario.provenance,
-                    )
-                    if note
-                ),
-            )
-            for scenario in report.scenarios
-        ),
-    )
-    lines += ["", "## Recommendation", ""]
-    if report.recommendation.status == STATUS_RECOMMENDED:
-        assert report.recommendation.usd is not None
-        lines.append(
-            f"**{report.recommendation.scenario}** at "
-            f"{usd(report.recommendation.usd)} -- the cheapest scenario passing every "
-            "validity gate."
-        )
-    else:
-        lines.append("**Provisional comparison** -- no recommendation. Missing:")
-        lines += [
-            f"- `{gate['gate']}`: {gate['detail']}" for gate in report.recommendation.failing_gates
-        ]
-    if report.warnings:
-        lines += ["", "## Warnings", ""]
-        lines += [f"- {warning}" for warning in report.warnings]
-    return "\n".join(lines) + "\n"
-
-
-# ---------------------------------------------------------------------------
 # The report command
 # ---------------------------------------------------------------------------
 
@@ -1267,6 +880,7 @@ __all__ = [
     "StageMeasurement",
     "build_report",
     "build_scenarios",
+    "eval_test_sizes",
     "gpu_hours",
     "main",
     "project",
