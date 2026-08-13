@@ -400,22 +400,39 @@ def check_directory_contract(out_dir: Path) -> None:
         raise SmokeError(f"{out_dir} holds no run manifest; nothing was measured")
 
 
-def check_costs_present(out_dir: Path) -> int:
-    """Every persisted run carries a non-null cost (stop condition (a), at scale)."""
-    cost_less: list[str] = []
+def check_costs_present(out_dir: Path) -> tuple[int, int]:
+    """Every *completed* run carries a non-null cost (stop condition (a), at scale).
+
+    A run the experiment terminated itself -- per-run budget or timeout -- has
+    no cost to report: the runtime raised before any usage came back, which is
+    why ``_partial_completion`` persists it with ``usage_lower_bound`` set.
+    Those are expected, already flagged, and counted separately here.
+
+    The condition this guards is the other one: a run that ran to completion
+    and still carries no cost means the route stopped reporting ``usage.cost``,
+    and every spend breaker downstream of it is blind. Conflating the two would
+    fail an honest run over its own timeout while hiding the failure that
+    actually matters.
+    """
+    blind: list[str] = []
+    terminated = 0
     total = 0
     for path in manifests(out_dir):
         for entry in read_jsonl(path):
             total += 1
-            if entry.get("cost") is None:
-                cost_less.append(f"{path}:{entry['run_id']}")
-    if cost_less:
+            if entry.get("cost") is not None:
+                continue
+            if entry.get("usage_lower_bound"):
+                terminated += 1
+                continue
+            blind.append(f"{path}:{entry['run_id']}")
+    if blind:
         raise SmokeError(
-            f"{len(cost_less)} persisted run(s) carry no cost, e.g. {cost_less[:3]}; "
+            f"{len(blind)} completed run(s) carry no cost, e.g. {blind[:3]}; "
             "OpenRouter stopped reporting usage.cost for this route and the spend "
             "breaker is now blind."
         )
-    return total
+    return total, terminated
 
 
 def check_sampling_args(out_dir: Path, config: ExperimentConfig) -> dict[str, Any]:
@@ -577,9 +594,15 @@ def run_live(config: ExperimentConfig, out_dir: Path) -> int:
         print(f"  {condition.condition_id}: outcome {condition.outcome}, ${condition.spent:.4f}")
 
     check_directory_contract(out_dir)
-    n_runs = check_costs_present(out_dir)
+    n_runs, n_terminated = check_costs_present(out_dir)
     persisted_args = check_sampling_args(out_dir, config)
-    print(f"Artifacts: {n_runs} persisted run(s), all carrying a non-null cost.")
+    completed = n_runs - n_terminated
+    note = (
+        ""
+        if not n_terminated
+        else f" {n_terminated} run(s) the experiment terminated carry no cost and are lower bounds."
+    )
+    print(f"Artifacts: {n_runs} persisted run(s), {completed} carrying a non-null cost.{note}")
     print(f"Persisted run_metadata.backend_kwargs.sampling_args: {persisted_args}")
 
     # Read once, reported here and adjudicated after the report is on disk.

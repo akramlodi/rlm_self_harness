@@ -512,6 +512,11 @@ class Leg:
     output_tokens: float
     wall_seconds: float
     basis: str
+    # Cost drift applied to this leg's per-run means, kept separate from the
+    # run count. The experiment executes exactly ``runs`` runs whatever the
+    # drift is; folding the multiplier into the count would report an
+    # execution volume the config forbids.
+    drift_multiplier: float = 1.0
 
     @property
     def total_tokens(self) -> float:
@@ -522,6 +527,7 @@ class Leg:
             "name": self.name,
             "context": self.context,
             "runs": self.runs,
+            "drift_multiplier": self.drift_multiplier,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
@@ -594,14 +600,17 @@ def pooled_bucket(buckets: Sequence[RunBucket], length: str) -> RunBucket | None
     )
 
 
-def leg_from(name: str, context: str, runs: float, basis: RunBucket) -> Leg:
+def leg_from(name: str, context: str, runs: float, basis: RunBucket, *, drift: float = 1.0) -> Leg:
+    """One leg: its true run count, with cost drift scaling the means only."""
+    scaled = runs * drift
     return Leg(
         name=name,
         context=context,
         runs=runs,
-        input_tokens=runs * basis.mean_input_tokens,
-        output_tokens=runs * basis.mean_output_tokens,
-        wall_seconds=runs * basis.mean_wall_seconds,
+        drift_multiplier=drift,
+        input_tokens=scaled * basis.mean_input_tokens,
+        output_tokens=scaled * basis.mean_output_tokens,
+        wall_seconds=scaled * basis.mean_wall_seconds,
         basis=f"{basis.environment}/{basis.length} ({basis.n_runs} run(s))",
     )
 
@@ -626,8 +635,9 @@ def project(
         leg_from(
             LEG_OPTIMIZATION,
             SHORT,
-            counts.runs_per_round * optimization_multiplier,
+            counts.optimization_runs,
             optimization_basis,
+            drift=optimization_multiplier / counts.rounds,
         ),
         leg_from(LEG_EVAL_SHORT, SHORT, counts.eval_short_runs, short_basis),
     ]
@@ -677,9 +687,10 @@ class CostReport:
                 "point": self.point.to_payload(),
                 "pessimistic": self.pessimistic.to_payload(),
                 "pessimistic_optimization_multiplier": next(
-                    leg.runs for leg in self.pessimistic.legs if leg.name == LEG_OPTIMIZATION
-                )
-                / self.run_counts.runs_per_round,
+                    leg.drift_multiplier
+                    for leg in self.pessimistic.legs
+                    if leg.name == LEG_OPTIMIZATION
+                ),
             },
             "scenarios": [scenario.to_payload() for scenario in self.scenarios],
             "recommendation": self.recommendation.to_payload(),

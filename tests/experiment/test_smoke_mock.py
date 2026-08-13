@@ -447,8 +447,10 @@ class TestLiveSmokeStructuralChecks:
 
     def test_directory_contract_and_costs_and_sampling_args_check_out(self, smoke: SmokeRun):
         experiment_smoke.check_directory_contract(smoke.out_dir)
+        # No run is terminated in the mock tier, so every run carries a cost.
         assert experiment_smoke.check_costs_present(smoke.out_dir) == (
-            n_optimization_runs() + n_evaluation_runs()
+            n_optimization_runs() + n_evaluation_runs(),
+            0,
         )
         persisted = experiment_smoke.check_sampling_args(smoke.out_dir, smoke.config)
         assert persisted["temperature"] == smoke.config.decoding.temperature
@@ -464,7 +466,7 @@ class TestLiveSmokeStructuralChecks:
         # Every environment has an uncapped long run, so the KTD6 gate passes.
         experiment_smoke.check_long_run_coverage(smoke.config, coverage)
 
-    def test_a_cost_less_run_is_refused(self, tmp_path):
+    def test_a_cost_less_completed_run_is_refused(self, tmp_path):
         round_path = tmp_path / "opt" / "round_01" / "mining" / "round_01"
         round_path.mkdir(parents=True)
         (round_path / "runs.jsonl").write_text(
@@ -472,6 +474,20 @@ class TestLiveSmokeStructuralChecks:
         )
         with pytest.raises(experiment_smoke.SmokeError, match="no cost"):
             experiment_smoke.check_costs_present(tmp_path)
+
+    def test_a_terminated_run_without_cost_is_counted_not_refused(self, tmp_path):
+        """A run the experiment's own timeout or budget killed reports no cost
+        and is already flagged a lower bound; only a *completed* cost-less run
+        means the route went blind."""
+        round_path = tmp_path / "opt" / "round_01" / "mining" / "round_01"
+        round_path.mkdir(parents=True)
+        (round_path / "runs.jsonl").write_text(
+            json.dumps({"run_id": "paid__a01", "cost": 0.01})
+            + "\n"
+            + json.dumps({"run_id": "killed__a01", "cost": None, "usage_lower_bound": True})
+            + "\n"
+        )
+        assert experiment_smoke.check_costs_present(tmp_path) == (2, 1)
 
     def test_a_missing_artifact_is_named(self, tmp_path):
         with pytest.raises(experiment_smoke.SmokeError, match=CONFIG_FILENAME):

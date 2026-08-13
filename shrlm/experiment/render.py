@@ -111,12 +111,13 @@ def render_markdown(report: CostReport) -> str:
     for projection in (report.point, report.pessimistic):
         lines += [f"### {projection.label} projection", ""]
         lines += table(
-            ("leg", "context", "runs", "input tok", "output tok", "basis"),
+            ("leg", "context", "runs", "cost drift", "input tok", "output tok", "basis"),
             (
                 (
                     leg.name,
                     leg.context,
                     count(leg.runs),
+                    "-" if leg.drift_multiplier == 1.0 else f"x{leg.drift_multiplier:,.0f}",
                     count(leg.input_tokens),
                     count(leg.output_tokens),
                     leg.basis,
