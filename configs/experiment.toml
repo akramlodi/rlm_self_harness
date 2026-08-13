@@ -44,7 +44,14 @@ patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
 # multipliers on the baseline's mean.
 tau_regression = 0.0
 tau_improvement = 0.0
-cost_band = [0.5, 2.0]
+# The upper bound is the single most cost-sensitive value in this file. It
+# gates promotion, but a promoted edit may raise cost every round, so the
+# drift compounds: the pessimistic projection multiplies the optimization
+# leg by sum(ceiling^i) over T rounds. At 2.0 that is x2,184 ($143k at list
+# price); at 1.25 it is x7.3 ($507). A candidate that costs 25% more than
+# its incumbent is already a hard sell as an improvement, so the ceiling
+# buys almost nothing above 1.25 and costs orders of magnitude.
+cost_band = [0.5, 1.25]
 # sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
 
 [caps]
@@ -55,7 +62,14 @@ cost_band = [0.5, 2.0]
 attempts = 1 # default per-round attempts; stages override with m / v / eval_repetitions
 max_iterations = 30
 max_depth = 1
-max_budget = 5.0 # USD per run
+# The one hard cost guarantee: the spend breaker terminates any run that
+# exceeds this, so total exposure is bounded by total_runs x max_budget
+# regardless of what the optimization loop does -- 25,260 x $0.10 = $2,526.
+# Smoke measurements put the mean run at $0.0024-$0.0134 and the single most
+# expensive run at $0.0409, so this leaves ~2.4x headroom over anything yet
+# observed. Raise it if pilot long runs start landing as lower bounds: a cap
+# that censors long runs defeats the KTD6 measurement it protects.
+max_budget = 0.1 # USD per run
 max_timeout = 1800.0 # seconds per run
 candidate_budget = 60.0 # USD across all of one candidate's runs
 
