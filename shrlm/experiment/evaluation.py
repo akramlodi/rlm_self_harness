@@ -247,11 +247,21 @@ class TestSet:
 
 
 def test_sets(splits_dir: Path) -> list[TestSet]:
-    """Every test split the persisted manifest records, in (env, length) order.
+    """Every test split the persisted manifest records, longest length first.
 
     Derived from the manifest rather than from the config's split plan: only
     materialized environments have files on disk, and eval reads files, never
     the plan.
+
+    Long sets run before short ones because a condition's spend breaker can
+    trip partway through, and what it truncates should be the cheap, plentiful
+    measurements rather than the scarce ones. Long-run cost is superlinear in
+    context length (KTD6), so a long per-run mean is both the dominant term in
+    every projection and the input the report's validity gate requires at
+    least one uncapped sample of; a short mean is neither. Ordering within a
+    length stays alphabetical by environment, and results are keyed by
+    (environment, length), so this changes only what survives a truncated
+    condition -- never any measurement's value.
     """
     manifest_path = splits_dir / MANIFEST_FILE
     if not manifest_path.exists():
@@ -261,8 +271,8 @@ def test_sets(splits_dir: Path) -> list[TestSet]:
     manifest = json.loads(manifest_path.read_text())
     sets = [
         TestSet(environment=environment, length=length)
+        for length in sorted(LENGTHS, key=LENGTHS.index, reverse=True)
         for environment in sorted(manifest["environments"])
-        for length in LENGTHS
         if split_file_name(environment, length, ROLE_TEST)
         in manifest["environments"][environment]["files"]
     ]

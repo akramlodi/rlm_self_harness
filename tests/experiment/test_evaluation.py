@@ -54,7 +54,10 @@ LOADERS: dict[str, LoaderFn] = {"graphwalks": fake_loader("graphwalks")}
 
 SET_SHORT = "graphwalks_short"
 SET_LONG = "graphwalks_long"
-BOTH_SETS = (SET_SHORT, SET_LONG)
+# Execution order, not just membership: eval runs long sets first so a tripped
+# breaker truncates the cheap, plentiful short measurements rather than the
+# scarce long ones the report's validity gate depends on.
+BOTH_SETS = (SET_LONG, SET_SHORT)
 BOTH_CONDITIONS = (CONDITION_B1, CONDITION_SH_RLM)
 
 FROZEN_TEXT = "Verify every claim against the stored evidence before answering. [frozen]"
@@ -112,8 +115,10 @@ def scripted(monkeypatch: pytest.MonkeyPatch, *responses: str) -> ClientFactory:
     return patch_runner(monkeypatch, [final(response) for response in responses])
 
 
-# Execution order is (condition, set): b1 short, b1 long, sh_rlm short, sh_rlm long.
-ONE_ATTEMPT_SCRIPT = ("RIGHT", "WRONG", "RIGHT", "RIGHT")
+# Execution order is (condition, set): b1 long, b1 short, sh_rlm long, sh_rlm short.
+# Kept so each condition's short set still passes and b1's long set still
+# fails, matching the pass-count assertions below.
+ONE_ATTEMPT_SCRIPT = ("WRONG", "RIGHT", "RIGHT", "RIGHT")
 
 
 # ---------------------------------------------------------------------------
@@ -379,10 +384,12 @@ class TestSpendBreaker:
         for condition in result.conditions:
             assert condition.outcome == OUTCOME_OVER_BUDGET
             assert condition.over_budget
-            assert condition.test_sets[SET_SHORT]["n_runs"] == 1
-            assert condition.test_sets[SET_LONG]["n_runs"] == 0
-            assert condition.test_sets[SET_LONG]["skipped_run_ids"] == ["graphwalks-long-0__a01"]
-            assert condition.test_sets[SET_LONG]["pass_rate"] is None
+            # Long runs first, so the trip costs the short set -- the scarce
+            # long measurement survives, which is the point of the ordering.
+            assert condition.test_sets[SET_LONG]["n_runs"] == 1
+            assert condition.test_sets[SET_SHORT]["n_runs"] == 0
+            assert condition.test_sets[SET_SHORT]["skipped_run_ids"] == ["graphwalks-short-4__a01"]
+            assert condition.test_sets[SET_SHORT]["pass_rate"] is None
 
         idle = scripted(monkeypatch)
         resumed = evaluate(config, out)
@@ -511,8 +518,9 @@ class TestCrashedEvalUsage:
         with pytest.raises(IndexError):
             evaluate(config, out)
 
-        assert len(manifest_lines(out, CONDITION_B1, SET_SHORT)) == 1
-        usage = read_stage_usage(out / STAGE_USAGE_FILE)[f"{EVAL_DIR}/{CONDITION_B1}/{SET_SHORT}"]
+        # Long sets run first, so the crashed set is the long one.
+        assert len(manifest_lines(out, CONDITION_B1, SET_LONG)) == 1
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)[f"{EVAL_DIR}/{CONDITION_B1}/{SET_LONG}"]
         assert usage.input_tokens == 10
         assert usage.output_tokens == 10
         assert usage.lower_bound is True
