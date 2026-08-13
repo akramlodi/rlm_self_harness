@@ -69,17 +69,20 @@ from typing import Any
 from shrlm.environments.graphwalks import GraphWalksVerifier
 from shrlm.environments.oolong_pairs import OolongPairsVerifier
 from shrlm.experiment.config import (
+    GOVERNED_ROUND_KEYS,
     ExperimentConfig,
     identity_hash,
     round_config_kwargs,
     validation_caps,
 )
+from shrlm.experiment.errors import ExperimentError
 from shrlm.experiment.orchestrator import (
     FROZEN_DIR,
     FROZEN_HARNESS_FILENAME,
     INITIAL_INCUMBENT,
     WORK_DIR,
     check_identity,
+    rematerialize_harness_envelope,
 )
 from shrlm.experiment.splits import (
     LENGTHS,
@@ -93,10 +96,11 @@ from shrlm.experiment.usage import (
     StageMeter,
     UsageTotals,
     aggregate_manifest_usage,
+    read_jsonl,
 )
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.bundle import round_dir
-from shrlm.optimization.candidates import CandidateRejection, materialize_harness
+from shrlm.optimization.candidates import CandidateRejection
 from shrlm.optimization.costs import (
     OUTCOME_COMPLETED,
     OUTCOME_OVER_BUDGET,
@@ -123,13 +127,8 @@ ROLE_TEST = "test"
 CONDITION_B1 = "b1"
 CONDITION_SH_RLM = "sh_rlm"
 
-# The limit kwargs ``governed_limits`` owns; the config's own values for them
-# are dropped so the caps (merged tighten-only against the harness's S6
-# policy) are the only source of a run's limits.
-_GOVERNED_KEYS = ("attempts", "max_iterations", "max_depth", "max_budget", "max_timeout")
 
-
-class EvaluationPersistenceError(RuntimeError):
+class EvaluationPersistenceError(ExperimentError):
     """Persisted evaluation state contradicts itself or the configuration."""
 
 
@@ -178,19 +177,12 @@ class FrozenHarnessSource:
                 f"{path} does not exist; this condition evaluates the frozen harness, so "
                 "the optimization experiment must have completed and frozen it first"
             )
-        envelope = json.loads(path.read_text())
-        recorded = str(envelope["hash"])
-        work_dir.mkdir(parents=True, exist_ok=True)
-        harness = materialize_harness(envelope["harness"], work_dir / f"_frozen_{recorded[:16]}.py")
-        rebuilt = harness_hash(harness)
-        if rebuilt != recorded:
-            raise EvaluationPersistenceError(
-                f"{path} records harness hash {recorded}, but rematerializing its envelope "
-                f"produced {rebuilt}; the frozen harness does not round-trip (the envelope "
-                "was modified, or its surfaces are not reconstructible). Refusing to "
-                "evaluate a condition whose identity cannot be verified."
-            )
-        return harness
+        return rematerialize_harness_envelope(
+            path,
+            work_dir,
+            module_prefix="_frozen_",
+            error=EvaluationPersistenceError,
+        )
 
 
 HarnessSource = RegistryHarnessSource | FrozenHarnessSource
@@ -283,7 +275,7 @@ def test_sets(splits_dir: Path) -> list[TestSet]:
 
 def read_instances(path: Path) -> list[dict[str, Any]]:
     """One persisted split file's instances, in file order."""
-    instances = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    instances = read_jsonl(path)
     if not instances:
         raise EvaluationPersistenceError(f"{path} holds no instances; cannot evaluate on it")
     return instances
@@ -451,7 +443,7 @@ class _Evaluation:
         instances = read_instances(split_path)
         set_path = self.out_dir / EVAL_DIR / condition_id / test_set.set_id
         kwargs = round_config_kwargs(self.config)
-        for key in _GOVERNED_KEYS:
+        for key in GOVERNED_ROUND_KEYS:
             kwargs.pop(key)
         round_config = RoundConfig(
             round_index=EVAL_ROUND_INDEX,

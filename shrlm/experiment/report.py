@@ -47,14 +47,18 @@ Recommendation policy (explicit and tested)
     1. no lower-bound flag on any contributing long-run mean,
     2. long coverage present for every configured environment,
     3. GPU scenarios eligible only when their throughput input carries
-       validated provenance -- a profile whose ``provenance`` is marked
-       ``unvalidated`` is scenario-only and can never be the recommendation.
+       validated provenance -- a profile declaring
+       ``provenance_validated = false`` is scenario-only and can never be the
+       recommendation.
 
     Otherwise the comparison is still emitted, labeled provisional, naming
-    each failing gate. Scenarios whose ``precision_note`` says the numerics
-    change (INT4-style) are surfaced with a ``changes_numerics`` flag and
-    deprioritized -- excluded from candidacy unless quantization is explicitly
-    accepted, never silently dropped from the table.
+    each failing gate. Scenarios declaring ``changes_numerics = true``
+    (INT4-style) are surfaced with that flag and deprioritized -- excluded
+    from candidacy unless quantization is explicitly accepted, never silently
+    dropped from the table. Both gates read the profile's declared booleans,
+    never its free-text ``provenance`` / ``precision_note``: those are the
+    human-readable justification the report prints, and editing a
+    justification must not move a decision.
 
 Thin and lower-bound inputs are flagged, not hidden: fewer than
 ``MIN_LONG_RUN_SAMPLES`` measured long runs in a bucket, or any terminated run
@@ -77,6 +81,7 @@ from shrlm.experiment.config import (
     PricingTier,
     load_config,
 )
+from shrlm.experiment.errors import ExperimentError
 from shrlm.experiment.evaluation import EVAL_DIR, EVAL_SUMMARY_FILENAME, STAGE_EVAL
 from shrlm.experiment.orchestrator import (
     MINING_DIR,
@@ -94,6 +99,7 @@ from shrlm.experiment.usage import (
     STAGE_USAGE_FILE,
     UsageTotals,
     aggregate_manifest_usage,
+    read_jsonl,
     read_stage_usage,
 )
 from shrlm.optimization.driver import MANIFEST_FILE
@@ -105,16 +111,6 @@ REPORT_FORMAT = "shrlm-cost-report/v1"
 # thin input: long-run cost has the widest spread, so a one- or two-run mean
 # is reported with a warning rather than presented as a measurement.
 MIN_LONG_RUN_SAMPLES = 3
-
-# A GPU profile's ``provenance`` is the audit trail for both its hourly rate
-# and its throughput numbers. A profile that says it is unvalidated is
-# scenario-only: it appears in the comparison and can never be recommended.
-UNVALIDATED_PROVENANCE_MARKER = "unvalidated"
-
-# A profile whose ``precision_note`` says the numerics change (INT4-style
-# quantization) does not preserve the measured behavior the projection is
-# built from, so it is deprioritized unless quantization is accepted.
-QUANTIZATION_PRECISION_MARKER = "numerics"
 
 SHORT, LONG = LENGTHS
 
@@ -155,7 +151,7 @@ SECONDS_PER_HOUR = 3600.0
 TOKENS_PER_PRICE_UNIT = 1e6
 
 
-class ReportInputError(RuntimeError):
+class ReportInputError(ExperimentError):
     """The experiment directory does not hold the measurements a report needs."""
 
 
@@ -247,13 +243,6 @@ class RunBucket:
             "thin": self.thin,
             "sources": dict(sorted(self.sources.items())),
         }
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """One JSON-lines file's records in file order; ``[]`` when it is absent."""
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def optimization_manifests(out_dir: Path) -> list[Path]:
@@ -729,7 +718,7 @@ def api_scenario(
 def gpu_scenario(profile: GpuScenario, point: Projection, pessimistic: Projection) -> Scenario:
     hours_point = gpu_hours(profile, point)
     hours_pessimistic = gpu_hours(profile, pessimistic)
-    validated = UNVALIDATED_PROVENANCE_MARKER not in profile.provenance.lower()
+    validated = profile.provenance_validated
     return Scenario(
         name=profile.name,
         kind=KIND_GPU,
@@ -744,7 +733,7 @@ def gpu_scenario(profile: GpuScenario, point: Projection, pessimistic: Projectio
                 "recommendation; this profile is scenario-only"
             )
         ),
-        changes_numerics=QUANTIZATION_PRECISION_MARKER in profile.precision_note.lower(),
+        changes_numerics=profile.changes_numerics,
         provenance=profile.provenance,
         detail={
             "hourly_rate_usd": profile.hourly_rate_usd,
@@ -984,9 +973,9 @@ def build_report(
             and GPU profile comes from it.
         out_dir: The experiment directory the orchestrator and evaluation
             runner wrote.
-        accept_quantization: Allow scenarios whose ``precision_note`` says the
-            numerics change to be recommended. They are always reported; this
-            flag only makes them candidates.
+        accept_quantization: Allow scenarios declaring ``changes_numerics`` to
+            be recommended. They are always reported; this flag only makes
+            them candidates.
 
     Returns:
         The ``CostReport``: measured stage table and per-run buckets, the
@@ -1245,7 +1234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--accept-quantization",
         action="store_true",
-        help="allow scenarios whose precision note says the model numerics change",
+        help="allow scenarios declaring changes_numerics (the model numerics change)",
     )
     args = parser.parse_args(argv)
 

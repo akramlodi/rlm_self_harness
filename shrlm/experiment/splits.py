@@ -36,6 +36,8 @@ from typing import Any
 from shrlm.environments.graphwalks import load_graphwalks
 from shrlm.environments.oolong_pairs import load_oolong_pairs_from_config
 from shrlm.experiment.config import ExperimentConfig
+from shrlm.experiment.errors import ExperimentError
+from shrlm.optimization.driver import _instance_lines, sha256_file
 
 SPLITS_DIR = "splits"
 MANIFEST_FILE = "manifest.json"
@@ -46,7 +48,7 @@ LENGTHS: tuple[str, ...] = ("short", "long")
 LoaderFn = Callable[[ExperimentConfig, str, int, int], list[dict[str, Any]]]
 
 
-class SplitsPersistenceError(RuntimeError):
+class SplitsPersistenceError(ExperimentError):
     """Persisted splits contradict the configuration or were modified on disk."""
 
 
@@ -119,8 +121,13 @@ def split_file_name(environment: str, length: str, role: str) -> str:
 
 
 def instance_lines(instances: list[dict[str, Any]]) -> str:
-    """Canonical byte content of a split file, matching ``instances.jsonl``."""
-    return "".join(json.dumps(instance, sort_keys=True) + "\n" for instance in instances)
+    """Canonical byte content of a split file, matching ``instances.jsonl``.
+
+    Delegates to the driver's own renderer rather than restating it: the
+    driver byte-compares a resumed round's ``instances.jsonl`` against these
+    exact bytes, so the two renderings must never be able to drift apart.
+    """
+    return _instance_lines(instances)
 
 
 def sha256_text(content: str) -> str:
@@ -198,7 +205,7 @@ def verify_environment(
             raise SplitsPersistenceError(
                 f"{path} is recorded in the splits manifest but missing on disk"
             )
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        actual = sha256_file(path)
         if actual != entry["sha256"]:
             raise SplitsPersistenceError(
                 f"{path} sha256 {actual} does not match the manifest's {entry['sha256']}; "

@@ -71,6 +71,7 @@ from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
 from shrlm.environments.graphwalks import GraphWalksVerifier
 from shrlm.experiment.config import (
+    GOVERNED_ROUND_KEYS,
     ExperimentConfig,
     backend_kwargs_for,
     evaluation_config_kwargs,
@@ -80,12 +81,14 @@ from shrlm.experiment.config import (
     round_config_kwargs,
     validation_caps,
 )
+from shrlm.experiment.errors import ExperimentError
 from shrlm.experiment.splits import LoaderFn, materialize_splits, split_file_name
 from shrlm.experiment.usage import (
     STAGE_USAGE_FILE,
     StageMeter,
     UsageTotals,
     aggregate_manifest_usage,
+    read_jsonl,
 )
 from shrlm.harness_identity import harness_hash, write_harness_json
 from shrlm.optimization.attribution import AttributionCache, LLMAttributor
@@ -147,7 +150,7 @@ ROLE_HELD_IN = "held_in"
 ROLE_HELD_OUT = "held_out"
 
 
-class ExperimentPersistenceError(RuntimeError):
+class ExperimentPersistenceError(ExperimentError):
     """Persisted experiment state contradicts itself or the configuration."""
 
 
@@ -155,7 +158,7 @@ class IdentityMismatchError(ExperimentPersistenceError):
     """The configured identity hash does not match the experiment's (R3)."""
 
 
-class MiningBudgetExceededError(RuntimeError):
+class MiningBudgetExceededError(ExperimentError):
     """The mining spend breaker tripped; partial state is persisted and resumable."""
 
 
@@ -259,7 +262,7 @@ def _operational_path(out_dir: Path, raw: str) -> Path:
 
 def _read_split(splits_dir: Path, role: str) -> list[dict[str, Any]]:
     path = splits_dir / split_file_name(SPLIT_ENVIRONMENT, SPLIT_LENGTH, role)
-    instances = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    instances = read_jsonl(path)
     if not instances:
         raise ExperimentPersistenceError(f"{path} holds no instances; cannot run a round on it")
     return instances
@@ -285,6 +288,66 @@ def _freeze_harness(harness: Harness, out_dir: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_harness_json(harness, path)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Persisted harness envelopes -> live harnesses
+# ---------------------------------------------------------------------------
+
+
+def rematerialize_harness_envelope(
+    envelope_path: Path,
+    work_dir: Path,
+    *,
+    module_prefix: str,
+    error: type[ExperimentError],
+    expected_hash: str | None = None,
+) -> Harness:
+    """Rebuild a persisted ``harness.json`` envelope and verify its identity.
+
+    The one place a persisted harness becomes a live one again -- the
+    orchestrator's resume path and the evaluation runner's frozen condition
+    both go through it. The envelope is rematerialized via
+    ``materialize_harness`` into ``work_dir/<module_prefix><hash[:16]>.py`` and
+    the rebuilt harness re-hashed against the hash the envelope records, so an
+    envelope edited after it was written -- or one whose surfaces do not
+    reconstruct -- is refused rather than silently used as something else.
+
+    Args:
+        envelope_path: The persisted ``write_harness_json`` envelope.
+        work_dir: Where the generated module is materialized; created if absent.
+        module_prefix: Filename prefix for that module (the caller's context).
+        error: The exception class raised on any mismatch. Callers pass their
+            own: the same failed check means a tampered freeze in one context
+            and contradictory round state in the other.
+        expected_hash: When given, the hash the caller independently expects;
+            an envelope recording a different one is refused before anything is
+            materialized. ``None`` verifies only that the envelope round-trips
+            to its own recorded hash.
+
+    Returns:
+        The rematerialized harness, hash-verified.
+    """
+    envelope = json.loads(envelope_path.read_text())
+    recorded = str(envelope["hash"])
+    if expected_hash is not None and recorded != expected_hash:
+        raise error(
+            f"{envelope_path} records harness hash {recorded}, but {expected_hash} was "
+            "expected; refusing to rebuild a harness from a contradictory envelope"
+        )
+    work_dir.mkdir(parents=True, exist_ok=True)
+    harness = materialize_harness(
+        envelope["harness"], work_dir / f"{module_prefix}{recorded[:16]}.py"
+    )
+    rebuilt = harness_hash(harness)
+    if rebuilt != recorded:
+        raise error(
+            f"rematerializing {envelope_path} produced harness hash {rebuilt}, not the "
+            f"recorded {recorded}; the envelope does not round-trip (it was modified, or "
+            "its surfaces are not reconstructible). Refusing to use a harness whose "
+            "identity cannot be verified."
+        )
+    return harness
 
 
 # ---------------------------------------------------------------------------
@@ -318,23 +381,13 @@ def _rematerialize_promoted(
             f"{promoted_hash}; the persisted round state contradicts itself"
         )
     envelope_path = validation_round_path / str(record["links"]["splits"][SPLIT_HELDIN]["harness"])
-    envelope = json.loads(envelope_path.read_text())
-    if str(envelope["hash"]) != promoted_hash:
-        raise ExperimentPersistenceError(
-            f"{envelope_path} records harness hash {envelope['hash']}, but the round "
-            f"promoted {promoted_hash}; refusing to resume from a contradictory envelope"
-        )
-    work_dir.mkdir(parents=True, exist_ok=True)
-    module_path = work_dir / f"_promoted_{promoted_hash[:16]}.py"
-    harness = materialize_harness(envelope["harness"], module_path)
-    rebuilt_hash = harness_hash(harness)
-    if rebuilt_hash != promoted_hash:
-        raise ExperimentPersistenceError(
-            f"rematerializing {envelope_path} produced harness hash {rebuilt_hash}, not the "
-            f"promoted {promoted_hash}; the envelope does not round-trip and the incumbent "
-            "cannot be trusted"
-        )
-    return harness
+    return rematerialize_harness_envelope(
+        envelope_path,
+        work_dir,
+        module_prefix="_promoted_",
+        error=ExperimentPersistenceError,
+        expected_hash=promoted_hash,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -491,13 +544,7 @@ class _Experiment:
                 "experiment, not a rejectable candidate"
             )
         kwargs = round_config_kwargs(self.config)
-        for governed_key in (
-            "attempts",
-            "max_iterations",
-            "max_depth",
-            "max_budget",
-            "max_timeout",
-        ):
+        for governed_key in GOVERNED_ROUND_KEYS:
             kwargs.pop(governed_key)
         mining_config = RoundConfig(
             round_index=round_index,
@@ -664,10 +711,7 @@ def _validation_usage(validation_round_path: Path) -> UsageTotals:
     if not validation_round_path.exists():
         return total
     for manifest_path in sorted(validation_round_path.rglob("runs.jsonl")):
-        entries = [
-            json.loads(line) for line in manifest_path.read_text().splitlines() if line.strip()
-        ]
-        total = total + aggregate_manifest_usage(entries)
+        total = total + aggregate_manifest_usage(read_jsonl(manifest_path))
     return total
 
 
@@ -749,5 +793,6 @@ __all__ = [
     "RoundOutcome",
     "check_identity",
     "experiment_round_dir",
+    "rematerialize_harness_envelope",
     "run_experiment",
 ]

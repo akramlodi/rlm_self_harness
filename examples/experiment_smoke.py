@@ -97,7 +97,7 @@ from shrlm.experiment.orchestrator import (
 )
 from shrlm.experiment.report import build_report, render_markdown, write_report
 from shrlm.experiment.splits import LENGTHS, MANIFEST_FILE, SPLITS_DIR
-from shrlm.experiment.usage import STAGE_USAGE_FILE, read_stage_usage
+from shrlm.experiment.usage import STAGE_USAGE_FILE, read_jsonl, read_stage_usage
 
 load_dotenv()
 
@@ -267,10 +267,6 @@ def check_provider(config: ExperimentConfig, provider: str | None) -> str:
 # ---------------------------------------------------------------------------
 # Structural checks over the persisted experiment
 # ---------------------------------------------------------------------------
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def manifests(out_dir: Path) -> list[Path]:

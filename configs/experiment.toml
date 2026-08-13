@@ -115,8 +115,10 @@ output_per_million = 0.30
 name = "h100_sxm_rented"
 hourly_rate_usd = 2.49
 provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true # eligible for the recommendation (rate and throughput are sourced)
 sensitivity_range = [1.99, 3.49] # USD/hour band for the sensitivity analysis
 precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
 
 [gpu_scenarios.throughput_tokens_per_second]
 # Aggregate decode throughput by context bucket, single GPU, tokens/second.
@@ -127,8 +129,10 @@ long = 700.0 # contexts >= 128k tokens
 name = "2x_a100_tp2_rented"
 hourly_rate_usd = 2.58 # 2 GPUs x $1.29/h
 provenance = "Unvalidated estimate from A100 80GB marketplace rates 2026-08; BF16 needs 2xA100 at 262k (weights ~61GB + KV ~24.6GB/seq)"
+provenance_validated = false # scenario-only until the rate and throughput are measured
 sensitivity_range = [0.94, 4.12]
 precision_note = "bf16 weights, tensor-parallel 2, vLLM serving"
+changes_numerics = false
 
 [gpu_scenarios.throughput_tokens_per_second]
 short = 2000.0
@@ -138,8 +142,10 @@ long = 500.0
 name = "1x_a100_int4"
 hourly_rate_usd = 1.29
 provenance = "Unvalidated estimate; AWQ/GPTQ-INT4 weights ~17GB fit 262k KV on one A100 80GB"
+provenance_validated = false # scenario-only until the rate and throughput are measured
 sensitivity_range = [0.47, 2.06]
 precision_note = "INT4 quantized weights change model numerics; measurements and comparability do not transfer (report prefers precision-preserving scenarios)"
+changes_numerics = true # INT4: a candidate only when quantization is explicitly accepted
 
 [gpu_scenarios.throughput_tokens_per_second]
 short = 1800.0

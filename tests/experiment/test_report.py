@@ -299,13 +299,29 @@ class TestGpuScenarios:
         assert int4.changes_numerics is True
         assert scenario_by_name(report, "h100_sxm_rented").eligible is True
 
+    def test_eligibility_reads_the_declared_booleans_not_the_prose(self, config, experiment):
+        """The gates are typed fields, so editing a justification cannot move them."""
+        profile = next(s for s in config.gpu_scenarios if s.name == "h100_sxm_rented")
+        prose_only = replace(
+            profile,
+            provenance="Unvalidated estimate (prose only)",
+            precision_note="INT4 quantized weights change model numerics (prose only)",
+        )
+        report = build_report(replace(config, gpu_scenarios=(prose_only,)), experiment)
+
+        scenario = scenario_by_name(report, "h100_sxm_rented")
+        assert scenario.eligible is True
+        assert scenario.changes_numerics is False
+
     def test_quantized_scenario_is_deprioritized_unless_accepted(self, config, experiment):
         cheap_quantized = GpuScenario(
             name="validated_int4",
             hourly_rate_usd=0.01,
             provenance="Measured on rented hardware, 2026-08",
+            provenance_validated=True,
             sensitivity_range=(0.01, 0.02),
             precision_note="INT4 weights change model numerics",
+            changes_numerics=True,
             throughput_tokens_per_second={"short": 5000.0, "long": 2000.0},
         )
         quantized_config = replace(config, gpu_scenarios=(cheap_quantized,))

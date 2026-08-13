@@ -44,13 +44,12 @@ Factory helpers
     construct the real objects. Call sites never touch raw TOML.
 """
 
-import hashlib
-import json
 import tomllib
 from dataclasses import MISSING, asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
+from shrlm.harness_identity import canonical_json_sha256
 from shrlm.optimization.costs import ValidationCaps
 from shrlm.optimization.promotion import Band, PromotionConfig
 from shrlm.optimization.proposal import ProposerConfig
@@ -259,13 +258,25 @@ class PricingConfig:
 
 @dataclass(frozen=True)
 class GpuScenario:
-    """One local-serving cost scenario for the report's GPU-hour projection."""
+    """One local-serving cost scenario for the report's GPU-hour projection.
+
+    ``provenance_validated`` and ``changes_numerics`` are the two booleans the
+    report's recommendation policy reads: an unvalidated profile is
+    scenario-only (it can never be recommended), and one whose numerics change
+    is a candidate only when quantization is explicitly accepted. They are
+    declared per profile in the TOML rather than inferred from the prose, so
+    editing a justification can never move the decision. ``provenance`` and
+    ``precision_note`` stay as the human-readable justification the report
+    prints alongside each verdict.
+    """
 
     name: str
     hourly_rate_usd: float
     provenance: str
+    provenance_validated: bool
     sensitivity_range: tuple[float, float]
     precision_note: str
+    changes_numerics: bool
     throughput_tokens_per_second: dict[str, float]
 
 
@@ -479,8 +490,7 @@ def identity_hash(config: ExperimentConfig) -> str:
     what is included and why operational keys are excluded.
     """
     subset = {name: asdict(getattr(config, name)) for name in IDENTITY_SECTIONS}
-    payload = json.dumps(subset, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return canonical_json_sha256(subset)
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +527,19 @@ def backend_kwargs_for(config: ExperimentConfig, role: str) -> dict[str, Any]:
         raise ValueError(f"unknown client role {role!r}; expected one of {CLIENT_ROLES}")
     endpoint: EndpointConfig = getattr(config.backends, role)
     return {"model_name": endpoint.model, "sampling_args": sampling_args(config)}
+
+
+# The ``round_config_kwargs`` keys that ``shrlm.optimization.costs.governed_limits``
+# owns. A stage that governs its round drops these from the kwargs and lets the
+# merged (tighten-only) limits supply them, so the caps are a run's only source
+# of limits.
+GOVERNED_ROUND_KEYS: tuple[str, ...] = (
+    "attempts",
+    "max_iterations",
+    "max_depth",
+    "max_budget",
+    "max_timeout",
+)
 
 
 def round_config_kwargs(config: ExperimentConfig) -> dict[str, Any]:

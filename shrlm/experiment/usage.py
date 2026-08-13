@@ -152,8 +152,15 @@ def aggregate_manifest_usage(entries: Iterable[Mapping[str, Any]]) -> UsageTotal
     return total
 
 
-def _read_records(path: Path) -> list[dict[str, Any]]:
-    """All records in file order; ``[]`` for a not-yet-created sidecar."""
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """One JSON-lines file's records in file order; ``[]`` when it is absent.
+
+    The package's single JSON-lines reader: the usage sidecar, the report's
+    manifests, the persisted split files, and the smoke checks all parse
+    through it, so "absent" and "blank line" mean one thing everywhere. It
+    imposes no emptiness policy -- callers that require records (a split with
+    no instances, say) check and raise with their own error type.
+    """
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -202,7 +209,7 @@ class StageMeter:
     def __enter__(self) -> "StageMeter":
         self._attempt_index = sum(
             1
-            for record in _read_records(self.out_path)
+            for record in read_jsonl(self.out_path)
             if record["stage_work_id"] == self.stage_work_id
         )
         self._started = time.perf_counter()
@@ -269,7 +276,7 @@ def read_stage_usage(path: Path | str) -> dict[str, UsageTotals]:
     incremental contract. Wall seconds sum across attempts too: the total is
     time actually spent, not time the finished stage would have taken.
     """
-    records = _read_records(Path(path))
+    records = read_jsonl(Path(path))
     latest: dict[str, dict[int, dict[str, Any]]] = {}
     for record in records:
         work_id = str(record["stage_work_id"])
