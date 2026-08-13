@@ -23,19 +23,52 @@ is meaningless, so model behavior is the model's business.
 Spend control (KTD7; hard ceiling $5)
     The smoke profile's own caps are sized for a pilot, not for a $5 ceiling,
     so this script tightens them to live-smoke values and proves the
-    arithmetic before spending anything (``check_budget_arithmetic``):
+    arithmetic before spending anything (``check_budget_arithmetic``). Every
+    paid call falls in exactly one of two classes, and the ceiling adds both.
+
+    Governed calls -- every run executed under a ``CandidateSpendBreaker``:
 
         per-run budget      $0.20   worst-case long run (below) x ~1.7 headroom
-        per-breaker budget  $0.50   cumulative, per spend breaker
-        breakers            7       1 mining + (baseline + k candidates +
+        per-breaker budget  $0.35   cumulative, per spend breaker
+        breakers            7       t x (1 mining + baseline + k candidates +
                                     merged) + 1 per evaluation condition
-        ceiling             7 x ($0.50 + $0.20) = $4.90 < $5.00
+        governed ceiling    7 x ($0.35 + $0.20) = $3.85
 
     A breaker trips only *after* a run pushes cumulative spend past its
     budget, so each breaker's true ceiling is its budget plus one per-run
-    budget -- that is the $0.70 term. Caps are identity keys (R3), so editing
-    the three ``LIVE_*`` constants below means a fresh ``--out-dir``: an
-    existing experiment refuses to resume under changed caps.
+    budget -- that is the $0.55 term. The per-round breakers are armed afresh
+    in each of ``loop.t`` rounds, hence the ``t`` factor (the shipped smoke
+    profile runs t = 1, so it is latent there and load-bearing anywhere else).
+
+    Ungoverned calls -- paid model calls no breaker ever sees:
+
+        probe               2       the raw completion plus the client's own
+        attribution         27      t x n_in x m records x max_attempts x
+                                    transport_retries
+        proposal            9       t x max_attempts x transport_retries
+        per call            $0.0274 a full 262,144-token context window in at
+                                    the configured list input price, plus
+                                    max_output_tokens out at the list output
+                                    price
+        ungoverned ceiling  38 x $0.0274 = $1.04
+
+        ceiling             $3.85 + $1.04 = $4.89 < $5.00
+
+    ``caps.max_budget`` is deliberately NOT the per-call bound for the
+    ungoverned classes: at $0.20 x 38 calls it would claim $7.60 of a $5
+    ceiling on its own, and the only way to fit under $5 would be to cut the
+    per-run budget below the worst-case long run -- guaranteeing the censored
+    long sample KTD6 exists to prevent. The priced bound above is a real
+    bound on one completion: the provider cannot be given more input than the
+    model's context window, and ``max_tokens`` caps the output. It is also
+    many times larger than any prompt these stages actually build -- an
+    attribution digest is char-bounded and the probe prompt is a constant in
+    this file -- which is what leaves the class allowances room to absorb the
+    bounded transport retries that are already counted into them.
+
+    Caps are identity keys (R3), so editing the three ``LIVE_*`` constants
+    below means a fresh ``--out-dir``: an existing experiment refuses to
+    resume under changed caps.
 
 Long runs (KTD6)
     Both environments contribute long instances, with the per-run budget sized
@@ -47,6 +80,13 @@ Long runs (KTD6)
     against a $0.20 per-run budget. Runs the breaker or the per-run budget
     does cap land as lower bounds and the report labels the recommendation
     provisional -- named, never silently zeroed.
+
+    An environment whose long runs were *all* capped (or all skipped by a
+    tripped breaker) fails the smoke: long-run cost is superlinear, so a fully
+    censored long sample cannot support the API-vs-GPU recommendation, and a
+    green smoke over one would certify nothing. The failure is raised only
+    after the report is built, written, and printed, so the operator keeps
+    every measured number.
 
 Usage:
     # ~$0.001: the U1 execution-note probe, run this FIRST.
@@ -85,6 +125,7 @@ from shrlm.experiment.evaluation import (
     DEFAULT_CONDITIONS,
     EVAL_DIR,
     EVAL_SUMMARY_FILENAME,
+    ROLE_TEST,
     run_evaluation,
 )
 from shrlm.experiment.orchestrator import (
@@ -96,8 +137,14 @@ from shrlm.experiment.orchestrator import (
     run_experiment,
 )
 from shrlm.experiment.report import build_report, render_markdown, write_report
-from shrlm.experiment.splits import LENGTHS, MANIFEST_FILE, SPLITS_DIR
+from shrlm.experiment.splits import LENGTHS, MANIFEST_FILE, SPLITS_DIR, split_plan
 from shrlm.experiment.usage import STAGE_USAGE_FILE, read_jsonl, read_stage_usage
+from shrlm.optimization.attribution import DEFAULT_MAX_ATTEMPTS as ATTRIBUTION_MAX_ATTEMPTS
+from shrlm.optimization.attribution import (
+    DEFAULT_TRANSPORT_RETRIES as ATTRIBUTION_TRANSPORT_RETRIES,
+)
+from shrlm.optimization.proposal import DEFAULT_MAX_ATTEMPTS as PROPOSAL_MAX_ATTEMPTS
+from shrlm.optimization.proposal import DEFAULT_TRANSPORT_RETRIES as PROPOSAL_TRANSPORT_RETRIES
 
 load_dotenv()
 
@@ -107,14 +154,31 @@ SPEND_CEILING_USD = 5.0
 # Live-smoke caps, sized by the module docstring's back-of-envelope. They
 # replace the smoke profile's pilot-sized caps; everything else -- decoding,
 # promotion rule, environments, scale counts -- is the shipped smoke profile.
+# The per-run budget is load-bearing for KTD6 (it must clear the ~$0.12
+# worst-case long run), so the ceiling is fitted by the candidate budget.
 LIVE_MAX_BUDGET_USD = 0.20
-LIVE_CANDIDATE_BUDGET_USD = 0.50
+LIVE_CANDIDATE_BUDGET_USD = 0.35
 LIVE_MAX_TIMEOUT_SECONDS = 1200.0
 
-# Spend breakers in one T=1 smoke: one for mining, one per validation subject
-# (baseline + k candidates + the merged harness), one per evaluation condition.
+# Spend breakers armed per round: one for mining, one per validation subject
+# (baseline + k candidates + the merged harness). Evaluation arms one more per
+# condition, once for the whole invocation.
 MINING_BREAKERS = 1
 VALIDATION_FIXED_BREAKERS = 2  # baseline and the merged re-evaluation
+
+# The ungoverned paid calls. ``probe`` issues two (the raw completion, then the
+# client's own), and neither the attributor's nor the proposer's completions
+# are wrapped in a CandidateSpendBreaker -- they are per-stage LM calls, not
+# governed runs -- so the ceiling must allow for them explicitly. The attempt
+# and retry counts are imported from the stage modules whose defaults the
+# orchestrator actually constructs, so a change there moves this arithmetic.
+PROBE_CALLS = 2
+
+# The runner/attributor/proposer model's context window
+# (qwen/qwen3-30b-a3b-instruct-2507). No single completion can be given more
+# input than this, so it bounds an ungoverned call's input side; the output
+# side is bounded by decoding.max_output_tokens (sent as ``max_tokens``).
+UNGOVERNED_CONTEXT_TOKENS = 262_144
 
 # The length whose per-run means the extrapolation is most sensitive to (KTD6).
 LONG = LENGTHS[1]
@@ -146,19 +210,61 @@ def live_config() -> ExperimentConfig:
 
 
 def breaker_count(config: ExperimentConfig, conditions: int = len(DEFAULT_CONDITIONS)) -> int:
-    """How many independent spend breakers one smoke invocation arms."""
-    return MINING_BREAKERS + VALIDATION_FIXED_BREAKERS + config.loop.k + conditions
+    """How many independent spend breakers one smoke invocation arms.
+
+    Mining, the two fixed validation subjects, and the ``k`` candidates are
+    armed once per optimization round, so they carry the ``loop.t`` factor;
+    the evaluation conditions are armed once for the whole invocation.
+    """
+    per_round = MINING_BREAKERS + VALIDATION_FIXED_BREAKERS + config.loop.k
+    return config.loop.t * per_round + conditions
+
+
+def ungoverned_call_count(config: ExperimentConfig) -> int:
+    """Every paid model call that no ``CandidateSpendBreaker`` governs.
+
+    The probe's two calls, one attribution attempt per mining run (worst case:
+    every run fails and every attempt is retried to its bound), and the
+    proposal batch's attempts, both per round.
+    """
+    attribution = (
+        config.loop.t
+        * config.splits.n_in
+        * config.loop.m
+        * ATTRIBUTION_MAX_ATTEMPTS
+        * ATTRIBUTION_TRANSPORT_RETRIES
+    )
+    proposal = config.loop.t * PROPOSAL_MAX_ATTEMPTS * PROPOSAL_TRANSPORT_RETRIES
+    return PROBE_CALLS + attribution + proposal
+
+
+def ungoverned_call_ceiling(config: ExperimentConfig) -> float:
+    """The most one ungoverned completion can cost, in USD.
+
+    A full context window of input at the configured *list* (never promo)
+    input price, plus ``decoding.max_output_tokens`` of output at the list
+    output price. Both sides are hard limits on a single completion, which is
+    what makes this a bound rather than an estimate -- see the module
+    docstring for why ``caps.max_budget`` is not used here.
+    """
+    price = config.pricing.list_price
+    input_usd = UNGOVERNED_CONTEXT_TOKENS * price.input_per_million / 1_000_000
+    output_usd = config.decoding.max_output_tokens * price.output_per_million / 1_000_000
+    return input_usd + output_usd
 
 
 def spend_ceiling(config: ExperimentConfig, conditions: int = len(DEFAULT_CONDITIONS)) -> float:
-    """The worst-case USD one smoke invocation can spend.
+    """The worst-case USD one smoke invocation can spend, governed and not.
 
     Each breaker admits its cumulative ``candidate_budget`` and trips only
     after the run that crosses it, so one more per-run ``max_budget`` can land
-    on top of every breaker.
+    on top of every breaker. The probe, attribution, and proposal calls are
+    governed by no breaker at all and are priced per call on top.
     """
     per_breaker = config.caps.candidate_budget + config.caps.max_budget
-    return breaker_count(config, conditions) * per_breaker
+    governed = breaker_count(config, conditions) * per_breaker
+    ungoverned = ungoverned_call_count(config) * ungoverned_call_ceiling(config)
+    return governed + ungoverned
 
 
 def check_budget_arithmetic(config: ExperimentConfig) -> float:
@@ -168,8 +274,11 @@ def check_budget_arithmetic(config: ExperimentConfig) -> float:
         raise SmokeError(
             f"the configured budgets admit up to ${ceiling:.2f} "
             f"({breaker_count(config)} breakers x (${config.caps.candidate_budget} + "
-            f"${config.caps.max_budget})), which does not clear the ${SPEND_CEILING_USD} "
-            "ceiling; lower caps.candidate_budget or caps.max_budget before running live."
+            f"${config.caps.max_budget}) + {ungoverned_call_count(config)} ungoverned call(s) "
+            f"x ${ungoverned_call_ceiling(config):.4f}), which does not clear the "
+            f"${SPEND_CEILING_USD} ceiling; lower caps.candidate_budget (raising "
+            "caps.max_budget is what the KTD6 long runs need, so cut the cumulative budget "
+            "first) before running live."
         )
     return ceiling
 
@@ -341,15 +450,37 @@ def check_sampling_args(out_dir: Path, config: ExperimentConfig) -> dict[str, An
     return persisted
 
 
-def long_run_coverage(out_dir: Path) -> dict[str, dict[str, int]]:
+def long_test_environments(config: ExperimentConfig) -> tuple[str, ...]:
+    """Every environment the config plans a long test split for.
+
+    Each one owes the run at least one uncapped long run (KTD6), so this is
+    the set ``long_run_coverage`` is seeded with -- an environment the
+    evaluation summary never mentions is a fully censored long sample, not an
+    environment to skip over.
+    """
+    plan = split_plan(config)
+    return tuple(
+        sorted(
+            environment
+            for environment, lengths in plan.items()
+            if ROLE_TEST in lengths.get(LONG, {})
+        )
+    )
+
+
+def long_run_coverage(config: ExperimentConfig, out_dir: Path) -> dict[str, dict[str, int]]:
     """Per environment: how many long evaluation runs landed, and how many uncapped.
 
     KTD6 wants at least one *uncapped* long run per environment -- a
     terminated (lower-bound) long run understates the per-run mean the
-    extrapolation keys off.
+    extrapolation keys off, and a run the spend breaker skipped never happened
+    at all. Seeded from the config, so every environment that owes a long run
+    appears with zeros even when the summary holds no aggregate for it.
     """
     summary = json.loads((out_dir / EVAL_DIR / EVAL_SUMMARY_FILENAME).read_text())
-    coverage: dict[str, dict[str, int]] = {}
+    coverage: dict[str, dict[str, int]] = {
+        environment: {"runs": 0, "uncapped": 0} for environment in long_test_environments(config)
+    }
     for condition in summary["conditions"].values():
         for aggregate in condition["test_sets"].values():
             if aggregate["length"] != LONG:
@@ -359,6 +490,45 @@ def long_run_coverage(out_dir: Path) -> dict[str, dict[str, int]]:
             if not aggregate["usage_lower_bound"]:
                 entry["uncapped"] += int(aggregate["n_runs"])
     return coverage
+
+
+def check_long_run_coverage(config: ExperimentConfig, coverage: dict[str, dict[str, int]]) -> None:
+    """Refuse to pass a smoke whose long sample is entirely censored (KTD6).
+
+    The plan's Definition of Done and Success Criteria require at least one
+    uncapped long run per environment. Long-run cost is superlinear, so a long
+    sample in which every run was terminated by a cap (or skipped by a tripped
+    breaker) supports no API-vs-GPU recommendation at all -- passing on one
+    would be exactly the silent pass this script exists to prevent.
+
+    Called only after the report has been built, written, and printed: the
+    measured numbers are worth keeping even when the run cannot be certified.
+
+    Raises:
+        SmokeError: Any environment landed zero uncapped long runs.
+    """
+    censored = sorted(
+        environment for environment, counts in coverage.items() if counts["uncapped"] == 0
+    )
+    if not censored:
+        return
+    detail = "; ".join(
+        f"{environment}: {coverage[environment]['runs']} long run(s) recorded, 0 uncapped"
+        for environment in censored
+    )
+    raise SmokeError(
+        f"no uncapped long run landed for {len(censored)} environment(s) -- {detail}. "
+        "KTD6 and the plan's Definition of Done require at least one uncapped long run per "
+        "environment: long-run cost is superlinear, so a fully capped (lower-bound) or "
+        "skipped long sample cannot support the API-vs-GPU recommendation, and the report "
+        "above -- complete and written to disk, every measured number in it still valid -- "
+        "may not be read as one. To fix: raise LIVE_MAX_BUDGET_USD (now "
+        f"${config.caps.max_budget}) so a long run completes, and LIVE_CANDIDATE_BUDGET_USD "
+        f"(now ${config.caps.candidate_budget}) if a condition went over budget before its "
+        f"long sets ran, keep spend_ceiling under the ${SPEND_CEILING_USD:.2f} ceiling, and "
+        "re-run in a FRESH --out-dir: caps are identity keys (R3), so an existing experiment "
+        "refuses to resume under changed caps."
+    )
 
 
 def measured_spend(out_dir: Path) -> float:
@@ -386,8 +556,10 @@ def run_live(config: ExperimentConfig, out_dir: Path) -> int:
     ceiling = check_budget_arithmetic(config)
     print(
         f"Live smoke: profile {config.profile}, model {config.backends.runner.model}, "
-        f"worst case ${ceiling:.2f} over {breaker_count(config)} breaker(s) "
-        f"(ceiling ${SPEND_CEILING_USD:.2f})."
+        f"worst case ${ceiling:.2f} = {breaker_count(config)} breaker(s) x "
+        f"${config.caps.candidate_budget + config.caps.max_budget:.2f} + "
+        f"{ungoverned_call_count(config)} ungoverned call(s) x "
+        f"${ungoverned_call_ceiling(config):.4f} (ceiling ${SPEND_CEILING_USD:.2f})."
     )
 
     probed = probe(config)
@@ -410,11 +582,13 @@ def run_live(config: ExperimentConfig, out_dir: Path) -> int:
     print(f"Artifacts: {n_runs} persisted run(s), all carrying a non-null cost.")
     print(f"Persisted run_metadata.backend_kwargs.sampling_args: {persisted_args}")
 
-    for environment, counts in sorted(long_run_coverage(out_dir).items()):
+    # Read once, reported here and adjudicated after the report is on disk.
+    coverage = long_run_coverage(config, out_dir)
+    for environment, counts in sorted(coverage.items()):
         note = (
             ""
             if counts["uncapped"]
-            else "  WARNING: no uncapped long run (report goes provisional)"
+            else "  WARNING: no uncapped long run -- this smoke FAILS after the report below"
         )
         print(
             f"Long coverage {environment}: {counts['runs']} run(s), {counts['uncapped']} uncapped.{note}"
@@ -440,6 +614,11 @@ def run_live(config: ExperimentConfig, out_dir: Path) -> int:
     print(f"Total measured spend: ${spent:.4f} (ceiling ${SPEND_CEILING_USD:.2f})")
     if spent >= SPEND_CEILING_USD:
         raise SmokeError(f"spend ${spent:.4f} breached the ${SPEND_CEILING_USD} ceiling")
+
+    # Last, and only here: the report exists on disk and has been printed in
+    # full, so a censored long sample fails the run without costing the
+    # operator a single measured number.
+    check_long_run_coverage(config, coverage)
     print(
         "SMOKE PASSED: artifacts complete, costs present, report carries a full-experiment estimate."
     )

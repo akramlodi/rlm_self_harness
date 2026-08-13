@@ -21,14 +21,19 @@ BOTH environments at BOTH lengths -- driven entirely offline:
 What it asserts is wiring, never statistics (KTD9): the directory contract, a
 ``stage_usage.jsonl`` carrying every stage with nonzero synthetic tokens, a
 report that renders and projects, and -- statically, without network -- that
-the tier-2 live budgets stay under the $5 ceiling and that tier 2 declines to
-spend anything without its flag and key.
+the tier-2 live budgets stay under the $5 ceiling (governed runs and
+ungoverned probe/attribution/proposal calls alike), that tier 2 fails rather
+than passes when an environment lands no uncapped long run, and that tier 2
+declines to spend anything without its flag and key.
 """
 
 import hashlib
 import json
+import shutil
 import socket
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -352,6 +357,85 @@ class TestSmokeReport:
 # ---------------------------------------------------------------------------
 
 
+SummaryTransform = Callable[[dict[str, Any]], None]
+
+
+def doctored_experiment(smoke: SmokeRun, tmp_path: Path, transform: SummaryTransform) -> Path:
+    """A copy of the mock experiment whose eval summary ``transform`` rewrote.
+
+    The tier-2 checks read persisted bytes only, so a doctored copy is how the
+    live smoke's failure paths are exercised without a live run. The report is
+    removed so a later assertion that it exists means *this* invocation wrote
+    it.
+    """
+    out_dir = tmp_path / "exp"
+    shutil.copytree(smoke.out_dir, out_dir)
+    summary_path = out_dir / EVAL_DIR / EVAL_SUMMARY_FILENAME
+    summary = json.loads(summary_path.read_text())
+    transform(summary)
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    (out_dir / REPORT_FILENAME).unlink(missing_ok=True)
+    return out_dir
+
+
+def cap_long_runs(environment: str) -> SummaryTransform:
+    """Flag every one of an environment's long aggregates as a lower bound."""
+
+    def transform(summary: dict[str, Any]) -> None:
+        for condition in summary["conditions"].values():
+            for aggregate in condition["test_sets"].values():
+                if aggregate["environment"] == environment and aggregate["length"] == "long":
+                    aggregate["usage_lower_bound"] = True
+
+    return transform
+
+
+def drop_long_sets(environment: str) -> SummaryTransform:
+    """Remove an environment's long aggregates, as a tripped breaker would."""
+
+    def transform(summary: dict[str, Any]) -> None:
+        for condition in summary["conditions"].values():
+            for set_id in [
+                set_id
+                for set_id, aggregate in condition["test_sets"].items()
+                if aggregate["environment"] == environment and aggregate["length"] == "long"
+            ]:
+                del condition["test_sets"][set_id]
+
+    return transform
+
+
+def stub_live_stages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace the three spending stages so ``run_live`` runs over the copy.
+
+    Everything downstream of them -- the structural checks, the coverage read,
+    the report, the spend accounting, the KTD6 gate -- runs for real against
+    the persisted artifacts, which is the ordering under test.
+    """
+    monkeypatch.setattr(
+        experiment_smoke,
+        "probe",
+        lambda config: {
+            "provider": "mock-provider",
+            "usage_cost": 0.000001,
+            "client_cost": 0.000001,
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "sampling_args": {},
+        },
+    )
+    monkeypatch.setattr(
+        experiment_smoke,
+        "run_experiment",
+        lambda config, out_dir: SimpleNamespace(stopped="max_rounds", final_harness_hash="stub"),
+    )
+    monkeypatch.setattr(
+        experiment_smoke,
+        "run_evaluation",
+        lambda config, conditions, out_dir: SimpleNamespace(conditions=[]),
+    )
+
+
 class TestLiveSmokeStructuralChecks:
     """Tier 2's own artifact checks, run over tier 1's artifacts.
 
@@ -371,12 +455,14 @@ class TestLiveSmokeStructuralChecks:
         assert persisted["extra_body"]["top_k"] == smoke.config.decoding.top_k
 
     def test_long_coverage_and_measured_spend_read_the_smoke_artifacts(self, smoke: SmokeRun):
-        coverage = experiment_smoke.long_run_coverage(smoke.out_dir)
+        coverage = experiment_smoke.long_run_coverage(smoke.config, smoke.out_dir)
         assert set(coverage) == {"graphwalks", "oolong_pairs"}
         for environment, counts in coverage.items():
             assert counts["runs"] > 0, environment
             assert counts["uncapped"] == counts["runs"], environment
         assert experiment_smoke.measured_spend(smoke.out_dir) > 0.0
+        # Every environment has an uncapped long run, so the KTD6 gate passes.
+        experiment_smoke.check_long_run_coverage(smoke.config, coverage)
 
     def test_a_cost_less_run_is_refused(self, tmp_path):
         round_path = tmp_path / "opt" / "round_01" / "mining" / "round_01"
@@ -392,15 +478,124 @@ class TestLiveSmokeStructuralChecks:
             experiment_smoke.check_directory_contract(tmp_path)
 
 
+class TestLiveSmokeLongRunGate:
+    """KTD6: a smoke whose long sample is entirely censored must go red.
+
+    The plan's Definition of Done wants at least one *uncapped* long run per
+    environment. These exercise the two ways an environment can end up with
+    none -- every long run terminated by a cap, and no long aggregate at all
+    (a breaker that tripped before the long sets ran) -- and pin the ordering
+    the failure must respect: the report is written and printed first.
+    """
+
+    def test_an_all_capped_environment_is_named_and_fails(self, smoke: SmokeRun, tmp_path: Path):
+        out_dir = doctored_experiment(smoke, tmp_path, cap_long_runs("oolong_pairs"))
+
+        coverage = experiment_smoke.long_run_coverage(smoke.config, out_dir)
+        assert coverage["oolong_pairs"]["runs"] > 0
+        assert coverage["oolong_pairs"]["uncapped"] == 0
+        assert coverage["graphwalks"]["uncapped"] > 0
+
+        with pytest.raises(experiment_smoke.SmokeError) as excinfo:
+            experiment_smoke.check_long_run_coverage(smoke.config, coverage)
+        message = str(excinfo.value)
+        assert "oolong_pairs" in message
+        assert "graphwalks" not in message
+        assert "FRESH --out-dir" in message
+        assert "LIVE_MAX_BUDGET_USD" in message
+
+    def test_an_environment_with_no_long_aggregate_at_all_fails(
+        self, smoke: SmokeRun, tmp_path: Path
+    ):
+        """A missing environment key is a censored long sample, not a skip."""
+        out_dir = doctored_experiment(smoke, tmp_path, drop_long_sets("oolong_pairs"))
+
+        coverage = experiment_smoke.long_run_coverage(smoke.config, out_dir)
+        assert coverage["oolong_pairs"] == {"runs": 0, "uncapped": 0}
+        with pytest.raises(experiment_smoke.SmokeError, match="oolong_pairs"):
+            experiment_smoke.check_long_run_coverage(smoke.config, coverage)
+
+    def test_run_live_writes_and_prints_the_report_before_it_fails(
+        self, smoke: SmokeRun, tmp_path: Path, capsys, monkeypatch
+    ):
+        """The operator wakes to a failed run AND every measured number."""
+        out_dir = doctored_experiment(smoke, tmp_path, cap_long_runs("oolong_pairs"))
+        report_path = out_dir / REPORT_FILENAME
+        assert not report_path.exists()
+        stub_live_stages(monkeypatch)
+
+        with pytest.raises(experiment_smoke.SmokeError, match="no uncapped long run"):
+            experiment_smoke.run_live(experiment_smoke.live_config(), out_dir)
+
+        out = capsys.readouterr().out
+        assert report_path.exists(), "the report must be on disk before the failure"
+        assert json.loads(report_path.read_text())["profile"] == "smoke"
+        for stage in STAGES:  # the rendered markdown reached stdout
+            assert stage in out
+        assert f"Wrote {report_path}" in out
+        assert "Total measured spend" in out
+        assert "SMOKE PASSED" not in out
+
+    def test_run_live_passes_the_gate_when_a_long_run_is_uncapped(
+        self, smoke: SmokeRun, tmp_path: Path, capsys, monkeypatch
+    ):
+        """The same path, undoctored: the gate is not unconditionally red."""
+        out_dir = doctored_experiment(smoke, tmp_path, lambda summary: None)
+        stub_live_stages(monkeypatch)
+
+        assert experiment_smoke.run_live(experiment_smoke.live_config(), out_dir) == 0
+        assert "SMOKE PASSED" in capsys.readouterr().out
+
+
 class TestLiveSmokeGuards:
     def test_configured_live_budgets_stay_under_the_five_dollar_ceiling(self):
         config = experiment_smoke.live_config()
 
-        # 7 breakers x ($0.50 cumulative + $0.20 per-run overshoot) = $4.90.
+        # Governed: t=1 x (1 mining + 2 fixed + k=2) + 2 conditions = 7 breakers,
+        # each admitting $0.35 cumulative + one $0.20 per-run overshoot = $3.85.
         assert experiment_smoke.breaker_count(config) == 7
-        assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.90)
+        governed = 7 * (config.caps.candidate_budget + config.caps.max_budget)
+        assert governed == pytest.approx(3.85)
+
+        # Ungoverned: 2 probe + (1 x 3 instances x 1 attempt x 3 x 3) attribution
+        # + (1 x 3 x 3) proposal = 38 calls, each priced at a full context window
+        # in plus max_output_tokens out, at the list tier.
+        assert experiment_smoke.ungoverned_call_count(config) == 38
+        assert experiment_smoke.ungoverned_call_ceiling(config) == pytest.approx(
+            (262_144 * 0.10 + 4096 * 0.30) / 1_000_000
+        )
+        ungoverned = 38 * experiment_smoke.ungoverned_call_ceiling(config)
+        assert ungoverned == pytest.approx(1.0428, abs=1e-4)
+
+        assert experiment_smoke.spend_ceiling(config) == pytest.approx(governed + ungoverned)
+        assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.8928, abs=1e-4)
         assert experiment_smoke.spend_ceiling(config) < experiment_smoke.SPEND_CEILING_USD
-        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.90)
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.8928, abs=1e-4)
+
+    def test_the_ceiling_scales_with_the_round_count(self):
+        """Every per-round breaker and per-round LM call is armed t times."""
+        from dataclasses import replace
+
+        config = experiment_smoke.live_config()
+        three_rounds = replace(config, loop=replace(config.loop, t=3))
+
+        # 3 x (1 mining + 2 fixed + k=2) + 2 conditions.
+        assert experiment_smoke.breaker_count(three_rounds) == 17
+        # 2 probe + 3 x (9 attribution + 3 proposal) x 3 transport retries.
+        assert experiment_smoke.ungoverned_call_count(three_rounds) == 2 + 3 * 36
+        assert experiment_smoke.spend_ceiling(three_rounds) > experiment_smoke.spend_ceiling(config)
+        # A three-round smoke is not affordable under the $5 ceiling, and the
+        # arithmetic says so rather than discovering it while spending.
+        with pytest.raises(experiment_smoke.SmokeError, match="ceiling"):
+            experiment_smoke.check_budget_arithmetic(three_rounds)
+
+    def test_the_ceiling_covers_the_ungoverned_calls(self):
+        """The proof is not a proof if the probe and the LM stages are free."""
+        config = experiment_smoke.live_config()
+        governed_only = experiment_smoke.breaker_count(config) * (
+            config.caps.candidate_budget + config.caps.max_budget
+        )
+        assert experiment_smoke.spend_ceiling(config) > governed_only
 
     def test_live_profile_keeps_the_smoke_scale_and_semantics(self):
         config = experiment_smoke.live_config()
