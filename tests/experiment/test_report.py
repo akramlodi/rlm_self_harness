@@ -365,7 +365,9 @@ class TestPessimisticScenario:
 
         ceiling = config.promotion.cost_band[1]
         factor = sum(ceiling**index for index in range(config.loop.t))
-        assert factor == 32767.0
+        # Geometric in the ceiling, so this value is highly sensitive to it:
+        # the shipped 1.25 gives ~109.7 over 15 rounds, where 2.0 gave 32,767.
+        assert factor == pytest.approx(sum(1.25**i for i in range(15)))
 
         point_optimization = next(leg for leg in report.point.legs if leg.name == "optimization")
         pessimistic_optimization = next(

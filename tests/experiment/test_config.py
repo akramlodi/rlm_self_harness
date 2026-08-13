@@ -74,7 +74,7 @@ def test_full_profile_ships_draft_defaults() -> None:
     assert config.decoding.top_p == 0.8
     assert config.decoding.top_k == 20
     assert config.decoding.max_output_tokens == 4096
-    assert config.promotion.cost_band == (0.5, 2.0)
+    assert config.promotion.cost_band == (0.5, 1.25)
     assert config.environments.graphwalks.dataset_file_short == (
         "graphwalks_128k_and_shorter.parquet"
     )
@@ -253,7 +253,7 @@ def test_promotion_config_factory() -> None:
     assert isinstance(promotion, PromotionConfig)
     assert promotion.tau_regression == 0.0
     assert promotion.tau_improvement == 0.0
-    assert promotion.cost_band == Band(lower=0.5, upper=2.0)
+    assert promotion.cost_band == Band(lower=0.5, upper=1.25)
     # Absent sub_call_band keeps the unconstrained default.
     assert promotion.sub_call_band == Band()
 
@@ -261,7 +261,7 @@ def test_promotion_config_factory() -> None:
 def test_validation_caps_factory() -> None:
     caps = validation_caps(load_config())
     assert isinstance(caps, ValidationCaps)
-    assert caps.max_budget == 5.0
+    assert caps.max_budget == 0.1
     assert caps.max_timeout == 1800.0
     assert caps.candidate_budget == 60.0
     assert caps.max_depth == 1

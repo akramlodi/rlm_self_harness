@@ -19,7 +19,7 @@
 | oolong_pairs | long | 4 | 137,188.0 | 8,099.8 | $0.01 | 237.8 | - |
 | oolong_pairs | short | 8 | 74,639.8 | 4,630.9 | $0.007815 | 254.3 | lower-bound |
 
-Disk: 379,776,213 B over 39 run(s) = 9,737,852 B/run; projected 245.978 GB for the full experiment.
+Disk: 379,779,853 B over 39 run(s) = 9,737,945 B/run; projected 245.980 GB for the full experiment.
 
 ## Extrapolation
 
@@ -39,21 +39,21 @@ Total: 803,839,390 in / 45,149,141 out
 
 | leg | context | runs | cost drift | input tok | output tok | basis |
 |---|---|---|---|---|---|---|
-| optimization | short | 21,840 | x2,184 | 1,225,216,757,286 | 67,509,958,374 | graphwalks/short (23 run(s)) |
+| optimization | short | 21,840 | x7 | 4,101,387,116 | 225,988,154 | graphwalks/short (23 run(s)) |
 | eval_short | short | 720 | - | 27,587,265 | 1,616,354 | graphwalks+oolong_pairs/short (31 run(s)) |
 | eval_long | long | 2,700 | - | 215,375,288 | 12,628,238 | graphwalks+oolong_pairs/long (8 run(s)) |
 
-Total: 1,225,459,719,838 in / 67,524,202,965 out
+Total: 4,344,349,668 in / 240,232,745 out
 
 ## Scenarios
 
 | scenario | kind | USD (point) | USD (pessimistic) | eligible | notes |
 |---|---|---|---|---|---|
-| api_promo | api | $77.40 | $117,618.80 | yes | configured pricing tier: $0.08/1M in, $0.29/1M out |
-| api_list | api | $93.93 | $142,803.23 | yes | configured pricing tier: $0.1/1M in, $0.3/1M out |
-| 1x_a100_int4 | gpu | $305.18 | $257,535.75 | no | provenance is marked unvalidated, so its throughput input cannot support a recommendation; this profile is scenario-only; changes model numerics; Unvalidated estimate; AWQ/GPTQ-INT4 weights ~17GB fit 262k KV on one A100 80GB |
-| h100_sxm_rented | gpu | $404.25 | $372,790.36 | yes | Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings) |
-| 2x_a100_tp2_rented | gpu | $549.32 | $463,564.34 | no | provenance is marked unvalidated, so its throughput input cannot support a recommendation; this profile is scenario-only; Unvalidated estimate from A100 80GB marketplace rates 2026-08; BF16 needs 2xA100 at 262k (weights ~61GB + KV ~24.6GB/seq) |
+| api_promo | api | $77.40 | $417.22 | yes | configured pricing tier: $0.08/1M in, $0.29/1M out |
+| api_list | api | $93.93 | $506.50 | yes | configured pricing tier: $0.1/1M in, $0.3/1M out |
+| 1x_a100_int4 | gpu | $305.18 | $1,048.84 | no | provenance is marked unvalidated, so its throughput input cannot support a recommendation; this profile is scenario-only; changes model numerics; Unvalidated estimate; AWQ/GPTQ-INT4 weights ~17GB fit 262k KV on one A100 80GB |
+| h100_sxm_rented | gpu | $404.25 | $1,480.83 | yes | Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings) |
+| 2x_a100_tp2_rented | gpu | $549.32 | $1,887.91 | no | provenance is marked unvalidated, so its throughput input cannot support a recommendation; this profile is scenario-only; Unvalidated estimate from A100 80GB marketplace rates 2026-08; BF16 needs 2xA100 at 262k (weights ~61GB + KV ~24.6GB/seq) |
 
 ## Recommendation
 

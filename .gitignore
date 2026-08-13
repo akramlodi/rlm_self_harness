@@ -230,3 +230,4 @@ experiment_smoke/**/runs/
 experiment_smoke/**/instances.jsonl
 experiment_smoke/**/digests/
 experiment_smoke/**/*.txt
+experiment_smoke/splits/*.jsonl
