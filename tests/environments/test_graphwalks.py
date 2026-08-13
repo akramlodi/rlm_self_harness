@@ -8,13 +8,17 @@ plumbing -- without pyarrow, huggingface_hub, or the network.
 
 from typing import Any
 
+import pytest
+
 import shrlm.environments.graphwalks as graphwalks
 from shrlm.environments.graphwalks import (
     DATASET_FILE,
     DATASET_REPO,
+    DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
     GraphWalksSubVerifier,
     GraphWalksVerifier,
     extract_answer_nodes,
+    fetch_rows,
     load_graphwalks,
     parse_subproblem,
     row_to_instance,
@@ -207,6 +211,73 @@ class TestSampleRows:
         first = sample_rows(pool, ("bfs", "parents"), limit=5, seed=2)
         second = sample_rows(pool, ("bfs", "parents"), limit=5, seed=2)
         assert [row["prompt"] for row in first] == [row["prompt"] for row in second]
+
+
+class TestFetchRowsDownloadTimeout:
+    """``fetch_rows``'s HTTP bound, exercised one level below the
+    ``TestLoadGraphwalks`` tests above: the real ``huggingface_hub`` and
+    ``pyarrow`` imports run (skipped if the ``graphwalks`` extra is not
+    installed), but ``hf_hub_download`` and ``pq.read_table`` are stubbed so
+    nothing ever touches the network."""
+
+    def _patch(self, monkeypatch):
+        huggingface_hub = pytest.importorskip("huggingface_hub")
+        hf_constants = pytest.importorskip("huggingface_hub.constants")
+        pq = pytest.importorskip("pyarrow.parquet")
+
+        seen: dict[str, Any] = {}
+
+        def fake_hf_hub_download(**kwargs: Any) -> str:
+            seen["kwargs"] = kwargs
+            seen["timeout_during_call"] = hf_constants.HF_HUB_DOWNLOAD_TIMEOUT
+            return "/fake/path.parquet"
+
+        class FakeTable:
+            def to_pylist(self) -> list[dict[str, Any]]:
+                return [{"prompt": "x"}]
+
+        monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hf_hub_download)
+        monkeypatch.setattr(pq, "read_table", lambda path: FakeTable())
+        return hf_constants, seen
+
+    def test_default_timeout_bounds_both_the_etag_request_and_the_transfer(self, monkeypatch):
+        hf_constants, seen = self._patch(monkeypatch)
+        original_timeout = hf_constants.HF_HUB_DOWNLOAD_TIMEOUT
+
+        rows = fetch_rows("some/repo", "some_file.parquet", revision="abc")
+
+        assert rows == [{"prompt": "x"}]
+        assert seen["kwargs"]["etag_timeout"] == DEFAULT_DOWNLOAD_TIMEOUT_SECONDS
+        assert seen["timeout_during_call"] == DEFAULT_DOWNLOAD_TIMEOUT_SECONDS
+        # Process-wide state is restored, not left mutated for unrelated
+        # huggingface_hub calls elsewhere in the process.
+        assert hf_constants.HF_HUB_DOWNLOAD_TIMEOUT == original_timeout
+
+    def test_custom_timeout_overrides_the_default(self, monkeypatch):
+        hf_constants, seen = self._patch(monkeypatch)
+
+        fetch_rows("some/repo", "some_file.parquet", revision=None, download_timeout_seconds=5.0)
+
+        assert seen["kwargs"]["etag_timeout"] == 5.0
+        assert seen["timeout_during_call"] == 5.0
+
+    def test_timeout_is_restored_even_if_the_download_raises(self, monkeypatch):
+        huggingface_hub = pytest.importorskip("huggingface_hub")
+        hf_constants = pytest.importorskip("huggingface_hub.constants")
+        pytest.importorskip("pyarrow.parquet")
+        original_timeout = hf_constants.HF_HUB_DOWNLOAD_TIMEOUT
+
+        def failing_hf_hub_download(**kwargs: Any) -> str:
+            raise TimeoutError("simulated stalled download")
+
+        monkeypatch.setattr(huggingface_hub, "hf_hub_download", failing_hf_hub_download)
+
+        with pytest.raises(TimeoutError):
+            fetch_rows(
+                "some/repo", "some_file.parquet", revision=None, download_timeout_seconds=5.0
+            )
+
+        assert hf_constants.HF_HUB_DOWNLOAD_TIMEOUT == original_timeout
 
 
 class TestLoadGraphwalks:

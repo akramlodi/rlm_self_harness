@@ -54,8 +54,10 @@ produced string, and RESOURCE_TERMINATED is owned by the experiment driver.
 """
 
 import hashlib
+import queue
 import random
 import re
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -406,11 +408,56 @@ def _role_20b(i: UserInstances) -> bool:
     return _has(i, "location") and _has(i, "entity") and _count(i, "abbreviation") == 1
 
 
+# Fail-fast ceiling on the number of gold pairs one (window, task) may produce.
+# Pair construction is quadratic in the number of eligible users in a window,
+# and nothing else bounds that count: `max_scan` limits raw dataset ROWS, not
+# users or pairs. The shipped config requests `context_length_long = 262144`
+# tokens, and several tasks (1-10) have single-label-OR eligibility, so a
+# schema-valid long window can plausibly carry tens of thousands of eligible
+# users -- whose full symmetric closure would be tens of millions of pairs,
+# enough to exhaust memory during split materialization. 1,000,000 is chosen
+# to sit orders of magnitude above any plausible legitimate window's gold-set
+# size (real windows realistically produce gold sets in the tens to low
+# thousands) while still catching a runaway window's pair count before the
+# O(n^2) pair list is allocated.
+MAX_GOLD_PAIRS_PER_WINDOW: int = 1_000_000
+
+
+def _check_pair_budget(
+    n_pairs_upper_bound: int,
+    max_gold_pairs: int,
+    task_id: int,
+    window_id: Any,
+    eligible_description: str,
+) -> None:
+    """Raise before allocating the pair list if it would exceed the budget."""
+    if n_pairs_upper_bound <= max_gold_pairs:
+        return
+    raise ValueError(
+        f"window {window_id!r} task {task_id}: gold-pair construction over "
+        f"{eligible_description} would produce up to {n_pairs_upper_bound} pairs, "
+        f"exceeding MAX_GOLD_PAIRS_PER_WINDOW={max_gold_pairs}. Refusing to "
+        "materialize the full pair list; this usually means the window has an "
+        "unexpectedly large number of task-eligible users."
+    )
+
+
 def _symmetric_pairs(
-    by_user: dict[int, UserInstances], eligible: Callable[[UserInstances], bool]
+    by_user: dict[int, UserInstances],
+    eligible: Callable[[UserInstances], bool],
+    task_id: int,
+    window_id: Any,
+    max_gold_pairs: int = MAX_GOLD_PAIRS_PER_WINDOW,
 ) -> list[tuple[int, int]]:
-    """Every pair of distinct users that both individually satisfy `eligible`."""
+    """Every pair of distinct users that both individually satisfy `eligible`.
+
+    Fails fast -- before allocating the O(n^2) pair list -- if the number of
+    eligible users would produce more than `max_gold_pairs` pairs; see
+    `MAX_GOLD_PAIRS_PER_WINDOW`.
+    """
     elig_users = sorted(u for u, instances in by_user.items() if eligible(instances))
+    n = len(elig_users)
+    _check_pair_budget(n * (n - 1) // 2, max_gold_pairs, task_id, window_id, f"{n} eligible users")
     return [(a, b) for idx, a in enumerate(elig_users) for b in elig_users[idx + 1 :]]
 
 
@@ -418,10 +465,24 @@ def _asymmetric_pairs(
     by_user: dict[int, UserInstances],
     role_a: Callable[[UserInstances], bool],
     role_b: Callable[[UserInstances], bool],
+    task_id: int,
+    window_id: Any,
+    max_gold_pairs: int = MAX_GOLD_PAIRS_PER_WINDOW,
 ) -> list[tuple[int, int]]:
-    """Every pair {u, v} where one of u/v satisfies role_a and the other satisfies role_b."""
+    """Every pair {u, v} where one of u/v satisfies role_a and the other satisfies role_b.
+
+    Fails fast -- before the O(|A|*|B|) double loop -- if the role-set sizes'
+    product would exceed `max_gold_pairs`; see `MAX_GOLD_PAIRS_PER_WINDOW`.
+    """
     role_a_users = {u for u, instances in by_user.items() if role_a(instances)}
     role_b_users = {u for u, instances in by_user.items() if role_b(instances)}
+    _check_pair_budget(
+        len(role_a_users) * len(role_b_users),
+        max_gold_pairs,
+        task_id,
+        window_id,
+        f"{len(role_a_users)} role-A and {len(role_b_users)} role-B eligible users",
+    )
     pairs = set()
     for u in role_a_users:
         for v in role_b_users:
@@ -431,40 +492,92 @@ def _asymmetric_pairs(
     return sorted(pairs)
 
 
-_GOLD_FNS: dict[int, Callable[[dict[int, UserInstances]], list[tuple[int, int]]]] = {
-    1: lambda by_user: _symmetric_pairs(by_user, _eligible_1),
-    2: lambda by_user: _symmetric_pairs(by_user, _eligible_2),
-    3: lambda by_user: _symmetric_pairs(by_user, _eligible_3),
-    4: lambda by_user: _symmetric_pairs(by_user, _eligible_4),
-    5: lambda by_user: _symmetric_pairs(by_user, _eligible_5),
-    6: lambda by_user: _symmetric_pairs(by_user, _eligible_6),
-    7: lambda by_user: _symmetric_pairs(by_user, _eligible_7),
-    8: lambda by_user: _symmetric_pairs(by_user, _eligible_8),
-    9: lambda by_user: _symmetric_pairs(by_user, _eligible_9),
-    10: lambda by_user: _symmetric_pairs(by_user, _eligible_10),
-    11: lambda by_user: _asymmetric_pairs(by_user, _role_11a, _role_11b),
-    12: lambda by_user: _asymmetric_pairs(by_user, _role_12a, _role_12b),
-    13: lambda by_user: _asymmetric_pairs(by_user, _role_13a, _role_13b),
-    14: lambda by_user: _asymmetric_pairs(by_user, _role_14a, _role_14b),
-    15: lambda by_user: _asymmetric_pairs(by_user, _role_15a, _role_15b),
-    16: lambda by_user: _asymmetric_pairs(by_user, _role_16a, _role_16b),
-    17: lambda by_user: _asymmetric_pairs(by_user, _role_17a, _role_17b),
-    18: lambda by_user: _asymmetric_pairs(by_user, _role_18a, _role_18b),
-    19: lambda by_user: _asymmetric_pairs(by_user, _role_19a, _role_19b),
-    20: lambda by_user: _asymmetric_pairs(by_user, _role_20a, _role_20b),
+_GoldFn = Callable[[dict[int, UserInstances], Any, int], list[tuple[int, int]]]
+
+_GOLD_FNS: dict[int, _GoldFn] = {
+    1: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_1, 1, window_id, max_gold_pairs
+    ),
+    2: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_2, 2, window_id, max_gold_pairs
+    ),
+    3: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_3, 3, window_id, max_gold_pairs
+    ),
+    4: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_4, 4, window_id, max_gold_pairs
+    ),
+    5: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_5, 5, window_id, max_gold_pairs
+    ),
+    6: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_6, 6, window_id, max_gold_pairs
+    ),
+    7: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_7, 7, window_id, max_gold_pairs
+    ),
+    8: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_8, 8, window_id, max_gold_pairs
+    ),
+    9: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_9, 9, window_id, max_gold_pairs
+    ),
+    10: lambda by_user, window_id, max_gold_pairs: _symmetric_pairs(
+        by_user, _eligible_10, 10, window_id, max_gold_pairs
+    ),
+    11: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_11a, _role_11b, 11, window_id, max_gold_pairs
+    ),
+    12: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_12a, _role_12b, 12, window_id, max_gold_pairs
+    ),
+    13: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_13a, _role_13b, 13, window_id, max_gold_pairs
+    ),
+    14: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_14a, _role_14b, 14, window_id, max_gold_pairs
+    ),
+    15: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_15a, _role_15b, 15, window_id, max_gold_pairs
+    ),
+    16: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_16a, _role_16b, 16, window_id, max_gold_pairs
+    ),
+    17: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_17a, _role_17b, 17, window_id, max_gold_pairs
+    ),
+    18: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_18a, _role_18b, 18, window_id, max_gold_pairs
+    ),
+    19: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_19a, _role_19b, 19, window_id, max_gold_pairs
+    ),
+    20: lambda by_user, window_id, max_gold_pairs: _asymmetric_pairs(
+        by_user, _role_20a, _role_20b, 20, window_id, max_gold_pairs
+    ),
 }
 
 
-def compute_gold_pairs(task_id: int, by_user: dict[int, UserInstances]) -> list[tuple[int, int]]:
+def compute_gold_pairs(
+    task_id: int,
+    by_user: dict[int, UserInstances],
+    window_id: Any = "<unknown>",
+    max_gold_pairs: int = MAX_GOLD_PAIRS_PER_WINDOW,
+) -> list[tuple[int, int]]:
     """Programmatically compute the gold (user_id_1, user_id_2) pairs for `task_id`.
 
     `by_user` maps each user id to the list of (label, date) instances
     belonging to that user, built from the OOLONG ground-truth labels. Pairs
     are deduplicated, lower id first, and returned in sorted order.
+
+    `window_id` and `max_gold_pairs` back the `MAX_GOLD_PAIRS_PER_WINDOW`
+    fail-fast guard (see `_symmetric_pairs`/`_asymmetric_pairs`); `window_id`
+    is used only in the resulting error message and defaults to a placeholder
+    for direct callers (e.g. tests) with no real window on hand.
     """
     if task_id not in _GOLD_FNS:
         raise ValueError(f"Unknown OOLONG-Pairs task_id: {task_id} (expected 1-20)")
-    return _GOLD_FNS[task_id](by_user)
+    return _GOLD_FNS[task_id](by_user, window_id, max_gold_pairs)
 
 
 # =============================================================================
@@ -525,12 +638,73 @@ def build_gold_mapping(entries: list[OolongEntry]) -> dict[int, UserInstances]:
 # =============================================================================
 
 
-def iter_dataset_rows(split: str, revision: str | None) -> Iterator[dict[str, Any]]:
+# Wall-clock ceiling on a single `next()` call against the upstream stream
+# (see `_bounded_iter`). `collect_windows` runs during `materialize_splits`,
+# which sits on the unattended, real-money `examples/experiment_smoke.py
+# --live` path and is OUTSIDE the SIGALRM hard-deadline backstop (that only
+# bounds run execution, not split materialization -- and
+# `config.operational.loader_timeout_seconds` sounds like it covers this too
+# but actually bounds an unrelated candidate-materialization subprocess). 60
+# seconds is generous for a single row under normal network jitter or
+# upstream retries, while still failing well before "indefinitely" if the
+# stream has genuinely stalled.
+DEFAULT_SCAN_DEADLINE_SECONDS: float = 60.0
+
+
+def _bounded_iter(
+    rows: Iterator[dict[str, Any]], deadline_seconds: float
+) -> Iterator[dict[str, Any]]:
+    """Wrap `rows` so a stalled `next()` call raises loudly instead of hanging.
+
+    The `datasets` library exposes no per-call timeout for its streaming
+    iterator, so this pulls rows on a background thread and enforces
+    `deadline_seconds` with a blocking queue read. Because the read (not a
+    post-hoc check between yielded rows) is what is bounded, a stall on the
+    very FIRST row is caught just as reliably as a stall between rows. An
+    exception raised by `rows` itself is re-raised unchanged in the caller's
+    thread.
+    """
+    result_q: queue.Queue[Any] = queue.Queue(maxsize=1)
+    sentinel = object()
+
+    def _pump() -> None:
+        try:
+            for row in rows:
+                result_q.put(row)
+            result_q.put(sentinel)
+        except Exception as exc:  # noqa: BLE001 -- forwarded to the consumer thread
+            result_q.put(exc)
+
+    thread = threading.Thread(target=_pump, daemon=True)
+    thread.start()
+    while True:
+        try:
+            item = result_q.get(timeout=deadline_seconds)
+        except queue.Empty as exc:
+            raise TimeoutError(
+                f"OOLONG dataset stream stalled: no row received from {DATASET_REPO} "
+                f"within {deadline_seconds}s. Aborting rather than blocking the "
+                "invocation indefinitely."
+            ) from exc
+        if item is sentinel:
+            return
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
+def iter_dataset_rows(
+    split: str,
+    revision: str | None,
+    deadline_seconds: float = DEFAULT_SCAN_DEADLINE_SECONDS,
+) -> Iterator[dict[str, Any]]:
     """Stream raw upstream rows -- the module's only network seam.
 
     Tests monkeypatch this with an iterator over synthetic rows. The imports
     live inside the function so the module imports without the ``oolong``
-    extra; only actually streaming the dataset requires it.
+    extra; only actually streaming the dataset requires it. Rows are pulled
+    through `_bounded_iter`, which bounds each `next()` call to
+    `deadline_seconds` -- see its docstring for why.
     """
     try:
         from datasets import load_dataset
@@ -539,7 +713,8 @@ def iter_dataset_rows(split: str, revision: str | None) -> Iterator[dict[str, An
             "Missing dependency for the OOLONG dataset. Install with:\n"
             '    uv pip install -e ".[oolong]"'
         ) from exc
-    return iter(load_dataset(DATASET_REPO, split=split, streaming=True, revision=revision))
+    raw_rows = iter(load_dataset(DATASET_REPO, split=split, streaming=True, revision=revision))
+    return _bounded_iter(raw_rows, deadline_seconds)
 
 
 def _check_context_lengths(context_lengths: tuple[int, ...]) -> None:
@@ -679,7 +854,9 @@ def build_instance(
         "id": instance_id,
         "question": task_text,
         "prompt": prompt,
-        "gold_pairs": [[a, b] for a, b in compute_gold_pairs(task_id, by_user)],
+        "gold_pairs": [
+            [a, b] for a, b in compute_gold_pairs(task_id, by_user, window["context_window_id"])
+        ],
         "task_id": task_id,
         "context_len": int(window["context_len"]),
         "context_window_id": window["context_window_id"],
@@ -794,16 +971,27 @@ def extract_answer_pairs(response: str) -> list[tuple[int, int]] | None:
 def score(predicted: list[tuple[int, int]], golden: list[tuple[int, int]]) -> dict[str, float]:
     """Precision/recall/F1 over the set of predicted vs. golden pairs.
 
-    Ported verbatim from the example. The both-empty case scores f1=1.0; an
-    empty prediction against a non-empty gold scores 0. The Verifier decides
-    pass/fail on exact set equality and reports these metrics as detail only.
+    Both predicted and golden empty (a correct answer for a window with no
+    qualifying pairs) scores precision=recall=f1=1.0. This is the one
+    deliberate divergence from the example's verbatim scorer, which computed
+    f1=0.0 for that case: precision landed at 0.0 (an empty prediction has no
+    overlap to divide by), which kept `recall + precision > 0` true and
+    routed past the `else 1.0` branch, scoring a correct answer as a total
+    miss. An empty prediction against a non-empty gold still scores 0. The
+    Verifier decides pass/fail on exact set equality and reports these
+    metrics as detail only.
     """
     pred_set, gold_set = set(predicted), set(golden)
+    if not pred_set and not gold_set:
+        return {"precision": 1.0, "recall": 1.0, "f1": 1.0}
     n_overlap = len(pred_set & gold_set)
     n_golden, n_sampled = len(gold_set), len(pred_set)
     recall = n_overlap / n_golden if n_golden > 0 else 1.0 if n_sampled == 0 else 0.0
     precision = n_overlap / n_sampled if n_sampled > 0 else 0.0
-    f1 = 2 * (recall * precision) / (recall + precision) if (recall + precision) > 0 else 1.0
+    # The both-empty perfect case already returned above, so every remaining
+    # zero-overlap answer is genuinely wrong -- spurious pairs against an empty
+    # gold, or an empty answer against a non-empty gold -- and scores 0.0.
+    f1 = 2 * (recall * precision) / (recall + precision) if (recall + precision) > 0 else 0.0
     return {"precision": precision, "recall": recall, "f1": f1}
 
 

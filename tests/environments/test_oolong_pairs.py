@@ -7,6 +7,7 @@ like ``oolongbench/oolong-synth`` (``dataset``, ``context_len``,
 """
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from shrlm.environments.oolong_pairs import (
     extract_answer_pairs,
     load_oolong_pairs,
     load_oolong_pairs_from_config,
+    score,
     verify_window_coverage,
 )
 from shrlm.experiment.config import OolongPairsConfig
@@ -79,20 +81,27 @@ def stub_rows(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]]) -> di
     return calls
 
 
-def sized_window_lines(context_len: int, tokens_per_entry: int = 16) -> list[str]:
+def sized_window_lines(
+    context_len: int, tokens_per_entry: int = 16, label: str = "entity"
+) -> list[str]:
     """Synthetic window text sized like a real ``context_len``-TOKEN window.
 
     Each labeled line is padded to ~4 characters per token, mirroring the
     real data's rough chars-per-token ratio, so ``context_len // tokens_per_
     entry`` entries give a labeled text of ~4 * context_len characters.
+
+    ``label`` defaults to "entity", which keeps task 1's gold empty (task 1
+    is eligible on numeric value or location) -- previously the only way this
+    helper avoided a window of tens of thousands of task-eligible users
+    exploding into millions of pairs. That explosion is now caught by
+    ``MAX_GOLD_PAIRS_PER_WINDOW`` (see ``TestGoldPairBudget``), so callers
+    that want to exercise that guard can pass an eligible label instead.
     """
     target_chars = tokens_per_entry * 4
     lines = []
     for i in range(context_len // tokens_per_entry):
         question = f"What is creature number {i:06d} ?"
-        # "entity" keeps task 1's gold empty: a window of tens of thousands of
-        # task-eligible users would otherwise explode into millions of pairs.
-        line = entry(100_000 + i, "Feb 02, 2023", question, "entity")
+        line = entry(100_000 + i, "Feb 02, 2023", question, label)
         lines.append(line + " " * max(0, target_chars - len(line) - 1))
     return lines
 
@@ -130,6 +139,60 @@ class TestComputeGoldPairs:
 
 
 # ---------------------------------------------------------------------------
+# Finding 9: unbounded quadratic gold-pair construction
+# ---------------------------------------------------------------------------
+
+
+class TestGoldPairBudget:
+    def test_symmetric_guard_fires_before_allocating(self):
+        from datetime import date
+
+        # 3 users all eligible for task 1 (numeric value or location) -> 3
+        # pairs, which exceeds a max_gold_pairs of 2.
+        by_user = {u: [("numeric value", date(2023, 1, 1))] for u in range(3)}
+        with pytest.raises(ValueError, match=r"window 'w-huge' task 1\b.*exceeding"):
+            compute_gold_pairs(1, by_user, window_id="w-huge", max_gold_pairs=2)
+
+    def test_asymmetric_guard_fires_before_allocating(self):
+        from datetime import date
+
+        d = date(2023, 1, 1)
+        # role_11a (entity and abbreviation): users 1, 2.
+        # role_11b (exactly one entity instance): users 3, 4.
+        # Upper bound on pairs is 2 * 2 = 4, which exceeds max_gold_pairs=3.
+        by_user = {
+            1: [("entity", d), ("abbreviation", d)],
+            2: [("entity", d), ("abbreviation", d)],
+            3: [("entity", d)],
+            4: [("entity", d)],
+        }
+        with pytest.raises(ValueError, match=r"window 'w-asym' task 11\b.*exceeding"):
+            compute_gold_pairs(11, by_user, window_id="w-asym", max_gold_pairs=3)
+
+    def test_normal_window_is_unaffected(self):
+        from datetime import date
+
+        by_user = {
+            1: [("numeric value", date(2023, 1, 1))],
+            2: [("location", date(2023, 1, 1))],
+            3: [("entity", date(2023, 1, 1))],
+        }
+        # Well under the default MAX_GOLD_PAIRS_PER_WINDOW ceiling.
+        assert compute_gold_pairs(1, by_user, window_id="w-normal") == [(1, 2)]
+
+    def test_broad_eligibility_long_window_fails_fast_not_oom(self):
+        """Regression for finding 9: a schema-valid 262144-token window where
+        every user is eligible under an OR-only predicate must fail fast with
+        a named error, not attempt to materialize tens of millions of pairs.
+        """
+        long_len = 262144
+        lines = sized_window_lines(long_len, label="numeric value")
+        window = make_row("w-explosive", long_len, lines)
+        with pytest.raises(ValueError, match=r"window 'w-explosive' task 1\b.*exceeding"):
+            build_instance(window, task_id=1, sample_seed=0, sample_index=0)
+
+
+# ---------------------------------------------------------------------------
 # Answer extraction
 # ---------------------------------------------------------------------------
 
@@ -148,6 +211,49 @@ class TestExtractAnswerPairs:
     def test_pairs_embedded_in_prose(self):
         parsed = extract_answer_pairs("The valid pairs are (101, 202) and (202, 303).")
         assert parsed == [(101, 202), (202, 303)]
+
+
+# ---------------------------------------------------------------------------
+# Finding 7: unbounded upstream stream
+# ---------------------------------------------------------------------------
+
+
+class TestBoundedIter:
+    def test_rows_pass_through_unchanged(self):
+        rows = iter([{"a": 1}, {"a": 2}, {"a": 3}])
+        assert list(oolong_pairs._bounded_iter(rows, deadline_seconds=5.0)) == [
+            {"a": 1},
+            {"a": 2},
+            {"a": 3},
+        ]
+
+    def test_stall_before_first_row_raises_timeout(self):
+        def slow_rows():
+            time.sleep(0.5)
+            yield {"a": 1}
+
+        with pytest.raises(TimeoutError, match="stalled"):
+            list(oolong_pairs._bounded_iter(slow_rows(), deadline_seconds=0.05))
+
+    def test_stall_between_rows_raises_timeout(self):
+        def slow_rows():
+            yield {"a": 1}
+            time.sleep(0.5)
+            yield {"a": 2}
+
+        collected = []
+        with pytest.raises(TimeoutError, match="stalled"):
+            for row in oolong_pairs._bounded_iter(slow_rows(), deadline_seconds=0.05):
+                collected.append(row)
+        assert collected == [{"a": 1}]
+
+    def test_upstream_exception_propagates_unchanged(self):
+        def boom():
+            yield {"a": 1}
+            raise RuntimeError("upstream broke")
+
+        with pytest.raises(RuntimeError, match="upstream broke"):
+            list(oolong_pairs._bounded_iter(boom(), deadline_seconds=5.0))
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +423,32 @@ class TestPromptMagnitude:
 
 
 # ---------------------------------------------------------------------------
+# Finding 20: degenerate score on the both-empty case
+# ---------------------------------------------------------------------------
+
+
+class TestScore:
+    def test_both_empty_scores_perfect(self):
+        assert score([], []) == {"precision": 1.0, "recall": 1.0, "f1": 1.0}
+
+    def test_normal_window_unaffected(self):
+        metrics = score([(1, 2)], [(1, 2), (2, 3)])
+        assert metrics["precision"] == 1.0
+        assert metrics["recall"] == 0.5
+        assert 0.0 < metrics["f1"] < 1.0
+
+    def test_empty_prediction_against_nonempty_gold_scores_zero(self):
+        metrics = score([], [(1, 2)])
+        assert metrics["recall"] == 0.0
+        assert metrics["f1"] == 0.0
+
+    def test_spurious_pairs_against_empty_gold_score_zero(self):
+        metrics = score([(1, 2)], [])
+        assert metrics["precision"] == 0.0
+        assert metrics["f1"] == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Verifier
 # ---------------------------------------------------------------------------
 
@@ -384,6 +516,9 @@ class TestOolongPairsVerifier:
         verdict = self.verifier(make_instance([]), "No valid pairs found.")
         assert verdict.passed
         assert verdict.gold == "[]"
+        # Finding 20 regression: a correct empty answer must not be scored as
+        # a miss in the reported detail metrics either.
+        assert "f1=1.000" in verdict.detail
 
     def test_config_names_the_environment(self):
         config = self.verifier.config()
