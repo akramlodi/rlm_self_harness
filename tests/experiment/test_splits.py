@@ -198,6 +198,47 @@ class TestIdempotency:
             materialize_splits(reseeded, tmp_path)
 
 
+class TestInterruptedMaterialization:
+    """A crash between the split writes and the manifest write must not wedge
+    the directory: the files are unaccounted for, but a re-draw reproduces them
+    byte for byte (the loaders are seeded), so they are reused, not refused."""
+
+    def counting_loader(self, calls: list[str]):
+        def loader(
+            cfg: ExperimentConfig, length: str, limit: int, seed: int
+        ) -> list[dict[str, Any]]:
+            calls.append(length)
+            return make_fake_instances(length, limit)
+
+        return loader
+
+    def test_files_left_by_an_interrupted_materialization_are_reused(self, config, tmp_path):
+        calls: list[str] = []
+        loaders = {"graphwalks": self.counting_loader(calls)}
+        splits_dir = materialize_splits(config, tmp_path, loaders=loaders)
+        before = splits_bytes(splits_dir)
+
+        # The crash: every split file is on disk, the manifest that accounts
+        # for them never landed.
+        (splits_dir / MANIFEST_FILE).unlink()
+
+        materialize_splits(config, tmp_path, loaders=loaders)
+
+        assert calls == ["short", "long", "short", "long"], "the retry must re-draw"
+        assert splits_bytes(splits_dir) == before, "the re-draw must reuse the identical files"
+
+    def test_an_unaccounted_file_that_diverges_still_raises(self, config, tmp_path):
+        calls: list[str] = []
+        loaders = {"graphwalks": self.counting_loader(calls)}
+        splits_dir = materialize_splits(config, tmp_path, loaders=loaders)
+        (splits_dir / MANIFEST_FILE).unlink()
+        target = splits_dir / split_file_name("graphwalks", "short", "held_in")
+        target.write_text(target.read_text().replace("p0", "tampered"))
+
+        with pytest.raises(SplitsPersistenceError, match="fresh draw does not reproduce"):
+            materialize_splits(config, tmp_path, loaders=loaders)
+
+
 class TestRevisionGuard:
     def test_manifest_records_the_configured_revision(self, fetch_calls, config, tmp_path):
         splits_dir = materialize_splits(config, tmp_path)

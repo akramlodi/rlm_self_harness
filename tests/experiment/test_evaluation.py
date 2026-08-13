@@ -30,12 +30,19 @@ from shrlm.experiment.evaluation import (
     EVAL_SUMMARY_FILENAME,
     EvaluationPersistenceError,
     run_evaluation,
+    verify_instance_identity,
 )
-from shrlm.experiment.orchestrator import FROZEN_DIR, FROZEN_HARNESS_FILENAME
-from shrlm.experiment.splits import SPLITS_DIR, LoaderFn
+from shrlm.experiment.evaluation import test_sets as persisted_test_sets
+from shrlm.experiment.orchestrator import (
+    FROZEN_DIR,
+    FROZEN_HARNESS_FILENAME,
+    IdentityMismatchError,
+)
+from shrlm.experiment.splits import MANIFEST_FILE, SPLITS_DIR, LoaderFn
 from shrlm.experiment.usage import STAGE_USAGE_FILE, read_stage_usage
 from shrlm.harness_identity import harness_hash, write_harness_json
 from shrlm.optimization.costs import OUTCOME_COMPLETED, OUTCOME_OVER_BUDGET
+from shrlm.optimization.driver import RoundPersistenceError
 from shrlm.rlm_harness import H0
 from tests.experiment.test_orchestrator import fake_loader, make_config, patch_runner
 from tests.optimization.test_driver import ClientFactory, GoldVerifier, final
@@ -56,8 +63,10 @@ FROZEN_TEXT = "Verify every claim against the stored evidence before answering. 
 def eval_config(tmp_path: Path, *, repetitions: int = 1, **kwargs: Any) -> ExperimentConfig:
     """The orchestrator's test config with an evaluation repetition count.
 
-    ``eval_repetitions`` is operational (KTD8), so overriding it leaves the
-    identity hash -- and therefore an existing experiment directory -- intact.
+    ``eval_repetitions`` is the evaluation stage's effective attempt count, so
+    it is identity-protected (KTD8): a directory evaluated at one count refuses
+    to be resumed at another (``TestEvalRepetitionsIdentity``). Each test here
+    therefore uses one count per ``out_dir``.
     """
     config = make_config(tmp_path, **kwargs)
     return replace(config, operational=replace(config.operational, eval_repetitions=repetitions))
@@ -192,6 +201,47 @@ class TestRepetitions:
                 assert sorted(entry["attempt"] for entry in entries) == [1, 2, 3]
         assert result.summary["eval_repetitions"] == 3
         assert result.conditions[0].test_sets[SET_SHORT]["n_runs"] == 3
+
+
+class TestEvalRepetitionsIdentity:
+    """The effective attempt count is identity-protected (KTD8): the persisted
+    runs and the summary's stated plan must never describe different
+    experiments."""
+
+    def test_lowering_repetitions_refuses_to_resume_the_directory(self, tmp_path, monkeypatch):
+        config = eval_config(tmp_path, repetitions=3)
+        out = tmp_path / "exp"
+        freeze(out)
+        scripted(monkeypatch, *(["RIGHT"] * 12))
+        evaluate(config, out)
+        assert len(manifest_lines(out, CONDITION_B1, SET_SHORT)) == 3
+
+        lowered = eval_config(tmp_path, repetitions=1)
+        idle = scripted(monkeypatch)
+        with pytest.raises(IdentityMismatchError):
+            evaluate(lowered, out)
+
+        assert idle.total_calls == 0
+        # The three attempts that were paid for still stand, and the summary
+        # still describes the plan they were run under.
+        assert len(manifest_lines(out, CONDITION_B1, SET_SHORT)) == 3
+        assert summary_of(out)["eval_repetitions"] == 3
+
+    def test_raising_repetitions_refuses_to_resume_the_directory(self, tmp_path, monkeypatch):
+        config = eval_config(tmp_path, repetitions=1)
+        out = tmp_path / "exp"
+        freeze(out)
+        scripted(monkeypatch, *ONE_ATTEMPT_SCRIPT)
+        evaluate(config, out)
+
+        raised = eval_config(tmp_path, repetitions=3)
+        idle = scripted(monkeypatch)
+        with pytest.raises(IdentityMismatchError):
+            evaluate(raised, out)
+
+        assert idle.total_calls == 0
+        assert len(manifest_lines(out, CONDITION_B1, SET_SHORT)) == 1
+        assert summary_of(out)["eval_repetitions"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +399,123 @@ class TestSpendBreaker:
         idle = scripted(monkeypatch)
         evaluate(config, out)
         assert idle.total_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# The R8 byte-identical-instances guarantee and the other refusal paths
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceIdentityGuard:
+    def build_round(
+        self, tmp_path: Path, split_text: str, persisted_text: str
+    ) -> tuple[Path, Path]:
+        split_path = tmp_path / "graphwalks_short_test.jsonl"
+        split_path.write_text(split_text)
+        set_path = tmp_path / CONDITION_B1 / SET_SHORT
+        (set_path / "round_00").mkdir(parents=True)
+        (set_path / "round_00" / "instances.jsonl").write_text(persisted_text)
+        return set_path, split_path
+
+    def test_a_round_that_did_not_consume_the_split_verbatim_is_detected(self, tmp_path):
+        set_path, split_path = self.build_round(
+            tmp_path,
+            '{"gold": "RIGHT", "id": "a", "prompt": "p"}\n',
+            '{"gold": "RIGHT", "id": "tampered", "prompt": "p"}\n',
+        )
+        with pytest.raises(EvaluationPersistenceError, match="byte-identical instances"):
+            verify_instance_identity(set_path, split_path)
+
+    def test_matching_bytes_return_the_shared_sha256(self, tmp_path):
+        text = '{"gold": "RIGHT", "id": "a", "prompt": "p"}\n'
+        set_path, split_path = self.build_round(tmp_path, text, text)
+        import hashlib
+
+        assert (
+            verify_instance_identity(set_path, split_path)
+            == hashlib.sha256(text.encode("utf-8")).hexdigest()
+        )
+
+    def test_editing_a_persisted_round_is_refused_by_the_driver_on_the_next_invocation(
+        self, tmp_path, monkeypatch
+    ):
+        """The layer below fires first: the driver byte-compares a resumed
+        round's ``instances.jsonl`` against the configured instances, so an
+        edited round never reaches ``verify_instance_identity`` (which stands as
+        the cross-condition check over what the round did consume)."""
+        config = eval_config(tmp_path)
+        out = tmp_path / "exp"
+        freeze(out)
+        scripted(monkeypatch, *ONE_ATTEMPT_SCRIPT)
+        evaluate(config, out)
+
+        target = set_round_dir(out, CONDITION_B1, SET_SHORT) / "instances.jsonl"
+        target.write_text(target.read_text().replace('"RIGHT"', '"WRONG"'))
+
+        idle = scripted(monkeypatch)
+        with pytest.raises(RoundPersistenceError, match="identical instance list"):
+            evaluate(config, out)
+        assert idle.total_calls == 0
+
+
+class TestPersistedSplitsGuards:
+    def test_missing_splits_manifest_is_refused(self, tmp_path):
+        with pytest.raises(EvaluationPersistenceError, match="does not exist"):
+            persisted_test_sets(tmp_path / SPLITS_DIR)
+
+    def test_a_manifest_recording_no_test_split_is_refused(self, tmp_path):
+        splits_dir = tmp_path / SPLITS_DIR
+        splits_dir.mkdir()
+        (splits_dir / MANIFEST_FILE).write_text(
+            json.dumps(
+                {
+                    "sample_seed": 0,
+                    "environments": {
+                        "graphwalks": {
+                            "revision": "rev-gw",
+                            "files": {
+                                "graphwalks_short_held_in.jsonl": {"sha256": "x", "count": 1}
+                            },
+                        }
+                    },
+                }
+            )
+        )
+        with pytest.raises(EvaluationPersistenceError, match="records no test split"):
+            persisted_test_sets(splits_dir)
+
+    def test_an_environment_without_a_verifier_is_refused(self, tmp_path, monkeypatch):
+        config = eval_config(tmp_path)
+        out = tmp_path / "exp"
+        factory = scripted(monkeypatch, *ONE_ATTEMPT_SCRIPT)
+        with pytest.raises(EvaluationPersistenceError, match="no verifier registered"):
+            run_evaluation(
+                config,
+                (CONDITION_B1,),
+                out,
+                verifiers={"oolong_pairs": GoldVerifier()},
+                loaders=LOADERS,
+            )
+        assert factory.total_calls == 0
+
+
+class TestCrashedEvalUsage:
+    def test_a_crashed_set_still_meters_the_runs_it_paid_for(self, tmp_path, monkeypatch):
+        """The stage raises on the second attempt; the first attempt was paid
+        for and persisted, so it must land in the sidecar (R5)."""
+        config = eval_config(tmp_path, repetitions=2)
+        out = tmp_path / "exp"
+        freeze(out)
+        scripted(monkeypatch, "RIGHT")  # the second attempt's call raises
+
+        with pytest.raises(IndexError):
+            evaluate(config, out)
+
+        assert len(manifest_lines(out, CONDITION_B1, SET_SHORT)) == 1
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)[f"{EVAL_DIR}/{CONDITION_B1}/{SET_SHORT}"]
+        assert usage.input_tokens == 10
+        assert usage.output_tokens == 10
+        assert usage.lower_bound is True
 
 
 # ---------------------------------------------------------------------------

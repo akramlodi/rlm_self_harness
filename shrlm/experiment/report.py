@@ -105,6 +105,7 @@ from shrlm.experiment.usage import (
     aggregate_manifest_usage,
     read_jsonl,
     read_stage_usage,
+    read_usage_records,
 )
 from shrlm.optimization.driver import MANIFEST_FILE
 
@@ -357,7 +358,10 @@ def stage_measurements(out_dir: Path) -> list[StageMeasurement]:
     """The measured per-stage table, exactly-once over ``stage_usage.jsonl``."""
     usage_path = out_dir / STAGE_USAGE_FILE
     totals = read_stage_usage(usage_path)
-    records = read_jsonl(usage_path)
+    # Tolerant reader: a torn final line must not kill a report over work
+    # already paid for. read_stage_usage already marks such totals as lower
+    # bounds; the strict reader stays for splits and run manifests.
+    records = read_usage_records(usage_path).records
     stage_of = {str(record["stage_work_id"]): str(record["stage"]) for record in records}
     resumed = Counter(str(record["stage_work_id"]) for record in records if bool(record["resumed"]))
     runs = stage_run_counts(out_dir)

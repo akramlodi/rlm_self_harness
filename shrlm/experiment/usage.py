@@ -38,9 +38,22 @@ Lower bounds
     a lower bound (e.g. terminated runs' manifest lines) or when the stage
     body raised -- a terminated attempt may have consumed usage the meter
     never saw (R5: terminated runs are lower bounds, never zeros).
+
+Durability of the sidecar
+    The sidecar is the accounting of an experiment that may hold thousands of
+    paid runs, so a kill mid-append must never brick the directory. Each record
+    is appended with one ``os.write`` to an ``O_APPEND`` descriptor
+    (``append_record``): the kernel places an append-mode write at the end of
+    the file in a single step, so a record cannot be interleaved with, or
+    truncated by, another append. Should a write still be cut short (a torn
+    line), the next append fences it off with a leading newline and
+    ``read_usage_records`` quarantines it -- counted, skipped, never raised on.
+    The stage totals it fed are then unattributable, so ``read_stage_usage``
+    reports every total as a ``lower_bound`` while the torn line remains.
 """
 
 import json
+import os
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -166,6 +179,66 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+@dataclass(frozen=True)
+class SidecarRecords:
+    """One sidecar's parsed records, plus how many lines failed to parse."""
+
+    records: list[dict[str, Any]]
+    torn_lines: int
+
+
+def read_usage_records(path: Path) -> SidecarRecords:
+    """The sidecar's records, quarantining any line that does not parse.
+
+    The usage sidecar is the one JSON-lines file in the package that must stay
+    readable through a crash: every ``StageMeter.__enter__``, report build, and
+    smoke spend check parses the whole file, so a single torn line raised on
+    would make an experiment directory unusable for work already paid for. A
+    line that does not parse is therefore skipped and counted rather than
+    raised on -- ``append_record`` fences it off so it can never swallow a
+    later record -- and the count lets ``read_stage_usage`` mark the totals it
+    can no longer account for as lower bounds. Split files and run manifests
+    keep the strict ``read_jsonl`` reader: there a corrupt line is a stop sign.
+    """
+    if not path.exists():
+        return SidecarRecords(records=[], torn_lines=0)
+    records: list[dict[str, Any]] = []
+    torn = 0
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            torn += 1
+    return SidecarRecords(records=records, torn_lines=torn)
+
+
+def _fence_prefix(path: Path) -> str:
+    """A newline when the sidecar's last line is unterminated, else nothing.
+
+    An unterminated last line is a torn append. Without the fence the next
+    record would be concatenated onto it, turning one damaged line into two
+    lost records; with it, the damage stays confined to the torn line.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return ""
+    with open(path, "rb") as handle:
+        handle.seek(-1, os.SEEK_END)
+        return "" if handle.read(1) == b"\n" else "\n"
+
+
+def append_record(path: Path, record: dict[str, Any]) -> None:
+    """Append one record to the sidecar as a single atomic write."""
+    payload = _fence_prefix(path) + json.dumps(record, sort_keys=True) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        os.write(descriptor, payload.encode("utf-8"))
+    finally:
+        os.close(descriptor)
+
+
 class StageMeter:
     """Context manager metering one stage execution attempt (R5).
 
@@ -209,7 +282,7 @@ class StageMeter:
     def __enter__(self) -> "StageMeter":
         self._attempt_index = sum(
             1
-            for record in read_jsonl(self.out_path)
+            for record in read_usage_records(self.out_path).records
             if record["stage_work_id"] == self.stage_work_id
         )
         self._started = time.perf_counter()
@@ -261,9 +334,7 @@ class StageMeter:
             "lower_bound": usage.lower_bound or exc_type is not None,
             "timestamp": datetime.now(UTC).isoformat(),
         }
-        self.out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.out_path, "a") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        append_record(self.out_path, record)
         return False
 
 
@@ -275,15 +346,21 @@ def read_stage_usage(path: Path | str) -> dict[str, UsageTotals]:
     and the surviving records sum -- their usage is disjoint by the
     incremental contract. Wall seconds sum across attempts too: the total is
     time actually spent, not time the finished stage would have taken.
+
+    A quarantined torn line (see ``read_usage_records``) carried usage that
+    cannot be attributed to any ``stage_work_id``, so while one is present
+    every total is reported as a ``lower_bound`` rather than as an exact
+    figure.
     """
-    records = read_jsonl(Path(path))
+    sidecar = read_usage_records(Path(path))
+    torn = sidecar.torn_lines > 0
     latest: dict[str, dict[int, dict[str, Any]]] = {}
-    for record in records:
+    for record in sidecar.records:
         work_id = str(record["stage_work_id"])
         latest.setdefault(work_id, {})[int(record["attempt_index"])] = record
     totals: dict[str, UsageTotals] = {}
     for work_id, attempts in latest.items():
-        total = UsageTotals()
+        total = UsageTotals(lower_bound=torn)
         for _, record in sorted(attempts.items()):
             total = total + UsageTotals(
                 input_tokens=int(record["input_tokens"]),

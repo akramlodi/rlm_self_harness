@@ -130,8 +130,14 @@ def run_id_for(instance_id: str, attempt: int) -> str:
     return f"{instance_id}__a{attempt:02d}"
 
 
-def _instance_lines(instances: list[dict[str, Any]]) -> str:
-    """The canonical byte content of ``instances.jsonl`` for these instances."""
+def instance_lines(instances: list[dict[str, Any]]) -> str:
+    """The canonical byte content of ``instances.jsonl`` for these instances.
+
+    Public because ``shrlm.experiment.splits`` renders persisted split files
+    through it: the driver byte-compares a resumed round's ``instances.jsonl``
+    against exactly these bytes, so the split writer and the round writer must
+    never be able to drift apart.
+    """
     return "".join(json.dumps(instance, sort_keys=True) + "\n" for instance in instances)
 
 
@@ -226,7 +232,7 @@ def _prepare_round_dir(config: RoundConfig) -> Path:
         write_harness_json(config.harness, harness_path)
 
     instances_path = path / INSTANCES_FILE
-    expected_lines = _instance_lines(config.instances)
+    expected_lines = instance_lines(config.instances)
     if instances_path.exists():
         if instances_path.read_text() != expected_lines:
             raise RoundPersistenceError(
@@ -731,6 +737,7 @@ __all__ = [
     "ROOT_LIMIT_EXCEPTIONS",
     "RoundConfig",
     "RoundPersistenceError",
+    "instance_lines",
     "load_manifest",
     "load_round",
     "mine_round",

@@ -19,6 +19,7 @@ from shrlm.experiment.usage import (
     UsageTotals,
     aggregate_manifest_usage,
     read_stage_usage,
+    read_usage_records,
     snapshot_usage,
 )
 from shrlm.rlm_harness import H0
@@ -300,6 +301,43 @@ class TestResumeAndExactlyOnce:
         (record,) = read_records(path)
         assert record["attempt_index"] == 0
         assert record["resumed"] is True
+
+    def test_a_torn_final_line_neither_raises_nor_swallows_later_records(self, tmp_path):
+        """A kill mid-append leaves an unterminated, unparsable line. Every
+        later ``StageMeter.__enter__``, report build, and spend check parses
+        the whole sidecar, so that line must be quarantined rather than raised
+        on -- and it must not swallow the next record either."""
+        path = tmp_path / "stage_usage.jsonl"
+        with StageMeter(
+            stage="mining", stage_work_id="round01/mining", round_index=1, out_path=path
+        ) as meter:
+            meter.add(UsageTotals(input_tokens=100, output_tokens=40, cost=0.01))
+
+        with open(path, "a") as handle:
+            handle.write('{"attempt_index": 1, "cache_hits": 0, "cost": 0.003, "input_to')
+
+        with StageMeter(
+            stage="mining", stage_work_id="round01/mining", round_index=1, out_path=path
+        ) as meter:
+            meter.add(UsageTotals(input_tokens=30, output_tokens=10, cost=0.003))
+
+        sidecar = read_usage_records(path)
+        assert sidecar.torn_lines == 1
+        assert len(sidecar.records) == 2, "the fence keeps the torn line from eating the next one"
+
+        totals = read_stage_usage(path)["round01/mining"]
+        assert totals.input_tokens == 130
+        assert totals.output_tokens == 50
+        assert totals.lower_bound is True, "unattributable torn usage makes every total a bound"
+
+    def test_intact_sidecar_reports_no_torn_lines_and_exact_totals(self, tmp_path):
+        path = tmp_path / "stage_usage.jsonl"
+        with StageMeter(
+            stage="mining", stage_work_id="round01/mining", round_index=1, out_path=path
+        ) as meter:
+            meter.add(UsageTotals(input_tokens=7, output_tokens=3, cost=0.001))
+        assert read_usage_records(path).torn_lines == 0
+        assert read_stage_usage(path)["round01/mining"].lower_bound is False
 
     def test_snapshot_usage_reads_the_cumulative_client_summary(self):
         lm = MockLM()

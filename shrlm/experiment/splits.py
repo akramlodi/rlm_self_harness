@@ -14,9 +14,13 @@ Splits are materialized exactly once. Re-invocation over an existing manifest
 verifies -- seed unchanged, configured revision equal to the recorded one
 (the dataset-drift guard: upstream HF edits must never silently change a
 frozen split), every file byte-identical to its recorded sha256 -- and is
-otherwise a no-op; any mismatch raises ``SplitsPersistenceError``. Downstream
-consumers (orchestrator, eval runner) read only the persisted files, so every
-condition sees byte-identical splits (R8).
+otherwise a no-op; any mismatch raises ``SplitsPersistenceError``. An
+environment interrupted *mid*-materialization (files on disk, no manifest
+entry yet) is redrawn on the next invocation and its files reused when the
+fresh render reproduces them byte for byte (``write_split_file``), so a crash
+between the file writes and the manifest write never wedges the directory.
+Downstream consumers (orchestrator, eval runner) read only the persisted files,
+so every condition sees byte-identical splits (R8).
 
 Loaders are an injectable mapping ``{environment_name: loader_fn}`` where a
 loader is ``loader(config, length, limit, seed) -> instances``. The GraphWalks
@@ -37,7 +41,11 @@ from shrlm.environments.graphwalks import load_graphwalks
 from shrlm.environments.oolong_pairs import load_oolong_pairs_from_config
 from shrlm.experiment.config import ExperimentConfig
 from shrlm.experiment.errors import ExperimentError
-from shrlm.optimization.driver import _instance_lines, sha256_file
+
+# ``instance_lines`` is the driver's own canonical renderer, imported rather
+# than restated: the driver byte-compares a resumed round's ``instances.jsonl``
+# against these exact bytes, so the two renderings must never drift apart.
+from shrlm.optimization.driver import instance_lines, sha256_file
 
 SPLITS_DIR = "splits"
 MANIFEST_FILE = "manifest.json"
@@ -120,16 +128,6 @@ def split_file_name(environment: str, length: str, role: str) -> str:
     return f"{environment}_{length}_{role}.jsonl"
 
 
-def instance_lines(instances: list[dict[str, Any]]) -> str:
-    """Canonical byte content of a split file, matching ``instances.jsonl``.
-
-    Delegates to the driver's own renderer rather than restating it: the
-    driver byte-compares a resumed round's ``instances.jsonl`` against these
-    exact bytes, so the two renderings must never be able to drift apart.
-    """
-    return _instance_lines(instances)
-
-
 def sha256_text(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
@@ -143,6 +141,31 @@ def dataset_revision_for(config: ExperimentConfig, environment: str) -> str:
         )
     env: Any = getattr(config.environments, environment)
     return str(env.dataset_revision)
+
+
+def write_split_file(path: Path, content: str, environment: str) -> None:
+    """Persist one split file, reusing an interrupted attempt's identical bytes.
+
+    Split files are written before the manifest entry that accounts for them,
+    so a crash (or a bounded-fetch timeout) between the two leaves unaccounted
+    files on disk. Loaders are seeded and deterministic, so the retry's draw
+    renders byte-identical content: a file that matches those bytes IS the
+    interrupted attempt's own output and is reused, which is what keeps an
+    interrupted materialization from wedging the splits directory forever.
+    Different bytes are a genuine divergence -- a file from another
+    configuration, or one edited on disk -- and are refused.
+    """
+    if not path.exists():
+        path.write_text(content)
+        return
+    if path.read_text() == content:
+        return
+    raise SplitsPersistenceError(
+        f"{path} exists with bytes a fresh draw does not reproduce, and the manifest has "
+        f"no entry for {environment!r}; an interrupted materialization would have left "
+        "byte-identical content (the loaders are seeded and deterministic), so this file "
+        "came from a different configuration or was modified. Refusing to overwrite it."
+    )
 
 
 def materialize_environment(
@@ -177,14 +200,8 @@ def materialize_environment(
             subset = instances[start : start + size]
             start += size
             file_name = split_file_name(environment, length, role)
-            path = splits_dir / file_name
-            if path.exists():
-                raise SplitsPersistenceError(
-                    f"{path} exists but the manifest has no entry for {environment!r}; "
-                    "refusing to overwrite an unaccounted-for split file"
-                )
             content = instance_lines(subset)
-            path.write_text(content)
+            write_split_file(splits_dir / file_name, content, environment)
             files[file_name] = {"sha256": sha256_text(content), "count": size}
     return {"revision": dataset_revision_for(config, environment), "files": files}
 

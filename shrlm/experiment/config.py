@@ -21,20 +21,27 @@ Identity hash (R3; KTD3)
     behavior-changing value: decoding/sampling args, split sizes and seeds,
     loop counts (m, v, k, t, patience), promotion thresholds and bands, caps
     (including per-round attempts), environment definitions with their dataset
-    revision pins, and the runner/attributor/proposer backends including
-    OpenRouter provider routing. Operational keys -- cache paths, pricing and
-    GPU tables, report settings, ``eval_repetitions`` -- are excluded: they
-    change what a run costs or how it is summarized, never what it does.
+    revision pins, the runner/attributor/proposer backends including OpenRouter
+    provider routing, and the evaluation repetition count
+    (``IDENTITY_OPERATIONAL_KEYS``; see below). The remaining operational keys
+    -- cache paths, loader timeout, pricing and GPU tables, report settings --
+    are excluded: they change what a run costs or how it is summarized, never
+    what it does or how much of it lands on disk.
 
 eval_repetitions -> attempts (KTD8)
     ``operational.eval_repetitions`` is the evaluation-stage repetition count
     per instance per condition. At evaluation time it is forwarded as the
     round's ``attempts`` (``RoundConfig.attempts``). Attempts are unseeded
-    temperature samples: adding repetitions draws more samples from the same
-    per-run behavior distribution without changing that distribution, which is
-    exactly why ``eval_repetitions`` is operational and excluded from the
-    identity hash, while ``caps.attempts`` (the default per-round attempts
-    baked into every round) is identity.
+    temperature samples, so a repetition draws another sample from the same
+    per-run behavior distribution without changing that distribution -- but it
+    does decide how many runs an evaluation persists and what
+    ``eval/eval_summary.json`` claims the evaluated plan was. Lowering it under
+    an existing experiment directory would reuse the runs a higher count
+    already persisted while rewriting the summary as if the smaller plan had
+    been evaluated, so the effective count is identity-protected
+    (``IDENTITY_OPERATIONAL_KEYS``) exactly like ``caps.attempts``. The smoke
+    profile may still shrink it (``SMOKE_SCALE_KEYS``): switching profiles
+    already moves the identity hash, and each profile owns its own out_dir.
 
 Factory helpers
     ``round_config_kwargs`` and ``evaluation_config_kwargs`` return kwargs for
@@ -47,7 +54,7 @@ Factory helpers
 import tomllib
 from dataclasses import MISSING, asdict, dataclass, fields
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from shrlm.harness_identity import canonical_json_sha256
 from shrlm.optimization.costs import ValidationCaps
@@ -86,6 +93,13 @@ IDENTITY_SECTIONS: tuple[str, ...] = (
     "environments",
     "backends",
 )
+
+# Identity-covered keys that live inside an otherwise operational section.
+# ``operational.eval_repetitions`` is the evaluation stage's effective attempt
+# count: it decides how many runs land on disk and what the eval summary claims
+# was evaluated, so lowering it under an existing experiment directory must be
+# refused like any other identity change (see the module docstring on KTD8).
+IDENTITY_OPERATIONAL_KEYS: tuple[str, ...] = ("eval_repetitions",)
 
 # The exhaustive set of dotted keys the [smoke] table may override (R2):
 # scale counts (instances, repetitions, candidate width, rounds) and spend
@@ -335,14 +349,21 @@ _S = TypeVar("_S")
 
 
 def build_section(cls: type[_S], table: dict[str, Any], context: str) -> _S:
-    """Construct one section dataclass, rejecting unknown and missing keys."""
-    names = {section_field.name for section_field in fields(cls)}  # type: ignore[arg-type]
+    """Construct one section dataclass, rejecting unknown and missing keys.
+
+    ``fields`` is typed for dataclass instances and dataclass types, which a
+    bare ``TypeVar`` cannot express; every call site passes one of this
+    module's frozen section dataclasses, so the ``cast`` is the sanctioned
+    narrowing (AGENTS.md prefers it to a ``type: ignore``).
+    """
+    section_fields = fields(cast(Any, cls))
+    names = {section_field.name for section_field in section_fields}
     unknown = sorted(set(table) - names)
     if unknown:
         raise ValueError(f"unknown key(s) in [{context}]: {unknown}")
     required = {
         section_field.name
-        for section_field in fields(cls)  # type: ignore[arg-type]
+        for section_field in section_fields
         if section_field.default is MISSING and section_field.default_factory is MISSING
     }
     missing = sorted(required - set(table))
@@ -486,10 +507,14 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
 def identity_hash(config: ExperimentConfig) -> str:
     """Sha256 over the canonical JSON of every behavior-changing value.
 
-    The subset is exactly ``IDENTITY_SECTIONS``; see the module docstring for
-    what is included and why operational keys are excluded.
+    The subset is ``IDENTITY_SECTIONS`` plus ``IDENTITY_OPERATIONAL_KEYS`` from
+    ``[operational]``; see the module docstring for what is included and why
+    the remaining operational keys are excluded.
     """
-    subset = {name: asdict(getattr(config, name)) for name in IDENTITY_SECTIONS}
+    subset: dict[str, Any] = {name: asdict(getattr(config, name)) for name in IDENTITY_SECTIONS}
+    subset["operational"] = {
+        key: getattr(config.operational, key) for key in IDENTITY_OPERATIONAL_KEYS
+    }
     return canonical_json_sha256(subset)
 
 

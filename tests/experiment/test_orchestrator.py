@@ -24,29 +24,43 @@ from typing import Any
 import pytest
 
 import rlm.core.rlm as rlm_module
+import shrlm.experiment.orchestrator as orchestrator_module
 from shrlm.experiment.config import ExperimentConfig, load_config
 from shrlm.experiment.orchestrator import (
     CONFIG_FILENAME,
+    EVIDENCE_MARKER_FILENAME,
     FROZEN_DIR,
     FROZEN_HARNESS_FILENAME,
     PROPOSALS_MARKER_FILENAME,
     ROUND_MARKER_FILENAME,
     STOP_MAX_ROUNDS,
     STOP_PATIENCE,
+    ExperimentPersistenceError,
     IdentityMismatchError,
     MiningBudgetExceededError,
     check_identity,
     experiment_round_dir,
     run_experiment,
 )
-from shrlm.experiment.splits import LoaderFn
-from shrlm.experiment.usage import STAGE_USAGE_FILE, read_stage_usage
+from shrlm.experiment.splits import (
+    MANIFEST_FILE,
+    SPLITS_DIR,
+    LoaderFn,
+    sha256_text,
+    split_file_name,
+)
+from shrlm.experiment.usage import STAGE_USAGE_FILE, read_jsonl, read_stage_usage
 from shrlm.harness_identity import harness_hash, write_harness_json
-from shrlm.optimization.bundle import round_dir
+from shrlm.optimization.bundle import (
+    ATTRIBUTIONS_FILENAME,
+    RECORDS_FILENAME,
+    round_dir,
+    write_bundle,
+)
 from shrlm.optimization.candidates import materialize_harness
 from shrlm.optimization.driver import load_manifest
 from shrlm.optimization.proposal import _import_candidate_function
-from shrlm.optimization.validation import load_promotion_ledger
+from shrlm.optimization.validation import SPLIT_HELDIN, load_promotion_ledger
 from shrlm.rlm_harness import H0
 from tests.mock_lm import MockLM
 from tests.optimization.test_driver import ClientFactory, GoldVerifier, final
@@ -672,7 +686,296 @@ class TestMiningSpendBreaker:
 
         # Re-invocation charges the persisted run, trips again, executes nothing.
         idle = patch_runner(monkeypatch, [])
-        with pytest.raises(MiningBudgetExceededError):
+        with pytest.raises(MiningBudgetExceededError) as excinfo:
             run(config, out, MockLM(responses=[]), MockLM(responses=[]))
         assert idle.total_calls == 0
         assert len(mining_manifest(out, 1)) == 1
+
+        # The re-trip is permanent for this directory, so the error must say so
+        # rather than reading as a transient "try again" (the budget cannot be
+        # raised in place either -- caps are identity keys).
+        message = str(excinfo.value)
+        assert "cannot be completed" in message
+        assert str(out) in message
+        assert "candidate_budget" in message
+        assert "identity-protected" in message
+        assert "FRESH out_dir" in message
+        assert "lower the scale" in message
+
+
+# ---------------------------------------------------------------------------
+# The evidence stage's completion marker (bundle.json is not one)
+# ---------------------------------------------------------------------------
+
+
+def mining_round_path(out_dir: Path, round_index: int) -> Path:
+    return round_dir(experiment_round_dir(out_dir, round_index) / "mining", round_index)
+
+
+class TestEvidenceCrashWindow:
+    """``write_bundle`` publishes ``bundle.json`` (atomically) BEFORE it writes
+    ``records.jsonl`` and ``attributions.jsonl``. A crash in that window leaves
+    a readable bundle beside missing audit files, so the bundle alone can never
+    be the stage's completion marker."""
+
+    def crash_after_publishing_bundle(self, bundle, records, out_dir, raw_attributions=None):
+        write_bundle(bundle, records, out_dir=out_dir, raw_attributions=raw_attributions)
+        published = round_dir(out_dir, bundle.config.round_index)
+        (published / RECORDS_FILENAME).unlink()
+        (published / ATTRIBUTIONS_FILENAME).unlink()
+        raise RuntimeError("crashed after publishing bundle.json")
+
+    def truncate_the_records_file(self, bundle, records, out_dir, raw_attributions=None):
+        write_bundle(bundle, records, out_dir=out_dir, raw_attributions=raw_attributions)
+        published = round_dir(out_dir, bundle.config.round_index)
+        first_line = (published / RECORDS_FILENAME).read_text().splitlines(keepends=True)[0]
+        (published / RECORDS_FILENAME).write_text(first_line)
+
+    def test_crash_between_bundle_and_audit_files_is_re_mined_on_resume(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        monkeypatch.setattr(orchestrator_module, "write_bundle", self.crash_after_publishing_bundle)
+        patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        with pytest.raises(RuntimeError, match="crashed after publishing"):
+            run(config, out, attributor, MockLM(responses=[]))
+
+        mining_round = mining_round_path(out, 1)
+        assert (mining_round / "bundle.json").exists()  # the readable "marker"
+        assert not (mining_round / RECORDS_FILENAME).exists()
+        assert not (mining_round / EVIDENCE_MARKER_FILENAME).exists()
+
+        monkeypatch.undo()  # the real write_bundle (and a fresh runner script)
+        resumed = patch_runner(monkeypatch, SUBJECT_FAIL + SUBJECT_PASS)
+        replay_attributor = MockLM(responses=[])  # a cache miss would raise IndexError
+        proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
+        result = run(config, out, replay_attributor, proposer)
+
+        assert replay_attributor._call_count == 0  # attributions replay from the cache
+        assert resumed.total_calls == 8  # validation only: mining runs stay persisted
+        assert len(read_jsonl(mining_round / RECORDS_FILENAME)) == 2
+        assert len(read_jsonl(mining_round / ATTRIBUTIONS_FILENAME)) == 2
+        marker = json.loads((mining_round / EVIDENCE_MARKER_FILENAME).read_text())
+        assert marker["n_records"] == 2
+        assert (
+            marker["bundle_id"]
+            == json.loads((mining_round / "bundle.json").read_text())["bundle_id"]
+        )
+        assert result.rounds[0].promoted
+
+    def test_a_truncated_audit_file_refuses_to_mark_the_stage_complete(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        monkeypatch.setattr(orchestrator_module, "write_bundle", self.truncate_the_records_file)
+        patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        with pytest.raises(ExperimentPersistenceError, match="truncated audit file"):
+            run(config, out, attributor, MockLM(responses=[]))
+        assert not (mining_round_path(out, 1) / EVIDENCE_MARKER_FILENAME).exists()
+
+
+# ---------------------------------------------------------------------------
+# A crashed stage's persisted runs are still metered (R5)
+# ---------------------------------------------------------------------------
+
+
+class TestCrashedStageUsage:
+    def test_a_crashed_mining_stage_still_meters_the_runs_it_paid_for(self, tmp_path, monkeypatch):
+        """The stage raises after persisting run 1; that run cost real money,
+        so it must land in the sidecar rather than being charged to nothing."""
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, [final("WRONG")])  # the second run's call raises
+        with pytest.raises(IndexError):
+            run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+
+        assert len(mining_manifest(out, 1)) == 1
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/mining"]
+        assert usage.input_tokens == 10  # exactly the persisted run's manifest line
+        assert usage.output_tokens == 10
+        assert usage.cost == pytest.approx(0.001)
+        assert usage.lower_bound is True  # the stage raised: never an exact figure
+
+    def test_a_crashed_validation_stage_still_meters_the_runs_it_paid_for(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        # Mining and attribution complete; validation dies partway through the
+        # baseline's four runs.
+        patch_runner(monkeypatch, MINING_FAIL + [final("WRONG")] * 2)
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
+        with pytest.raises(IndexError):
+            run(config, out, attributor, proposer)
+
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
+        assert usage.input_tokens == 20  # the two persisted validation runs
+        assert usage.lower_bound is True
+
+
+# ---------------------------------------------------------------------------
+# Persisted state that contradicts itself: the resume guards (R7)
+# ---------------------------------------------------------------------------
+
+
+def complete_one_promoted_round(config, out: Path, monkeypatch) -> Any:
+    """One finished, promoting round -- the state the guards below corrupt."""
+    patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_PASS)
+    attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+    proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
+    return run(config, out, attributor, proposer)
+
+
+def rewrite_json(path: Path, **changes: Any) -> None:
+    payload = json.loads(path.read_text())
+    payload.update(changes)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+class TestContradictoryPersistedState:
+    def test_round_marker_recording_another_round_index_is_refused(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        complete_one_promoted_round(config, out, monkeypatch)
+        rewrite_json(experiment_round_dir(out, 1) / ROUND_MARKER_FILENAME, round=7)
+
+        idle = patch_runner(monkeypatch, [])
+        with pytest.raises(ExperimentPersistenceError, match="records round 7"):
+            run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+        assert idle.total_calls == 0
+
+    def test_round_marker_of_the_wrong_format_is_refused(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        complete_one_promoted_round(config, out, monkeypatch)
+        rewrite_json(experiment_round_dir(out, 1) / ROUND_MARKER_FILENAME, format="something-else")
+
+        patch_runner(monkeypatch, [])
+        with pytest.raises(ExperimentPersistenceError, match="shrlm-experiment-round/v1"):
+            run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+
+    def test_marker_hash_diverging_from_the_ledger_decision_is_refused(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        complete_one_promoted_round(config, out, monkeypatch)
+        rewrite_json(
+            experiment_round_dir(out, 1) / ROUND_MARKER_FILENAME,
+            promoted_harness_hash="0" * 64,
+        )
+
+        idle = patch_runner(monkeypatch, [])
+        with pytest.raises(ExperimentPersistenceError, match="contradicts itself"):
+            run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+        assert idle.total_calls == 0
+
+    def test_a_promoted_envelope_that_no_longer_round_trips_is_refused(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        complete_one_promoted_round(config, out, monkeypatch)
+        validation_path = validation_round_path(out, 1)
+        records, _ = load_promotion_ledger(validation_path)
+        promoted = [record for record in records if record["decision"] == "promoted"]
+        envelope_path = validation_path / str(
+            promoted[0]["links"]["splits"][SPLIT_HELDIN]["harness"]
+        )
+        envelope = json.loads(envelope_path.read_text())
+        envelope["harness"]["surfaces"]["S4_verification_instruction"] = "edited after the fact"
+        envelope_path.write_text(json.dumps(envelope, indent=2, sort_keys=True) + "\n")
+
+        patch_runner(monkeypatch, [])
+        with pytest.raises(ExperimentPersistenceError, match="does not round-trip"):
+            run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+
+    def test_a_materialized_split_holding_no_instances_is_refused(self, tmp_path, monkeypatch):
+        """Emptying the file alone trips the splits hash guard, so this empties
+        it *consistently* -- manifest updated -- to reach the orchestrator's own
+        "cannot run a round on it" check."""
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        complete_one_promoted_round(config, out, monkeypatch)
+        splits_dir = out / SPLITS_DIR
+        file_name = split_file_name("graphwalks", "short", "held_in")
+        (splits_dir / file_name).write_text("")
+        manifest_path = splits_dir / MANIFEST_FILE
+        manifest = json.loads(manifest_path.read_text())
+        manifest["environments"]["graphwalks"]["files"][file_name] = {
+            "sha256": sha256_text(""),
+            "count": 0,
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+        idle = patch_runner(monkeypatch, [])
+        with pytest.raises(ExperimentPersistenceError, match="holds no instances"):
+            run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+        assert idle.total_calls == 0
+
+    def test_a_frozen_harness_diverging_from_the_conclusion_is_refused(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        complete_one_promoted_round(config, out, monkeypatch)
+        # Someone froze a different harness into the completed experiment.
+        write_harness_json(
+            replace(H0, verification_instruction="a different frozen harness"),
+            out / FROZEN_DIR / FROZEN_HARNESS_FILENAME,
+        )
+
+        patch_runner(monkeypatch, [])
+        with pytest.raises(ExperimentPersistenceError, match="refusing to overwrite a frozen"):
+            run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+
+
+# ---------------------------------------------------------------------------
+# A round whose proposal stage seals zero candidates
+# ---------------------------------------------------------------------------
+
+EMPTY_BATCH = "```json\n[]\n```"
+
+
+class TestZeroCandidateRound:
+    def test_no_candidates_means_no_ledger_no_promotion_and_no_prior_history(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path, t=2)
+        out = tmp_path / "exp"
+
+        histories: list[int] = []
+        real_propose_round = orchestrator_module.propose_round
+
+        def spy(*args: Any, **kwargs: Any) -> Any:
+            histories.append(len(kwargs["prior_history"]))
+            return real_propose_round(*args, **kwargs)
+
+        monkeypatch.setattr(orchestrator_module, "propose_round", spy)
+        factory = patch_runner(
+            monkeypatch,
+            MINING_FAIL  # round 1: mined, but the proposer offers nothing
+            + MINING_FAIL_V2
+            + SUBJECT_FAIL
+            + SUBJECT_PASS,  # round 2: a real candidate, promoted
+        )
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
+        proposer = MockLM(responses=[EMPTY_BATCH, proposer_batch((0, TEXT_ROUND_2))])
+        result = run(config, out, attributor, proposer)
+
+        assert factory.total_calls == 12  # 2 + 2 mining runs, then 8 validation runs
+        first, second = result.rounds
+        assert (first.has_ledger, first.promoted) == (False, False)
+        assert (second.has_ledger, second.promoted) == (True, True)
+
+        marker = json.loads((experiment_round_dir(out, 1) / ROUND_MARKER_FILENAME).read_text())
+        assert marker["has_ledger"] is False
+        assert marker["promoted"] is False
+        assert marker["promoted_harness_hash"] is None
+        assert (
+            json.loads((experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text())[
+                "candidate_ids"
+            ]
+            == []
+        )
+        # A ledger-less round creates no validation round directory at all...
+        assert not validation_round_path(out, 1).exists()
+        # ...and contributes no prior history to the next round's proposal.
+        assert histories == [0, 0]

@@ -462,8 +462,16 @@ class _Evaluation:
             out_path=self.usage_path,
         ) as meter:
             known = len(load_manifest(set_path, EVAL_ROUND_INDEX))
-            result = run_governed_round(round_config, breaker)
-            meter.add(aggregate_manifest_usage(result.entries[known:]))
+            try:
+                result = run_governed_round(round_config, breaker)
+            finally:
+                # Re-read from disk rather than from the (possibly unbound)
+                # result: a stage that raised still persisted every run it
+                # paid for, and usage the meter never sees is usage the
+                # report silently undercounts (R5).
+                meter.add(
+                    aggregate_manifest_usage(load_manifest(set_path, EVAL_ROUND_INDEX)[known:])
+                )
 
         usage = aggregate_manifest_usage(result.entries)
         return {

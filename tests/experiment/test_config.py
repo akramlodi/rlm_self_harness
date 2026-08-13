@@ -198,12 +198,45 @@ def test_identity_hash_ignores_operational_values() -> None:
     base = identity_hash(config)
     pricier_gpu = dataclasses.replace(config.gpu_scenarios[0], hourly_rate_usd=9.99)
     assert identity_hash(dataclasses.replace(config, gpu_scenarios=(pricier_gpu,))) == base
-    more_repetitions = dataclasses.replace(config.operational, eval_repetitions=7)
-    assert identity_hash(dataclasses.replace(config, operational=more_repetitions)) == base
+    relocated_cache = dataclasses.replace(
+        config.operational, attribution_cache_path="/tmp/attribution.jsonl"
+    )
+    assert identity_hash(dataclasses.replace(config, operational=relocated_cache)) == base
+    patient_loader = dataclasses.replace(config.operational, loader_timeout_seconds=9999.0)
+    assert identity_hash(dataclasses.replace(config, operational=patient_loader)) == base
     cheaper = dataclasses.replace(
         config.pricing, promo=dataclasses.replace(config.pricing.promo, input_per_million=0.01)
     )
     assert identity_hash(dataclasses.replace(config, pricing=cheaper)) == base
+
+
+def test_identity_hash_covers_eval_repetitions_in_both_directions() -> None:
+    """The effective evaluation attempt count is identity-protected (KTD8).
+
+    It decides how many runs an evaluation persists and what the eval summary
+    claims was evaluated, so raising *or* lowering it under an existing
+    experiment directory must move the hash -- lowering in particular would
+    otherwise reuse a higher count's persisted attempts while rewriting the
+    summary as if the smaller plan had been run.
+    """
+    config = load_config()
+    base = identity_hash(config)
+    assert config.operational.eval_repetitions == 3
+    lowered = dataclasses.replace(
+        config, operational=dataclasses.replace(config.operational, eval_repetitions=1)
+    )
+    raised = dataclasses.replace(
+        config, operational=dataclasses.replace(config.operational, eval_repetitions=7)
+    )
+    assert identity_hash(lowered) != base
+    assert identity_hash(raised) != base
+    assert identity_hash(lowered) != identity_hash(raised)
+
+
+def test_smoke_profile_still_shrinks_eval_repetitions() -> None:
+    """Identity protection must not cost the smoke profile its scale key (R2)."""
+    assert load_config("smoke").operational.eval_repetitions == 1
+    assert load_config("full").operational.eval_repetitions == 3
 
 
 def test_identity_hash_differs_between_profiles() -> None:

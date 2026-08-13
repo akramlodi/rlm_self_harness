@@ -14,6 +14,7 @@ Directory contract under ``out_dir``::
     stage_usage.jsonl         # one StageMeter record per stage attempt (R5)
     opt/round_NN/
         mining/round_NN/      # run_round + mine_round artifacts, incl. bundle.json
+            evidence_complete.json  # stage marker: the whole bundle triplet landed
         proposals/            # <candidate_id>/proposal.json directories
         proposals_complete.json  # stage marker: the proposal stage's sealed outcome
         validation/round_NN/  # validate_round artifacts, incl. decision.json
@@ -34,9 +35,18 @@ Crash-safe resume. Every stage boundary is decidable from disk:
    executes only the missing runs (under the cumulative spend breaker, R12;
    a tripped breaker raises ``MiningBudgetExceededError`` after persisting the
    partial, resumable state).
-2. The evidence stage is complete when ``bundle.json`` exists; resume reads it
-   back instead of re-mining (the attribution cache, persisted at the
-   configured operational path, makes any re-mine replay-free anyway).
+2. The evidence stage is complete when ``evidence_complete.json`` exists;
+   resume then reads ``bundle.json`` back instead of re-mining (the attribution
+   cache, persisted at the configured operational path, makes any re-mine
+   replay-free anyway). ``bundle.json`` itself is NOT the marker:
+   ``shrlm.optimization.bundle.write_bundle`` publishes it atomically *before*
+   it writes ``records.jsonl`` and ``attributions.jsonl``, so a crash in that
+   window leaves a readable bundle beside missing or truncated audit files.
+   The marker is written by this module only after all three artifacts are
+   re-read and their line counts checked against what mining produced. An
+   unmarked bundle is re-mined with the persisted ``created_at``, so the
+   re-mine reproduces the same bytes and ``write_bundle``'s non-clobber guard
+   confirms it rather than refusing the resume.
 3. The proposal stage is complete when ``proposals_complete.json`` exists.
    ``propose_round`` runs over a PERSISTED ``ProposalCache``
    (``operational.proposal_cache_path``), so a crash-and-rerun replays the
@@ -55,6 +65,25 @@ Crash-safe resume. Every stage boundary is decidable from disk:
 Operational cache paths (``operational.attribution_cache_path`` /
 ``proposal_cache_path``) resolve relative to ``out_dir`` unless absolute, so
 an experiment directory is self-contained and resumable as a unit.
+
+Deferred redesign: a resumable mining budget allocation. ``run_governed_round``
+charges every already-persisted run into each fresh ``CandidateSpendBreaker``,
+so once a round's cumulative persisted mining spend exceeds
+``caps.candidate_budget``, every re-invocation re-charges it, trips before the
+pending runs execute, and raises ``MiningBudgetExceededError`` again -- the
+round cannot be completed in that output directory, and because caps are
+identity keys (R3) the budget cannot be raised in place. That is the breaker's
+contract working as designed (cumulative spend over persisted runs; a
+per-invocation budget would let an operator spend the cap again on every
+re-invocation), so the fix that would make such a round resumable -- persisting
+a per-round budget allocation (spend already accounted for, remaining
+allowance) and charging an invocation only for what it adds -- is deliberately
+NOT smuggled in here: it changes what ``candidate_budget`` means for every
+stage that shares a breaker (validation and evaluation included) and belongs in
+its own change. Until then the failure is transparent rather than silent: the
+error states that the round is uncompletable in this directory, why, and the
+operator's two options (a larger budget in a fresh out_dir, or a smaller
+scale).
 
 Single-threaded, main thread only: the SIGALRM hard-deadline backstop in
 ``shrlm.optimization.costs`` binds only there (POSIX main thread), and this
@@ -92,7 +121,13 @@ from shrlm.experiment.usage import (
 )
 from shrlm.harness_identity import harness_hash, write_harness_json
 from shrlm.optimization.attribution import AttributionCache, LLMAttributor
-from shrlm.optimization.bundle import BUNDLE_FILENAME, round_dir, write_bundle
+from shrlm.optimization.bundle import (
+    ATTRIBUTIONS_FILENAME,
+    BUNDLE_FILENAME,
+    RECORDS_FILENAME,
+    round_dir,
+    write_bundle,
+)
 from shrlm.optimization.candidates import CandidateRejection, materialize_harness
 from shrlm.optimization.costs import (
     CandidateSpendBreaker,
@@ -124,6 +159,8 @@ PROPOSALS_DIR = "proposals"
 VALIDATION_DIR = "validation"
 WORK_DIR = "work"
 
+EVIDENCE_MARKER_FILENAME = "evidence_complete.json"
+EVIDENCE_MARKER_FORMAT = "shrlm-evidence-complete/v1"
 PROPOSALS_MARKER_FILENAME = "proposals_complete.json"
 PROPOSALS_MARKER_FORMAT = "shrlm-proposals-complete/v1"
 ROUND_MARKER_FILENAME = "round.json"
@@ -221,6 +258,52 @@ def _load_marker(path: Path, expected_format: str) -> dict[str, Any]:
     if payload.get("format") != expected_format:
         raise ExperimentPersistenceError(f"{path} is not a {expected_format} document")
     return payload
+
+
+def _interrupted_bundle_created_at(bundle_path: Path) -> str | None:
+    """The ``created_at`` of a bundle an interrupted evidence stage left behind.
+
+    ``write_bundle`` refuses any rewrite that differs from the persisted bundle
+    in a single byte, timestamp included, so a re-mine over an unmarked bundle
+    must reproduce the timestamp already on disk -- otherwise the very crash
+    window this resume path exists for would raise instead of healing. No
+    bundle on disk means a fresh stage, which mints its own timestamp.
+    """
+    if not bundle_path.exists():
+        return None
+    return str(json.loads(bundle_path.read_text())["created_at"])
+
+
+def _evidence_marker_payload(
+    mining_round_path: Path, round_index: int, *, n_records: int, n_attributions: int
+) -> dict[str, Any]:
+    """Verify the whole evidence triplet landed; describe it for the marker.
+
+    ``bundle.json`` is published (atomically) before ``records.jsonl`` and
+    ``attributions.jsonl`` are written, so only a re-read of all three proves
+    the stage finished: both JSON-lines files are parsed and their line counts
+    checked against what mining produced, and the bundle id is recorded so the
+    marker names the evidence it certifies.
+    """
+    bundle_id = str(json.loads((mining_round_path / BUNDLE_FILENAME).read_text())["bundle_id"])
+    for file_name, expected in (
+        (RECORDS_FILENAME, n_records),
+        (ATTRIBUTIONS_FILENAME, n_attributions),
+    ):
+        actual = len(read_jsonl(mining_round_path / file_name))
+        if actual != expected:
+            raise ExperimentPersistenceError(
+                f"{mining_round_path / file_name} holds {actual} line(s), but round "
+                f"{round_index}'s mining produced {expected}; refusing to mark evidence "
+                "complete over a missing or truncated audit file."
+            )
+    return {
+        "format": EVIDENCE_MARKER_FORMAT,
+        "round": round_index,
+        "bundle_id": bundle_id,
+        "n_records": n_records,
+        "n_attributions": n_attributions,
+    }
 
 
 def check_identity(config: ExperimentConfig, out_dir: Path | str) -> str:
@@ -564,23 +647,48 @@ class _Experiment:
         ) as meter:
             known = len(load_manifest(mining_parent, round_index))
             breaker = CandidateSpendBreaker(self.caps)
-            result = run_governed_round(mining_config, breaker)
-            meter.add(aggregate_manifest_usage(result.entries[known:]))
+            try:
+                result = run_governed_round(mining_config, breaker)
+            finally:
+                # Re-read from disk rather than from the (possibly unbound)
+                # result: a stage that raised still persisted every run it
+                # paid for, and usage the meter never sees is usage the
+                # report silently undercounts (R5).
+                meter.add(
+                    aggregate_manifest_usage(load_manifest(mining_parent, round_index)[known:])
+                )
             if result.over_budget:
                 raise MiningBudgetExceededError(
-                    f"round {round_index} mining tripped the spend breaker at "
-                    f"{result.spent:.6f} USD (candidate_budget "
-                    f"{self.caps.candidate_budget}); {len(result.skipped_run_ids)} run(s) "
-                    "were skipped. Completed runs are persisted; the round is resumable "
-                    "only under a configuration whose budget admits it."
+                    f"round {round_index} mining tripped the cumulative spend breaker at "
+                    f"{result.spent:.6f} USD against candidate_budget "
+                    f"{self.caps.candidate_budget}; {len(result.skipped_run_ids)} run(s) were "
+                    f"skipped. Every completed run is persisted, but this round cannot be "
+                    f"completed in {self.out_dir}: each invocation charges the already-persisted "
+                    "mining spend to a fresh breaker, so the breaker trips again before the "
+                    "pending runs execute, and caps.candidate_budget is identity-protected (R3) "
+                    "-- raising it under this directory is refused by the identity check. "
+                    "Options: (a) raise caps.candidate_budget and run in a FRESH out_dir, or "
+                    "(b) lower the scale (splits.n_in, loop.m, caps.max_budget) and run in a "
+                    "fresh out_dir. A resumable per-round budget allocation is a documented "
+                    "deferral -- see this module's docstring."
                 )
 
     def _evidence_bundle(
         self, mining_parent: Path, mining_round_path: Path, round_index: int
     ) -> dict[str, Any]:
-        """Stage 2: mine the persisted round into ``bundle.json`` (or read it back)."""
+        """Stage 2: mine the persisted round into the evidence triplet.
+
+        Gated on this module's ``evidence_complete.json``, never on
+        ``bundle.json`` alone: ``write_bundle`` publishes the bundle before the
+        records and attributions files, so the bundle is a completion marker
+        for nothing (see the module docstring's resume contract). An unmarked
+        bundle is re-mined with its persisted ``created_at`` so the rewrite
+        reproduces it byte for byte.
+        """
         bundle_path = mining_round_path / BUNDLE_FILENAME
-        if bundle_path.exists():
+        marker_path = mining_round_path / EVIDENCE_MARKER_FILENAME
+        if marker_path.exists():
+            _load_marker(marker_path, EVIDENCE_MARKER_FORMAT)
             return json.loads(bundle_path.read_text())
         cache_path = _operational_path(self.out_dir, self.config.operational.attribution_cache_path)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -606,6 +714,7 @@ class _Experiment:
                 split_id=split_file_name(
                     SPLIT_ENVIRONMENT, SPLIT_LENGTH, ROLE_HELD_IN
                 ).removesuffix(".jsonl"),
+                created_at=_interrupted_bundle_created_at(bundle_path),
             )
             if result.errors:
                 raise ExperimentPersistenceError(
@@ -621,6 +730,18 @@ class _Experiment:
                 out_dir=str(mining_parent),
                 raw_attributions=result.raw_attributions,
             )
+        _persist_once(
+            marker_path,
+            _evidence_marker_payload(
+                mining_round_path,
+                round_index,
+                n_records=len(result.records),
+                n_attributions=len(result.raw_attributions),
+            ),
+            f"{marker_path} already marks a diverging evidence bundle for round "
+            f"{round_index}; the persisted attribution cache should have made this "
+            "impossible -- refusing to mix two mining outcomes.",
+        )
         return json.loads(bundle_path.read_text())
 
     def _proposals(
@@ -694,14 +815,18 @@ class _Experiment:
             out_path=self.usage_path,
         ) as meter:
             before = _validation_usage(validation_round_path)
-            validation = validate_round(
-                incumbent,
-                proposals_dir,
-                eval_config,
-                self.pconfig,
-                loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
-            )
-            meter.add(_validation_usage(validation_round_path) - before)
+            try:
+                validation = validate_round(
+                    incumbent,
+                    proposals_dir,
+                    eval_config,
+                    self.pconfig,
+                    loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
+                )
+            finally:
+                # A crashed validation stage still persisted (and paid for)
+                # every run its manifests hold; charge the delta either way.
+                meter.add(_validation_usage(validation_round_path) - before)
         return validation
 
 
@@ -780,6 +905,7 @@ def run_experiment(
 
 __all__ = [
     "CONFIG_FILENAME",
+    "EVIDENCE_MARKER_FILENAME",
     "FROZEN_DIR",
     "FROZEN_HARNESS_FILENAME",
     "PROPOSALS_MARKER_FILENAME",
