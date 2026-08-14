@@ -28,16 +28,14 @@
 </p>
 
 ## Overview
-Recursive Language Models (RLMs) are a task-agnostic inference paradigm for language models (LMs) to handle near-infinite length contexts by enabling the LM to *programmatically* examine, decompose, and recursively call itself over its input. RLMs replace the canonical `llm.completion(prompt, model)` call with a `rlm.completion(prompt, model)` call, acting as a "language model". RLMs offload the context as a variable in a REPL environment that the LM can interact with and launch sub-LM calls inside of.
+Recursive language models (RLMs) let a fixed, bounded-context model answer queries over inputs far larger than its context window: the model treats its prompt
+as an external variable, decomposes it in code, and recursively calls itself on the pieces [arXiv preprint](https://arxiv.org/abs/2512.24601). Whether recursion succeeds depends not on the model alone but on
+the harness that governs how it decomposes the input, when it stops, and how it recovers from errors. Today that harness is supplied either by fine-tuning the model or by an expert hand-engineering the scaffold, remedies that are tied to a specific model and scale poorly as new models arrive. We ask whether a fixed model can instead improve its own recursive harness from the evidence it produces
+while running. We adapt the SELF-HARNESS framework of Zhang et al. [arXiv preprint](https://arxiv.org/abs/2606.09498) to RLMs [repo](https://github.com/alexzhang13/rlm): from verifier-grounded execution traces the model mines recurring failure mechanisms, proposes minimal edits to nine declared harness surfaces keyed to the phases of the recursive loop, and promotes only edits that survive non-regressive validation on held-out data, all without weight updates or a stronger external model. Optimization begins from a deliberately sparse harness and runs only on short instances; the frozen harness is then evaluated on inputs 8–32× longer than any seen during optimization and in unseen target environments, testing whether a self-discovered orchestration strategy transfers across both input length and task environment. As this is a proposal, experimental results are forthcoming.
 
-RLMs are a bet on future "language model" design choices. We argue for a [CodeAct](https://arxiv.org/abs/2402.01030)-style harness (i.e. all language models should have access to a code environment) with sub-(R)LM calls as functions in code, and context / prompts as objects in code. RLMs explicitly defer code execution with sub-calls as functions to the language model itself, which is incredibly flexible and lends itself well to scale if trained correctly. We want to move away from the JSON tool-calling standard for both sub-agents and generic tool calls. The naming comes from the fact that such a system is itself a "language model" (a probabilistic mapping from text to text) that builds around and relies on recursive sub-LLM calls.
-
-This repository provides both an extensible inference engine and training environment for using RLMs around standard API-based and local LLMs. The initial experiments and idea were proposed in a [blogpost](https://alexzhang13.github.io/blog/2025/rlm/) in 2025, with expanded results in an [arXiv preprint](https://arxiv.org/abs/2512.24601).
-
-We now also include a [verifiers](https://github.com/PrimeIntellect-ai/verifiers) training environment based on Prime Intellect's [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) in the `training/` folder. Train your own RLMs, which directly can be plugged into our inference engine!
 
 > [!NOTE]
-> This repository contains inference code for RLMs with support for various sandbox environments. Open-source contributions are welcome. This repository is maintained by the authors of the paper from the MIT OASYS lab.
+> This repository contains inference code for SH-RLMs with support for various sandbox environments. Open-source contributions are welcome. This repository is maintained by the authors of the paper from the MIT OASYS lab.
 
 ## Quick Setup
 > [!NOTE]
