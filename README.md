@@ -135,6 +135,8 @@ A worked example with an example `.toml` lives in [`training/environments/oolong
 ## Relevant Reading
 * **[Dec '25]** [Recursive Language Models arXiv](https://arxiv.org/abs/2512.24601)
 * **[Oct '25]** [Recursive Language Models Blogpost](https://alexzhang13.github.io/blog/2025/rlm/)
+* **[Jun '26]** [Self-Harness: Harnesses That Improve Themselves](https://arxiv.org/pdf/2606.09498)
+  
 
 If you use this code or repository in your research, please cite:
 
