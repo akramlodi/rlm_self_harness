@@ -152,18 +152,6 @@ If you use this code or repository in your research, please cite:
 }
 ```
 
-## RLMs in the Wild
-There are many amazing demos and production-ready use cases of RLMs. We provide a list of notable examples that explicitly use RLMs as a central piece of their design.
-* <img src="https://www.google.com/s2/favicons?domain=dspy.ai&sz=64" alt="DSPy" height="15" style="vertical-align: middle;"/> [DSPy.RLM](https://github.com/stanfordnlp/dspy) <a href="https://github.com/stanfordnlp/dspy/stargazers"><img src="https://badgen.net/github/stars/stanfordnlp/dspy?icon=github&label=Stars" height="15" alt="GitHub stars"></a>
-* <img src="https://github.com/ax-llm.png" alt="Ax" height="15" style="vertical-align: middle;"/> [Ax](https://github.com/ax-llm/ax) <a href="https://github.com/ax-llm/ax/stargazers"><img src="https://badgen.net/github/stars/ax-llm/ax?icon=github&label=Stars" height="15" alt="GitHub stars"></a>
-* <img src="https://github.com/context-labs.png" alt="context-labs" height="15" style="vertical-align: middle;"/> [context-labs/HALO: **RLM-based Automatic Agent Optimization Loop**](https://github.com/context-labs/halo) <a href="https://github.com/context-labs/halo/stargazers"><img src="https://badgen.net/github/stars/context-labs/halo?icon=github&label=Stars" height="15" alt="GitHub stars"></a>
-* [viplismism/rlm-cli: **CLI for Recursive Language Models**](https://github.com/viplismism/rlm-cli) <a href="https://github.com/viplismism/rlm-cli/stargazers"><img src="https://badgen.net/github/stars/viplismism/rlm-cli?icon=github&label=Stars" height="15" alt="GitHub stars"></a>
-* <img src="https://www.google.com/s2/favicons?domain=alphaxiv.org&sz=64" alt="alphaXiv" height="15" style="vertical-align: middle;"/> [alphaXiv Official Blog. **Reinforcing Recursive Language Models**](https://www.alphaxiv.org/blog/reinforcement-learning-for-rlms#training)
-* <img src="https://www.google.com/s2/favicons?domain=daytona.io&sz=64" alt="Daytona" height="15" style="vertical-align: middle;"/> [Daytona. **Building Deep Recursive Language Models**](https://www.daytona.io/docs/en/guides/rlm/recursive-language-models/)
-* <img src="https://www.google.com/s2/favicons?domain=symbolica.ai&sz=64" alt="Symbolica" height="15" style="vertical-align: middle;"/> [Symbolica. **SotA ARC-AGI-2 Results with REPL Agents**](https://www.symbolica.ai/blog/arcgentica)
-* <img src="https://www.google.com/s2/favicons?domain=cloud.google.com&sz=64" alt="Google Cloud" height="15" style="vertical-align: middle;"/> [Google Cloud Community Articles. **RLMs in ADK**](https://discuss.google.dev/t/recursive-language-models-in-adk/)
-* <img src="https://github.com/PrimeIntellect-ai.png" alt="Prime Intellect" height="15" style="vertical-align: middle;"/> [Prime Intellect Blog. **Recursive Language Models: *the* paradigm of 2026**](https://www.primeintellect.ai/blog/rlm)
-
 ## Optional: Trajectory metadata, logging, and debugging
 `RLMChatCompletion` has an optional `metadata` field (default `None`) that holds the full trajectory (run config + all iterations and sub-calls) so you can reconstruct the run. Pass an `RLMLogger` to capture it:
 
