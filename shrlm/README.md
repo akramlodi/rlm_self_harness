@@ -1,5 +1,5 @@
 <h1 align="center" style="font-size:2.8em">
-<span>Self-hosted Recursive Language Models (<span style="color:orange">shrlm</span>)</span>
+<span>Self-harnessing Recursive Language Models (<span style="color:orange">shrlm</span>)</span>
 </h1>
 
 <p align="center" style="font-size:1.3em">
@@ -16,7 +16,7 @@
 
 ## Overview
 
-**shrlm** (Self-hosted Recursive Language Models) is a small, auditable specification and runtime harness for RLMs (Recursive Language Models). It provides nine editable design surfaces (S1–S9) that define the root model's environment, three mechanical invariants (I1–I3) that are enforced structurally, and tooling to deterministically serialize and identity harnesses so runs can be reproduced and attributed reliably.
+**shrlm** (Self-harnessing Recursive Language Models) is a small, auditable specification and runtime harness for RLMs (Recursive Language Models). It provides nine editable design surfaces (S1–S9) that define the root model's environment, three mechanical invariants (I1–I3) that are enforced structurally, and tooling to deterministically serialize and identity harnesses so runs can be reproduced and attributed reliably.
 
 Unlike generic RLM implementations, shrlm separates **editable design surfaces** from **runtime mechanics**, allowing researchers and engineers to modify RLM behavior in controlled, measurable ways. It is designed to be small and auditable — every surface is explicitly listed, every invariant is mechanically enforced, and every harness is fully reconstructible.
 
