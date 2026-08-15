@@ -908,10 +908,11 @@ def validate_round(
         )
 
     evaluation = evaluate_validation_round(incumbent, loaded, config)
+    surface_by_id = {candidate.candidate_id: candidate.surface for candidate in loaded}
     decisions = [
         decide_subject(evaluation.baseline.summary, rejection, pconfig) for rejection in rejections
     ]
-    decisions += assess_round(evaluation, pconfig)
+    decisions += assess_round(evaluation, pconfig, surfaces=surface_by_id)
     plan = plan_promotion(incumbent, decisions, loaded)
 
     merge_evaluation: SubjectEvaluation | CandidateRejection | None = None

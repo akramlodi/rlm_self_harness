@@ -36,7 +36,7 @@ layers, in the order U6's ``validate_round`` will compose them:
 """
 
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -166,6 +166,10 @@ class CandidateDecision:
     over budget, in which case ``upstream`` or ``reasons`` say why). The thresholds are recorded on every
     record, scored or not -- they are round-level preregistration, and a
     ledger row must be interpretable without the config that produced it.
+    ``surface`` is the one S1-S9 surface the candidate's proposal edited
+    (from its ``LoadedCandidate``); it is None for a loader rejection whose
+    surface was never resolved, and for the merged harness's own re-evaluation
+    record, which spans more than one surface by construction.
     """
 
     subject_id: str
@@ -177,6 +181,7 @@ class CandidateDecision:
     rule: dict[str, Any] | None = None
     band: dict[str, Any] | None = None
     upstream: dict[str, str] | None = None
+    surface: str | None = None
 
     @property
     def accepted(self) -> bool:
@@ -199,6 +204,7 @@ class CandidateDecision:
             "rule": self.rule,
             "band": self.band,
             "upstream": self.upstream,
+            "surface": self.surface,
         }
 
 
@@ -278,6 +284,7 @@ def score_candidate(
     baseline_summary: dict[str, Any],
     candidate_summary: dict[str, Any],
     config: PromotionConfig,
+    surface: str | None = None,
 ) -> CandidateDecision:
     """Apply the acceptance rule and the band to one completed evaluation (R6).
 
@@ -289,6 +296,8 @@ def score_candidate(
         baseline_summary: The incumbent's summary payload.
         candidate_summary: The candidate's (or merged harness's) summary.
         config: The preregistered thresholds and bands.
+        surface: The candidate's edited surface (S1-S9), recorded on the
+            decision verbatim; None for the merged harness's re-evaluation.
 
     Returns:
         An ``accepted`` or ``rejected`` decision with the rule and band
@@ -355,6 +364,7 @@ def score_candidate(
         harness_hash=str(candidate_summary["harness_hash"]),
         rule=rule,
         band=band,
+        surface=surface,
     )
 
 
@@ -367,6 +377,7 @@ def decide_subject(
     baseline_summary: dict[str, Any],
     subject: SubjectEvaluation | CandidateRejection,
     config: PromotionConfig,
+    surface: str | None = None,
 ) -> CandidateDecision:
     """One subject's decision record, whatever happened to it upstream.
 
@@ -374,6 +385,11 @@ def decide_subject(
     carrying the gate verdict verbatim; an over-budget evaluation becomes
     ``over_budget``; only a completed evaluation is scored. This is also the
     entry point U6's merge leg uses on the merged harness's evaluation.
+
+    Args:
+        surface: The candidate's edited surface (S1-S9), when known -- a
+            loader rejection whose surface never resolved, or the merged
+            harness's own re-evaluation, passes None.
     """
     if isinstance(subject, CandidateRejection):
         return CandidateDecision(
@@ -383,6 +399,7 @@ def decide_subject(
             tau_regression=config.tau_regression,
             tau_improvement=config.tau_improvement,
             upstream=subject.to_dict(),
+            surface=surface,
         )
     if subject.over_budget:
         return CandidateDecision(
@@ -395,12 +412,22 @@ def decide_subject(
             tau_regression=config.tau_regression,
             tau_improvement=config.tau_improvement,
             harness_hash=subject.harness_hash,
+            surface=surface,
         )
-    return score_candidate(baseline_summary, subject.summary, config)
+    return score_candidate(baseline_summary, subject.summary, config, surface=surface)
 
 
-def assess_round(evaluation: RoundEvaluation, config: PromotionConfig) -> list[CandidateDecision]:
+def assess_round(
+    evaluation: RoundEvaluation,
+    config: PromotionConfig,
+    surfaces: Mapping[str, str] | None = None,
+) -> list[CandidateDecision]:
     """One decision record per candidate, in the round's order.
+
+    Args:
+        surfaces: ``candidate_id -> surface``, from the round's loaded
+            candidates; a candidate absent from this mapping records
+            ``surface=None``.
 
     Raises:
         ValueError: If the baseline itself ran over budget -- no candidate
@@ -412,8 +439,18 @@ def assess_round(evaluation: RoundEvaluation, config: PromotionConfig) -> list[C
             "the baseline evaluation ran over budget; no delta is measurable against a "
             "partial baseline, so the round must be re-run with a workable budget"
         )
+    surfaces = surfaces or {}
     return [
-        decide_subject(evaluation.baseline.summary, candidate, config)
+        decide_subject(
+            evaluation.baseline.summary,
+            candidate,
+            config,
+            surface=surfaces.get(
+                candidate.candidate_id
+                if isinstance(candidate, CandidateRejection)
+                else candidate.subject_id
+            ),
+        )
         for candidate in evaluation.candidates
     ]
 
