@@ -123,7 +123,7 @@ def _plot_series(
 
 def _mark_incumbent_changes(ax: "plt.Axes", rows: list[dict]) -> None:
     changed = [row for row in rows if row["incumbent_changed"]]
-    for split_key, color in (("heldin_pass_rate", BLUE), ("heldout_pass_rate", ORANGE)):
+    for split_key in ("heldin_pass_rate", "heldout_pass_rate"):
         xs = [row["round_index"] for row in changed if not math.isnan(row[split_key])]
         ys = [row[split_key] for row in changed if not math.isnan(row[split_key])]
         ax.scatter(
