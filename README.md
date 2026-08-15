@@ -1,4 +1,4 @@
-
+ 
 ---
 
 <h1 align="center" style="font-size:2.8em">
@@ -29,13 +29,45 @@
 
 ## Overview
 Recursive language models (RLMs) let a fixed, bounded-context model answer queries over inputs far larger than its context window: the model treats its prompt
-as an external variable, decomposes it in code, and recursively calls itself on the pieces [arXiv preprint](https://arxiv.org/abs/2512.24601). Whether recursion succeeds depends not on the model alone but on
-the harness that governs how it decomposes the input, when it stops, and how it recovers from errors. Today that harness is supplied either by fine-tuning the model or by an expert hand-engineering the scaffold, remedies that are tied to a specific model and scale poorly as new models arrive. We ask whether a fixed model can instead improve its own recursive harness from the evidence it produces
-while running. We adapt the SELF-HARNESS framework of Zhang et al. [arXiv preprint](https://arxiv.org/abs/2606.09498) to RLMs [repo](https://github.com/alexzhang13/rlm): from verifier-grounded execution traces the model mines recurring failure mechanisms, proposes minimal edits to nine declared harness surfaces keyed to the phases of the recursive loop, and promotes only edits that survive non-regressive validation on held-out data, all without weight updates or a stronger external model. Optimization begins from a deliberately sparse harness and runs only on short instances; the frozen harness is then evaluated on inputs 8–32× longer than any seen during optimization and in unseen target environments, testing whether a self-discovered orchestration strategy transfers across both input length and task environment. As this is a proposal, experimental results are forthcoming.
+as an external variable, decomposes it in code, and recursively calls itself on the pieces [arXiv preprint](https://arxiv.org/abs/2512.24601). Whether recursion succeeds depends not on the model a[...]
+the harness that governs how it decomposes the input, when it stops, and how it recovers from errors. Today that harness is supplied either by fine-tuning the model or by an expert hand-engineerin[...]
 
 
 > [!NOTE]
-> This repository contains inference code for SH-RLMs with support for various sandbox environments. Open-source contributions are welcome. This repository is maintained by the authors of the paper from the MIT OASYS lab.
+> This repository contains inference code for SH-RLMs with support for various sandbox environments. Open-source contributions are welcome. This repository is maintained by the authors of the pape[...]
+
+## Repository structure
+This repository separates core runtime, harness specifications, training code, and supporting tools so you can find the part you need quickly.
+
+Top-level layout (annotated):
+
+```text
+.gitattributes                       repository attributes
+.github/                              GitHub workflows and CI configs
+.gitignore                            ignore rules
+AGENTS.md                             agent-related documentation
+Makefile                              common tasks (install, check, quickstart)
+pyproject.toml                        packaging, dependencies, and extras
+uv.lock                               lockfile for the uv environment
+configs/                              optional configuration files
+docs/                                 additional documentation
+examples/                              example scripts and small demos
+experiment_smoke/                      small experiment harnesses / smoke tests
+paper/                                 paper source and assets
+patches/                               auxiliary patches
+rlm/                                   core RLM runtime package (clients, environments, logger, utils)
+shrlm/                                  self-harness implementation and spec (surfaces, runner, harness_identity, optimization)
+training/                               training harness, environments, and examples (rlm-train, oolong env)
+visualizer/                             web visualizer (Node.js + shadcn/ui) for run logs
+tests/                                  unit tests and test utilities
+```
+
+How it fits together: The `rlm/` package implements the runtime client, REPL environments, logging, and utilities used when running RLMs. The `shrlm/` package provides the self-harness specification (S1–S9), structural checks (I1–I3), and helpers to build and serialize harnesses for reproducible experiments. The `training/` directory holds training harnesses and example environments (including `oolong`) that depend on the core packages. The `visualizer/` is a separate frontend that reads JSONL logs written by `RLMLogger` in order to show call graphs, code, and sub-call traces.
+
+Where to look next:
+- rlm/Readme.md — runtime usage and REPL environments
+- shrlm/README.md — self-harness specification and examples
+- pyproject.toml — packaging, extras for sandboxes (modal, prime, ipython)
 
 ## Quick Setup
 > [!NOTE]
@@ -46,7 +78,7 @@ You can try out RLMs quickly by installing from PyPi:
 pip install rlms
 ```
 
-The default RLM client uses a REPL environment that runs on the host process through Python `exec` calls. It uses the same virtual environment as the host process (i.e. it will have access to the same dependencies), but with some limitations in its available global modules. As an example, we can call RLM completions using GPT-5-nano:
+The default RLM client uses a REPL environment that runs on the host process through Python `exec` calls. It uses the same virtual environment as the host process (i.e. it will have access to the [...]
 ```python
 from rlm import RLM
 
@@ -74,7 +106,7 @@ This project includes a `Makefile` to simplify common tasks.
 - `make install`: Install base dependencies.
 - `make check`: Run linter, formatter, and tests.
 
-To run a quick test, the following will run an RLM query with the OpenAI client using your environment variable `OPENAI_API_KEY` (feel free to change this). This will generate console output as well as a log which you can use with the visualizer to explore the trajectories.
+To run a quick test, the following will run an RLM query with the OpenAI client using your environment variable `OPENAI_API_KEY` (feel free to change this). This will generate console output as we[...]
 ```bash
 make quickstart
 ```
@@ -82,7 +114,7 @@ make quickstart
 </details>
 
 ## REPL Environments
-We support two types of REPL environments -- isolated, and non-isolated. Non-isolated environments (default) run code execution on the same machine as the RLM (e.g. through `exec`), which is pretty reasonable for some local low-risk tasks, like simple benchmarking, but can be problematic if the prompts or tool calls can interact with malicious users. Fully isolated environments use cloud-based sandboxes (e.g. Prime Sandboxes, [Modal Sandboxes](https://modal.com/docs/guide/sandboxes)) to run code generated by the RLM, ensuring complete isolation from the host process. Environments can be added, but we natively support the following: `local` (default), `ipython`, `docker`, `modal`, `prime`, `daytona`, `e2b`.
+We support two types of REPL environments -- isolated, and non-isolated. Non-isolated environments (default) run code execution on the same machine as the RLM (e.g. through `exec`), which is prett[...]
 
 ```python
 rlm = RLM(
@@ -92,15 +124,15 @@ rlm = RLM(
 ```
 
 ### Local Environments
-The default `local` environment `LocalREPL` runs in the same process as the RLM itself, with specified global and local namespaces for minimal security. Using this REPL is generally safe, but should not be used for production settings. It also shares the same virtual environment (e.g. Conda or uv) as the host process.
+The default `local` environment `LocalREPL` runs in the same process as the RLM itself, with specified global and local namespaces for minimal security. Using this REPL is generally safe, but shou[...]
 
 #### IPython (*requires `pip install 'rlms[ipython]'`*)
-`IPythonREPL` runs cells inside a real IPython session — either in-process (default) or in a separate `ipykernel` subprocess. Subprocess mode adds hard `cell_timeout` enforcement and full namespace isolation from the RLM host. See the [IPythonREPL docs](https://alexzhang13.github.io/rlm/environments/ipython) for details.
+`IPythonREPL` runs cells inside a real IPython session — either in-process (default) or in a separate `ipykernel` subprocess. Subprocess mode adds hard `cell_timeout` enforcement and full namesp[...]
 
-#### Docker <img src="https://github.com/docker.png" alt="Docker" height="20" style="vertical-align: middle;"/> (*requires [Docker installed](https://docs.docker.com/desktop/setup/install/)*)
-We also support a Docker-based environment called `DockerREPL` that launches the REPL environment as a Docker image. By default, we use the `python:3.11-slim` image, but the user can specify custom images as well. The container runs fully isolated from the host; a lightweight host-side proxy bridges LM access back into the container.
+#### Docker <img src="https://github.com/docker.png" alt="Docker" height="20" style="vertical-align: middle;"/> (*requires [Docker installed](https://docs.docker.com/desktop/setup/install/)* )
+We also support a Docker-based environment called `DockerREPL` that launches the REPL environment as a Docker image. By default, we use the `python:3.11-slim` image, but the user can specify cust[...]
 
-`DockerREPL` supports the full feature set of the local environment: single LM calls (`llm_query` / `llm_query_batched`), recursive sub-RLM calls (`rlm_query` / `rlm_query_batched`, including parallel batched sub-calls bounded by `max_concurrent_subcalls`), `custom_tools` / `custom_sub_tools`, `persistent=True` multi-turn sessions (versioned `context_N` / `history_N` reused across `completion()` calls), and `compaction=True` auto-summarization of the running `history`. For isolated environments, custom tools should be passed as Python code strings or JSON-serializable values (host callables cannot cross the process boundary).
+`DockerREPL` supports the full feature set of the local environment: single LM calls (`llm_query` / `llm_query_batched`), recursive sub-RLM calls (`rlm_query` / `rlm_query_batched`, including par[...]
 
 ### Isolated Environments
 We support several different REPL environments that run on separate, cloud-based machines. Whenever a recursive sub-call is made in these instances, it is requested from the host process.
@@ -114,7 +146,7 @@ modal setup   # authenticate account
 
 #### Prime Intellect Sandboxes <img src="https://github.com/PrimeIntellect-ai.png" alt="Prime Intellect" height="20" style="vertical-align: middle;"/>
 > [!NOTE]
-> **Prime Intellect Sandboxes** are currently a beta feature. See the [documentation](https://docs.primeintellect.ai/sandboxes/overview) for more information. We noticed slow runtimes when using these sandboxes, which is currently an open issue.
+> **Prime Intellect Sandboxes** are currently a beta feature. See the [documentation](https://docs.primeintellect.ai/sandboxes/overview) for more information. We noticed slow runtimes when using [...]
 
 
 To use [Prime Sandboxes](https://docs.primeintellect.ai/sandboxes/sdk), install the SDK and set your API key:
@@ -125,19 +157,18 @@ export PRIME_API_KEY=...
 
 
 ### Model Providers
-We currently support most major clients (OpenAI, Anthropic), as well as the router platforms (OpenRouter, Portkey). For local models, we recommend using vLLM (which interfaces with the [OpenAI client](https://github.com/alexzhang13/rlm/blob/main/rlm/clients/openai.py)). To view or add support for more clients, start by looking at [`rlm/clients/`](https://github.com/alexzhang13/rlm/tree/main/rlm/clients).
+We currently support most major clients (OpenAI, Anthropic), as well as the router platforms (OpenRouter, Portkey). For local models, we recommend using vLLM (which interfaces with the [OpenAI cl[...]
 
 ## Training
-We provide a simple RL training harness for training RLMs used in this repo (specifically the `local` REPL). The implementation uses no sandboxes for simplicity and slots easily your use case, but an ideal setup would use sandboxes for safety. Training logic is isolated to the [`training/`](https://github.com/alexzhang13/rlm/tree/main/training) folder, which exposes `rlm.RLM` as a [`verifiers`](https://github.com/willccbb/verifiers) `Environment` and plugs straight into [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl). See the [training README](https://github.com/alexzhang13/rlm/tree/main/training#readme) for the launch command. The harness uses subprocess-isolated local REPL execution (no cloud sandboxes), matching the `local` environment above.
+We provide a simple RL training harness for training RLMs used in this repo (specifically the `local` REPL). The implementation uses no sandboxes for simplicity and slots easily your use case, bu[...]
 
-A worked example with an example `.toml` lives in [`training/environments/oolong/`](https://github.com/alexzhang13/rlm/tree/main/training/environments/oolong) (OOLONG long-context QA). New training environments can be added the same way — author a `verifiers` env that wraps your task (see the [verifiers docs](https://verifiers.readthedocs.io/)), then reference it from a config.
+A worked example with an example `.toml` lives in [`training/environments/oolong/`](https://github.com/alexzhang13/rlm/tree/main/training/environments/oolong) (OOLONG long-context QA). New traini[...]
 
 ## Relevant Reading
 * **[Dec '25]** [Recursive Language Models arXiv](https://arxiv.org/abs/2512.24601)
 * **[Oct '25]** [Recursive Language Models Blogpost](https://alexzhang13.github.io/blog/2025/rlm/)
 * **[Jun '26]** [Self-Harness: Harnesses That Improve Themselves](https://arxiv.org/pdf/2606.09498)
   
-
 If you use this code or repository in your research, please cite:
 
 ```bibtex
@@ -153,7 +184,7 @@ If you use this code or repository in your research, please cite:
 ```
 
 ## Optional: Trajectory metadata, logging, and debugging
-`RLMChatCompletion` has an optional `metadata` field (default `None`) that holds the full trajectory (run config + all iterations and sub-calls) so you can reconstruct the run. Pass an `RLMLogger` to capture it:
+`RLMChatCompletion` has an optional `metadata` field (default `None`) that holds the full trajectory (run config + all iterations and sub-calls) so you can reconstruct the run. Pass an `RLMLogger[...]
 
 - **In-memory only** (trajectory on `completion.metadata`): `logger=RLMLogger()` (no `log_dir`).
 - **Also save to disk** (JSONL for the visualizer): `logger=RLMLogger(log_dir="./logs")`.
