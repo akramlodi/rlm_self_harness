@@ -29,6 +29,18 @@ Non-promoting rounds
     contributes no annotation, per the spec this script implements: it is
     the expected, unremarkable outcome of a round that did not improve on
     the incumbent, not a structural anomaly worth flagging.
+
+The all-candidates table
+    ``incumbent_quality_over_rounds`` tracks only the running incumbent -- one
+    number per split per round. ``all_candidate_quality_over_rounds`` is the
+    second table the plotting script's optional scatter overlay needs: one
+    row per *scored* candidate record (``rule`` populated -- an unscored
+    loader rejection or over-budget stop has no measured pass rate to plot),
+    reading its own ``candidate_pass_count`` rather than the shared
+    ``baseline_pass_count``. This includes the merged harness's own
+    re-evaluation record (a genuine scored candidate, just with no single
+    surface), and constituent records that lost the promotion despite being
+    individually scored.
 """
 
 import argparse
@@ -42,6 +54,7 @@ from shrlm.experiment.promotion_rounds import iter_promotion_rounds
 from shrlm.optimization.promotion import DECISION_PROMOTED
 
 INCUMBENT_QUALITY_FILENAME = "incumbent_quality.csv"
+INCUMBENT_QUALITY_CANDIDATES_FILENAME = "incumbent_quality_candidates.csv"
 
 SPLIT_HELDIN = "heldin"
 SPLIT_HELDOUT = "heldout"
@@ -92,6 +105,28 @@ class IncumbentQualityRow:
             "heldout_pass_rate": self.heldout_pass_rate,
             "incumbent_changed": self.incumbent_changed,
             "annotation": self.annotation,
+        }
+
+
+@dataclass(frozen=True)
+class CandidateQualityRow:
+    """One scored candidate's own pass rates in one round (the scatter table)."""
+
+    round_index: int
+    subject_id: str
+    decision: str
+    surface: str | None
+    heldin_pass_rate: float | None
+    heldout_pass_rate: float | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "round_index": self.round_index,
+            "subject_id": self.subject_id,
+            "decision": self.decision,
+            "surface": self.surface,
+            "heldin_pass_rate": self.heldin_pass_rate,
+            "heldout_pass_rate": self.heldout_pass_rate,
         }
 
 
@@ -152,7 +187,29 @@ def incumbent_quality_over_rounds(out_dir: Path | str) -> list[IncumbentQualityR
     return rows
 
 
-def _write_csv(path: Path, rows: Sequence[IncumbentQualityRow]) -> None:
+def all_candidate_quality_over_rounds(out_dir: Path | str) -> list[CandidateQualityRow]:
+    """One row per scored candidate record, across every round (the scatter table)."""
+    rows: list[CandidateQualityRow] = []
+    for round_index, records, _decision in iter_promotion_rounds(out_dir):
+        for record in records:
+            rule = record.get("rule")
+            if rule is None:
+                continue
+            state = _IncumbentState.from_rule(rule, key="candidate")
+            rows.append(
+                CandidateQualityRow(
+                    round_index=round_index,
+                    subject_id=record["subject_id"],
+                    decision=record["decision"],
+                    surface=record.get("surface"),
+                    heldin_pass_rate=state.heldin_pass_rate,
+                    heldout_pass_rate=state.heldout_pass_rate,
+                )
+            )
+    return rows
+
+
+def _write_csv(path: Path, rows: Sequence[IncumbentQualityRow] | Sequence[CandidateQualityRow]) -> None:
     with path.open("w", newline="") as handle:
         if not rows:
             return
@@ -164,7 +221,7 @@ def _write_csv(path: Path, rows: Sequence[IncumbentQualityRow]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Write ``incumbent_quality.csv``."""
+    """Write ``incumbent_quality.csv`` and ``incumbent_quality_candidates.csv``."""
     parser = argparse.ArgumentParser(
         prog="python -m shrlm.experiment.incumbent_quality",
         description="Per-round incumbent held-in/held-out pass rates (feeds Graph 2).",
@@ -181,6 +238,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     quality_path = out_dir / INCUMBENT_QUALITY_FILENAME
     _write_csv(quality_path, rows)
     sys.stdout.write(f"Wrote {quality_path}\n")
+
+    candidates_path = out_dir / INCUMBENT_QUALITY_CANDIDATES_FILENAME
+    _write_csv(candidates_path, all_candidate_quality_over_rounds(out_dir))
+    sys.stdout.write(f"Wrote {candidates_path}\n")
     return 0
 
 
@@ -189,8 +250,11 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
 
 
 __all__ = [
+    "INCUMBENT_QUALITY_CANDIDATES_FILENAME",
     "INCUMBENT_QUALITY_FILENAME",
+    "CandidateQualityRow",
     "IncumbentQualityRow",
+    "all_candidate_quality_over_rounds",
     "incumbent_quality_over_rounds",
     "main",
 ]
