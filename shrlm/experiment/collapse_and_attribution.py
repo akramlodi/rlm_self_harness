@@ -67,7 +67,7 @@ from typing import Any
 
 from shrlm.environments.graphwalks import GraphWalksSubVerifier
 from shrlm.experiment.evaluation import EVAL_DIR, EVAL_SUMMARY_FILENAME
-from shrlm.experiment.orchestrator import MINING_DIR, OPT_DIR
+from shrlm.experiment.rounds import discover_rounds
 from shrlm.optimization.bundle import BUNDLE_FILENAME, round_dir
 from shrlm.optimization.driver import MANIFEST_FILE, load_round
 from shrlm.optimization.grounding import apply_sub_verifier
@@ -196,31 +196,6 @@ class OptimizationRow:
         return {"round_index": self.round_index, "environment": self.environment, **self.metrics.to_dict()}
 
 
-def discover_mining_rounds(out_dir: Path | str) -> list[tuple[int, Path]]:
-    """Every round with a persisted mining manifest, in ascending order.
-
-    Returns ``(round_index, mining_parent)`` pairs -- ``mining_parent`` is
-    ``load_round``'s own ``out_dir`` argument (it appends ``round_NN`` itself),
-    matching the nested ``opt/round_NN/mining/round_NN/`` layout
-    ``orchestrator.py`` writes (``mining_round_path = round_dir(round_path /
-    MINING_DIR, round_index)``).
-    """
-    opt_root = Path(out_dir) / OPT_DIR
-    found: dict[int, Path] = {}
-    if not opt_root.is_dir():
-        return []
-    for opt_round_path in sorted(opt_root.glob("round_*")):
-        try:
-            round_index = int(opt_round_path.name.removeprefix("round_"))
-        except ValueError:
-            continue
-        mining_parent = opt_round_path / MINING_DIR
-        mining_round_path = round_dir(mining_parent, round_index)
-        if (mining_round_path / MANIFEST_FILE).exists():
-            found[round_index] = mining_parent
-    return sorted(found.items())
-
-
 def _environment_for_round(mining_round_path: Path) -> str | None:
     bundle_path = mining_round_path / BUNDLE_FILENAME
     if not bundle_path.exists():
@@ -233,13 +208,19 @@ def _environment_for_round(mining_round_path: Path) -> str | None:
 def collapse_and_attribution_optimization(out_dir: Path | str) -> list[OptimizationRow]:
     """One row per mining round: collapse rate + failure-attribution shares, re-walked from traces."""
     rows: list[OptimizationRow] = []
-    for round_index, mining_parent in discover_mining_rounds(out_dir):
-        mining_round_path = round_dir(mining_parent, round_index)
-        environment = _environment_for_round(mining_round_path)
+    for record in discover_rounds(out_dir).rounds:
+        if not record.has_manifest:
+            # A round whose mining stage persisted nothing has no trace to walk.
+            continue
+        environment = _environment_for_round(record.mining_round_path)
         sub_verifier = SUB_VERIFIERS.get(environment) if environment else None
-        runs, verdicts, _envelope, _entries = load_round(mining_parent, round_index)
+        runs, verdicts, _envelope, _entries = load_round(record.mining_parent, record.round_index)
         metrics = compute_group_metrics(runs, verdicts, sub_verifier)
-        rows.append(OptimizationRow(round_index=round_index, environment=environment, metrics=metrics))
+        rows.append(
+            OptimizationRow(
+                round_index=record.round_index, environment=environment, metrics=metrics
+            )
+        )
     return rows
 
 
@@ -377,7 +358,6 @@ __all__ = [
     "collapse_and_attribution_evaluation",
     "collapse_and_attribution_optimization",
     "compute_group_metrics",
-    "discover_mining_rounds",
     "empty_group_metrics",
     "eval_summary_path",
     "main",

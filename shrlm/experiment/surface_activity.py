@@ -1,9 +1,10 @@
 """Script 1: surface activity over rounds -- feeds Graph 1 (lever-touch over time).
 
 ``surface_activity_over_rounds`` reads every round's ``promotions.jsonl`` (via
-``shrlm.experiment.promotion_rounds``) and counts, per ``(round_index,
-surface)``, how many candidates targeted that surface (``attempted_count``)
-and how many of those were promoted (``promoted_count``). On top of that it
+``shrlm.experiment.rounds``, the shared discovery module) and counts, per
+``(round_index, surface)``, how many candidates targeted that surface
+(``attempted_count``) and how many of those were promoted
+(``promoted_count``). On top of that it
 derives the running distinct-surface counts (``cumulative_surfaces_attempted``
 / ``cumulative_surfaces_promoted``) that drive the dashed-vs-solid line chart,
 and the two grids (attempted, promoted) the heatmap needs -- both readable
@@ -34,8 +35,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from shrlm.experiment.promotion_rounds import iter_promotion_rounds
-from shrlm.optimization.promotion import DECISION_ACCEPTED, DECISION_PROMOTED, SURFACE_HARNESS_FIELDS
+from shrlm.experiment.rounds import iter_promotion_rounds
+from shrlm.optimization.promotion import (
+    DECISION_ACCEPTED,
+    DECISION_PROMOTED,
+    SURFACE_HARNESS_FIELDS,
+)
 from shrlm.optimization.validation import ROLE_CONSTITUENT
 
 # S1..S9 in the codebase's canonical order (shrlm.optimization.promotion), so

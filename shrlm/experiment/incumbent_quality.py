@@ -1,11 +1,11 @@
 """Script 2: incumbent quality over rounds -- feeds Graph 2 (quality over time).
 
 ``incumbent_quality_over_rounds`` walks every round's ``promotions.jsonl``
-(via ``shrlm.experiment.promotion_rounds``) and tracks one running "current
-incumbent" state -- held-in and held-out pass counts and run counts -- that
-only moves on a ``promoted`` decision. Every round still emits exactly one
-row, so the series is a clean step function even through rounds that
-promoted nothing.
+(via ``shrlm.experiment.rounds``, the shared discovery module) and tracks one
+running "current incumbent" state -- held-in and held-out pass counts and run
+counts -- that only moves on a ``promoted`` decision. Every round still emits
+exactly one row, so the series is a clean step function even through rounds
+that promoted nothing.
 
 Seeding the baseline
     The state starts from the first round that actually scored a candidate:
@@ -50,7 +50,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from shrlm.experiment.promotion_rounds import iter_promotion_rounds
+from shrlm.experiment.rounds import iter_promotion_rounds
 from shrlm.optimization.promotion import DECISION_PROMOTED
 
 INCUMBENT_QUALITY_FILENAME = "incumbent_quality.csv"
