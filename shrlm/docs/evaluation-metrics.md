@@ -1,4 +1,4 @@
-ptimization loop (shrlm/optimization/ + shrlm/experiment/orchestrator.py)
+# Optimization loop (shrlm/optimization/ + shrlm/experiment/orchestrator.py)
 1. Mining (mining.py, driver.py) — per-run execution
 Every run against the current harness writes a line to runs.jsonl:
 
@@ -44,4 +44,17 @@ usage_lower_bound flag, skipped_run_ids if the spend breaker tripped
 Plus report.py/scenarios.py roll measured usage into report.json — extrapolated token/cost/time projections (pessimistic/point scenarios) per pricing tier or GPU profile, used to answer "was optimization worth it and what would scaling this cost."
 
 The throughline: everything is hash-addressed (harness_hash, trace_sha256, digest_sha256, instances_sha256) so any later number in a report can be walked back to the exact harness, trace, and prompt that produced it — that's what audit.py mechanically checks.
+
+Analysis layer (shrlm/experiment/rounds.py, analysis_io.py, the four aggregation CLIs)
+Nothing above is an analysis; the loops only persist evidence. Everything downstream — the four aggregations, the two plot scripts, and report.py — reads that evidence through two shared modules, and that indirection is the point rather than a tidiness preference:
+
+rounds.py is the one inventory of what an experiment directory holds. discover_rounds(out_dir) returns per-round records (round index, the loop's own mining/validation/proposals paths, marker and ledger presence) plus the evaluation test-set inventory (condition × test set, outcome, skipped run ids). Path construction goes exclusively through the loop's own layout functions and constants, and round_* directories are enumerated in exactly one function, so an analysis can never be reading a tree the loop no longer writes. It also owns the completeness truth table (round_complete, evidence_complete, runs_complete, eval-set complete) and resolve_surface, which recovers a ledger row's surface from the round's persisted proposal.json when the ledger's own value is missing or null.
+
+Completeness is three-valued, and unknown is never false. n_expected = len(instances.jsonl) × repetitions, with repetitions read per stage from the experiment config (loop.m mining, loop.v validation, operational.eval_repetitions evaluation). If the config cannot be resolved and re-verified against the directory's recorded identity_hash, n_expected is null and the row reports count_unknown — deliberately, with no fallback that infers the attempt count from observed run ids, because the manifest records only completed runs and a round truncated at attempt 2 of 3 would infer an expected count of 2 and declare itself complete.
+
+analysis_io.py is the one output layer. Every batch of analyses writes into a fresh <out_dir>/analysis/<UTC-stamp>/ snapshot carrying provenance.json (identity_hash + identity_source, created_at, analysis_revision, analyzed rounds and eval sets, per-tool success/failure, and a sha256 manifest of every consumed artifact) and, written last, published.json. The source hashes are the load-bearing part of the reproducibility claim: experiment identity plus round number does not distinguish two snapshots built from a round that was re-mined or resumed, and the content hashes do.
+
+The orchestrator refreshes those snapshots itself, best-effort, after every executed round (and once at catch-up when a resume replays finished rounds), so mid-study outputs never go stale. The hook writes only under analysis/, is never read back by the loop, and cannot fail, block, or alter a round.
+
+See `SH-RLM Metrics & Graphs — Reference.md` §3 for the snapshot layout, the provenance field list, the completeness columns each output carries, `surface_source`, and how to reproduce a figure from a pinned snapshot.
 

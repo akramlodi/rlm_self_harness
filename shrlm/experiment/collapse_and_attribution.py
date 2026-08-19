@@ -54,10 +54,31 @@ Denominators, deliberately different per metric
     with ``sub_verifier_available=False`` shows ``ungrounded_share=1.0``
     structurally, not because grounding failed at any individual run -- this
     column exists so a reader can tell the two apart at a glance.
+
+Completeness, carried beside every rate (R2, KTD5, KTD9)
+    A rate computed over a truncated round is not wrong, but read as if it
+    were complete it is misleading -- and before this the two were
+    indistinguishable once they reached a CSV. So every row carries the
+    completeness of the group it summarizes, taken from the shared inventory
+    rather than re-derived here: mining rounds report their expected and
+    missing run counts plus ``runs_complete`` / ``evidence_complete`` /
+    ``round_complete``; test sets report the summary's ``outcome``, their
+    skipped-run count, the same expected/missing run counts and
+    ``runs_complete`` the rounds carry, and the ``complete`` verdict that folds
+    both sides together.
+
+    Nothing is dropped for being incomplete (KTD5). Every discovered round is
+    emitted, including a completed no-op round whose mining stage persisted no
+    manifest at all -- that round is ``round_complete`` true with zero runs and
+    null rates, which is a real outcome rather than missing data, and skipping
+    it would make the round vanish from the series entirely. The same holds on
+    the evaluation side: test sets come from the inventory rather than from
+    ``eval_summary.json``'s own grid, so a set with run directories but no
+    summary entry is emitted with ``complete`` unknown instead of being
+    invisible to this table.
 """
 
 import argparse
-import csv
 import json
 import sys
 from collections.abc import Sequence
@@ -66,10 +87,23 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.environments.graphwalks import GraphWalksSubVerifier
+from shrlm.experiment.analysis_io import (
+    Snapshot,
+    add_snapshot_parent_argument,
+    allocate_snapshot,
+    record_inventory_sources,
+    tristate,
+    write_csv,
+)
 from shrlm.experiment.evaluation import EVAL_DIR, EVAL_SUMMARY_FILENAME
-from shrlm.experiment.orchestrator import MINING_DIR, OPT_DIR
-from shrlm.optimization.bundle import BUNDLE_FILENAME, round_dir
-from shrlm.optimization.driver import MANIFEST_FILE, load_round
+from shrlm.experiment.rounds import (
+    EvalSetRecord,
+    ExperimentInventory,
+    RoundRecord,
+    discover_rounds,
+)
+from shrlm.optimization.bundle import BUNDLE_FILENAME
+from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, TRACES_DIR, load_round
 from shrlm.optimization.grounding import apply_sub_verifier
 from shrlm.optimization.taxonomy import FailingLevel
 from shrlm.optimization.types import SubVerifier
@@ -89,6 +123,64 @@ PHASE_EVALUATION = "evaluation"
 
 OPTIMIZATION_FILENAME = "collapse_and_attribution_optimization.csv"
 EVALUATION_FILENAME = "collapse_and_attribution_evaluation.csv"
+
+# The names this aggregation's two phases are recorded under in a snapshot's
+# provenance -- separate, because a batch may run one and not the other.
+TOOL_NAME_OPTIMIZATION = "collapse_and_attribution_optimization"
+TOOL_NAME_EVALUATION = "collapse_and_attribution_evaluation"
+
+# Declared field order per phase (KTD8): a phase that finds no group still has
+# to write a header-only CSV, which it could not do from an absent first row.
+GROUP_METRICS_FIELDNAMES = (
+    "n_runs",
+    "n_walked",
+    "n_unwalkable",
+    "n_failures",
+    "collapse_rate",
+    "root_failure_share",
+    "child_failure_share",
+    "no_recursion_failure_share",
+    "ungrounded_share",
+    "sub_verifier_available",
+)
+
+# Completeness travels with the numbers it qualifies (R2), appended after them
+# so the metric columns keep the positions a pre-change reader knows.
+ROUND_COMPLETENESS_FIELDNAMES = (
+    "n_expected_runs",
+    "n_missing_runs",
+    "runs_complete",
+    "evidence_complete",
+    "round_complete",
+)
+# The evaluation side carries the same run-count evidence as the round side
+# (R2): ``complete`` folds the persisted-vs-planned run counts into the
+# summary's verdict, so the counts that moved it have to be visible beside it
+# -- a bare ``complete=false`` with nothing to read it against is the opaque
+# verdict this plan removed on the optimization side already.
+EVAL_COMPLETENESS_FIELDNAMES = (
+    "outcome",
+    "n_skipped",
+    "n_expected_runs",
+    "n_missing_runs",
+    "runs_complete",
+    "complete",
+)
+
+OPTIMIZATION_FIELDNAMES = (
+    "round_index",
+    "environment",
+    *GROUP_METRICS_FIELDNAMES,
+    *ROUND_COMPLETENESS_FIELDNAMES,
+)
+EVALUATION_FIELDNAMES = (
+    "condition_id",
+    "test_set_id",
+    "environment",
+    "length",
+    *GROUP_METRICS_FIELDNAMES,
+    *EVAL_COMPLETENESS_FIELDNAMES,
+)
 
 
 @dataclass(frozen=True)
@@ -118,6 +210,95 @@ class GroupMetrics:
             "no_recursion_failure_share": self.no_recursion_failure_share,
             "ungrounded_share": self.ungrounded_share,
             "sub_verifier_available": self.sub_verifier_available,
+        }
+
+
+@dataclass(frozen=True)
+class RoundCompleteness:
+    """One mining round's KTD9 completeness, as a row carries it.
+
+    Read straight off the shared inventory's ``RoundRecord`` -- discovery owns
+    the truth table, and a second opinion computed here is exactly the drift
+    this plan removed. ``n_expected_runs`` and ``n_missing_runs`` are ``None``
+    when the experiment's configuration cannot be resolved (KTD6); the
+    ``runs_complete`` flag beside them then reads ``unknown``, which is what
+    keeps an unmeasurable round distinguishable from a truncated one in the
+    written CSV rather than both showing an empty cell.
+    """
+
+    n_expected_runs: int | None
+    n_missing_runs: int | None
+    runs_complete: bool | None
+    evidence_complete: bool
+    round_complete: bool
+
+    @classmethod
+    def from_record(cls, record: RoundRecord) -> "RoundCompleteness":
+        return cls(
+            n_expected_runs=record.mining_runs.n_expected,
+            n_missing_runs=record.mining_runs.n_missing,
+            runs_complete=record.mining_runs.runs_complete,
+            evidence_complete=record.evidence_complete,
+            round_complete=record.round_complete,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "n_expected_runs": self.n_expected_runs,
+            "n_missing_runs": self.n_missing_runs,
+            "runs_complete": tristate(self.runs_complete),
+            "evidence_complete": tristate(self.evidence_complete),
+            "round_complete": tristate(self.round_complete),
+        }
+
+
+@dataclass(frozen=True)
+class EvalCompleteness:
+    """One test set's KTD9 completeness: the summary's verdict AND its runs.
+
+    ``complete`` is the shared inventory's combined verdict (see
+    ``rounds.EvalSetRecord.complete``): the summary's ``outcome`` and skipped
+    runs on one side, the set's persisted-vs-planned run counts on the other.
+    Both sides are written out beside it, because a verdict a reader cannot
+    trace back to its evidence is the thing that made a truncated evaluation
+    indistinguishable from a finished one in the first place -- the summary is
+    a self-report, so a set that says ``completed`` while ``n_missing_runs``
+    is positive must read incomplete, and the two columns are how a reader sees
+    which half moved.
+
+    ``complete`` is ``None`` -- ``unknown`` once written -- for a set that has
+    run directories but no ``eval_summary.json`` entry (an evaluation that
+    crashed before it aggregated is unmeasured, not failed) and for one whose
+    planned run count is unknowable (KTD6). ``unknown`` never collapses into
+    ``false`` in either case.
+    """
+
+    outcome: str | None
+    n_skipped: int
+    n_expected_runs: int | None
+    n_missing_runs: int | None
+    runs_complete: bool | None
+    complete: bool | None
+
+    @classmethod
+    def from_record(cls, record: EvalSetRecord) -> "EvalCompleteness":
+        return cls(
+            outcome=record.outcome,
+            n_skipped=record.n_skipped,
+            n_expected_runs=record.runs.n_expected,
+            n_missing_runs=record.runs.n_missing,
+            runs_complete=record.runs.runs_complete,
+            complete=record.complete,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "outcome": self.outcome,
+            "n_skipped": self.n_skipped,
+            "n_expected_runs": self.n_expected_runs,
+            "n_missing_runs": self.n_missing_runs,
+            "runs_complete": tristate(self.runs_complete),
+            "complete": tristate(self.complete),
         }
 
 
@@ -191,34 +372,15 @@ class OptimizationRow:
     round_index: int
     environment: str | None
     metrics: GroupMetrics
+    completeness: RoundCompleteness
 
     def to_dict(self) -> dict[str, Any]:
-        return {"round_index": self.round_index, "environment": self.environment, **self.metrics.to_dict()}
-
-
-def discover_mining_rounds(out_dir: Path | str) -> list[tuple[int, Path]]:
-    """Every round with a persisted mining manifest, in ascending order.
-
-    Returns ``(round_index, mining_parent)`` pairs -- ``mining_parent`` is
-    ``load_round``'s own ``out_dir`` argument (it appends ``round_NN`` itself),
-    matching the nested ``opt/round_NN/mining/round_NN/`` layout
-    ``orchestrator.py`` writes (``mining_round_path = round_dir(round_path /
-    MINING_DIR, round_index)``).
-    """
-    opt_root = Path(out_dir) / OPT_DIR
-    found: dict[int, Path] = {}
-    if not opt_root.is_dir():
-        return []
-    for opt_round_path in sorted(opt_root.glob("round_*")):
-        try:
-            round_index = int(opt_round_path.name.removeprefix("round_"))
-        except ValueError:
-            continue
-        mining_parent = opt_round_path / MINING_DIR
-        mining_round_path = round_dir(mining_parent, round_index)
-        if (mining_round_path / MANIFEST_FILE).exists():
-            found[round_index] = mining_parent
-    return sorted(found.items())
+        return {
+            "round_index": self.round_index,
+            "environment": self.environment,
+            **self.metrics.to_dict(),
+            **self.completeness.to_dict(),
+        }
 
 
 def _environment_for_round(mining_round_path: Path) -> str | None:
@@ -230,16 +392,40 @@ def _environment_for_round(mining_round_path: Path) -> str | None:
     return str(environment) if environment else None
 
 
-def collapse_and_attribution_optimization(out_dir: Path | str) -> list[OptimizationRow]:
-    """One row per mining round: collapse rate + failure-attribution shares, re-walked from traces."""
+def collapse_and_attribution_optimization(
+    out_dir: Path | str, *, inventory: ExperimentInventory | None = None
+) -> list[OptimizationRow]:
+    """One row per discovered round: collapse rate + failure-attribution shares, re-walked from traces.
+
+    Every round discovery finds gets a row, flagged with its completeness
+    (KTD5). A round whose mining stage persisted no manifest has no trace to
+    walk, so its metrics are explicit nulls rather than zeros -- but it stays in
+    the table, because a completed no-op round is a real outcome and dropping
+    it would silently shorten the series a reader plots.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_collapse_and_attribution``); omitted, one is discovered here.
+    """
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     rows: list[OptimizationRow] = []
-    for round_index, mining_parent in discover_mining_rounds(out_dir):
-        mining_round_path = round_dir(mining_parent, round_index)
-        environment = _environment_for_round(mining_round_path)
+    for record in inventory.rounds:
+        environment = _environment_for_round(record.mining_round_path)
         sub_verifier = SUB_VERIFIERS.get(environment) if environment else None
-        runs, verdicts, _envelope, _entries = load_round(mining_parent, round_index)
-        metrics = compute_group_metrics(runs, verdicts, sub_verifier)
-        rows.append(OptimizationRow(round_index=round_index, environment=environment, metrics=metrics))
+        if not record.has_manifest:
+            metrics = empty_group_metrics(sub_verifier_available=sub_verifier is not None)
+        else:
+            runs, verdicts, _envelope, _entries = load_round(
+                record.mining_parent, record.round_index
+            )
+            metrics = compute_group_metrics(runs, verdicts, sub_verifier)
+        rows.append(
+            OptimizationRow(
+                round_index=record.round_index,
+                environment=environment,
+                metrics=metrics,
+                completeness=RoundCompleteness.from_record(record),
+            )
+        )
     return rows
 
 
@@ -252,9 +438,10 @@ def collapse_and_attribution_optimization(out_dir: Path | str) -> list[Optimizat
 class EvaluationRow:
     condition_id: str
     test_set_id: str
-    environment: str
-    length: str
+    environment: str | None
+    length: str | None
     metrics: GroupMetrics
+    completeness: EvalCompleteness
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -263,6 +450,7 @@ class EvaluationRow:
             "environment": self.environment,
             "length": self.length,
             **self.metrics.to_dict(),
+            **self.completeness.to_dict(),
         }
 
 
@@ -271,35 +459,45 @@ def eval_summary_path(out_dir: Path | str) -> Path:
     return Path(out_dir) / EVAL_DIR / EVAL_SUMMARY_FILENAME
 
 
-def collapse_and_attribution_evaluation(out_dir: Path | str) -> list[EvaluationRow]:
-    """One row per condition x test set, from ``eval_summary.json``'s own grid, re-walked from traces."""
-    out_dir = Path(out_dir)
-    summary = json.loads(eval_summary_path(out_dir).read_text())
+def collapse_and_attribution_evaluation(
+    out_dir: Path | str, *, inventory: ExperimentInventory | None = None
+) -> list[EvaluationRow]:
+    """One row per condition x test set from the shared inventory, re-walked from traces.
+
+    The grid comes from ``rounds.discover_rounds`` rather than from
+    ``eval_summary.json`` directly (KTD1): the summary is one of two things
+    discovery reconciles, and a set that exists on disk but never reached the
+    summary -- an evaluation that crashed before it aggregated -- would be
+    invisible to a table that enumerated the summary's own conditions. Such a
+    set is emitted with ``complete`` unknown, which is the honest reading;
+    ``outcome`` and the skipped-run count come from the same inventory, so this
+    table and every other analysis agree on one verdict per set.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_collapse_and_attribution``); omitted, one is discovered here.
+    """
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     rows: list[EvaluationRow] = []
-    for condition_id, condition in summary.get("conditions", {}).items():
-        for test_set_id, test_set in condition.get("test_sets", {}).items():
-            environment = str(test_set["environment"])
-            length = str(test_set["length"])
-            sub_verifier_available = environment in SUB_VERIFIERS
-            set_path = out_dir / EVAL_DIR / condition_id / test_set_id
-            manifest_path = round_dir(set_path, EVAL_ROUND_INDEX) / MANIFEST_FILE
-            if not manifest_path.exists():
-                # Entirely skipped -- e.g. the spend breaker tripped before this
-                # set ran a single instance. Emitted with explicit nulls, not
-                # dropped from the table.
-                metrics = empty_group_metrics(sub_verifier_available=sub_verifier_available)
-            else:
-                runs, verdicts, _envelope, _entries = load_round(set_path, EVAL_ROUND_INDEX)
-                metrics = compute_group_metrics(runs, verdicts, SUB_VERIFIERS.get(environment))
-            rows.append(
-                EvaluationRow(
-                    condition_id=condition_id,
-                    test_set_id=test_set_id,
-                    environment=environment,
-                    length=length,
-                    metrics=metrics,
-                )
+    for record in inventory.eval_sets:
+        environment = record.environment
+        sub_verifier = SUB_VERIFIERS.get(environment) if environment else None
+        if not (record.round_path / MANIFEST_FILE).exists():
+            # Entirely skipped -- e.g. the spend breaker tripped before this set
+            # ran a single instance. Emitted with explicit nulls, not dropped.
+            metrics = empty_group_metrics(sub_verifier_available=sub_verifier is not None)
+        else:
+            runs, verdicts, _envelope, _entries = load_round(record.set_path, EVAL_ROUND_INDEX)
+            metrics = compute_group_metrics(runs, verdicts, sub_verifier)
+        rows.append(
+            EvaluationRow(
+                condition_id=record.condition_id,
+                test_set_id=record.set_id,
+                environment=environment,
+                length=record.length,
+                metrics=metrics,
+                completeness=EvalCompleteness.from_record(record),
             )
+        )
     return rows
 
 
@@ -308,15 +506,102 @@ def collapse_and_attribution_evaluation(out_dir: Path | str) -> list[EvaluationR
 # ---------------------------------------------------------------------------
 
 
-def _write_csv(path: Path, rows: Sequence[OptimizationRow] | Sequence[EvaluationRow]) -> None:
-    with path.open("w", newline="") as handle:
-        if not rows:
-            return
-        fieldnames = list(rows[0].to_dict())
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row.to_dict())
+def _record_round_sources(snapshot: Snapshot, round_path: Path) -> None:
+    """Every artifact ``load_round`` reads for one round, hashed for provenance.
+
+    The per-run traces are recorded as one directory entry rather than one line
+    per run: this analysis re-walks every trace, so the traces ARE its input
+    and a changed one must change the manifest -- but a real experiment holds
+    thousands of them, and a provenance record nobody can read is not a
+    provenance record.
+    """
+    snapshot.record_source(round_path / MANIFEST_FILE)
+    snapshot.record_source(round_path / INSTANCES_FILE)
+    snapshot.record_source_dir(round_path / TRACES_DIR)
+
+
+def write_collapse_and_attribution_optimization(
+    snapshot: Snapshot,
+    out_dir: Path | str,
+    rows: Sequence[OptimizationRow],
+    *,
+    inventory: ExperimentInventory | None = None,
+) -> Path:
+    """Write the optimization table into an allocated snapshot, with sources.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_collapse_and_attribution``); omitted, one is discovered here.
+    """
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
+    # The completeness columns this table publishes are read off the round and
+    # evidence markers and the experiment config, so those inputs belong in the
+    # source manifest too -- otherwise editing a marker would change a published
+    # column with no recorded hash moving to show it.
+    record_inventory_sources(snapshot, out_dir, inventory=inventory)
+    analyzed: list[int] = []
+    for record in inventory.rounds:
+        analyzed.append(record.round_index)
+        _record_round_sources(snapshot, record.mining_round_path)
+        snapshot.record_source(record.mining_round_path / BUNDLE_FILENAME)
+    snapshot.record_rounds(analyzed)
+
+    csv_path = snapshot.path / OPTIMIZATION_FILENAME
+    write_csv(csv_path, rows, fieldnames=OPTIMIZATION_FIELDNAMES)
+    return csv_path
+
+
+def write_collapse_and_attribution_evaluation(
+    snapshot: Snapshot,
+    out_dir: Path | str,
+    rows: Sequence[EvaluationRow],
+    *,
+    inventory: ExperimentInventory | None = None,
+) -> Path:
+    """Write the evaluation table into an allocated snapshot, with sources.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_collapse_and_attribution``); omitted, one is discovered here.
+    """
+    out_dir = Path(out_dir)
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
+    snapshot.record_source(eval_summary_path(out_dir))
+    # Paths come from the inventory rather than being rebuilt here, so the
+    # provenance manifest names exactly the files the rows were read from.
+    for record in inventory.eval_sets:
+        _record_round_sources(snapshot, record.round_path)
+    snapshot.record_eval_sets(f"{row.condition_id}/{row.test_set_id}" for row in rows)
+
+    csv_path = snapshot.path / EVALUATION_FILENAME
+    write_csv(csv_path, rows, fieldnames=EVALUATION_FIELDNAMES)
+    return csv_path
+
+
+def run_collapse_and_attribution(out_dir: Path | str, snapshot: Snapshot, *, phase: str) -> Path:
+    """Aggregate one phase into the caller's snapshot (KTD2).
+
+    Takes an allocated snapshot rather than allocating one, so a batch that
+    aggregates both phases -- or this phase alongside the other analyses --
+    leaves one directory a reader can compare across, not four.
+
+    Discovery runs ONCE per phase and is threaded into both the row build and
+    the provenance recording, which otherwise walk the same unchanging tree
+    twice to reach the same paths.
+    """
+    out_dir = Path(out_dir)
+    inventory = discover_rounds(out_dir)
+    if phase == PHASE_OPTIMIZATION:
+        return write_collapse_and_attribution_optimization(
+            snapshot,
+            out_dir,
+            collapse_and_attribution_optimization(out_dir, inventory=inventory),
+            inventory=inventory,
+        )
+    return write_collapse_and_attribution_evaluation(
+        snapshot,
+        out_dir,
+        collapse_and_attribution_evaluation(out_dir, inventory=inventory),
+        inventory=inventory,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -329,34 +614,60 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("out_dir", help="the experiment directory to read")
     parser.add_argument(
-        "--phase", choices=[PHASE_OPTIMIZATION, PHASE_EVALUATION], required=True, help="which phase to aggregate"
+        "--phase",
+        choices=[PHASE_OPTIMIZATION, PHASE_EVALUATION],
+        required=True,
+        help="which phase to aggregate",
     )
-    parser.add_argument(
-        "--out", dest="csv_out_dir", default=None, help="directory to write the CSV into (default: out_dir)"
-    )
+    add_snapshot_parent_argument(parser)
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
-    csv_out_dir = Path(args.csv_out_dir) if args.csv_out_dir else out_dir
+    inventory = discover_rounds(out_dir)
 
+    # The two phases are written out separately rather than dispatched through
+    # one variable: their row types are different, and a shared call site would
+    # only typecheck by widening both to `Any` -- which is how a row of the
+    # wrong shape would reach the wrong writer without anything noticing.
+    # The emptiness check comes before allocation in both, so a phase with
+    # nothing to analyze leaves no empty unpublished directory behind.
     if args.phase == PHASE_OPTIMIZATION:
-        rows: Sequence[Any] = collapse_and_attribution_optimization(out_dir)
+        optimization_rows = collapse_and_attribution_optimization(out_dir, inventory=inventory)
+        if not optimization_rows:
+            sys.stderr.write(f"no {args.phase} groups found under {out_dir}\n")
+            return 1
+        snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
+        tool_name = TOOL_NAME_OPTIMIZATION
         filename = OPTIMIZATION_FILENAME
+        snapshot.run_tool(
+            tool_name,
+            lambda: write_collapse_and_attribution_optimization(
+                snapshot, out_dir, optimization_rows, inventory=inventory
+            ),
+        )
     else:
         if not eval_summary_path(out_dir).exists():
             sys.stderr.write(f"{eval_summary_path(out_dir)} not found\n")
             return 1
-        rows = collapse_and_attribution_evaluation(out_dir)
+        evaluation_rows = collapse_and_attribution_evaluation(out_dir, inventory=inventory)
+        if not evaluation_rows:
+            sys.stderr.write(f"no {args.phase} groups found under {out_dir}\n")
+            return 1
+        snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
+        tool_name = TOOL_NAME_EVALUATION
         filename = EVALUATION_FILENAME
+        snapshot.run_tool(
+            tool_name,
+            lambda: write_collapse_and_attribution_evaluation(
+                snapshot, out_dir, evaluation_rows, inventory=inventory
+            ),
+        )
 
-    if not rows:
-        sys.stderr.write(f"no {args.phase} groups found under {out_dir}\n")
+    if not snapshot.publish():
+        sys.stderr.write(snapshot.failure_message(tool_name))
         return 1
 
-    csv_out_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = csv_out_dir / filename
-    _write_csv(csv_path, rows)
-    sys.stdout.write(f"Wrote {csv_path}\n")
+    sys.stdout.write(f"Wrote {snapshot.path / filename}\n")
     return 0
 
 
@@ -366,19 +677,29 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
 
 __all__ = [
     "COLLAPSE_THRESHOLD",
+    "EVALUATION_FIELDNAMES",
     "EVALUATION_FILENAME",
+    "EVAL_COMPLETENESS_FIELDNAMES",
+    "OPTIMIZATION_FIELDNAMES",
     "OPTIMIZATION_FILENAME",
     "PHASE_EVALUATION",
     "PHASE_OPTIMIZATION",
+    "ROUND_COMPLETENESS_FIELDNAMES",
     "SUB_VERIFIERS",
+    "TOOL_NAME_EVALUATION",
+    "TOOL_NAME_OPTIMIZATION",
+    "EvalCompleteness",
     "EvaluationRow",
     "GroupMetrics",
     "OptimizationRow",
+    "RoundCompleteness",
     "collapse_and_attribution_evaluation",
     "collapse_and_attribution_optimization",
     "compute_group_metrics",
-    "discover_mining_rounds",
     "empty_group_metrics",
     "eval_summary_path",
     "main",
+    "run_collapse_and_attribution",
+    "write_collapse_and_attribution_evaluation",
+    "write_collapse_and_attribution_optimization",
 ]

@@ -147,10 +147,15 @@ def fake_candidate(candidate_id: str, surface: str) -> LoadedCandidate:
 
 
 def score(
-    heldin_pass: int, heldout_pass: int, config: PromotionConfig | None = None, **kwargs: Any
+    heldin_pass: int,
+    heldout_pass: int,
+    config: PromotionConfig | None = None,
+    *,
+    surface: str | None = None,
+    **kwargs: Any,
 ) -> CandidateDecision:
     candidate = make_summary("cand-a", heldin_pass, heldout_pass, **kwargs)
-    return score_candidate(BASELINE, candidate, config or PromotionConfig())
+    return score_candidate(BASELINE, candidate, config or PromotionConfig(), surface=surface)
 
 
 def accepted_decision(
@@ -425,7 +430,7 @@ class TestAssessRound:
             assess_round(evaluation, PromotionConfig())
 
     def test_decision_records_serialize_for_the_ledger(self):
-        decision = score(3, 3)
+        decision = score(3, 3, surface="S2")
         payload = decision.to_dict()
         assert payload["subject_id"] == "cand-a"
         assert payload["decision"] == DECISION_ACCEPTED
@@ -436,6 +441,78 @@ class TestAssessRound:
         assert payload["band"]["mean_cost"]["within"] is True
         assert payload["harness_hash"] == "hash-cand-a"
         assert payload["upstream"] is None
+        # The edited surface is the ledger's only record of which lever a round
+        # touched; every surface-level analysis reads it off these bytes, so it
+        # has to survive serialization verbatim (R6).
+        assert payload["surface"] == "S2"
+
+    def test_an_unresolved_surface_serializes_as_an_explicit_null(self):
+        """The key is always emitted, even when nothing resolved a surface.
+
+        This is the fact the analysis layer's backfill turns on: a loader
+        rejection and the merged harness's own record both serialize as
+        ``surface: null`` rather than as an absent key, so a recovery keyed on
+        key-absence alone would never fire for anything the loop writes.
+        """
+        payload = score(3, 3).to_dict()
+        assert "surface" in payload
+        assert payload["surface"] is None
+
+    def test_surfaces_thread_onto_scored_over_budget_and_rejected_records(self):
+        """The surfaces mapping reaches every kind of decision record.
+
+        ``assess_round`` looks the surface up under ``candidate_id`` for a
+        ``CandidateRejection`` but under ``subject_id`` for a
+        ``SubjectEvaluation``; the two agree only because
+        ``evaluate_subject(candidate.candidate_id, ...)`` names an evaluation
+        after its candidate. That invariant is invisible from here -- these
+        fabricated evaluations simply assert it holds -- and
+        ``tests/optimization/test_validation_e2e.py`` pins it against the real
+        loader/evaluation path.
+        """
+        rejection = CandidateRejection(
+            candidate_id="cand-broken",
+            gate=GATE_SCHEMA,
+            reason="proposal.json unreadable",
+            path="/nonexistent/cand-broken/proposal.json",
+        )
+        evaluation = RoundEvaluation(
+            round_path=Path("/nonexistent/round_01"),
+            baseline=fake_evaluation(BASELINE),
+            candidates=[
+                fake_evaluation(make_summary("cand-good", 3, 3)),
+                fake_evaluation(make_summary("cand-burn", 1, 0, outcome=OUTCOME_OVER_BUDGET)),
+                fake_evaluation(make_summary("cand-unmapped", 3, 3)),
+                rejection,
+            ],
+        )
+        surfaces = {"cand-good": "S2", "cand-burn": "S5", "cand-broken": "S3"}
+
+        decisions = assess_round(evaluation, PromotionConfig(), surfaces=surfaces)
+
+        assert {decision.subject_id: decision.surface for decision in decisions} == {
+            "cand-good": "S2",  # scored
+            "cand-burn": "S5",  # never scored, but its surface is still known
+            "cand-unmapped": None,  # absent from the mapping
+            "cand-broken": "S3",  # upstream rejection, looked up by candidate id
+        }
+        # And it reaches the ledger's bytes, not just the in-memory record.
+        assert [decision.to_dict()["surface"] for decision in decisions] == [
+            "S2",
+            "S5",
+            None,
+            "S3",
+        ]
+
+    def test_no_surfaces_mapping_records_null_on_every_decision(self):
+        evaluation = RoundEvaluation(
+            round_path=Path("/nonexistent/round_01"),
+            baseline=fake_evaluation(BASELINE),
+            candidates=[fake_evaluation(make_summary("cand-good", 3, 3))],
+        )
+        assert [decision.surface for decision in assess_round(evaluation, PromotionConfig())] == [
+            None
+        ]
 
 
 # ---------------------------------------------------------------------------

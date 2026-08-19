@@ -1,7 +1,8 @@
 """Static figure for Graph 1: harness lever-touch over time.
 
-Reads the tidy CSV ``surface_activity.py`` writes (``surface_activity.csv``,
-``surface_activity_unattributed.csv``) and renders one PNG with two panels:
+Reads the tidy CSVs ``surface_activity.py`` writes into an analysis snapshot
+(``surface_activity.csv``, ``surface_activity_unattributed.csv``) and renders
+one PNG with two panels into that same snapshot's ``plots/`` directory:
 
 - **Panel A**: the running distinct-surface counts as two step functions --
   ``cumulative_surfaces_attempted`` (dashed) and ``cumulative_surfaces_promoted``
@@ -11,9 +12,21 @@ Reads the tidy CSV ``surface_activity.py`` writes (``surface_activity.csv``,
   directly comparable (promoted is always <= attempted, and the shared scale
   makes that visible rather than each heatmap re-normalizing to its own max).
 
-Palette: the repo's dataviz skill reference palette (``references/palette.md``)
--- categorical slot 1 (blue, `#2a78d6`) for both panels, since "attempted" and
-"promoted" are the same underlying metric measured two ways (promoted is a
+Only the nine canonical surfaces enter either panel. The table also carries a
+``merged`` category row per round (KTD7) -- the merged harness spans several
+surfaces by construction, so it is neither a tenth heatmap row nor part of the
+distinct-surface counts; the lookups here are keyed by ``CANONICAL_SURFACES``,
+which is what keeps it inert.
+
+Rounds the aggregation could not confirm complete (``round_complete`` or
+``runs_complete`` not ``true``) are marked with a hatched band behind Panel A
+and a starred tick label on every panel, and counted in a caption. The PNG is
+what a reader draws conclusions from, so completeness that stopped at the CSV
+would leave the honesty claim unmet exactly where it matters.
+
+Palette: the repo's dataviz skill reference palette, shared through
+``plot_style`` -- categorical slot 1 (blue) for both panels, since "attempted"
+and "promoted" are the same underlying metric measured two ways (promoted is a
 subset of attempted every round), not two independent identities; linestyle
 carries that distinction instead of a second hue. The heatmaps reuse the
 palette's blue sequential ramp (100->700), consistent with Panel A's hue.
@@ -23,9 +36,9 @@ variant to select here.
 """
 
 import argparse
-import csv
 import sys
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib
@@ -35,6 +48,28 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
+from shrlm.experiment.analysis_io import PLOTS_DIR
+from shrlm.experiment.plot_style import (
+    BASELINE,
+    BLUE,
+    DPI,
+    GRIDLINE,
+    MUTED_INK,
+    PARTIAL_GID_PREFIX,
+    PARTIAL_HATCH,
+    PRIMARY_INK,
+    SECONDARY_INK,
+    SURFACE,
+    PlotInputError,
+    add_snapshot_arguments,
+    apply_style,
+    draw_footer,
+    partial_caption,
+    partial_rounds,
+    read_rows,
+    resolve_snapshot,
+    save_figure,
+)
 from shrlm.experiment.surface_activity import (
     CANONICAL_SURFACES,
     SURFACE_ACTIVITY_FILENAME,
@@ -42,19 +77,10 @@ from shrlm.experiment.surface_activity import (
     UNATTRIBUTED_WARN_FRACTION,
 )
 
-PLOTS_DIR = "plots"
 OUTPUT_FILENAME = "surface_activity.png"
 
-# shrlm's dataviz skill reference palette (references/palette.md), light mode.
-BLUE = "#2a78d6"
-MUTED_INK = "#898781"
-SECONDARY_INK = "#52514e"
-PRIMARY_INK = "#0b0b0b"
-GRIDLINE = "#e1e0d9"
-BASELINE = "#c3c2b7"
-SURFACE = "#fcfcfb"
-
 # The palette's blue sequential ramp, steps 100->700 (references/palette.md).
+# Single-consumer, so it stays here rather than in ``plot_style``.
 BLUE_SEQUENTIAL_STOPS = [
     "#cde2fb",
     "#b7d3f6",
@@ -63,36 +89,24 @@ BLUE_SEQUENTIAL_STOPS = [
     "#6da7ec",
     "#5598e7",
     "#3987e5",
-    "#2a78d6",
+    BLUE,  # the ramp's 700 step is the shared categorical blue, not a second value
     "#256abf",
     "#1c5cab",
     "#184f95",
     "#104281",
     "#0d366b",
 ]
-BLUE_SEQUENTIAL_CMAP = LinearSegmentedColormap.from_list("shrlm_blue_seq", BLUE_SEQUENTIAL_STOPS)
 # A cell with exactly zero activity reads as *blank*, not "a pale blue value" --
 # masked to NaN before imshow and painted the chart surface color, so an
 # untouched surface (S1, ...) is visually empty rather than a faint tint of
 # the same ramp used for real counts.
-BLUE_SEQUENTIAL_CMAP.set_bad(SURFACE)
-
-DPI = 200
-
-plt.rcParams["font.family"] = "sans-serif"
-plt.rcParams["text.color"] = PRIMARY_INK
-plt.rcParams["axes.edgecolor"] = BASELINE
-plt.rcParams["axes.labelcolor"] = SECONDARY_INK
-plt.rcParams["xtick.color"] = MUTED_INK
-plt.rcParams["ytick.color"] = MUTED_INK
-plt.rcParams["figure.facecolor"] = SURFACE
-plt.rcParams["axes.facecolor"] = SURFACE
-plt.rcParams["savefig.facecolor"] = SURFACE
+BLUE_SEQUENTIAL_CMAP = LinearSegmentedColormap.from_list(
+    "shrlm_blue_seq", BLUE_SEQUENTIAL_STOPS
+).with_extremes(bad=SURFACE)
 
 
-def _read_activity_csv(path: Path) -> list[dict]:
-    with path.open(newline="") as handle:
-        rows = list(csv.DictReader(handle))
+def _read_activity_csv(snapshot_dir: Path) -> list[dict]:
+    rows = read_rows(snapshot_dir, SURFACE_ACTIVITY_FILENAME)
     for row in rows:
         row["round_index"] = int(row["round_index"])
         row["attempted_count"] = int(row["attempted_count"])
@@ -102,9 +116,8 @@ def _read_activity_csv(path: Path) -> list[dict]:
     return rows
 
 
-def _read_unattributed_csv(path: Path) -> list[dict]:
-    with path.open(newline="") as handle:
-        rows = list(csv.DictReader(handle))
+def _read_unattributed_csv(snapshot_dir: Path) -> list[dict]:
+    rows = read_rows(snapshot_dir, UNATTRIBUTED_FILENAME)
     for row in rows:
         row["round_index"] = int(row["round_index"])
         row["unattributed_count"] = int(row["unattributed_count"])
@@ -112,7 +125,34 @@ def _read_unattributed_csv(path: Path) -> list[dict]:
     return rows
 
 
-def _plot_cumulative_panel(ax: "plt.Axes", rounds: list[int], activity_rows: list[dict]) -> None:
+def _tick_labels(rounds: Sequence[int], partial: set[int]) -> list[str]:
+    """Round tick labels, starred where the round is not confirmed complete."""
+    return [f"{index}*" if index in partial else str(index) for index in rounds]
+
+
+def _mark_partial_rounds(ax: "plt.Axes", rounds: Sequence[int], partial: set[int]) -> None:
+    """Hatch the band behind each round that is not confirmed complete.
+
+    A band rather than a per-point marker because Panel A already spends
+    filled-vs-hollow circles on attempted-vs-promoted; a third marker state on
+    the same points would collide with a distinction the reader needs more.
+    """
+    for index in sorted(partial):
+        ax.axvspan(
+            index - 0.5,
+            index + 0.5,
+            facecolor="none",
+            edgecolor=BASELINE,
+            hatch=PARTIAL_HATCH,
+            linewidth=0,
+            zorder=0,
+            gid=f"{PARTIAL_GID_PREFIX}{index}",
+        )
+
+
+def _plot_cumulative_panel(
+    ax: "plt.Axes", rounds: list[int], activity_rows: list[dict], partial: set[int]
+) -> None:
     """Panel A: dashed attempted vs solid promoted step lines, y capped at 9."""
     by_round: dict[int, dict] = {}
     for row in activity_rows:
@@ -125,6 +165,8 @@ def _plot_cumulative_panel(ax: "plt.Axes", rounds: list[int], activity_rows: lis
         )
     attempted = [by_round[r]["attempted"] for r in rounds]
     promoted = [by_round[r]["promoted"] for r in rounds]
+
+    _mark_partial_rounds(ax, rounds, partial)
 
     ax.axhline(9, color=BASELINE, linewidth=1, linestyle=(0, (1, 2)), zorder=1)
     ax.text(
@@ -140,13 +182,16 @@ def _plot_cumulative_panel(ax: "plt.Axes", rounds: list[int], activity_rows: lis
     ax.step(
         rounds, attempted, where="post", color=BLUE, linewidth=2, linestyle="--", label="attempted"
     )
-    ax.step(rounds, promoted, where="post", color=BLUE, linewidth=2, linestyle="-", label="promoted")
+    ax.step(
+        rounds, promoted, where="post", color=BLUE, linewidth=2, linestyle="-", label="promoted"
+    )
     ax.scatter(rounds, attempted, s=24, color=BLUE, marker="o", zorder=3, facecolors="none")
     ax.scatter(rounds, promoted, s=24, color=BLUE, marker="o", zorder=3)
 
     ax.set_ylim(0, 9.6)
     ax.set_yticks(range(0, 10))
     ax.set_xticks(rounds)
+    ax.set_xticklabels(_tick_labels(rounds, partial))
     ax.set_xlabel("round")
     ax.set_ylabel("distinct surfaces (of 9)")
     ax.set_title("Surfaces touched over time", color=PRIMARY_INK, fontsize=12, loc="left")
@@ -176,13 +221,22 @@ def _plot_cumulative_panel(ax: "plt.Axes", rounds: list[int], activity_rows: lis
 
 
 def _grid_for(activity_rows: list[dict], rounds: list[int], metric: str) -> list[list[int]]:
-    """Dense surface x round matrix (S1 at the top row) for one count column."""
+    """Dense surface x round matrix (S1 at the top row) for one count column.
+
+    Keyed by ``CANONICAL_SURFACES`` only, so the table's ``merged`` category
+    row (KTD7) never reaches the grid -- not as a tenth row, and not through
+    the shared color scale.
+    """
     by_key = {(row["round_index"], row["surface"]): row[metric] for row in activity_rows}
     return [[by_key.get((r, s), 0) for r in rounds] for s in reversed(CANONICAL_SURFACES)]
 
 
 def _plot_heatmaps(
-    fig: "plt.Figure", axes: Sequence["plt.Axes"], rounds: list[int], activity_rows: list[dict]
+    fig: "plt.Figure",
+    axes: Sequence["plt.Axes"],
+    rounds: list[int],
+    activity_rows: list[dict],
+    partial: set[int],
 ) -> None:
     """Panel B: attempted_count and promoted_count heatmaps, one shared color scale."""
     attempted_grid = _grid_for(activity_rows, rounds, "attempted_count")
@@ -196,11 +250,16 @@ def _plot_heatmaps(
         # instead of the ramp's palest step -- "never touched" reads as blank.
         masked = np.where(np.array(grid) == 0, np.nan, grid)
         image = ax.imshow(
-            masked, cmap=BLUE_SEQUENTIAL_CMAP, vmin=0, vmax=vmax, aspect="auto", interpolation="nearest"
+            masked,
+            cmap=BLUE_SEQUENTIAL_CMAP,
+            vmin=0,
+            vmax=vmax,
+            aspect="auto",
+            interpolation="nearest",
         )
         images.append(image)
         ax.set_xticks(range(len(rounds)))
-        ax.set_xticklabels(rounds)
+        ax.set_xticklabels(_tick_labels(rounds, partial))
         ax.set_yticks(range(len(CANONICAL_SURFACES)))
         ax.set_yticklabels(list(reversed(CANONICAL_SURFACES)))
         ax.set_xlabel("round")
@@ -226,11 +285,56 @@ def _plot_heatmaps(
     fig.colorbar(images[0], ax=list(axes), fraction=0.04, pad=0.02, label="count")
 
 
-def plot_surface_activity(out_dir: Path, output_path: Path) -> None:
-    activity_rows = _read_activity_csv(out_dir / SURFACE_ACTIVITY_FILENAME)
-    unattributed_rows = _read_unattributed_csv(out_dir / UNATTRIBUTED_FILENAME)
-    rounds = sorted({row["round_index"] for row in activity_rows})
+def _unattributed_caption(unattributed_rows: list[dict]) -> str | None:
+    """The exclusion footnote, counting rounds that actually excluded something.
 
+    The table holds one entry per round whether or not anything was excluded,
+    so counting its length overstated the reach of the exclusions -- three
+    rounds "affected" when one row in one round was dropped (R8).
+    """
+    excluded = [row for row in unattributed_rows if row["unattributed_count"]]
+    if not excluded:
+        return None
+    total = sum(row["unattributed_count"] for row in excluded)
+    note = (
+        f"Note: {total} ledger row(s) across {len(excluded)} round(s) excluded from surface "
+        "counts (no single surface: loader rejections with no proposal left on disk) -- see "
+        f"{UNATTRIBUTED_FILENAME}."
+    )
+    flagged = [
+        row
+        for row in excluded
+        if row["total_rows"]
+        and row["unattributed_count"] / row["total_rows"] > UNATTRIBUTED_WARN_FRACTION
+    ]
+    if flagged:
+        note += f" Rounds {', '.join(str(row['round_index']) for row in flagged)} exceed 25% unattributed."
+    return note
+
+
+def build_figure(snapshot_dir: Path | str, *, rendered_at: datetime | None = None) -> "plt.Figure":
+    """Render the figure for one snapshot, without writing it anywhere.
+
+    Separate from ``plot_surface_activity`` so the figure's structure -- which
+    rounds carry the partial mark, what the captions say -- is assertable
+    without going through a PNG.
+
+    Raises:
+        PlotInputError: A required table is missing, or the snapshot holds no
+            round to plot (a header-only CSV, which the previous code walked
+            straight into ``rounds[-1]`` on).
+    """
+    snapshot_dir = Path(snapshot_dir)
+    activity_rows = _read_activity_csv(snapshot_dir)
+    unattributed_rows = _read_unattributed_csv(snapshot_dir)
+    rounds = sorted({row["round_index"] for row in activity_rows})
+    if not rounds:
+        raise PlotInputError(
+            f"{snapshot_dir / SURFACE_ACTIVITY_FILENAME} holds no rounds -- nothing to plot"
+        )
+    partial = partial_rounds(activity_rows)
+
+    apply_style()
     fig = plt.figure(figsize=(9, 9.5), dpi=DPI)
     grid_spec = fig.add_gridspec(2, 2, height_ratios=[1, 1.1], hspace=0.45, wspace=0.15)
     ax_top = fig.add_subplot(grid_spec[0, :])
@@ -239,50 +343,77 @@ def plot_surface_activity(out_dir: Path, output_path: Path) -> None:
     plt.setp(ax_bottom_right.get_yticklabels(), visible=False)
     ax_bottom_right.set_ylabel("")
 
-    _plot_cumulative_panel(ax_top, rounds, activity_rows)
-    _plot_heatmaps(fig, (ax_bottom_left, ax_bottom_right), rounds, activity_rows)
+    _plot_cumulative_panel(ax_top, rounds, activity_rows, partial)
+    _plot_heatmaps(fig, (ax_bottom_left, ax_bottom_right), rounds, activity_rows, partial)
 
-    flagged = [
-        row
-        for row in unattributed_rows
-        if row["total_rows"] and row["unattributed_count"] / row["total_rows"] > UNATTRIBUTED_WARN_FRACTION
+    captions = [
+        partial_caption(
+            partial,
+            len(rounds),
+            marker="Hatched band / starred round label",
+            source=SURFACE_ACTIVITY_FILENAME,
+        ),
+        _unattributed_caption(unattributed_rows),
     ]
-    total_unattributed = sum(row["unattributed_count"] for row in unattributed_rows)
-    if total_unattributed:
-        note = (
-            f"Note: {total_unattributed} ledger row(s) across {len(unattributed_rows)} round(s) "
-            "excluded from surface counts (no single surface: loader rejections, merged-harness "
-            f"records) -- see {UNATTRIBUTED_FILENAME}."
+    text = "\n".join(caption for caption in captions if caption)
+    if text:
+        fig.text(
+            0.5, 0.045, text, ha="center", va="bottom", fontsize=7.5, color=MUTED_INK, wrap=True
         )
-        if flagged:
-            note += f" Rounds {', '.join(str(r['round_index']) for r in flagged)} exceed 25% unattributed."
-        fig.text(0.5, 0.005, note, ha="center", va="bottom", fontsize=7.5, color=MUTED_INK, wrap=True)
 
-    fig.suptitle("Surface activity over optimization rounds", fontsize=14, color=PRIMARY_INK, x=0.02, ha="left")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=DPI, bbox_inches="tight")
-    plt.close(fig)
+    fig.suptitle(
+        "Surface activity over optimization rounds",
+        fontsize=14,
+        color=PRIMARY_INK,
+        x=0.02,
+        ha="left",
+    )
+    draw_footer(fig, snapshot_dir, rendered_at=rendered_at)
+    return fig
+
+
+def plot_surface_activity(
+    snapshot_dir: Path | str,
+    output_path: Path | str | None = None,
+    *,
+    rendered_at: datetime | None = None,
+) -> Path:
+    """Render Graph 1 into the snapshot's re-renderable ``plots/`` directory.
+
+    Writes ``<snapshot>/plots/surface_activity.png`` by default. ``plots/`` is
+    the one part of a published snapshot that may be replaced (KTD2): the
+    frozen CSVs underneath never move, and the footer's render time is what
+    keeps a re-rendered PNG from misrepresenting when it was drawn.
+    """
+    snapshot_dir = Path(snapshot_dir)
+    path = (
+        Path(output_path) if output_path is not None else snapshot_dir / PLOTS_DIR / OUTPUT_FILENAME
+    )
+    fig = build_figure(snapshot_dir, rendered_at=rendered_at)
+    try:
+        return save_figure(fig, path)
+    finally:
+        plt.close(fig)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m shrlm.experiment.plot_surface_activity",
-        description="Render Graph 1 (surface activity over rounds) from surface_activity.csv.",
+        description=(
+            "Render Graph 1 (surface activity over rounds) from an analysis snapshot's "
+            "surface_activity.csv."
+        ),
     )
-    parser.add_argument("out_dir", help="the experiment directory holding surface_activity.csv")
+    add_snapshot_arguments(parser)
     args = parser.parse_args(argv)
 
-    out_dir = Path(args.out_dir)
-    activity_path = out_dir / SURFACE_ACTIVITY_FILENAME
-    if not activity_path.exists():
-        sys.stderr.write(
-            f"{activity_path} not found -- run `python -m shrlm.experiment.surface_activity "
-            f"{out_dir}` first\n"
-        )
+    try:
+        snapshot_dir = resolve_snapshot(Path(args.out_dir), args.snapshot)
+        output_path = plot_surface_activity(snapshot_dir)
+    except PlotInputError as error:
+        sys.stderr.write(f"{error}\n")
         return 1
 
-    output_path = out_dir / PLOTS_DIR / OUTPUT_FILENAME
-    plot_surface_activity(out_dir, output_path)
     sys.stdout.write(f"Wrote {output_path}\n")
     return 0
 
@@ -291,4 +422,4 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
 
 
-__all__ = ["OUTPUT_FILENAME", "PLOTS_DIR", "main", "plot_surface_activity"]
+__all__ = ["OUTPUT_FILENAME", "PLOTS_DIR", "build_figure", "main", "plot_surface_activity"]
