@@ -57,7 +57,6 @@ Denominators, deliberately different per metric
 """
 
 import argparse
-import csv
 import json
 import sys
 from collections.abc import Sequence
@@ -66,10 +65,16 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.environments.graphwalks import GraphWalksSubVerifier
+from shrlm.experiment.analysis_io import (
+    PROVENANCE_FILENAME,
+    Snapshot,
+    allocate_snapshot,
+    write_csv,
+)
 from shrlm.experiment.evaluation import EVAL_DIR, EVAL_SUMMARY_FILENAME
 from shrlm.experiment.rounds import discover_rounds
 from shrlm.optimization.bundle import BUNDLE_FILENAME, round_dir
-from shrlm.optimization.driver import MANIFEST_FILE, load_round
+from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, TRACES_DIR, load_round
 from shrlm.optimization.grounding import apply_sub_verifier
 from shrlm.optimization.taxonomy import FailingLevel
 from shrlm.optimization.types import SubVerifier
@@ -89,6 +94,34 @@ PHASE_EVALUATION = "evaluation"
 
 OPTIMIZATION_FILENAME = "collapse_and_attribution_optimization.csv"
 EVALUATION_FILENAME = "collapse_and_attribution_evaluation.csv"
+
+# The names this aggregation's two phases are recorded under in a snapshot's
+# provenance -- separate, because a batch may run one and not the other.
+TOOL_NAME_OPTIMIZATION = "collapse_and_attribution_optimization"
+TOOL_NAME_EVALUATION = "collapse_and_attribution_evaluation"
+
+# Declared field order per phase (KTD8): a phase that finds no group still has
+# to write a header-only CSV, which it could not do from an absent first row.
+GROUP_METRICS_FIELDNAMES = (
+    "n_runs",
+    "n_walked",
+    "n_unwalkable",
+    "n_failures",
+    "collapse_rate",
+    "root_failure_share",
+    "child_failure_share",
+    "no_recursion_failure_share",
+    "ungrounded_share",
+    "sub_verifier_available",
+)
+OPTIMIZATION_FIELDNAMES = ("round_index", "environment", *GROUP_METRICS_FIELDNAMES)
+EVALUATION_FIELDNAMES = (
+    "condition_id",
+    "test_set_id",
+    "environment",
+    "length",
+    *GROUP_METRICS_FIELDNAMES,
+)
 
 
 @dataclass(frozen=True)
@@ -289,15 +322,69 @@ def collapse_and_attribution_evaluation(out_dir: Path | str) -> list[EvaluationR
 # ---------------------------------------------------------------------------
 
 
-def _write_csv(path: Path, rows: Sequence[OptimizationRow] | Sequence[EvaluationRow]) -> None:
-    with path.open("w", newline="") as handle:
-        if not rows:
-            return
-        fieldnames = list(rows[0].to_dict())
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row.to_dict())
+def _record_round_sources(snapshot: Snapshot, round_path: Path) -> None:
+    """Every artifact ``load_round`` reads for one round, hashed for provenance.
+
+    The per-run traces are recorded as one directory entry rather than one line
+    per run: this analysis re-walks every trace, so the traces ARE its input
+    and a changed one must change the manifest -- but a real experiment holds
+    thousands of them, and a provenance record nobody can read is not a
+    provenance record.
+    """
+    snapshot.record_source(round_path / MANIFEST_FILE)
+    snapshot.record_source(round_path / INSTANCES_FILE)
+    snapshot.record_source_dir(round_path / TRACES_DIR)
+
+
+def write_collapse_and_attribution_optimization(
+    snapshot: Snapshot, out_dir: Path | str, rows: Sequence[OptimizationRow]
+) -> Path:
+    """Write the optimization table into an allocated snapshot, with sources."""
+    analyzed: list[int] = []
+    for record in discover_rounds(out_dir).rounds:
+        if not record.has_manifest:
+            continue
+        analyzed.append(record.round_index)
+        _record_round_sources(snapshot, record.mining_round_path)
+        snapshot.record_source(record.mining_round_path / BUNDLE_FILENAME)
+    snapshot.record_rounds(analyzed)
+
+    csv_path = snapshot.path / OPTIMIZATION_FILENAME
+    write_csv(csv_path, rows, fieldnames=OPTIMIZATION_FIELDNAMES)
+    return csv_path
+
+
+def write_collapse_and_attribution_evaluation(
+    snapshot: Snapshot, out_dir: Path | str, rows: Sequence[EvaluationRow]
+) -> Path:
+    """Write the evaluation table into an allocated snapshot, with sources."""
+    out_dir = Path(out_dir)
+    snapshot.record_source(eval_summary_path(out_dir))
+    for row in rows:
+        set_path = out_dir / EVAL_DIR / row.condition_id / row.test_set_id
+        _record_round_sources(snapshot, round_dir(set_path, EVAL_ROUND_INDEX))
+    snapshot.record_eval_sets(f"{row.condition_id}/{row.test_set_id}" for row in rows)
+
+    csv_path = snapshot.path / EVALUATION_FILENAME
+    write_csv(csv_path, rows, fieldnames=EVALUATION_FIELDNAMES)
+    return csv_path
+
+
+def run_collapse_and_attribution(out_dir: Path | str, snapshot: Snapshot, *, phase: str) -> Path:
+    """Aggregate one phase into the caller's snapshot (KTD2).
+
+    Takes an allocated snapshot rather than allocating one, so a batch that
+    aggregates both phases -- or this phase alongside the other analyses --
+    leaves one directory a reader can compare across, not four.
+    """
+    out_dir = Path(out_dir)
+    if phase == PHASE_OPTIMIZATION:
+        return write_collapse_and_attribution_optimization(
+            snapshot, out_dir, collapse_and_attribution_optimization(out_dir)
+        )
+    return write_collapse_and_attribution_evaluation(
+        snapshot, out_dir, collapse_and_attribution_evaluation(out_dir)
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -313,31 +400,61 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--phase", choices=[PHASE_OPTIMIZATION, PHASE_EVALUATION], required=True, help="which phase to aggregate"
     )
     parser.add_argument(
-        "--out", dest="csv_out_dir", default=None, help="directory to write the CSV into (default: out_dir)"
+        "--out",
+        dest="snapshot_parent",
+        metavar="DIR",
+        default=None,
+        help=(
+            "parent directory for the timestamped analysis snapshot "
+            "(default: <out_dir>/analysis)"
+        ),
     )
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
-    csv_out_dir = Path(args.csv_out_dir) if args.csv_out_dir else out_dir
 
+    # The two phases are written out separately rather than dispatched through
+    # one variable: their row types are different, and a shared call site would
+    # only typecheck by widening both to `Any` -- which is how a row of the
+    # wrong shape would reach the wrong writer without anything noticing.
+    # The emptiness check comes before allocation in both, so a phase with
+    # nothing to analyze leaves no empty unpublished directory behind.
     if args.phase == PHASE_OPTIMIZATION:
-        rows: Sequence[Any] = collapse_and_attribution_optimization(out_dir)
+        optimization_rows = collapse_and_attribution_optimization(out_dir)
+        if not optimization_rows:
+            sys.stderr.write(f"no {args.phase} groups found under {out_dir}\n")
+            return 1
+        snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
+        tool_name = TOOL_NAME_OPTIMIZATION
         filename = OPTIMIZATION_FILENAME
+        ok = snapshot.run_tool(
+            tool_name,
+            lambda: write_collapse_and_attribution_optimization(
+                snapshot, out_dir, optimization_rows
+            ),
+        )
     else:
         if not eval_summary_path(out_dir).exists():
             sys.stderr.write(f"{eval_summary_path(out_dir)} not found\n")
             return 1
-        rows = collapse_and_attribution_evaluation(out_dir)
+        evaluation_rows = collapse_and_attribution_evaluation(out_dir)
+        if not evaluation_rows:
+            sys.stderr.write(f"no {args.phase} groups found under {out_dir}\n")
+            return 1
+        snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
+        tool_name = TOOL_NAME_EVALUATION
         filename = EVALUATION_FILENAME
+        ok = snapshot.run_tool(
+            tool_name,
+            lambda: write_collapse_and_attribution_evaluation(snapshot, out_dir, evaluation_rows),
+        )
 
-    if not rows:
-        sys.stderr.write(f"no {args.phase} groups found under {out_dir}\n")
+    snapshot.publish()
+    if not ok:
+        sys.stderr.write(f"{tool_name} failed; see {snapshot.path / PROVENANCE_FILENAME}\n")
         return 1
 
-    csv_out_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = csv_out_dir / filename
-    _write_csv(csv_path, rows)
-    sys.stdout.write(f"Wrote {csv_path}\n")
+    sys.stdout.write(f"Wrote {snapshot.path / filename}\n")
     return 0
 
 
@@ -347,11 +464,15 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
 
 __all__ = [
     "COLLAPSE_THRESHOLD",
+    "EVALUATION_FIELDNAMES",
     "EVALUATION_FILENAME",
+    "OPTIMIZATION_FIELDNAMES",
     "OPTIMIZATION_FILENAME",
     "PHASE_EVALUATION",
     "PHASE_OPTIMIZATION",
     "SUB_VERIFIERS",
+    "TOOL_NAME_EVALUATION",
+    "TOOL_NAME_OPTIMIZATION",
     "EvaluationRow",
     "GroupMetrics",
     "OptimizationRow",
@@ -361,4 +482,7 @@ __all__ = [
     "empty_group_metrics",
     "eval_summary_path",
     "main",
+    "run_collapse_and_attribution",
+    "write_collapse_and_attribution_evaluation",
+    "write_collapse_and_attribution_optimization",
 ]

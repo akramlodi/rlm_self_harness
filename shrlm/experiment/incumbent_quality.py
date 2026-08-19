@@ -44,17 +44,44 @@ The all-candidates table
 """
 
 import argparse
-import csv
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from shrlm.experiment.analysis_io import (
+    PROVENANCE_FILENAME,
+    Snapshot,
+    allocate_snapshot,
+    record_ledger_sources,
+    write_csv,
+)
 from shrlm.experiment.rounds import iter_promotion_rounds
 from shrlm.optimization.promotion import DECISION_PROMOTED
 
 INCUMBENT_QUALITY_FILENAME = "incumbent_quality.csv"
 INCUMBENT_QUALITY_CANDIDATES_FILENAME = "incumbent_quality_candidates.csv"
+
+# The name this aggregation is recorded under in a snapshot's provenance.
+TOOL_NAME = "incumbent_quality"
+
+# Declared field order, so an experiment with no scored round still writes a
+# header-only CSV rather than an empty file (KTD8).
+INCUMBENT_QUALITY_FIELDNAMES = (
+    "round_index",
+    "heldin_pass_rate",
+    "heldout_pass_rate",
+    "incumbent_changed",
+    "annotation",
+)
+INCUMBENT_QUALITY_CANDIDATES_FIELDNAMES = (
+    "round_index",
+    "subject_id",
+    "decision",
+    "surface",
+    "heldin_pass_rate",
+    "heldout_pass_rate",
+)
 
 SPLIT_HELDIN = "heldin"
 SPLIT_HELDOUT = "heldout"
@@ -209,15 +236,41 @@ def all_candidate_quality_over_rounds(out_dir: Path | str) -> list[CandidateQual
     return rows
 
 
-def _write_csv(path: Path, rows: Sequence[IncumbentQualityRow] | Sequence[CandidateQualityRow]) -> None:
-    with path.open("w", newline="") as handle:
-        if not rows:
-            return
-        fieldnames = list(rows[0].to_dict())
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row.to_dict())
+def write_incumbent_quality(
+    snapshot: Snapshot,
+    out_dir: Path | str,
+    rows: Sequence[IncumbentQualityRow],
+    candidates: Sequence[CandidateQualityRow],
+) -> list[Path]:
+    """Write both tables into an already-allocated snapshot, recording sources.
+
+    Sources are recorded before the outputs are written, which is the ordering
+    the snapshot's identity resolution assumes for a legacy tree carrying no
+    recorded identity of its own.
+    """
+    record_ledger_sources(snapshot, out_dir)
+    quality_path = snapshot.path / INCUMBENT_QUALITY_FILENAME
+    candidates_path = snapshot.path / INCUMBENT_QUALITY_CANDIDATES_FILENAME
+    write_csv(quality_path, rows, fieldnames=INCUMBENT_QUALITY_FIELDNAMES)
+    write_csv(candidates_path, candidates, fieldnames=INCUMBENT_QUALITY_CANDIDATES_FIELDNAMES)
+    return [quality_path, candidates_path]
+
+
+def run_incumbent_quality(out_dir: Path | str, snapshot: Snapshot) -> list[Path]:
+    """Compute both tables and write them into the caller's snapshot (KTD2).
+
+    Takes an allocated snapshot rather than allocating one: every aggregation
+    in one invocation belongs in the same snapshot, so the quality series and
+    the surface series a reader plots together are guaranteed to describe one
+    pass over one tree.
+    """
+    out_dir = Path(out_dir)
+    return write_incumbent_quality(
+        snapshot,
+        out_dir,
+        incumbent_quality_over_rounds(out_dir),
+        all_candidate_quality_over_rounds(out_dir),
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -227,21 +280,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Per-round incumbent held-in/held-out pass rates (feeds Graph 2).",
     )
     parser.add_argument("out_dir", help="the experiment directory to read (holds opt/)")
+    parser.add_argument(
+        "--out",
+        dest="snapshot_parent",
+        metavar="DIR",
+        default=None,
+        help=(
+            "parent directory for the timestamped analysis snapshot "
+            "(default: <out_dir>/analysis)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
     rows = incumbent_quality_over_rounds(out_dir)
     if not rows:
+        # Checked before a snapshot is allocated: an experiment with nothing to
+        # analyze should not leave an empty unpublished directory behind.
         sys.stderr.write(f"no validation rounds with a promotion ledger found under {out_dir}\n")
         return 1
 
-    quality_path = out_dir / INCUMBENT_QUALITY_FILENAME
-    _write_csv(quality_path, rows)
-    sys.stdout.write(f"Wrote {quality_path}\n")
+    snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
+    ok = snapshot.run_tool(
+        TOOL_NAME,
+        lambda: write_incumbent_quality(
+            snapshot, out_dir, rows, all_candidate_quality_over_rounds(out_dir)
+        ),
+    )
+    snapshot.publish()
+    if not ok:
+        sys.stderr.write(f"{TOOL_NAME} failed; see {snapshot.path / PROVENANCE_FILENAME}\n")
+        return 1
 
-    candidates_path = out_dir / INCUMBENT_QUALITY_CANDIDATES_FILENAME
-    _write_csv(candidates_path, all_candidate_quality_over_rounds(out_dir))
-    sys.stdout.write(f"Wrote {candidates_path}\n")
+    sys.stdout.write(f"Wrote {snapshot.path / INCUMBENT_QUALITY_FILENAME}\n")
+    sys.stdout.write(f"Wrote {snapshot.path / INCUMBENT_QUALITY_CANDIDATES_FILENAME}\n")
     return 0
 
 
@@ -250,11 +322,16 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
 
 
 __all__ = [
+    "INCUMBENT_QUALITY_CANDIDATES_FIELDNAMES",
     "INCUMBENT_QUALITY_CANDIDATES_FILENAME",
+    "INCUMBENT_QUALITY_FIELDNAMES",
     "INCUMBENT_QUALITY_FILENAME",
+    "TOOL_NAME",
     "CandidateQualityRow",
     "IncumbentQualityRow",
     "all_candidate_quality_over_rounds",
     "incumbent_quality_over_rounds",
     "main",
+    "run_incumbent_quality",
+    "write_incumbent_quality",
 ]

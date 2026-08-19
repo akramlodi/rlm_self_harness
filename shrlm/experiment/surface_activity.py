@@ -29,12 +29,18 @@ actually gained that round.
 """
 
 import argparse
-import csv
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from shrlm.experiment.analysis_io import (
+    PROVENANCE_FILENAME,
+    Snapshot,
+    allocate_snapshot,
+    record_ledger_sources,
+    write_csv,
+)
 from shrlm.experiment.rounds import iter_promotion_rounds
 from shrlm.optimization.promotion import (
     DECISION_ACCEPTED,
@@ -50,6 +56,22 @@ CANONICAL_SURFACES: tuple[str, ...] = tuple(SURFACE_HARNESS_FIELDS)
 
 SURFACE_ACTIVITY_FILENAME = "surface_activity.csv"
 UNATTRIBUTED_FILENAME = "surface_activity_unattributed.csv"
+
+# The name this aggregation is recorded under in a snapshot's provenance.
+TOOL_NAME = "surface_activity"
+
+# Field order is declared, not read off the first row: an experiment with no
+# ledgered round still has to write a header-only CSV rather than an empty
+# file, and an empty file cannot say which columns it would have had (KTD8).
+SURFACE_ACTIVITY_FIELDNAMES = (
+    "round_index",
+    "surface",
+    "attempted_count",
+    "promoted_count",
+    "cumulative_surfaces_attempted",
+    "cumulative_surfaces_promoted",
+)
+UNATTRIBUTED_FIELDNAMES = ("round_index", "unattributed_count", "total_rows")
 
 # Fraction of a round's ledger rows landing as unattributed above which the
 # CLI prints a warning -- a nudge to look, not a hard threshold.
@@ -186,15 +208,38 @@ def surface_activity_over_rounds(
     return rows, unattributed
 
 
-def _write_csv(path: Path, rows: Sequence[object]) -> None:
-    with path.open("w", newline="") as handle:
-        if not rows:
-            return
-        fieldnames = list(rows[0].to_dict())  # type: ignore[attr-defined]
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row.to_dict())  # type: ignore[attr-defined]
+def write_surface_activity(
+    snapshot: Snapshot,
+    out_dir: Path | str,
+    rows: Sequence[SurfaceActivityRow],
+    unattributed: Sequence[UnattributedRow],
+) -> list[Path]:
+    """Write both tables into an already-allocated snapshot, recording sources.
+
+    Sources are recorded before the outputs are written, which is the ordering
+    the snapshot's identity resolution assumes for a legacy tree carrying no
+    recorded identity of its own.
+    """
+    record_ledger_sources(snapshot, out_dir)
+    activity_path = snapshot.path / SURFACE_ACTIVITY_FILENAME
+    unattributed_path = snapshot.path / UNATTRIBUTED_FILENAME
+    write_csv(activity_path, rows, fieldnames=SURFACE_ACTIVITY_FIELDNAMES)
+    write_csv(unattributed_path, unattributed, fieldnames=UNATTRIBUTED_FIELDNAMES)
+    return [activity_path, unattributed_path]
+
+
+def run_surface_activity(out_dir: Path | str, snapshot: Snapshot) -> list[Path]:
+    """Compute both tables and write them into the caller's snapshot.
+
+    The entry point a batch caller (a CLI run, or the post-round hook) invokes:
+    it takes an already-allocated snapshot rather than allocating one, because
+    every aggregation in one invocation belongs in ONE snapshot (KTD2) --
+    tables a reader compares against each other must have come from a single
+    pass over a single tree.
+    """
+    out_dir = Path(out_dir)
+    rows, unattributed = surface_activity_over_rounds(out_dir)
+    return write_surface_activity(snapshot, out_dir, rows, unattributed)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -204,18 +249,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Per-round, per-surface attempted/promoted counts (feeds Graph 1).",
     )
     parser.add_argument("out_dir", help="the experiment directory to read (holds opt/)")
+    parser.add_argument(
+        "--out",
+        dest="snapshot_parent",
+        metavar="DIR",
+        default=None,
+        help=(
+            "parent directory for the timestamped analysis snapshot "
+            "(default: <out_dir>/analysis)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
     rows, unattributed = surface_activity_over_rounds(out_dir)
     if not rows:
+        # Checked before a snapshot is allocated: an experiment with nothing to
+        # analyze should not leave an empty unpublished directory behind.
         sys.stderr.write(f"no validation rounds with a promotion ledger found under {out_dir}\n")
         return 1
 
-    activity_path = out_dir / SURFACE_ACTIVITY_FILENAME
-    unattributed_path = out_dir / UNATTRIBUTED_FILENAME
-    _write_csv(activity_path, rows)
-    _write_csv(unattributed_path, unattributed)
+    snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
+    ok = snapshot.run_tool(
+        TOOL_NAME, lambda: write_surface_activity(snapshot, out_dir, rows, unattributed)
+    )
+    snapshot.publish()
+    if not ok:
+        sys.stderr.write(f"{TOOL_NAME} failed; see {snapshot.path / PROVENANCE_FILENAME}\n")
+        return 1
+    activity_path = snapshot.path / SURFACE_ACTIVITY_FILENAME
+    unattributed_path = snapshot.path / UNATTRIBUTED_FILENAME
 
     for entry in unattributed:
         if entry.total_rows and entry.unattributed_count / entry.total_rows > UNATTRIBUTED_WARN_FRACTION:
@@ -237,10 +300,15 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
 
 __all__ = [
     "CANONICAL_SURFACES",
+    "SURFACE_ACTIVITY_FIELDNAMES",
     "SURFACE_ACTIVITY_FILENAME",
+    "TOOL_NAME",
+    "UNATTRIBUTED_FIELDNAMES",
     "UNATTRIBUTED_FILENAME",
     "SurfaceActivityRow",
     "UnattributedRow",
     "main",
+    "run_surface_activity",
     "surface_activity_over_rounds",
+    "write_surface_activity",
 ]

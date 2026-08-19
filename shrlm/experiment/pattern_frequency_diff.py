@@ -28,7 +28,6 @@ The denominator, honestly stated
 """
 
 import argparse
-import csv
 import json
 import re
 import sys
@@ -36,6 +35,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from shrlm.experiment.analysis_io import (
+    PROVENANCE_FILENAME,
+    Snapshot,
+    allocate_snapshot,
+    write_csv,
+    write_json,
+)
 
 # A signature is present with rate exactly equal (floating-point noise only,
 # not "close enough") counted as persisted_unchanged rather than a spurious
@@ -51,6 +58,25 @@ STATUS_PERSISTED_WORSENED = "persisted_worsened"
 STATUS_PERSISTED_UNCHANGED = "persisted_unchanged"
 
 SIGNATURE_FIELDS = ("verifier_cause", "failing_level", "causal_status", "agent_mechanism")
+
+# The name this analysis is recorded under in a snapshot's provenance.
+TOOL_NAME = "pattern_frequency_diff"
+
+# Declared field order (KTD8): a pair with no signature on either side still
+# writes a header-only CSV, which says "no shared failure patterns" where an
+# empty file would say "this analysis never ran".
+DIFF_FIELDNAMES = (
+    "signature",
+    "status",
+    "support_rate_before",
+    "support_rate_after",
+    "delta",
+    "delta_pct",
+    "grounded_fraction_before",
+    "grounded_fraction_after",
+    "below_support_floor_before",
+    "below_support_floor_after",
+)
 
 
 @dataclass(frozen=True)
@@ -98,8 +124,22 @@ class PatternFrequencyDiffRow:
 
 
 def _signature_key(pattern: dict[str, Any]) -> tuple[str, str, str, str]:
+    """The fixed four-tuple two bundles' patterns are joined on.
+
+    Unpacked into four names rather than returned straight from the generator:
+    a comprehension over ``SIGNATURE_FIELDS`` has the type of a
+    variable-length tuple, not the four-tuple the join key actually is, and
+    the previous spelling needed a ``# type: ignore[return-value]`` to paper
+    over the difference. Unpacking keeps ``SIGNATURE_FIELDS`` as the single
+    source of field order while making the arity real -- a signature that grew
+    or lost a field raises here instead of silently producing a key of the
+    wrong shape.
+    """
     signature = pattern["signature"]
-    return tuple(signature[field_name] for field_name in SIGNATURE_FIELDS)  # type: ignore[return-value]
+    verifier_cause, failing_level, causal_status, agent_mechanism = (
+        signature[field_name] for field_name in SIGNATURE_FIELDS
+    )
+    return verifier_cause, failing_level, causal_status, agent_mechanism
 
 
 def _safe_label(raw: str) -> str:
@@ -214,26 +254,6 @@ def summarize(rows: list[PatternFrequencyDiffRow]) -> dict[str, int]:
     return counts
 
 
-def _write_csv(path: Path, rows: list[PatternFrequencyDiffRow]) -> None:
-    fieldnames = [
-        "signature",
-        "status",
-        "support_rate_before",
-        "support_rate_after",
-        "delta",
-        "delta_pct",
-        "grounded_fraction_before",
-        "grounded_fraction_after",
-        "below_support_floor_before",
-        "below_support_floor_after",
-    ]
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row.to_dict())
-
-
 def _pairs_to_diff(bundles: list[_BundleSummary]) -> list[tuple[_BundleSummary, _BundleSummary]]:
     """Every consecutive pair, plus first-vs-last when more than two bundles are given."""
     pairs = [(bundles[i], bundles[i + 1]) for i in range(len(bundles) - 1)]
@@ -260,9 +280,17 @@ def _dedupe_labels(bundles: list[_BundleSummary]) -> list[_BundleSummary]:
 
 
 def run_pattern_frequency_diff(
-    bundle_paths: Sequence[Path | str], out_dir: Path | str, labels: Sequence[str] | None = None
+    bundle_paths: Sequence[Path | str], snapshot: Snapshot, labels: Sequence[str] | None = None
 ) -> list[Path]:
     """Load every bundle, diff every pair (see ``_pairs_to_diff``), write CSV + summary JSON each.
+
+    Writes into an already-allocated snapshot (KTD2) rather than a bare output
+    directory: the diff's own filenames are derived from bundle labels, so two
+    runs over re-mined bundles carrying the same round indices would otherwise
+    land on the same names -- the exact clobber the snapshot layer exists to
+    make impossible. The bundles are recorded as provenance sources before
+    anything is written, because a diff is only interpretable against the exact
+    bundle bytes it compared.
 
     Returns the list of written CSV paths, one per diffed pair.
     """
@@ -276,25 +304,37 @@ def run_pattern_frequency_diff(
         for i, path in enumerate(bundle_paths)
     ]
     bundles = _dedupe_labels(bundles)
+    snapshot.record_sources(bundle.path for bundle in bundles)
 
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for before, after in _pairs_to_diff(bundles):
         rows = diff_bundle_pair(before, after)
         summary = summarize(rows)
 
-        csv_path = out_dir / f"pattern_frequency_diff_{before.label}_vs_{after.label}.csv"
-        _write_csv(csv_path, rows)
+        stem = f"pattern_frequency_diff_{before.label}_vs_{after.label}"
+        csv_path = snapshot.path / f"{stem}.csv"
+        write_csv(csv_path, rows, fieldnames=DIFF_FIELDNAMES)
         written.append(csv_path)
 
-        summary_path = out_dir / f"pattern_frequency_diff_{before.label}_vs_{after.label}.json"
-        summary_payload = {
-            "before": {"path": str(before.path), "label": before.label, "n_runs": before.n_runs},
-            "after": {"path": str(after.path), "label": after.label, "n_runs": after.n_runs},
-            **summary,
-        }
-        summary_path.write_text(json.dumps(summary_payload, indent=2, sort_keys=True) + "\n")
+        summary_path = snapshot.path / f"{stem}.json"
+        write_json(
+            summary_path,
+            snapshot.stamp_payload(
+                {
+                    "before": {
+                        "path": str(before.path),
+                        "label": before.label,
+                        "n_runs": before.n_runs,
+                    },
+                    "after": {
+                        "path": str(after.path),
+                        "label": after.label,
+                        "n_runs": after.n_runs,
+                    },
+                    **summary,
+                }
+            ),
+        )
 
         sys.stdout.write(f"{before.label} vs {after.label}: {summary}\n")
         sys.stdout.write(f"  Wrote {csv_path}\n")
@@ -310,12 +350,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             "(proposal section 3.5's before/after-optimization comparison)."
         ),
     )
+    # The experiment directory is required even though the bundles carry every
+    # number this analysis reads: it is what anchors the snapshot location and
+    # the identity lookup (KTD2). Without it a diff would be a table with no
+    # answer to "which experiment is this about" -- which is the whole failure
+    # mode the snapshot layer exists to close.
+    parser.add_argument(
+        "out_dir", help="the experiment directory the bundles came from (anchors the snapshot)"
+    )
     parser.add_argument(
         "bundle_paths",
         nargs="+",
         help="two or more bundle.json paths, in chronological order (round 0 first)",
     )
-    parser.add_argument("--out", dest="out_dir", required=True, help="directory to write CSV/JSON into")
+    parser.add_argument(
+        "--out",
+        dest="snapshot_parent",
+        metavar="DIR",
+        default=None,
+        help=(
+            "parent directory for the timestamped analysis snapshot "
+            "(default: <out_dir>/analysis)"
+        ),
+    )
     parser.add_argument(
         "--labels",
         nargs="+",
@@ -331,11 +388,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write("need at least 2 bundle paths to diff\n")
         return 1
 
+    out_dir = Path(args.out_dir)
+    snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
     try:
-        run_pattern_frequency_diff(args.bundle_paths, args.out_dir, labels=args.labels)
+        run_pattern_frequency_diff(args.bundle_paths, snapshot, labels=args.labels)
     except ValueError as error:
+        # Recorded as a failed tool and left unpublished, rather than simply
+        # reported: the directory stays on disk as the audit trail for what was
+        # attempted, but nothing will ever select it as "the latest results".
+        snapshot.record_tool(TOOL_NAME, ok=False, error=str(error))
+        snapshot.publish()
         sys.stderr.write(f"{error}\n")
+        sys.stderr.write(f"see {snapshot.path / PROVENANCE_FILENAME}\n")
         return 1
+    snapshot.record_tool(TOOL_NAME, ok=True)
+    snapshot.publish()
     return 0
 
 
@@ -344,12 +411,14 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
 
 
 __all__ = [
+    "DIFF_FIELDNAMES",
     "RATE_EPSILON",
     "STATUS_NEW",
     "STATUS_PERSISTED_IMPROVED",
     "STATUS_PERSISTED_UNCHANGED",
     "STATUS_PERSISTED_WORSENED",
     "STATUS_RESOLVED",
+    "TOOL_NAME",
     "PatternFrequencyDiffRow",
     "diff_bundle_pair",
     "load_bundle_summary",
