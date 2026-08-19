@@ -33,8 +33,9 @@ false rather than vanishing from the round accounting.
 ``round_complete``   ``round.json`` present, well-formed, and recording this
                      round's index. Never unknown -- marker presence is always
                      knowable.
-``evidence_complete````evidence_complete.json`` present and its recorded line
-                     counts matching the persisted ``records.jsonl`` /
+``evidence_complete````evidence_complete.json`` present, naming this round and
+                     the bundle beside it, and its recorded record counts
+                     matching the PARSED ``records.jsonl`` /
                      ``attributions.jsonl``. Never unknown. The re-check
                      matters because ``write_bundle`` publishes ``bundle.json``
                      before those two files, so a marker written over a
@@ -42,8 +43,10 @@ false rather than vanishing from the round accounting.
                      orchestrator's own marker payload guards.
 ``runs_complete``    ``n_present == n_expected`` when the expected count is
                      knowable; ``None`` (``count_unknown``) when it is not.
-eval set ``complete``the set's outcome is ``completed`` with no skipped runs;
-                     ``None`` when the set is absent from ``eval_summary.json``.
+eval set ``complete``the set's outcome is ``completed``, no skipped runs are
+                     recorded, AND the set's persisted runs reach the count it
+                     planned; ``None`` when the set is absent from
+                     ``eval_summary.json`` or its planned count is unknowable.
 ===================  ==========================================================
 
 ``unknown`` is always its own value and never collapses into false: an
@@ -108,7 +111,13 @@ from shrlm.experiment.orchestrator import (
     VALIDATION_DIR,
     experiment_round_dir,
 )
-from shrlm.optimization.bundle import ATTRIBUTIONS_FILENAME, RECORDS_FILENAME, round_dir
+from shrlm.experiment.usage import read_jsonl
+from shrlm.optimization.bundle import (
+    ATTRIBUTIONS_FILENAME,
+    BUNDLE_FILENAME,
+    RECORDS_FILENAME,
+    round_dir,
+)
 from shrlm.optimization.costs import OUTCOME_COMPLETED
 from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, load_manifest
 from shrlm.optimization.promotion import MERGED_SUBJECT_ID
@@ -319,6 +328,14 @@ class EvalSetRecord:
     ``eval_summary.json`` -- an evaluation that crashed before it aggregated,
     or a summary written by an earlier invocation. Its ``complete`` is then
     ``None``: unmeasured, not failed.
+
+    ``complete`` reads BOTH the summary's verdict and the set's own run counts,
+    because the summary is a self-report: ``evaluation.py`` writes its outcome
+    from the state it held in memory, so a set truncated after the aggregate
+    landed -- or one whose run directory was never fully persisted -- would
+    otherwise publish itself complete while ``runs`` says runs are missing. The
+    optimization rounds have always carried ``runs_complete`` next to their
+    marker flags; this is the same evidence on the evaluation side.
     """
 
     condition_id: str
@@ -337,11 +354,41 @@ class EvalSetRecord:
         return len(self.skipped_run_ids)
 
     @property
-    def complete(self) -> bool | None:
-        """True / False / None per KTD9's evaluation row."""
+    def summary_complete(self) -> bool | None:
+        """The evaluation summary's own verdict on the set, on its own.
+
+        ``None`` when the set never reached ``eval_summary.json``. Published
+        beside ``complete`` through the ``outcome`` / ``n_skipped`` columns, so
+        a reader can always see which half of the verdict moved.
+        """
         if not self.in_summary:
             return None
         return self.outcome == OUTCOME_COMPLETED and not self.skipped_run_ids
+
+    @property
+    def complete(self) -> bool | None:
+        """True / False / None per KTD9's evaluation row, over both signals.
+
+        The summary's verdict and ``runs.runs_complete`` are combined
+        three-valued (KTD9): either one being ``False`` makes the set
+        incomplete, an unknown planned count leaves the set unknown, and only
+        two trues make it complete. Unknown never collapses into false in
+        either direction -- a set the config cannot size is unmeasurable, not
+        failed, and a set the summary never recorded stays unmeasured even when
+        its runs are all on disk.
+        """
+        summary = self.summary_complete
+        if summary is None:
+            # KTD9's unknown row: a set absent from the summary is unmeasured.
+            # The run counts still travel beside it, so a reader sees whatever
+            # its directory does say.
+            return None
+        runs = self.runs.runs_complete
+        if summary is False or runs is False:
+            return False
+        if runs is None:
+            return None
+        return True
 
 
 @dataclass(frozen=True)
@@ -383,8 +430,15 @@ def _read_marker(path: Path, expected_format: str) -> dict[str, Any] | None:
     return payload
 
 
-def _round_marker_agrees(payload: dict[str, Any] | None, round_index: int) -> bool:
-    """Whether a round marker exists and records this round (KTD9 row 1)."""
+def _marker_round_agrees(payload: dict[str, Any] | None, round_index: int) -> bool:
+    """Whether a marker exists and records the round it was found under.
+
+    Both stage markers record a ``round``, and both are checked against the
+    directory they were read from (KTD9 rows 1 and 2). A marker naming another
+    round is a marker that travelled -- copied, restored from another tree, or
+    written by a resume against a different index -- and it certifies nothing
+    about the files beside it.
+    """
     if payload is None:
         return False
     try:
@@ -393,22 +447,79 @@ def _round_marker_agrees(payload: dict[str, Any] | None, round_index: int) -> bo
         return False
 
 
-def _evidence_is_complete(payload: dict[str, Any] | None, mining_round_path: Path) -> bool:
-    """Whether the evidence marker's counts match the persisted audit files.
+def _jsonl_record_count(path: Path) -> int | None:
+    """Parsed records in a JSON-lines file; ``None`` when absent or unparseable.
 
-    ``write_bundle`` publishes ``bundle.json`` before ``records.jsonl`` and
-    ``attributions.jsonl``, so only the line-count re-check proves the triplet
-    landed -- the same check ``orchestrator._evidence_marker_payload`` makes
-    before it writes the marker, made again here because an analysis reads
-    trees the current process did not write.
+    Parsed, not line-counted, because the writer parses: a half-written final
+    line still counts as a line, and counting it would let a torn audit file
+    match a marker that describes an intact one.
+    """
+    if not path.exists():
+        return None
+    try:
+        return len(read_jsonl(path))
+    except (OSError, ValueError):
+        return None
+
+
+def _bundle_id_agrees(payload: dict[str, Any], mining_round_path: Path) -> bool:
+    """Whether the marker names the bundle sitting in the same directory.
+
+    The writer records the id it read out of ``bundle.json`` so the marker
+    names the evidence it certifies; a marker carrying no id at all did not
+    come from that writer and is not trusted. The bundle's own id is the one
+    resolvable-or-not half: a ``bundle.json`` that is absent, unreadable, or
+    carries no ``bundle_id`` leaves nothing to compare against, and the round
+    and record-count checks decide alone rather than this returning a verdict
+    it has no evidence for. A bundle that DOES name itself and names another
+    bundle is a positive disagreement -- the marker describes evidence that is
+    no longer the evidence on disk.
+    """
+    recorded = payload.get("bundle_id")
+    if recorded is None:
+        return False
+    bundle_path = mining_round_path / BUNDLE_FILENAME
+    if not bundle_path.exists():
+        return True
+    try:
+        bundle = json.loads(bundle_path.read_text())
+    except (OSError, ValueError):
+        return True
+    if not isinstance(bundle, dict) or bundle.get("bundle_id") is None:
+        return True
+    return str(recorded) == str(bundle["bundle_id"])
+
+
+def _evidence_is_complete(
+    payload: dict[str, Any] | None, mining_round_path: Path, round_index: int
+) -> bool:
+    """Whether the evidence marker actually certifies the files beside it.
+
+    ``orchestrator._evidence_marker_payload`` is the writer, and this is the
+    same check made again by a process that did not write the tree, so it has
+    to match: the marker names its round and its bundle, and BOTH audit files
+    parse to the record counts it recorded. ``write_bundle`` publishes
+    ``bundle.json`` before ``records.jsonl`` and ``attributions.jsonl``, so the
+    re-read of the two JSON-lines files is what proves the whole triplet
+    landed.
+
+    Every failure direction is honest: an absent, foreign, or unparseable
+    marker -- and an audit file that cannot be parsed at all -- yields false,
+    never true, because "complete" here is a positive claim that has to be
+    demonstrated. (KTD9 gives this row no unknown value: the marker is either
+    on disk and checkable or it is not there.)
     """
     if payload is None:
+        return False
+    if not _marker_round_agrees(payload, round_index):
+        return False
+    if not _bundle_id_agrees(payload, mining_round_path):
         return False
     for file_name, key in (
         (RECORDS_FILENAME, "n_records"),
         (ATTRIBUTIONS_FILENAME, "n_attributions"),
     ):
-        actual = _count_lines(mining_round_path / file_name)
+        actual = _jsonl_record_count(mining_round_path / file_name)
         if actual is None:
             return False
         try:
@@ -478,8 +589,8 @@ def _round_record(
         has_proposals_marker=(round_path / PROPOSALS_MARKER_FILENAME).exists(),
         has_manifest=(mining_round_path / MANIFEST_FILE).exists(),
         has_ledger=(validation_round_path / PROMOTIONS_FILENAME).exists(),
-        round_complete=_round_marker_agrees(round_marker, round_index),
-        evidence_complete=_evidence_is_complete(evidence_marker, mining_round_path),
+        round_complete=_marker_round_agrees(round_marker, round_index),
+        evidence_complete=_evidence_is_complete(evidence_marker, mining_round_path, round_index),
         mining_runs=_run_counts(
             mining_round_path,
             mining_parent,

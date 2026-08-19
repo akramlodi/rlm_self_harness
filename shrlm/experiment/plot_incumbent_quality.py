@@ -100,11 +100,19 @@ def _read_candidates_csv(snapshot_dir: Path) -> list[dict]:
 
 
 def _plot_candidate_scatter(ax: "plt.Axes", candidate_rows: list[dict]) -> None:
-    heldin_x = [row["round_index"] for row in candidate_rows if not math.isnan(row["heldin_pass_rate"])]
-    heldin_y = [row["heldin_pass_rate"] for row in candidate_rows if not math.isnan(row["heldin_pass_rate"])]
-    heldout_x = [row["round_index"] for row in candidate_rows if not math.isnan(row["heldout_pass_rate"])]
+    heldin_x = [
+        row["round_index"] for row in candidate_rows if not math.isnan(row["heldin_pass_rate"])
+    ]
+    heldin_y = [
+        row["heldin_pass_rate"] for row in candidate_rows if not math.isnan(row["heldin_pass_rate"])
+    ]
+    heldout_x = [
+        row["round_index"] for row in candidate_rows if not math.isnan(row["heldout_pass_rate"])
+    ]
     heldout_y = [
-        row["heldout_pass_rate"] for row in candidate_rows if not math.isnan(row["heldout_pass_rate"])
+        row["heldout_pass_rate"]
+        for row in candidate_rows
+        if not math.isnan(row["heldout_pass_rate"])
     ]
     ax.scatter(heldin_x, heldin_y, s=18, color=BLUE, alpha=0.18, zorder=1, linewidths=0)
     ax.scatter(heldout_x, heldout_y, s=18, color=ORANGE, alpha=0.18, zorder=1, linewidths=0)
@@ -130,7 +138,12 @@ def _plot_series(
     complete = [(r, v) for r, v in zip(rounds, values, strict=True) if r not in partial]
     if complete:
         ax.scatter(
-            [r for r, _ in complete], [v for _, v in complete], s=36, color=color, marker=marker, zorder=4
+            [r for r, _ in complete],
+            [v for _, v in complete],
+            s=36,
+            color=color,
+            marker=marker,
+            zorder=4,
         )
     incomplete = [(r, v) for r, v in zip(rounds, values, strict=True) if r in partial]
     if incomplete:
@@ -258,7 +271,9 @@ def build_figure(
     ax.set_xticklabels([f"{index}*" if index in partial else str(index) for index in rounds])
     ax.set_xlabel("round")
     ax.set_ylabel("pass rate")
-    ax.set_title("Incumbent quality over optimization rounds", color=PRIMARY_INK, fontsize=12, loc="left")
+    ax.set_title(
+        "Incumbent quality over optimization rounds", color=PRIMARY_INK, fontsize=12, loc="left"
+    )
     ax.grid(True, axis="y", color=GRIDLINE, linewidth=0.75, linestyle="-")
     ax.set_axisbelow(True)
     for spine in ("top", "right"):
@@ -283,7 +298,9 @@ def build_figure(
         )
     text = "\n".join(caption for caption in captions if caption)
     if text:
-        fig.text(0.02, 0.045, text, ha="left", va="bottom", fontsize=7.5, color=MUTED_INK, wrap=True)
+        fig.text(
+            0.02, 0.045, text, ha="left", va="bottom", fontsize=7.5, color=MUTED_INK, wrap=True
+        )
 
     draw_footer(fig, snapshot_dir, rendered_at=rendered_at)
     return fig
@@ -304,7 +321,9 @@ def plot_incumbent_quality(
     keeps a re-rendered PNG from misrepresenting when it was drawn.
     """
     snapshot_dir = Path(snapshot_dir)
-    path = Path(output_path) if output_path is not None else snapshot_dir / PLOTS_DIR / OUTPUT_FILENAME
+    path = (
+        Path(output_path) if output_path is not None else snapshot_dir / PLOTS_DIR / OUTPUT_FILENAME
+    )
     fig = build_figure(snapshot_dir, show_candidates=show_candidates, rendered_at=rendered_at)
     try:
         return save_figure(fig, path)

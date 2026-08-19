@@ -120,7 +120,9 @@ def _surface_snapshot(
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     snapshot = allocate_snapshot(out_dir)
-    _write_csv(snapshot.path / SURFACE_ACTIVITY_FILENAME, SURFACE_ACTIVITY_FIELDNAMES, activity_rows)
+    _write_csv(
+        snapshot.path / SURFACE_ACTIVITY_FILENAME, SURFACE_ACTIVITY_FIELDNAMES, activity_rows
+    )
     if write_unattributed:
         rounds = sorted({int(row["round_index"]) for row in activity_rows})
         rows = unattributed_rows
@@ -143,7 +145,9 @@ def _quality_snapshot(
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     snapshot = allocate_snapshot(out_dir)
-    _write_csv(snapshot.path / INCUMBENT_QUALITY_FILENAME, INCUMBENT_QUALITY_FIELDNAMES, quality_rows)
+    _write_csv(
+        snapshot.path / INCUMBENT_QUALITY_FILENAME, INCUMBENT_QUALITY_FIELDNAMES, quality_rows
+    )
     if write_candidates:
         _write_csv(
             snapshot.path / INCUMBENT_QUALITY_CANDIDATES_FILENAME,
@@ -191,7 +195,9 @@ def test_incumbent_partial_round_marked_and_counted_in_caption(tmp_path: Path) -
             if (collection.get_gid() or "").startswith(plot_style.PARTIAL_GID_PREFIX)
         ]
         assert partial, "no partial-marker collection was drawn"
-        plotted = {round(offset[0]) for collection in partial for offset in collection.get_offsets()}
+        plotted = {
+            round(offset[0]) for collection in partial for offset in collection.get_offsets()
+        }
         assert plotted == {2}
         for collection in partial:
             # Hollow: no face, edge only -- the distinct marker U7 asks for.
@@ -218,7 +224,9 @@ def test_incumbent_unknown_runs_complete_marks_partial_without_claiming_incomple
             for collection in fig.axes[0].collections
             if (collection.get_gid() or "").startswith(plot_style.PARTIAL_GID_PREFIX)
         ]
-        plotted = {round(offset[0]) for collection in partial for offset in collection.get_offsets()}
+        plotted = {
+            round(offset[0]) for collection in partial for offset in collection.get_offsets()
+        }
         assert plotted == {2}, "an unknown completeness flag is not `true`, so it marks as partial"
         caption = _figure_text(fig)
         assert "1 of 2" in caption

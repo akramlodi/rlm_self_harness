@@ -182,7 +182,9 @@ def _plot_cumulative_panel(
     ax.step(
         rounds, attempted, where="post", color=BLUE, linewidth=2, linestyle="--", label="attempted"
     )
-    ax.step(rounds, promoted, where="post", color=BLUE, linewidth=2, linestyle="-", label="promoted")
+    ax.step(
+        rounds, promoted, where="post", color=BLUE, linewidth=2, linestyle="-", label="promoted"
+    )
     ax.scatter(rounds, attempted, s=24, color=BLUE, marker="o", zorder=3, facecolors="none")
     ax.scatter(rounds, promoted, s=24, color=BLUE, marker="o", zorder=3)
 
@@ -302,7 +304,8 @@ def _unattributed_caption(unattributed_rows: list[dict]) -> str | None:
     flagged = [
         row
         for row in excluded
-        if row["total_rows"] and row["unattributed_count"] / row["total_rows"] > UNATTRIBUTED_WARN_FRACTION
+        if row["total_rows"]
+        and row["unattributed_count"] / row["total_rows"] > UNATTRIBUTED_WARN_FRACTION
     ]
     if flagged:
         note += f" Rounds {', '.join(str(row['round_index']) for row in flagged)} exceed 25% unattributed."
@@ -354,10 +357,16 @@ def build_figure(snapshot_dir: Path | str, *, rendered_at: datetime | None = Non
     ]
     text = "\n".join(caption for caption in captions if caption)
     if text:
-        fig.text(0.5, 0.045, text, ha="center", va="bottom", fontsize=7.5, color=MUTED_INK, wrap=True)
+        fig.text(
+            0.5, 0.045, text, ha="center", va="bottom", fontsize=7.5, color=MUTED_INK, wrap=True
+        )
 
     fig.suptitle(
-        "Surface activity over optimization rounds", fontsize=14, color=PRIMARY_INK, x=0.02, ha="left"
+        "Surface activity over optimization rounds",
+        fontsize=14,
+        color=PRIMARY_INK,
+        x=0.02,
+        ha="left",
     )
     draw_footer(fig, snapshot_dir, rendered_at=rendered_at)
     return fig
@@ -377,7 +386,9 @@ def plot_surface_activity(
     keeps a re-rendered PNG from misrepresenting when it was drawn.
     """
     snapshot_dir = Path(snapshot_dir)
-    path = Path(output_path) if output_path is not None else snapshot_dir / PLOTS_DIR / OUTPUT_FILENAME
+    path = (
+        Path(output_path) if output_path is not None else snapshot_dir / PLOTS_DIR / OUTPUT_FILENAME
+    )
     fig = build_figure(snapshot_dir, rendered_at=rendered_at)
     try:
         return save_figure(fig, path)

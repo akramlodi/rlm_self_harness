@@ -50,6 +50,7 @@ from shrlm.experiment.analysis_io import (
     Snapshot,
     allocate_snapshot,
 )
+from shrlm.experiment.orchestrator import CONFIG_FILENAME, ROUND_MARKER_FILENAME
 from shrlm.experiment.pattern_frequency_diff import (
     BUNDLES_FILENAME,
     DIFF_FIELDNAMES,
@@ -791,8 +792,35 @@ class TestCompletenessDrivenComparison:
         snapshot.publish()
 
         payload = json.loads((snapshot.path / PROVENANCE_FILENAME).read_text())
-        assert len(payload["sources"]) == 2
-        assert all(entry["sha256"] for entry in payload["sources"])
+        bundles = [entry for entry in payload["sources"] if entry["path"].endswith(".json")]
+        assert {Path(entry["path"]).name for entry in bundles} >= {"b1.json", "b2.json"}
+        assert all(
+            entry["sha256"]
+            for entry in payload["sources"]
+            if Path(entry["path"]).name in {"b1.json", "b2.json"}
+        )
+
+    def test_the_inputs_behind_the_completeness_table_are_recorded_too(
+        self, experiment: Path, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        """``round_complete`` / ``evidence_complete`` come off the loop's stage
+        markers and the config, not off any bundle, so a manifest naming only
+        the bundles would let a marker edit move a published column without
+        moving a recorded hash."""
+        complete_round(experiment, 1)
+        first = write_bundle(tmp_path / "b1.json", 1, support=5)
+        second = write_bundle(tmp_path / "b2.json", 2, support=2)
+
+        run_pattern_frequency_diff([first, second], snapshot)
+        snapshot.publish()
+
+        payload = json.loads((snapshot.path / PROVENANCE_FILENAME).read_text())
+        recorded = {entry["path"] for entry in payload["sources"]}
+        record = record_for(experiment, 1)
+        assert CONFIG_FILENAME in recorded
+        assert (record.round_path / ROUND_MARKER_FILENAME).relative_to(
+            experiment
+        ).as_posix() in recorded
 
 
 # ---------------------------------------------------------------------------

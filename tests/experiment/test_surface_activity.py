@@ -29,13 +29,14 @@ build them with the loop's own layout functions; proposal artifacts are written
 at the path discovery reports for the round, never at a locally assembled one.
 """
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from shrlm.experiment.analysis_io import Snapshot, allocate_snapshot
+from shrlm.experiment.analysis_io import ANALYSIS_DIR, Snapshot, allocate_snapshot
 from shrlm.experiment.rounds import (
     MERGED_CATEGORY,
     SURFACE_SOURCE_BACKFILLED,
@@ -51,6 +52,7 @@ from shrlm.experiment.surface_activity import (
     UNATTRIBUTED_FILENAME,
     _is_promoted,
     main,
+    run_surface_activity,
     surface_activity_over_rounds,
     write_surface_activity,
 )
@@ -508,6 +510,103 @@ class TestUnattributedWarning:
         assert "round 1" in stderr
         assert "proposal" in stderr
         assert "loader rejections" not in stderr
+
+
+# ---------------------------------------------------------------------------
+# A backfilled surface is only a number if its proposal is in the manifest
+# ---------------------------------------------------------------------------
+
+
+def recorded_sources(snapshot: Snapshot) -> dict[str, Any]:
+    return {entry["path"]: entry for entry in snapshot.provenance_payload()["sources"]}
+
+
+def proposal_source_name(out_dir: Path, round_index: int, candidate_id: str) -> str:
+    path = record_for(out_dir, round_index).proposals_dir / candidate_id / PROPOSAL_FILENAME
+    return path.relative_to(out_dir).as_posix()
+
+
+class TestSurfaceSourcesAreRecorded:
+    """The artifact that supplied a recovered surface has to be provenance.
+
+    A cell marked ``backfilled`` is an attribution no ledger states; it came out
+    of a specific ``proposal.json``. A manifest that lists only the ledgers
+    leaves the reader unable to say which proposal produced the number, and
+    unable to detect that it changed.
+    """
+
+    def test_the_proposal_a_backfilled_surface_came_from_is_recorded(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        write_round(
+            experiment,
+            1,
+            [ledger_record("r01-c01-s2")],
+            proposals={"r01-c01-s2": "S2"},
+        )
+
+        run_surface_activity(experiment, snapshot)
+
+        sources = recorded_sources(snapshot)
+        name = proposal_source_name(experiment, 1, "r01-c01-s2")
+        assert name in sources, f"the backfilled proposal is missing from {sorted(sources)}"
+        assert sources[name]["sha256"] is not None
+
+    def test_a_proposal_that_was_looked_for_and_absent_is_recorded_with_a_null_hash(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        """``surface_source=none`` is produced BY the absence, so the absence is
+        an input: a proposal appearing later would move the published
+        attribution without moving any recorded hash."""
+        write_round(experiment, 1, [ledger_record("r01-c01-s5")])
+
+        run_surface_activity(experiment, snapshot)
+
+        sources = recorded_sources(snapshot)
+        name = proposal_source_name(experiment, 1, "r01-c01-s5")
+        assert name in sources, (
+            f"the consulted-and-absent proposal is missing from {sorted(sources)}"
+        )
+        assert sources[name]["sha256"] is None
+
+    def test_editing_the_proposal_moves_the_recorded_hash(self, experiment: Path) -> None:
+        write_round(experiment, 1, [ledger_record("r01-c01-s2")], proposals={"r01-c01-s2": "S2"})
+        name = proposal_source_name(experiment, 1, "r01-c01-s2")
+
+        first = allocate_snapshot(experiment, now=FROZEN)
+        run_surface_activity(experiment, first)
+
+        write_round(experiment, 1, [ledger_record("r01-c01-s2")], proposals={"r01-c01-s2": "S4"})
+        second = allocate_snapshot(experiment, now=FROZEN)
+        run_surface_activity(experiment, second)
+
+        assert recorded_sources(first)[name]["sha256"] != recorded_sources(second)[name]["sha256"]
+
+
+# ---------------------------------------------------------------------------
+# The CLI diagnoses a tree it cannot read instead of tracebacking
+# ---------------------------------------------------------------------------
+
+
+class TestCliReadFailures:
+    def test_a_malformed_ledger_exits_non_zero_with_one_line(
+        self, experiment: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Discovery and the aggregation deliberately run before a snapshot is
+        allocated (an experiment with nothing to analyze must not leave an empty
+        stamped directory), which puts them outside ``run_tool``'s guard -- so
+        they need one of their own or a malformed ledger reaches the operator as
+        a traceback."""
+        write_round(experiment, 1, [ledger_record("r01-c01-s2", surface="S2")])
+        ledger = record_for(experiment, 1).validation_round_path / PROMOTIONS_FILENAME
+        ledger.write_text(json.dumps({"subject_id": "r01-c01-s2"}) + "\n")
+
+        assert main([str(experiment)]) == 1
+        captured = capsys.readouterr()
+        assert len(captured.err.strip().splitlines()) == 1
+        assert str(experiment) in captured.err
+        # Nothing was stamped: the failure happened before allocation.
+        assert not (experiment / ANALYSIS_DIR).exists()
 
 
 # ---------------------------------------------------------------------------

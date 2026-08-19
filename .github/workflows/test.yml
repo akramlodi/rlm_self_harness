@@ -25,7 +25,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install --system -e .
+          # The plotting extra is installed because the plot suite
+          # (tests/experiment/test_plots.py) is gated behind
+          # ``pytest.importorskip("matplotlib")``: without it those tests are
+          # collected, skipped, and reported green -- 18 tests that exist and
+          # never run. Every plot module forces the Agg backend, so this is
+          # headless-safe on the runner.
+          uv pip install --system -e ".[plotting]"
           uv pip install --system pytest pytest-asyncio pytest-cov
 
       - name: Run tests

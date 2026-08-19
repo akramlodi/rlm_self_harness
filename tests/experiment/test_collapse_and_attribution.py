@@ -306,6 +306,52 @@ class TestEvaluationCompleteness:
         assert row["environment"] == "graphwalks"
         assert row["length"] == "short"
 
+    def test_a_set_short_on_runs_is_not_published_complete(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        """A summary saying ``completed`` over a truncated set is not evidence.
+
+        The written row is what a reader draws conclusions from, so the run
+        counts that moved the verdict have to be in it: without them a
+        ``complete=false`` on a set whose ``outcome`` reads ``completed`` and
+        whose ``n_skipped`` reads 0 would be unexplainable from the table.
+        """
+        config = load_config(PROFILE)
+        write_eval_set(
+            experiment,
+            "b1",
+            "graphwalks_short",
+            n_instances=2,
+            attempts=config.operational.eval_repetitions,
+            n_runs=2,
+        )
+        write_eval_summary(
+            experiment, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}}
+        )
+
+        (row,) = written_evaluation(snapshot, experiment)
+        assert row["outcome"] == OUTCOME_COMPLETED
+        assert row["n_skipped"] == "0"
+        assert row["n_expected_runs"] == str(2 * config.operational.eval_repetitions)
+        assert row["n_missing_runs"] == str(2 * config.operational.eval_repetitions - 2)
+        assert row["runs_complete"] == TRISTATE_FALSE
+        assert row["complete"] == TRISTATE_FALSE
+
+    def test_a_set_whose_planned_count_is_unknowable_reads_unknown_not_false(
+        self, tmp_path: Path
+    ) -> None:
+        """KTD9 again, on the evaluation side: unmeasurable is not failed."""
+        legacy = tmp_path / "legacy"
+        write_eval_set(legacy, "b1", "graphwalks_short", n_instances=2, attempts=3)
+        write_eval_summary(legacy, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}})
+
+        (row,) = written_evaluation(allocate_snapshot(legacy, now=FROZEN), legacy)
+        assert row["outcome"] == OUTCOME_COMPLETED
+        assert row["n_expected_runs"] == ""
+        assert row["runs_complete"] == TRISTATE_UNKNOWN
+        assert row["complete"] == TRISTATE_UNKNOWN
+        assert row["complete"] != TRISTATE_FALSE
+
     def test_a_set_on_disk_but_absent_from_the_summary_is_unknown_and_still_emitted(
         self, experiment: Path, snapshot: Snapshot
     ) -> None:
@@ -543,6 +589,8 @@ def test_no_analysis_row_type_omits_its_completeness() -> None:
         OPTIMIZATION_FIELDNAMES
     )
     assert {"outcome", "n_skipped", "complete"} <= set(EVALUATION_FIELDNAMES)
+    # The evaluation verdict folds the run counts in, so the counts ship with it.
+    assert {"n_expected_runs", "n_missing_runs", "runs_complete"} <= set(EVALUATION_FIELDNAMES)
     assert {"round_complete", "runs_complete"} <= set(SURFACE_ACTIVITY_FIELDNAMES)
     assert {"round_complete", "runs_complete"} <= set(INCUMBENT_QUALITY_FIELDNAMES)
     assert {"evidence_complete", "included", "exclusion_reason"} <= set(BUNDLE_FIELDNAMES)

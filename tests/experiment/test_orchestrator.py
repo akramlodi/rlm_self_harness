@@ -1202,6 +1202,59 @@ class TestPostRoundAnalysisIsolation:
         assert TOOL_NAME_INCUMBENT_QUALITY in capsys.readouterr().err
 
 
+class TestPostRoundAnalysisInterrupts:
+    """Ctrl-C is not an analysis failure, and must not be treated as one.
+
+    ``allocate_snapshot`` stamps its directory before a single tool runs, and
+    ``KeyboardInterrupt`` is not an ``Exception`` -- so an interrupt landing in
+    the hook used to leave exactly the stamped-but-empty snapshot the hook's own
+    docstring says it never produces, with nothing on disk saying why.
+    """
+
+    def test_an_interrupt_leaves_provenance_and_still_stops_the_experiment(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        out = tmp_path / "exp"
+        out.mkdir()
+
+        def interrupt(out_dir: Path, snapshot: Any) -> Any:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(orchestrator_module, "_post_round_analyses", interrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator_module._run_post_round_analysis(out)
+
+        # The claimed directory explains itself instead of being empty...
+        (snapshot,) = snapshots(out)
+        assert (snapshot / PROVENANCE_FILENAME).exists(), sorted(snapshot.iterdir())
+        provenance = json.loads((snapshot / PROVENANCE_FILENAME).read_text())
+        outcomes = {tool["name"]: tool for tool in provenance["tools"]}
+        assert outcomes[POST_ROUND_BATCH_TOOL]["ok"] is False
+        assert "KeyboardInterrupt" in outcomes[POST_ROUND_BATCH_TOOL]["error"]
+
+        # ...and is never presented as a finished batch.
+        assert not is_published(snapshot)
+        assert latest_snapshot(out) is None
+        assert "interrupted" in capsys.readouterr().err
+
+    def test_a_systemexit_takes_the_same_path(self, tmp_path, monkeypatch):
+        out = tmp_path / "exp"
+        out.mkdir()
+
+        def interrupt(out_dir: Path, snapshot: Any) -> Any:
+            raise SystemExit(2)
+
+        monkeypatch.setattr(orchestrator_module, "_post_round_analyses", interrupt)
+
+        with pytest.raises(SystemExit):
+            orchestrator_module._run_post_round_analysis(out)
+
+        (snapshot,) = snapshots(out)
+        assert (snapshot / PROVENANCE_FILENAME).exists()
+        assert not is_published(snapshot)
+
+
 class TestPostRoundAnalysisSnapshots:
     """What a round's refresh actually produces (KTD2/KTD4)."""
 

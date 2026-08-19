@@ -91,8 +91,11 @@ Post-round analysis (KTD4). After every EXECUTED round the loop refreshes the
 aggregation snapshots under ``analysis/`` from what it has just persisted, so a
 long study's outputs never go stale. That refresh is strictly one-way: it reads
 persisted artifacts, writes only under ``analysis/``, and cannot fail, block, or
-alter a round -- ``_run_post_round_analysis`` swallows everything, including its
-own imports. Nothing in the loop ever reads ``analysis/`` back.
+alter a round -- ``_run_post_round_analysis`` swallows every analysis failure,
+including its own imports. It does NOT swallow an operator interrupt: a
+``KeyboardInterrupt`` is recorded in the snapshot's provenance and then re-raised,
+because Ctrl-C means stop the experiment, not skip the analysis. Nothing in the
+loop ever reads ``analysis/`` back.
 
 Single-threaded, main thread only: the SIGALRM hard-deadline backstop in
 ``shrlm.optimization.costs`` binds only there (POSIX main thread), and this
@@ -968,14 +971,21 @@ def _post_round_analyses(
 def _run_post_round_analysis(out_dir: Path) -> None:
     """Refresh the analysis snapshot from what the loop has persisted (KTD4).
 
-    Best-effort in the strongest sense: NO failure in here may reach the
-    experiment. A broken aggregation, an unreadable artifact, an unallocatable
-    snapshot, even an ImportError raised while loading the analysis modules --
-    each ends in a warning on stderr and a return. The experiment's outcome must never
-    depend on whether its analyses ran, which is why the whole body sits under
-    one blanket guard and why the individual tools sit under a second one
-    (``Snapshot.run_tool``) inside it: one failing aggregation must not cost the
-    others their output either.
+    Best-effort in the strongest sense: no analysis FAILURE in here may reach
+    the experiment. A broken aggregation, an unreadable artifact, an
+    unallocatable snapshot, even an ImportError raised while loading the
+    analysis modules -- each ends in a warning on stderr and a return. The
+    experiment's outcome must never depend on whether its analyses ran, which
+    is why the whole body sits under one blanket guard and why the individual
+    tools sit under a second one (``Snapshot.run_tool``) inside it: one failing
+    aggregation must not cost the others their output either.
+
+    An INTERRUPT is the one thing that does travel outward. ``KeyboardInterrupt``
+    and ``SystemExit`` are not analysis failures -- they are the operator
+    stopping the process -- so they take the same audit-trail path as any other
+    escape (see ``_publish_failed_batch``) and are then re-raised. Catching them
+    with everything else would silently turn a Ctrl-C during the hook into
+    "skip this snapshot and run another round".
 
     The batch allocates exactly ONE snapshot (KTD2) and publishes it
     unconditionally -- ``publish`` writes ``provenance.json`` either way and
@@ -1010,6 +1020,18 @@ def _run_post_round_analysis(out_dir: Path) -> None:
             if not snapshot.run_tool(name, call)
         ]
         published = snapshot.publish()
+    except (KeyboardInterrupt, SystemExit) as interrupt:
+        # Ahead of the blanket arm because these are NOT ``Exception``: without
+        # this, Ctrl-C between the ``mkdir`` and ``publish`` left exactly the
+        # stamped-but-empty directory this function promises never to produce.
+        # The snapshot explains itself, and then the interrupt goes on stopping
+        # the experiment -- swallowing it would make Ctrl-C mean "skip the
+        # analysis and keep running", which is not what anybody typed it for.
+        sys.stderr.write(
+            f"post-round analysis interrupted for {out_dir}: {type(interrupt).__name__}\n"
+        )
+        _publish_failed_batch(snapshot, interrupt)
+        raise
     except Exception as error:  # noqa: BLE001 -- isolation from the loop is the point
         sys.stderr.write(
             f"post-round analysis skipped for {out_dir}: {type(error).__name__}: {error}\n"
@@ -1023,14 +1045,15 @@ def _run_post_round_analysis(out_dir: Path) -> None:
         )
 
 
-def _publish_failed_batch(snapshot: "Snapshot | None", error: Exception) -> None:
+def _publish_failed_batch(snapshot: "Snapshot | None", error: BaseException) -> None:
     """Leave provenance behind for a batch that failed outside any tool's guard.
 
     ``allocate_snapshot`` claims its directory before a single aggregation
     runs, so anything that raises between the claim and ``publish`` -- the
-    function-local import of the analysis modules, or building the list of
-    analyses -- used to leave a stamped directory with no ``provenance.json``
-    and no ``published.json``. Recording the failure as a tool outcome and
+    function-local import of the analysis modules, building the list of
+    analyses, or a ``KeyboardInterrupt`` landing anywhere in there -- used to
+    leave a stamped directory with no ``provenance.json`` and no
+    ``published.json``. Recording the failure as a tool outcome and
     publishing gives that directory the audit trail every other failure mode
     gets, and (because the outcome is a failed one) withholds the completion
     marker, so it can never be read as the latest results.

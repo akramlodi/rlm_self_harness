@@ -63,7 +63,9 @@ Completeness, carried beside every rate (R2, KTD5, KTD9)
     rather than re-derived here: mining rounds report their expected and
     missing run counts plus ``runs_complete`` / ``evidence_complete`` /
     ``round_complete``; test sets report the summary's ``outcome``, their
-    skipped-run count, and ``complete``.
+    skipped-run count, the same expected/missing run counts and
+    ``runs_complete`` the rounds carry, and the ``complete`` verdict that folds
+    both sides together.
 
     Nothing is dropped for being incomplete (KTD5). Every discovered round is
     emitted, including a completed no-op round whose mining stage persisted no
@@ -89,6 +91,7 @@ from shrlm.experiment.analysis_io import (
     Snapshot,
     add_snapshot_parent_argument,
     allocate_snapshot,
+    record_inventory_sources,
     tristate,
     write_csv,
 )
@@ -150,7 +153,19 @@ ROUND_COMPLETENESS_FIELDNAMES = (
     "evidence_complete",
     "round_complete",
 )
-EVAL_COMPLETENESS_FIELDNAMES = ("outcome", "n_skipped", "complete")
+# The evaluation side carries the same run-count evidence as the round side
+# (R2): ``complete`` folds the persisted-vs-planned run counts into the
+# summary's verdict, so the counts that moved it have to be visible beside it
+# -- a bare ``complete=false`` with nothing to read it against is the opaque
+# verdict this plan removed on the optimization side already.
+EVAL_COMPLETENESS_FIELDNAMES = (
+    "outcome",
+    "n_skipped",
+    "n_expected_runs",
+    "n_missing_runs",
+    "runs_complete",
+    "complete",
+)
 
 OPTIMIZATION_FIELDNAMES = (
     "round_index",
@@ -239,25 +254,50 @@ class RoundCompleteness:
 
 @dataclass(frozen=True)
 class EvalCompleteness:
-    """One test set's KTD9 completeness, as the evaluation summary recorded it.
+    """One test set's KTD9 completeness: the summary's verdict AND its runs.
+
+    ``complete`` is the shared inventory's combined verdict (see
+    ``rounds.EvalSetRecord.complete``): the summary's ``outcome`` and skipped
+    runs on one side, the set's persisted-vs-planned run counts on the other.
+    Both sides are written out beside it, because a verdict a reader cannot
+    trace back to its evidence is the thing that made a truncated evaluation
+    indistinguishable from a finished one in the first place -- the summary is
+    a self-report, so a set that says ``completed`` while ``n_missing_runs``
+    is positive must read incomplete, and the two columns are how a reader sees
+    which half moved.
 
     ``complete`` is ``None`` -- ``unknown`` once written -- for a set that has
-    run directories but no ``eval_summary.json`` entry: an evaluation that
-    crashed before it aggregated is unmeasured, not failed.
+    run directories but no ``eval_summary.json`` entry (an evaluation that
+    crashed before it aggregated is unmeasured, not failed) and for one whose
+    planned run count is unknowable (KTD6). ``unknown`` never collapses into
+    ``false`` in either case.
     """
 
     outcome: str | None
     n_skipped: int
+    n_expected_runs: int | None
+    n_missing_runs: int | None
+    runs_complete: bool | None
     complete: bool | None
 
     @classmethod
     def from_record(cls, record: EvalSetRecord) -> "EvalCompleteness":
-        return cls(outcome=record.outcome, n_skipped=record.n_skipped, complete=record.complete)
+        return cls(
+            outcome=record.outcome,
+            n_skipped=record.n_skipped,
+            n_expected_runs=record.runs.n_expected,
+            n_missing_runs=record.runs.n_missing,
+            runs_complete=record.runs.runs_complete,
+            complete=record.complete,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "outcome": self.outcome,
             "n_skipped": self.n_skipped,
+            "n_expected_runs": self.n_expected_runs,
+            "n_missing_runs": self.n_missing_runs,
+            "runs_complete": tristate(self.runs_complete),
             "complete": tristate(self.complete),
         }
 
@@ -493,6 +533,11 @@ def write_collapse_and_attribution_optimization(
     ``run_collapse_and_attribution``); omitted, one is discovered here.
     """
     inventory = inventory if inventory is not None else discover_rounds(out_dir)
+    # The completeness columns this table publishes are read off the round and
+    # evidence markers and the experiment config, so those inputs belong in the
+    # source manifest too -- otherwise editing a marker would change a published
+    # column with no recorded hash moving to show it.
+    record_inventory_sources(snapshot, out_dir, inventory=inventory)
     analyzed: list[int] = []
     for record in inventory.rounds:
         analyzed.append(record.round_index)
@@ -569,7 +614,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("out_dir", help="the experiment directory to read")
     parser.add_argument(
-        "--phase", choices=[PHASE_OPTIMIZATION, PHASE_EVALUATION], required=True, help="which phase to aggregate"
+        "--phase",
+        choices=[PHASE_OPTIMIZATION, PHASE_EVALUATION],
+        required=True,
+        help="which phase to aggregate",
     )
     add_snapshot_parent_argument(parser)
     args = parser.parse_args(argv)

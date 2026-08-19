@@ -66,6 +66,14 @@ Provenance, and why the source hashes are the load-bearing part
     provenance does not grow to thousands of lines while still detecting any
     byte that moved.
 
+    "Every artifact an analysis read" includes the ones it read to decide a
+    completeness column, not only the ones it counted rows out of: the stage
+    markers, the run plan and the configuration behind ``round_complete`` /
+    ``runs_complete`` / ``evidence_complete`` / ``n_expected_runs``, and the
+    proposal artifacts a backfilled surface was recovered from. Those go in
+    through ``record_inventory_sources`` and ``record_surface_sources``, shared
+    so that a tool publishing such a column cannot forget them.
+
     ``identity_hash`` is read from ``<out_dir>/config.json`` -- the value the
     orchestrator recorded, taken verbatim rather than re-derived, because the
     question provenance answers is "which experiment produced this", and that
@@ -93,9 +101,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from shrlm.experiment.config import CONFIG_PATH
 from shrlm.experiment.errors import ExperimentError
-from shrlm.experiment.orchestrator import CONFIG_FILENAME, CONFIG_FORMAT
-from shrlm.experiment.rounds import ExperimentInventory, discover_rounds
+from shrlm.experiment.orchestrator import (
+    CONFIG_FILENAME,
+    CONFIG_FORMAT,
+    EVIDENCE_MARKER_FILENAME,
+    ROUND_MARKER_FILENAME,
+)
+from shrlm.experiment.rounds import (
+    SURFACE_SOURCE_BACKFILLED,
+    SURFACE_SOURCE_NONE,
+    ExperimentInventory,
+    discover_rounds,
+    iter_promotion_rounds,
+    resolve_surface,
+)
+from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE
+from shrlm.optimization.proposal import PROPOSAL_FILENAME
 from shrlm.optimization.validation import DECISION_FILENAME, PROMOTIONS_FILENAME
 
 ANALYSIS_DIR = "analysis"
@@ -657,6 +680,95 @@ def latest_snapshot(out_dir: Path | str, *, parent: Path | str | None = None) ->
 # ---------------------------------------------------------------------------
 
 
+def record_inventory_sources(
+    snapshot: Snapshot,
+    out_dir: Path | str,
+    *,
+    inventory: ExperimentInventory | None = None,
+    config_path: Path | str = CONFIG_PATH,
+) -> ExperimentInventory:
+    """Record every input a published completeness column is derived from.
+
+    ``round_complete``, ``runs_complete``, ``evidence_complete`` and
+    ``n_expected_runs`` are not read off the ledgers an aggregation counts:
+    ``rounds.discover_rounds`` reads them off the loop's stage markers
+    (``round.json``, ``evidence_complete.json``), the run plan
+    (``manifest.jsonl`` against ``instances.jsonl``) and the configuration
+    (``<out_dir>/config.json`` verified against the profile in the experiment
+    TOML). A manifest whose ``sources`` listed only the ledgers therefore
+    changed nothing when a marker or the TOML was edited underneath it, while
+    the published columns moved -- exactly the drift the manifest exists to
+    detect.
+
+    One shared recorder rather than a per-tool copy on purpose: a tool that
+    publishes a completeness column and forgets to record its inputs is the
+    failure mode, and it is unreachable if the recording travels with the
+    inventory every such tool already reads. ``record_ledger_sources``
+    delegates here, so the ledger-reading aggregations get it for free.
+
+    An absent marker is recorded with a ``null`` hash, never omitted: "this
+    round has no ``round.json``" is precisely the input that produced
+    ``round_complete=false``.
+
+    Args:
+        snapshot: The batch's snapshot; the sources land in its provenance.
+        out_dir: The experiment directory, used when no inventory is passed.
+        inventory: The discovery the caller already ran over ``out_dir``.
+        config_path: The experiment TOML ``resolve_config`` reloads the
+            profile from -- ``discover_rounds``'s own default, named here so
+            provenance records the file that was actually consulted.
+
+    Returns:
+        The inventory whose sources were recorded, so a caller that passed
+        nothing can reuse it rather than discovering twice.
+    """
+    resolved = inventory if inventory is not None else discover_rounds(out_dir)
+    snapshot.record_source(Path(out_dir) / CONFIG_FILENAME)
+    snapshot.record_source(config_path)
+    for record in resolved.rounds:
+        snapshot.record_source(record.round_path / ROUND_MARKER_FILENAME)
+        snapshot.record_source(record.mining_round_path / EVIDENCE_MARKER_FILENAME)
+        snapshot.record_source(record.mining_round_path / MANIFEST_FILE)
+        snapshot.record_source(record.mining_round_path / INSTANCES_FILE)
+    return resolved
+
+
+def record_surface_sources(
+    snapshot: Snapshot, out_dir: Path | str, *, inventory: ExperimentInventory | None = None
+) -> None:
+    """Record every proposal artifact a surface backfill consulted (KTD3).
+
+    ``rounds.resolve_surface`` recovers a surface the ledger left null from
+    ``<round>/proposals/<subject_id>/proposal.json``, and the tables that
+    publish it mark the cell ``backfilled``. The recovered value is then a
+    number no reader can reproduce -- or notice changing -- unless the artifact
+    that supplied it is in the manifest.
+
+    Proposals that were looked for and were NOT there are recorded too, with a
+    ``null`` hash (``Snapshot.record_source``'s own convention): "no proposal
+    here" is the input that produced ``surface_source=none``, and a later
+    appearance of that file would change the published attribution without
+    moving any recorded hash.
+
+    The ledgers are re-read rather than threaded out of the table builder
+    because provenance is recorded at write time, beside every other source,
+    and a ledger is a handful of JSON lines over a tree nothing rewrites
+    mid-batch.
+    """
+    resolved = inventory if inventory is not None else discover_rounds(out_dir)
+    by_index = {record.round_index: record for record in resolved.rounds}
+    for round_index, records, _decision in iter_promotion_rounds(out_dir, inventory=resolved):
+        round_record = by_index[round_index]
+        for record in records:
+            subject_id = str(record.get("subject_id", ""))
+            if not subject_id:
+                continue
+            attribution = resolve_surface(record, round_record)
+            if attribution.source not in (SURFACE_SOURCE_BACKFILLED, SURFACE_SOURCE_NONE):
+                continue
+            snapshot.record_source(round_record.proposals_dir / subject_id / PROPOSAL_FILENAME)
+
+
 def record_ledger_sources(
     snapshot: Snapshot, out_dir: Path | str, *, inventory: ExperimentInventory | None = None
 ) -> list[int]:
@@ -667,6 +779,11 @@ def record_ledger_sources(
     through the same discovery. Recording them here rather than in each CLI
     keeps the provenance manifest and the reader in agreement by construction.
 
+    Both of those aggregations also publish the round's completeness columns,
+    so the inventory's own inputs go in through ``record_inventory_sources``
+    here rather than in each caller -- the manifest has to cover everything the
+    published columns are derived from, not only the rows they counted.
+
     Args:
         snapshot: The batch's snapshot; the sources land in its provenance.
         out_dir: The experiment directory, used when no inventory is passed.
@@ -676,7 +793,7 @@ def record_ledger_sources(
             holds one passes it rather than paying for an identical second
             pass. Omitted, it is discovered here.
     """
-    resolved = inventory if inventory is not None else discover_rounds(out_dir)
+    resolved = record_inventory_sources(snapshot, out_dir, inventory=inventory)
     analyzed: list[int] = []
     for record in resolved.rounds:
         if not record.has_ledger:
@@ -709,7 +826,9 @@ __all__ = [
     "analysis_revision",
     "is_published",
     "latest_snapshot",
+    "record_inventory_sources",
     "record_ledger_sources",
+    "record_surface_sources",
     "recorded_identity",
     "snapshot_parent",
     "tristate",

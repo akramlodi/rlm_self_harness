@@ -58,6 +58,7 @@ from shrlm.experiment.analysis_io import (
     Snapshot,
     add_snapshot_parent_argument,
     allocate_snapshot,
+    record_inventory_sources,
     tristate,
     write_csv,
     write_json,
@@ -169,7 +170,10 @@ class PatternFrequencyDiffRow:
 
     @property
     def signature_str(self) -> str:
-        return "|".join(f"{field_name}={value}" for field_name, value in zip(SIGNATURE_FIELDS, self.signature_key, strict=True))
+        return "|".join(
+            f"{field_name}={value}"
+            for field_name, value in zip(SIGNATURE_FIELDS, self.signature_key, strict=True)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -258,7 +262,9 @@ def _rate(pattern: dict[str, Any] | None, n_runs: int) -> float:
     return pattern["instance_support"] / n_runs
 
 
-def diff_bundle_pair(before: _BundleSummary, after: _BundleSummary) -> list[PatternFrequencyDiffRow]:
+def diff_bundle_pair(
+    before: _BundleSummary, after: _BundleSummary
+) -> list[PatternFrequencyDiffRow]:
     """Full outer join of two bundles' patterns on the failure signature."""
     all_keys = sorted(set(before.patterns_by_key) | set(after.patterns_by_key))
     rows: list[PatternFrequencyDiffRow] = []
@@ -290,8 +296,12 @@ def diff_bundle_pair(before: _BundleSummary, after: _BundleSummary) -> list[Patt
                 support_rate_after=rate_after,
                 delta=delta,
                 delta_pct=(delta / rate_before) if rate_before > 0 else None,
-                grounded_fraction_before=pattern_before["grounded_fraction"] if pattern_before else None,
-                grounded_fraction_after=pattern_after["grounded_fraction"] if pattern_after else None,
+                grounded_fraction_before=pattern_before["grounded_fraction"]
+                if pattern_before
+                else None,
+                grounded_fraction_after=pattern_after["grounded_fraction"]
+                if pattern_after
+                else None,
                 below_support_floor_before=(
                     pattern_before["below_support_floor"] if pattern_before else None
                 ),
@@ -336,7 +346,10 @@ def _dedupe_labels(bundles: list[_BundleSummary]) -> list[_BundleSummary]:
         label = bundle.label if count == 0 else f"{bundle.label}_{index}"
         deduped.append(
             _BundleSummary(
-                path=bundle.path, label=label, n_runs=bundle.n_runs, patterns_by_key=bundle.patterns_by_key
+                path=bundle.path,
+                label=label,
+                n_runs=bundle.n_runs,
+                patterns_by_key=bundle.patterns_by_key,
             )
         )
     return deduped
@@ -430,7 +443,9 @@ def run_pattern_frequency_diff(
     if len(bundle_paths) < 2:
         raise ValueError(f"need at least 2 bundle paths to diff, got {len(bundle_paths)}")
     if labels is not None and len(labels) != len(bundle_paths):
-        raise ValueError(f"--labels has {len(labels)} entries but {len(bundle_paths)} bundles were given")
+        raise ValueError(
+            f"--labels has {len(labels)} entries but {len(bundle_paths)} bundles were given"
+        )
 
     bundles = [
         load_bundle_summary(path, explicit_label=labels[i] if labels else None)
@@ -441,6 +456,12 @@ def run_pattern_frequency_diff(
 
     if inventory is None:
         inventory = discover_rounds(snapshot.out_dir)
+    # The completeness table below publishes ``round_complete`` /
+    # ``evidence_complete``, which are read off the loop's stage markers and the
+    # configuration rather than off any bundle -- so those inputs go into the
+    # manifest too, or a marker edit would move a published column without
+    # moving a recorded hash.
+    record_inventory_sources(snapshot, snapshot.out_dir, inventory=inventory)
     completeness = bundle_completeness(bundles, inventory)
     snapshot.record_rounds(row.round_index for row in completeness if row.round_index is not None)
     bundles_path = snapshot.path / BUNDLES_FILENAME

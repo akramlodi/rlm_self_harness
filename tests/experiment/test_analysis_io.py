@@ -41,25 +41,33 @@ from shrlm.experiment.analysis_io import (
     AnalysisOutputError,
     allocate_snapshot,
     latest_snapshot,
+    record_ledger_sources,
     write_csv,
 )
 from shrlm.experiment.collapse_and_attribution import EVALUATION_FILENAME
 from shrlm.experiment.collapse_and_attribution import main as collapse_main
+from shrlm.experiment.config import CONFIG_PATH
 from shrlm.experiment.incumbent_quality import (
     INCUMBENT_QUALITY_CANDIDATES_FILENAME,
     INCUMBENT_QUALITY_FILENAME,
 )
 from shrlm.experiment.incumbent_quality import main as incumbent_main
-from shrlm.experiment.orchestrator import CONFIG_FILENAME
+from shrlm.experiment.orchestrator import (
+    CONFIG_FILENAME,
+    EVIDENCE_MARKER_FILENAME,
+    ROUND_MARKER_FILENAME,
+)
 from shrlm.experiment.pattern_frequency_diff import main as diff_main
 from shrlm.experiment.surface_activity import (
     SURFACE_ACTIVITY_FILENAME,
     UNATTRIBUTED_FILENAME,
 )
 from shrlm.experiment.surface_activity import main as surface_main
+from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE
 from tests.experiment.test_rounds import (
     complete_round,
     eval_set_payload,
+    record_for,
     write_bundle,
     write_config,
     write_eval_summary,
@@ -303,6 +311,57 @@ class TestProvenance:
         assert before["stable.jsonl"]["sha256"] == after["stable.jsonl"]["sha256"]
         assert before["edited.jsonl"]["sha256"] != after["edited.jsonl"]["sha256"]
 
+    def test_the_inputs_behind_the_completeness_columns_are_recorded(
+        self, experiment: Path
+    ) -> None:
+        """``round_complete`` / ``runs_complete`` / ``evidence_complete`` /
+        ``n_expected_runs`` are read off the stage markers, the run plan and the
+        configuration -- none of which is a ledger. A manifest listing only the
+        ledgers lets any of them be edited without a recorded hash moving, which
+        is precisely the drift the manifest exists to detect."""
+        snapshot = allocate_snapshot(experiment, now=FROZEN)
+        record_ledger_sources(snapshot, experiment)
+        snapshot.publish()
+
+        sources = sources_by_path(json.loads((snapshot.path / PROVENANCE_FILENAME).read_text()))
+        record = record_for(experiment, 1)
+        expected = {
+            CONFIG_FILENAME,
+            (record.round_path / ROUND_MARKER_FILENAME).relative_to(experiment).as_posix(),
+            (record.mining_round_path / EVIDENCE_MARKER_FILENAME)
+            .relative_to(experiment)
+            .as_posix(),
+            (record.mining_round_path / MANIFEST_FILE).relative_to(experiment).as_posix(),
+            (record.mining_round_path / INSTANCES_FILE).relative_to(experiment).as_posix(),
+        }
+        assert expected <= set(sources), f"missing from the manifest: {expected - set(sources)}"
+        # The TOML lives outside the experiment directory, so it is recorded
+        # repository-relative rather than dropped.
+        assert any(name.endswith(CONFIG_PATH.name) for name in sources), sorted(sources)
+
+    def test_editing_a_round_marker_moves_a_recorded_source_hash(self, experiment: Path) -> None:
+        """The published ``round_complete`` flips when this file is edited; a
+        provenance record that did not move would say the two snapshots were
+        derived from the same bytes."""
+        marker = record_for(experiment, 1).round_path / ROUND_MARKER_FILENAME
+        name = marker.relative_to(experiment).as_posix()
+
+        first = allocate_snapshot(experiment, now=FROZEN)
+        record_ledger_sources(first, experiment)
+        first.publish()
+
+        payload = json.loads(marker.read_text())
+        payload["round"] = 99
+        marker.write_text(json.dumps(payload))
+
+        second = allocate_snapshot(experiment, now=FROZEN)
+        record_ledger_sources(second, experiment)
+        second.publish()
+
+        before = sources_by_path(json.loads((first.path / PROVENANCE_FILENAME).read_text()))
+        after = sources_by_path(json.loads((second.path / PROVENANCE_FILENAME).read_text()))
+        assert before[name]["sha256"] != after[name]["sha256"]
+
     def test_an_absent_source_is_recorded_with_a_null_hash_rather_than_dropped(
         self, tmp_path: Path
     ) -> None:
@@ -489,7 +548,18 @@ class TestPatternFrequencyDiffCli:
         assert (snapshot / PUBLISHED_FILENAME).exists()
         payload = json.loads((snapshot / PROVENANCE_FILENAME).read_text())
         assert payload["identity_source"] == IDENTITY_SOURCE_CONFIG
-        assert len(payload["sources"]) == 2
+        # The two bundles the diff compared, plus the inventory inputs behind
+        # the completeness table it also publishes (``round_complete`` /
+        # ``evidence_complete`` are read off the markers and the config, not off
+        # any bundle, so a manifest naming only the bundles would let a marker
+        # edit move a published column with no recorded hash moving).
+        sources = sources_by_path(payload)
+        assert {before.name, after.name} <= {Path(name).name for name in sources}
+        record = record_for(experiment, 1)
+        assert (record.round_path / ROUND_MARKER_FILENAME).relative_to(
+            experiment
+        ).as_posix() in sources
+        assert CONFIG_FILENAME in sources
 
     def test_out_overrides_the_snapshot_parent(self, experiment: Path, tmp_path: Path) -> None:
         before = write_bundle(tmp_path / "before.json", 1, support=5, n_runs=10)

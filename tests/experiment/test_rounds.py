@@ -54,7 +54,12 @@ from shrlm.experiment.rounds import (
     iter_promotion_rounds,
     stage_repetitions,
 )
-from shrlm.optimization.bundle import ATTRIBUTIONS_FILENAME, RECORDS_FILENAME, round_dir
+from shrlm.optimization.bundle import (
+    ATTRIBUTIONS_FILENAME,
+    BUNDLE_FILENAME,
+    RECORDS_FILENAME,
+    round_dir,
+)
 from shrlm.optimization.costs import OUTCOME_COMPLETED, OUTCOME_OVER_BUDGET
 from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, run_id_for
 from shrlm.optimization.validation import (
@@ -123,12 +128,22 @@ def write_mining_round(
 
 
 def write_evidence(
-    out_dir: Path, round_index: int, *, n_records: int = 3, recorded_records: int | None = None
+    out_dir: Path,
+    round_index: int,
+    *,
+    n_records: int = 3,
+    recorded_records: int | None = None,
+    recorded_round: int | None = None,
+    bundle_id: str | None = "",
 ) -> None:
     """The evidence triplet plus the orchestrator's completion marker.
 
-    ``recorded_records`` diverging from ``n_records`` is the crash the marker
-    exists to catch: a marker claiming more lines than the audit file holds.
+    ``recorded_records`` diverging from ``n_records`` is one crash the marker
+    exists to catch: a marker claiming more records than the audit file holds.
+    ``recorded_round`` diverging from ``round_index`` is the other: a marker
+    that certifies some other round's evidence. ``bundle_id`` defaults to this
+    round's own id and can be set to ``None`` to omit the key entirely, which
+    the loop's writer never does.
     """
     mining_round_path = round_dir(
         experiment_round_dir(out_dir, round_index) / MINING_DIR, round_index
@@ -139,16 +154,31 @@ def write_evidence(
     write_jsonl(
         mining_round_path / ATTRIBUTIONS_FILENAME, [{"run_id": f"r{i}"} for i in range(n_records)]
     )
-    write_json(
-        mining_round_path / EVIDENCE_MARKER_FILENAME,
-        {
-            "format": EVIDENCE_MARKER_FORMAT,
-            "round": round_index,
-            "bundle_id": f"bundle-{round_index}",
-            "n_records": n_records if recorded_records is None else recorded_records,
-            "n_attributions": n_records,
-        },
+    payload: dict[str, Any] = {
+        "format": EVIDENCE_MARKER_FORMAT,
+        "round": round_index if recorded_round is None else recorded_round,
+        "n_records": n_records if recorded_records is None else recorded_records,
+        "n_attributions": n_records,
+    }
+    if bundle_id is not None:
+        payload["bundle_id"] = f"bundle-{round_index}" if bundle_id == "" else bundle_id
+    write_json(mining_round_path / EVIDENCE_MARKER_FILENAME, payload)
+
+
+def write_bundle_identity(out_dir: Path, round_index: int, *, bundle_id: str) -> Path:
+    """A ``bundle.json`` that names itself, as ``write_bundle`` in mining does.
+
+    The evidence marker records the id it read out of this file, so the pair is
+    what a re-check compares. Kept separate from ``write_bundle`` (which the
+    pattern-frequency tests use for its pattern list) because the identity is
+    all these cases care about.
+    """
+    mining_round_path = round_dir(
+        experiment_round_dir(out_dir, round_index) / MINING_DIR, round_index
     )
+    bundle_path = mining_round_path / BUNDLE_FILENAME
+    write_json(bundle_path, {"bundle_id": bundle_id, "config": {}, "patterns": []})
+    return bundle_path
 
 
 def write_ledger(out_dir: Path, round_index: int, *, promoted: bool = True) -> Path:
@@ -413,6 +443,61 @@ class TestEvidenceCompleteness:
         assert record.has_evidence_marker is False
         assert record.evidence_complete is False
 
+    def test_a_marker_naming_another_round_certifies_nothing_here(self, experiment: Path):
+        """A marker that travelled describes another round's evidence, not this one's.
+
+        The counts still match -- the audit files beside it are intact -- which
+        is exactly why the count check alone is not enough: only the recorded
+        round index distinguishes a marker written for these files from one
+        copied in from a different round.
+        """
+        write_mining_round(experiment, 1)
+        write_evidence(experiment, 1, n_records=3, recorded_round=7)
+
+        record = record_for(experiment, 1)
+        assert record.has_evidence_marker is True
+        assert record.evidence_complete is False
+
+    def test_a_marker_naming_a_different_bundle_than_the_one_on_disk_is_not_complete(
+        self, experiment: Path
+    ):
+        """The marker names the evidence it certifies; a swapped bundle is not it."""
+        write_mining_round(experiment, 1)
+        write_evidence(experiment, 1, n_records=3, bundle_id="bundle-A")
+        write_bundle_identity(experiment, 1, bundle_id="bundle-B")
+
+        assert record_for(experiment, 1).evidence_complete is False
+
+    def test_a_marker_over_the_bundle_it_names_stays_complete(self, experiment: Path):
+        write_mining_round(experiment, 1)
+        write_evidence(experiment, 1, n_records=3, bundle_id="bundle-A")
+        write_bundle_identity(experiment, 1, bundle_id="bundle-A")
+
+        assert record_for(experiment, 1).evidence_complete is True
+
+    def test_a_marker_carrying_no_bundle_id_is_not_complete(self, experiment: Path):
+        """The writer always records one; a marker without it is not that writer's."""
+        write_mining_round(experiment, 1)
+        write_evidence(experiment, 1, n_records=3, bundle_id=None)
+
+        assert record_for(experiment, 1).evidence_complete is False
+
+    def test_an_audit_file_that_cannot_be_parsed_is_not_complete(self, experiment: Path):
+        """The writer parses the records; a line count would pass a torn file.
+
+        Three lines are on disk and the marker says three, so a non-blank line
+        count agrees -- but the last line is a truncated JSON object, which is
+        the crash the marker exists to catch and which ``read_jsonl`` sees.
+        """
+        write_mining_round(experiment, 1)
+        write_evidence(experiment, 1, n_records=3)
+        records_path = record_for(experiment, 1).mining_round_path / RECORDS_FILENAME
+        lines = records_path.read_text().splitlines()
+        records_path.write_text("\n".join([*lines[:-1], '{"run_id": "r2"']) + "\n")
+
+        assert len(records_path.read_text().splitlines()) == 3
+        assert record_for(experiment, 1).evidence_complete is False
+
 
 # ---------------------------------------------------------------------------
 # Expected run counts (KTD6) and the unknown case (KTD9 row 3)
@@ -604,6 +689,54 @@ class TestEvaluationInventory:
         assert record.runs.n_expected == 2 * config.operational.eval_repetitions
         assert record.runs.n_present == 2 * config.operational.eval_repetitions
         assert record.runs.runs_complete is True
+
+    def test_a_set_short_on_runs_is_not_complete_however_the_summary_reports_itself(
+        self, experiment: Path
+    ):
+        """The summary is a self-report; the persisted runs are the evidence.
+
+        ``eval_summary.json`` records the outcome the evaluation held in memory
+        when it aggregated, so a set truncated on disk can still say
+        ``completed`` with no skipped runs. Publishing that as complete is the
+        false completeness the round rows have always guarded against with
+        ``runs_complete``, so the eval verdict folds the same evidence in.
+        """
+        config = load_config(PROFILE)
+        write_eval_set(
+            experiment,
+            "b1",
+            "graphwalks_short",
+            n_instances=2,
+            attempts=config.operational.eval_repetitions,
+            n_runs=2,
+        )
+        write_eval_summary(
+            experiment, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}}
+        )
+
+        (record,) = discover_rounds(experiment).eval_sets
+        assert record.outcome == OUTCOME_COMPLETED
+        assert record.n_skipped == 0
+        assert record.summary_complete is True
+        assert record.runs.n_present == 2
+        assert record.runs.n_expected == 2 * config.operational.eval_repetitions
+        assert record.runs.runs_complete is False
+        assert record.complete is False
+
+    def test_a_set_whose_planned_count_is_unknowable_is_unknown_never_complete(
+        self, tmp_path: Path
+    ):
+        """KTD9: no config means unmeasurable, which is neither complete nor failed."""
+        legacy = tmp_path / "legacy"
+        write_eval_set(legacy, "b1", "graphwalks_short", n_instances=2, attempts=3)
+        write_eval_summary(legacy, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}})
+        assert not (legacy / CONFIG_FILENAME).exists()
+
+        (record,) = discover_rounds(legacy).eval_sets
+        assert record.summary_complete is True
+        assert record.runs.count_unknown is True
+        assert record.complete is None
+        assert record.complete is not False
 
     def test_a_condition_work_directory_is_not_a_test_set(self, experiment: Path):
         write_eval_set(experiment, "sh_rlm", "graphwalks_short")

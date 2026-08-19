@@ -51,6 +51,13 @@ The all-candidates table
     re-evaluation record (a genuine scored candidate, just with no single
     surface), and constituent records that lost the promotion despite being
     individually scored.
+
+    Its ``surface`` is resolved through ``rounds.resolve_surface``, exactly as
+    ``surface_activity`` resolves the same ledger rows, and every row carries
+    the ``surface_source`` that placed it (KTD3). The two tables ship in one
+    snapshot and a reader joins them by ``(round_index, subject_id)``, so a
+    raw-ledger surface here beside a backfilled one there would have been two
+    answers to one question with nothing to say which was which.
 """
 
 import argparse
@@ -64,6 +71,7 @@ from shrlm.experiment.analysis_io import (
     add_snapshot_parent_argument,
     allocate_snapshot,
     record_ledger_sources,
+    record_surface_sources,
     tristate,
     write_csv,
 )
@@ -72,6 +80,7 @@ from shrlm.experiment.rounds import (
     RoundRecord,
     discover_rounds,
     iter_promotion_rounds,
+    resolve_surface,
 )
 from shrlm.optimization.promotion import DECISION_PROMOTED
 
@@ -97,6 +106,7 @@ INCUMBENT_QUALITY_CANDIDATES_FIELDNAMES = (
     "subject_id",
     "decision",
     "surface",
+    "surface_source",
     "heldin_pass_rate",
     "heldout_pass_rate",
 )
@@ -159,12 +169,23 @@ class IncumbentQualityRow:
 
 @dataclass(frozen=True)
 class CandidateQualityRow:
-    """One scored candidate's own pass rates in one round (the scatter table)."""
+    """One scored candidate's own pass rates in one round (the scatter table).
+
+    ``surface`` is resolved through ``rounds.resolve_surface`` -- the same
+    resolution ``surface_activity`` runs over the same ledger rows -- so the
+    two tables in one snapshot cannot disagree about the same candidate.
+    Reading ``record["surface"]`` raw here would have shown a blank surface for
+    every row of every ledger written before the field existed, beside a
+    backfilled one in ``surface_activity.csv``, with nothing in either table
+    explaining the difference. ``surface_source`` is what keeps a recovered
+    surface distinguishable from a recorded one (KTD3).
+    """
 
     round_index: int
     subject_id: str
     decision: str
     surface: str | None
+    surface_source: str
     heldin_pass_rate: float | None
     heldout_pass_rate: float | None
 
@@ -174,6 +195,7 @@ class CandidateQualityRow:
             "subject_id": self.subject_id,
             "decision": self.decision,
             "surface": self.surface,
+            "surface_source": self.surface_source,
             "heldin_pass_rate": self.heldin_pass_rate,
             "heldout_pass_rate": self.heldout_pass_rate,
         }
@@ -258,22 +280,36 @@ def all_candidate_quality_over_rounds(
 ) -> list[CandidateQualityRow]:
     """One row per scored candidate record, across every round (the scatter table).
 
+    Each row's surface goes through the shared ``resolve_surface`` (KTD3, KTD7)
+    rather than the raw ledger value, so this table and ``surface_activity.csv``
+    place the same candidate on the same surface, and every row says whether
+    that placement was recorded by the loop, recovered from the round's
+    proposal artifact, the merged harness's own category, or unresolvable.
+
     ``inventory`` is the caller's already-computed discovery (see
     ``run_incumbent_quality``); omitted, one is discovered here.
     """
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
+    # The proposal artifacts the backfill joins against live at paths only
+    # discovery knows, so the round's own record travels with its ledger rows.
+    discovered: dict[int, RoundRecord] = {record.round_index: record for record in inventory.rounds}
+
     rows: list[CandidateQualityRow] = []
     for round_index, records, _decision in iter_promotion_rounds(out_dir, inventory=inventory):
+        round_record = discovered[round_index]
         for record in records:
             rule = record.get("rule")
             if rule is None:
                 continue
             state = _IncumbentState.from_rule(rule, key="candidate")
+            attribution = resolve_surface(record, round_record)
             rows.append(
                 CandidateQualityRow(
                     round_index=round_index,
                     subject_id=record["subject_id"],
                     decision=record["decision"],
-                    surface=record.get("surface"),
+                    surface=attribution.category,
+                    surface_source=attribution.source,
                     heldin_pass_rate=state.heldin_pass_rate,
                     heldout_pass_rate=state.heldout_pass_rate,
                 )
@@ -295,10 +331,17 @@ def write_incumbent_quality(
     the snapshot's identity resolution assumes for a legacy tree carrying no
     recorded identity of its own.
 
+    The candidates table resolves each row's surface through the same backfill
+    ``surface_activity`` uses, so the proposal artifacts that supplied a
+    recovered surface are recorded too -- a snapshot that publishes a
+    ``backfilled`` value must carry the artifact the value came from, or the
+    attribution cannot be rechecked later.
+
     ``inventory`` is the caller's already-computed discovery (see
     ``run_incumbent_quality``); omitted, one is discovered here.
     """
     record_ledger_sources(snapshot, out_dir, inventory=inventory)
+    record_surface_sources(snapshot, out_dir, inventory=inventory)
     quality_path = snapshot.path / INCUMBENT_QUALITY_FILENAME
     candidates_path = snapshot.path / INCUMBENT_QUALITY_CANDIDATES_FILENAME
     write_csv(quality_path, rows, fieldnames=INCUMBENT_QUALITY_FIELDNAMES)
@@ -342,8 +385,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
-    inventory = discover_rounds(out_dir)
-    rows = incumbent_quality_over_rounds(out_dir, inventory=inventory)
+    # Discovery and both aggregations run BEFORE a snapshot exists, deliberately:
+    # an experiment with nothing to analyze must not leave a stamped empty
+    # directory behind (the ``if not rows`` arm below). That places them outside
+    # ``run_tool``'s guard, where an unreadable tree (an ``OSError``) or a
+    # malformed ledger (a ``ValueError`` out of the JSON decode) would reach the
+    # user as a raw traceback rather than as a diagnosis, so they get a guard of
+    # their own: one stderr line naming what failed, and a non-zero exit.
+    try:
+        inventory = discover_rounds(out_dir)
+        rows = incumbent_quality_over_rounds(out_dir, inventory=inventory)
+        candidates = all_candidate_quality_over_rounds(out_dir, inventory=inventory)
+    except Exception as error:  # noqa: BLE001 -- a CLI reports, it does not traceback
+        sys.stderr.write(f"could not read {out_dir}: {type(error).__name__}: {error}\n")
+        return 1
     if not rows:
         # Checked before a snapshot is allocated: an experiment with nothing to
         # analyze should not leave an empty unpublished directory behind.
@@ -353,13 +408,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
     snapshot.run_tool(
         TOOL_NAME,
-        lambda: write_incumbent_quality(
-            snapshot,
-            out_dir,
-            rows,
-            all_candidate_quality_over_rounds(out_dir, inventory=inventory),
-            inventory=inventory,
-        ),
+        lambda: write_incumbent_quality(snapshot, out_dir, rows, candidates, inventory=inventory),
     )
     if not snapshot.publish():
         sys.stderr.write(snapshot.failure_message(TOOL_NAME))

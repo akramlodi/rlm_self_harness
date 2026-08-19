@@ -69,6 +69,7 @@ from shrlm.experiment.analysis_io import (
     add_snapshot_parent_argument,
     allocate_snapshot,
     record_ledger_sources,
+    record_surface_sources,
     tristate,
     write_csv,
 )
@@ -193,9 +194,10 @@ def _is_promoted(record: dict) -> bool:
     """
     if record["decision"] == DECISION_PROMOTED:
         return True
-    return record["decision"] == DECISION_ACCEPTED and record.get("merge", {}).get(
-        "role"
-    ) == ROLE_CONSTITUENT
+    return (
+        record["decision"] == DECISION_ACCEPTED
+        and record.get("merge", {}).get("role") == ROLE_CONSTITUENT
+    )
 
 
 def _cell_source(category: str, cell_sources: set[str] | None) -> str:
@@ -331,10 +333,18 @@ def write_surface_activity(
     the snapshot's identity resolution assumes for a legacy tree carrying no
     recorded identity of its own.
 
+    Three groups of them, because this table publishes three kinds of claim:
+    the ledgers its counts come from, the inventory inputs its ``round_complete``
+    / ``runs_complete`` columns come from, and (through
+    ``record_surface_sources``) the proposal artifacts every ``backfilled``
+    cell was recovered from -- a recovered surface nobody can trace back to the
+    proposal that supplied it is not a reproducible number.
+
     ``inventory`` is the caller's already-computed discovery (see
     ``run_surface_activity``); omitted, one is discovered here.
     """
     record_ledger_sources(snapshot, out_dir, inventory=inventory)
+    record_surface_sources(snapshot, out_dir, inventory=inventory)
     activity_path = snapshot.path / SURFACE_ACTIVITY_FILENAME
     unattributed_path = snapshot.path / UNATTRIBUTED_FILENAME
     write_csv(activity_path, rows, fieldnames=SURFACE_ACTIVITY_FIELDNAMES)
@@ -372,8 +382,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
-    inventory = discover_rounds(out_dir)
-    rows, unattributed = surface_activity_over_rounds(out_dir, inventory=inventory)
+    # Discovery and the aggregation run BEFORE a snapshot exists, deliberately:
+    # an experiment with nothing to analyze must not leave a stamped empty
+    # directory behind (the ``if not rows`` arm below). That places them outside
+    # ``run_tool``'s guard, where an unreadable tree (an ``OSError``) or a
+    # malformed ledger (a ``ValueError`` out of the JSON decode) would reach the
+    # user as a raw traceback rather than as a diagnosis, so they get a guard of
+    # their own: one stderr line naming what failed, and a non-zero exit.
+    try:
+        inventory = discover_rounds(out_dir)
+        rows, unattributed = surface_activity_over_rounds(out_dir, inventory=inventory)
+    except Exception as error:  # noqa: BLE001 -- a CLI reports, it does not traceback
+        sys.stderr.write(f"could not read {out_dir}: {type(error).__name__}: {error}\n")
+        return 1
     if not rows:
         # Checked before a snapshot is allocated: an experiment with nothing to
         # analyze should not leave an empty unpublished directory behind.
@@ -392,7 +413,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     unattributed_path = snapshot.path / UNATTRIBUTED_FILENAME
 
     for entry in unattributed:
-        if entry.total_rows and entry.unattributed_count / entry.total_rows > UNATTRIBUTED_WARN_FRACTION:
+        if (
+            entry.total_rows
+            and entry.unattributed_count / entry.total_rows > UNATTRIBUTED_WARN_FRACTION
+        ):
             sys.stderr.write(
                 f"warning: round {entry.round_index} has {entry.unattributed_count}/"
                 f"{entry.total_rows} ledger rows no surface could be resolved for: "
