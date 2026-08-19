@@ -8,6 +8,14 @@ experiment state; the report is a pure function of persisted bytes plus the
 configuration, emitted as markdown on stdout and as ``report.json`` in the
 experiment directory.
 
+Which rounds those manifests belong to comes from
+``shrlm.experiment.rounds.discover_rounds`` -- the same inventory every
+analysis reads (R1, KTD1). The report used to list ``opt/`` itself, which made
+it a third independent view of a layout the loop owns: it could count runs the
+analyses did not, or miss rounds they saw, and nothing would have failed. It
+now shares their view, so a disagreement about what the experiment contains is
+impossible rather than merely unlikely.
+
 This module holds measurement, run counts, and the projections built from
 them. Scenario pricing (API tiers, GPU-hour projections) and the
 recommendation policy live in ``shrlm.experiment.scenarios``; markdown
@@ -76,17 +84,15 @@ from typing import Any
 from shrlm.experiment.config import CONFIG_PATH, ExperimentConfig, load_config
 from shrlm.experiment.evaluation import EVAL_DIR, EVAL_SUMMARY_FILENAME, STAGE_EVAL
 from shrlm.experiment.orchestrator import (
-    MINING_DIR,
-    OPT_DIR,
     SPLIT_ENVIRONMENT,
     SPLIT_LENGTH,
     STAGE_ATTRIBUTION,
     STAGE_MINING,
     STAGE_PROPOSAL,
     STAGE_VALIDATION,
-    VALIDATION_DIR,
 )
 from shrlm.experiment.render import render_markdown
+from shrlm.experiment.rounds import discover_rounds
 from shrlm.experiment.scenarios import (
     STATUS_PROVISIONAL,
     STATUS_RECOMMENDED,
@@ -230,16 +236,36 @@ class RunBucket:
         }
 
 
+def _stage_manifests(out_dir: Path) -> list[tuple[str, Path]]:
+    """Every optimization-stage run manifest, paired with the stage that wrote it.
+
+    The rounds come from the shared inventory (KTD1), never from a listing of
+    ``opt/`` this module makes for itself: the report must count exactly the
+    rounds the analyses count, and one private directory walk per consumer is
+    how those two views drift apart. It also means the report sees whatever
+    discovery sees -- a completed no-op round included -- and nothing else: an
+    entry under ``opt/`` that the loop's own naming would not have produced is
+    not a round, so its files are not optimization runs.
+
+    Within a discovered round the search is still recursive, because what is
+    being enumerated there is a driver tree rather than the round layout:
+    validation nests one manifest per candidate x split
+    (``<subject>/<split>/round_00/runs.jsonl``), while mining writes exactly
+    one at its round root.
+    """
+    found: list[tuple[str, Path]] = []
+    for record in discover_rounds(out_dir).rounds:
+        for stage, root in (
+            (STAGE_MINING, record.mining_round_path),
+            (STAGE_VALIDATION, record.validation_round_path),
+        ):
+            found.extend((stage, path) for path in sorted(root.rglob(MANIFEST_FILE)))
+    return found
+
+
 def optimization_manifests(out_dir: Path) -> list[Path]:
     """Every optimization-stage run manifest: mining rounds and validation trees."""
-    opt_dir = out_dir / OPT_DIR
-    if not opt_dir.exists():
-        return []
-    paths: list[Path] = []
-    for round_path in sorted(opt_dir.iterdir()):
-        paths.extend(sorted((round_path / MINING_DIR).rglob(MANIFEST_FILE)))
-        paths.extend(sorted((round_path / VALIDATION_DIR).rglob(MANIFEST_FILE)))
-    return paths
+    return [path for _, path in _stage_manifests(out_dir)]
 
 
 def read_eval_summary(out_dir: Path) -> dict[str, Any] | None:
@@ -340,9 +366,7 @@ def run_buckets(out_dir: Path) -> list[RunBucket]:
 def stage_run_counts(out_dir: Path) -> dict[str, int]:
     """Executed runs per stage: manifest lines for the run-executing stages."""
     counts: Counter[str] = Counter()
-    for path in optimization_manifests(out_dir):
-        parts = path.relative_to(out_dir).parts
-        stage = STAGE_MINING if MINING_DIR in parts else STAGE_VALIDATION
+    for stage, path in _stage_manifests(out_dir):
         counts[stage] += len(read_jsonl(path))
     summary = read_eval_summary(out_dir)
     if summary is not None:
