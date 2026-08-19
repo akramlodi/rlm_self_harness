@@ -17,6 +17,15 @@ every surface-level count. It is not silently dropped, though: it is tallied
 into a parallel ``unattributed_rows_by_round`` table so a caller can see, per
 round, how many ledger rows the surface-level view could not place.
 
+Every row also carries the round's completeness (R2, KTD9), read off the same
+discovery that found the ledger: ``round_complete`` (the loop's own round
+marker, present and recording this round) and ``runs_complete`` (whether the
+round's mining stage persisted every run it planned -- the only per-round run
+plan persisted state can know, and the one a partial round's counts come from).
+``runs_complete`` is ``unknown`` rather than ``false`` when the experiment's
+configuration cannot be resolved, so a round nobody can measure is never
+plotted as one that failed.
+
 A ``promoted_count`` row counts a decision of ``promoted`` -- the single
 winner's own record, or the merged harness's own re-evaluation record (which
 carries no single surface, so it never contributes here) -- *and* a decision
@@ -39,9 +48,10 @@ from shrlm.experiment.analysis_io import (
     Snapshot,
     allocate_snapshot,
     record_ledger_sources,
+    tristate,
     write_csv,
 )
-from shrlm.experiment.rounds import iter_promotion_rounds
+from shrlm.experiment.rounds import RoundRecord, discover_rounds, iter_promotion_rounds
 from shrlm.optimization.promotion import (
     DECISION_ACCEPTED,
     DECISION_PROMOTED,
@@ -70,6 +80,8 @@ SURFACE_ACTIVITY_FIELDNAMES = (
     "promoted_count",
     "cumulative_surfaces_attempted",
     "cumulative_surfaces_promoted",
+    "round_complete",
+    "runs_complete",
 )
 UNATTRIBUTED_FIELDNAMES = ("round_index", "unattributed_count", "total_rows")
 
@@ -88,6 +100,8 @@ class SurfaceActivityRow:
     promoted_count: int
     cumulative_surfaces_attempted: int
     cumulative_surfaces_promoted: int
+    round_complete: bool
+    runs_complete: bool | None
 
     def to_dict(self) -> dict[str, int | str]:
         return {
@@ -97,6 +111,8 @@ class SurfaceActivityRow:
             "promoted_count": self.promoted_count,
             "cumulative_surfaces_attempted": self.cumulative_surfaces_attempted,
             "cumulative_surfaces_promoted": self.cumulative_surfaces_promoted,
+            "round_complete": tristate(self.round_complete),
+            "runs_complete": tristate(self.runs_complete),
         }
 
 
@@ -144,6 +160,13 @@ def surface_activity_over_rounds(
         ``unattributed`` has one entry per round with a nonzero row count
         found on disk, even when its unattributed count is zero.
     """
+    # One discovery pass for the completeness every row carries; the ledger
+    # iteration below is built on the same inventory, so the two agree on which
+    # rounds exist by construction.
+    discovered: dict[int, RoundRecord] = {
+        record.round_index: record for record in discover_rounds(out_dir).rounds
+    }
+
     # counts[(round_index, surface)] = {"attempted_count": n, "promoted_count": n}
     counts: dict[tuple[int, str], dict[str, int]] = {}
     unattributed_by_round: dict[int, int] = {}
@@ -184,6 +207,7 @@ def surface_activity_over_rounds(
                 ever_promoted.add(surface)
         cumulative_attempted = len(ever_attempted)
         cumulative_promoted = len(ever_promoted)
+        record = discovered.get(round_index)
         for surface in CANONICAL_SURFACES:
             entry = round_entries[surface]
             rows.append(
@@ -194,6 +218,8 @@ def surface_activity_over_rounds(
                     promoted_count=entry["promoted_count"],
                     cumulative_surfaces_attempted=cumulative_attempted,
                     cumulative_surfaces_promoted=cumulative_promoted,
+                    round_complete=record is not None and record.round_complete,
+                    runs_complete=None if record is None else record.mining_runs.runs_complete,
                 )
             )
 

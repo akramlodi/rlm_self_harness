@@ -112,6 +112,16 @@ SNAPSHOT_STAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 IDENTITY_SOURCE_CONFIG = "config"
 IDENTITY_SOURCE_DERIVED = "derived"
 
+# How a KTD9 three-valued completeness flag reaches a CSV cell. Spelled out as
+# words rather than left to Python's own rendering because ``None`` writes as
+# an EMPTY cell, and an empty cell in a completeness column is indistinguishable
+# from a column the writer forgot -- which is precisely the reading KTD9
+# forbids: "unknown is always its own value and never collapses into false", so
+# an unmeasurable round must never be presented as a failed one.
+TRISTATE_TRUE = "true"
+TRISTATE_FALSE = "false"
+TRISTATE_UNKNOWN = "unknown"
+
 SOURCE_KIND_FILE = "file"
 SOURCE_KIND_DIRECTORY = "directory"
 
@@ -190,6 +200,21 @@ def write_csv(path: Path | str, rows: Sequence[CsvRow], *, fieldnames: Sequence[
     for row in rows:
         writer.writerow(dict(row.to_dict()))
     _write_once(Path(path), buffer.getvalue())
+
+
+def tristate(value: bool | None) -> str:
+    """Serialize one three-valued completeness flag for a CSV cell (KTD9).
+
+    Every analysis in this package writes its completeness columns through
+    this one function, so ``unknown`` reads identically in every table and no
+    module can accidentally render it as ``False`` -- the single translation
+    KTD9 exists to forbid. Numeric completeness columns (an expected or missing
+    run count) stay numeric and write an empty cell when unknown; the flag
+    beside them is what says which kind of blank it is.
+    """
+    if value is None:
+        return TRISTATE_UNKNOWN
+    return TRISTATE_TRUE if value else TRISTATE_FALSE
 
 
 def write_json(path: Path | str, payload: Mapping[str, Any]) -> None:
@@ -610,6 +635,9 @@ __all__ = [
     "PUBLISHED_FILENAME",
     "PUBLISHED_FORMAT",
     "SNAPSHOT_STAMP_FORMAT",
+    "TRISTATE_FALSE",
+    "TRISTATE_TRUE",
+    "TRISTATE_UNKNOWN",
     "AnalysisOutputError",
     "CsvRow",
     "Snapshot",
@@ -620,6 +648,7 @@ __all__ = [
     "record_ledger_sources",
     "recorded_identity",
     "snapshot_parent",
+    "tristate",
     "write_csv",
     "write_json",
 ]

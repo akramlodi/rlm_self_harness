@@ -30,6 +30,16 @@ Non-promoting rounds
     the expected, unremarkable outcome of a round that did not improve on
     the incumbent, not a structural anomaly worth flagging.
 
+Completeness beside the series
+    Each round row carries ``round_complete`` (the loop's own round marker,
+    present and recording this round) and ``runs_complete`` (whether the
+    round's mining stage persisted every run it planned), both read off the
+    shared discovery rather than re-derived here. A step in this series taken
+    from a round the loop never finished is still worth plotting, but only
+    while it is visibly partial -- and ``runs_complete`` reads ``unknown``,
+    never ``false``, when the experiment's configuration cannot be resolved to
+    say what the round planned (KTD9).
+
 The all-candidates table
     ``incumbent_quality_over_rounds`` tracks only the running incumbent -- one
     number per split per round. ``all_candidate_quality_over_rounds`` is the
@@ -54,9 +64,10 @@ from shrlm.experiment.analysis_io import (
     Snapshot,
     allocate_snapshot,
     record_ledger_sources,
+    tristate,
     write_csv,
 )
-from shrlm.experiment.rounds import iter_promotion_rounds
+from shrlm.experiment.rounds import RoundRecord, discover_rounds, iter_promotion_rounds
 from shrlm.optimization.promotion import DECISION_PROMOTED
 
 INCUMBENT_QUALITY_FILENAME = "incumbent_quality.csv"
@@ -73,6 +84,8 @@ INCUMBENT_QUALITY_FIELDNAMES = (
     "heldout_pass_rate",
     "incumbent_changed",
     "annotation",
+    "round_complete",
+    "runs_complete",
 )
 INCUMBENT_QUALITY_CANDIDATES_FIELDNAMES = (
     "round_index",
@@ -124,6 +137,8 @@ class IncumbentQualityRow:
     heldout_pass_rate: float | None
     incumbent_changed: bool
     annotation: str | None
+    round_complete: bool
+    runs_complete: bool | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -132,6 +147,8 @@ class IncumbentQualityRow:
             "heldout_pass_rate": self.heldout_pass_rate,
             "incumbent_changed": self.incumbent_changed,
             "annotation": self.annotation,
+            "round_complete": tristate(self.round_complete),
+            "runs_complete": tristate(self.runs_complete),
         }
 
 
@@ -171,8 +188,16 @@ def incumbent_quality_over_rounds(out_dir: Path | str) -> list[IncumbentQualityR
     """One row per validation round: the incumbent's pass rates and whether it changed."""
     rows: list[IncumbentQualityRow] = []
     state: _IncumbentState | None = None
+    # The same inventory the ledger iteration below walks, kept by round index
+    # so every emitted row carries that round's completeness (R2).
+    discovered: dict[int, RoundRecord] = {
+        record.round_index: record for record in discover_rounds(out_dir).rounds
+    }
 
     for round_index, records, _decision in iter_promotion_rounds(out_dir):
+        discovery = discovered.get(round_index)
+        round_complete = discovery is not None and discovery.round_complete
+        runs_complete = None if discovery is None else discovery.mining_runs.runs_complete
         scored = [record for record in records if record.get("rule") is not None]
         if state is None:
             if not scored:
@@ -186,6 +211,8 @@ def incumbent_quality_over_rounds(out_dir: Path | str) -> list[IncumbentQualityR
                             "no candidate was scored this round (loader-rejection-only or "
                             "over-budget); the H0 baseline has not been observed yet"
                         ),
+                        round_complete=round_complete,
+                        runs_complete=runs_complete,
                     )
                 )
                 continue
@@ -209,6 +236,8 @@ def incumbent_quality_over_rounds(out_dir: Path | str) -> list[IncumbentQualityR
                 heldout_pass_rate=state.heldout_pass_rate,
                 incumbent_changed=incumbent_changed,
                 annotation=annotation,
+                round_complete=round_complete,
+                runs_complete=runs_complete,
             )
         )
     return rows

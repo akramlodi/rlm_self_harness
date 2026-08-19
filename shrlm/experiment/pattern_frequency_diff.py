@@ -25,6 +25,24 @@ The denominator, honestly stated
     how the rest of this codebase treats a known-imprecise-but-honest
     denominator (see ``totals`` on ``EvidenceBundle``, or the bundle's own
     ``known_substrate_biases``), not silently presented as exact.
+
+Which bundles are compared, and why the excluded ones are still written down
+    A frequency diff across a round whose mining never finished compares a
+    full round against a partial one and reports the shortfall as improvement.
+    So the comparison runs only over bundles whose round is EVIDENCE-COMPLETE
+    (KTD9) -- but excluding a bundle silently is the same failure in the other
+    direction, because the excluded round then simply disappears from the
+    output. Every bundle handed to this analysis therefore gets a row in
+    ``pattern_frequency_diff_bundles.csv`` naming its round, its completeness,
+    whether it was included, and -- when it was not -- why (KTD5's flag,
+    don't refuse).
+
+    Exclusion turns on KNOWN incompleteness only. A bundle that discovery
+    cannot match to a round of this experiment (a checked-in fixture, a copy
+    lifted out of the tree) has completeness ``unknown``, and unknown never
+    collapses into false: it is compared, and its row says the completeness was
+    never established. Refusing to compare on unknown would be treating an
+    unmeasured round as a failed one, which is precisely what KTD9 forbids.
 """
 
 import argparse
@@ -40,9 +58,12 @@ from shrlm.experiment.analysis_io import (
     PROVENANCE_FILENAME,
     Snapshot,
     allocate_snapshot,
+    tristate,
     write_csv,
     write_json,
 )
+from shrlm.experiment.rounds import ExperimentInventory, RoundRecord, discover_rounds
+from shrlm.optimization.bundle import BUNDLE_FILENAME
 
 # A signature is present with rate exactly equal (floating-point noise only,
 # not "close enough") counted as persisted_unchanged rather than a spurious
@@ -78,6 +99,19 @@ DIFF_FIELDNAMES = (
     "below_support_floor_after",
 )
 
+# The completeness table: one row per bundle handed to this analysis, whether
+# or not it was compared (KTD5).
+BUNDLES_FILENAME = "pattern_frequency_diff_bundles.csv"
+BUNDLE_FIELDNAMES = (
+    "label",
+    "bundle_path",
+    "round_index",
+    "round_complete",
+    "evidence_complete",
+    "included",
+    "exclusion_reason",
+)
+
 
 @dataclass(frozen=True)
 class _BundleSummary:
@@ -87,6 +121,35 @@ class _BundleSummary:
     label: str
     n_runs: int
     patterns_by_key: dict[tuple[str, str, str, str], dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class BundleCompletenessRow:
+    """One input bundle's completeness, and whether the diff used it.
+
+    ``round_index`` and both flags are empty when discovery could not match the
+    bundle to a round of this experiment -- completeness unknown, which is a
+    reason to say so, never a reason to drop the bundle.
+    """
+
+    label: str
+    bundle_path: str
+    round_index: int | None
+    round_complete: bool | None
+    evidence_complete: bool | None
+    included: bool
+    exclusion_reason: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "bundle_path": self.bundle_path,
+            "round_index": self.round_index,
+            "round_complete": tristate(self.round_complete),
+            "evidence_complete": tristate(self.evidence_complete),
+            "included": tristate(self.included),
+            "exclusion_reason": self.exclusion_reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -279,10 +342,60 @@ def _dedupe_labels(bundles: list[_BundleSummary]) -> list[_BundleSummary]:
     return deduped
 
 
+def _matching_round(bundle_path: Path, inventory: ExperimentInventory) -> RoundRecord | None:
+    """The discovered round a bundle belongs to, or None when it belongs to none.
+
+    Matched on the path the loop itself would have written the bundle to
+    (``<mining round>/bundle.json``, from discovery) rather than on the
+    ``config.round_index`` the bundle carries: a bundle copied out of the tree,
+    or one from a different experiment, records a round index just as
+    convincingly as an in-tree one, and treating it as that round's evidence
+    would attach another experiment's completeness to it.
+    """
+    resolved = bundle_path.resolve()
+    for record in inventory.rounds:
+        if (record.mining_round_path / BUNDLE_FILENAME).resolve() == resolved:
+            return record
+    return None
+
+
+def bundle_completeness(
+    bundles: Sequence[_BundleSummary], inventory: ExperimentInventory
+) -> list[BundleCompletenessRow]:
+    """One completeness row per bundle, marking which ones the diff may use.
+
+    Only a bundle whose round is KNOWN incomplete is excluded; unknown
+    completeness is reported and included (see this module's docstring).
+    """
+    rows: list[BundleCompletenessRow] = []
+    for bundle in bundles:
+        record = _matching_round(bundle.path, inventory)
+        excluded = record is not None and not record.evidence_complete
+        reason = (
+            f"round {record.round_index} is not evidence-complete: its mining evidence "
+            "marker is absent or disagrees with the persisted records, so a frequency "
+            "comparison against it would read the missing evidence as change"
+            if excluded and record is not None
+            else None
+        )
+        rows.append(
+            BundleCompletenessRow(
+                label=bundle.label,
+                bundle_path=str(bundle.path),
+                round_index=None if record is None else record.round_index,
+                round_complete=None if record is None else record.round_complete,
+                evidence_complete=None if record is None else record.evidence_complete,
+                included=not excluded,
+                exclusion_reason=reason,
+            )
+        )
+    return rows
+
+
 def run_pattern_frequency_diff(
     bundle_paths: Sequence[Path | str], snapshot: Snapshot, labels: Sequence[str] | None = None
 ) -> list[Path]:
-    """Load every bundle, diff every pair (see ``_pairs_to_diff``), write CSV + summary JSON each.
+    """Load every bundle, flag its completeness, diff every includable pair.
 
     Writes into an already-allocated snapshot (KTD2) rather than a bare output
     directory: the diff's own filenames are derived from bundle labels, so two
@@ -292,7 +405,13 @@ def run_pattern_frequency_diff(
     anything is written, because a diff is only interpretable against the exact
     bundle bytes it compared.
 
-    Returns the list of written CSV paths, one per diffed pair.
+    The completeness table is written first and unconditionally, so a run whose
+    bundles leave fewer than two comparable rounds still says what it found and
+    why it compared nothing -- an empty snapshot would say only that the
+    analysis ran.
+
+    Returns every written CSV path: the completeness table, then one per
+    diffed pair.
     """
     if len(bundle_paths) < 2:
         raise ValueError(f"need at least 2 bundle paths to diff, got {len(bundle_paths)}")
@@ -306,8 +425,26 @@ def run_pattern_frequency_diff(
     bundles = _dedupe_labels(bundles)
     snapshot.record_sources(bundle.path for bundle in bundles)
 
-    written: list[Path] = []
-    for before, after in _pairs_to_diff(bundles):
+    inventory = discover_rounds(snapshot.out_dir)
+    completeness = bundle_completeness(bundles, inventory)
+    snapshot.record_rounds(row.round_index for row in completeness if row.round_index is not None)
+    bundles_path = snapshot.path / BUNDLES_FILENAME
+    write_csv(bundles_path, completeness, fieldnames=BUNDLE_FIELDNAMES)
+    written: list[Path] = [bundles_path]
+
+    for row in completeness:
+        if row.included:
+            continue
+        sys.stderr.write(f"excluded {row.label} from the comparison: {row.exclusion_reason}\n")
+    includable = [bundle for bundle, row in zip(bundles, completeness, strict=True) if row.included]
+    if len(includable) < 2:
+        sys.stderr.write(
+            f"{len(includable)} of {len(bundles)} bundles are comparable; no pair was diffed. "
+            f"See {bundles_path}\n"
+        )
+        return written
+
+    for before, after in _pairs_to_diff(includable):
         rows = diff_bundle_pair(before, after)
         summary = summarize(rows)
 
@@ -411,6 +548,8 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
 
 
 __all__ = [
+    "BUNDLES_FILENAME",
+    "BUNDLE_FIELDNAMES",
     "DIFF_FIELDNAMES",
     "RATE_EPSILON",
     "STATUS_NEW",
@@ -419,7 +558,9 @@ __all__ = [
     "STATUS_PERSISTED_WORSENED",
     "STATUS_RESOLVED",
     "TOOL_NAME",
+    "BundleCompletenessRow",
     "PatternFrequencyDiffRow",
+    "bundle_completeness",
     "diff_bundle_pair",
     "load_bundle_summary",
     "main",
