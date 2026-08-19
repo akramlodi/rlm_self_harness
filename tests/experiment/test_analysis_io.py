@@ -60,9 +60,9 @@ from shrlm.experiment.surface_activity import main as surface_main
 from tests.experiment.test_rounds import (
     complete_round,
     eval_set_payload,
+    write_bundle,
     write_config,
     write_eval_summary,
-    write_json,
 )
 
 FROZEN = datetime(2026, 8, 18, 16, 48, 0, tzinfo=UTC)
@@ -475,34 +475,11 @@ class TestCollapseAndAttributionCli:
 
 
 class TestPatternFrequencyDiffCli:
-    def bundle(self, path: Path, round_index: int, support: int) -> Path:
-        write_json(
-            path,
-            {
-                "config": {"round_index": round_index},
-                "totals": {"n_runs": 10},
-                "patterns": [
-                    {
-                        "signature": {
-                            "verifier_cause": "wrong_answer",
-                            "failing_level": "child",
-                            "causal_status": "causal",
-                            "agent_mechanism": "routed_whole_input",
-                        },
-                        "instance_support": support,
-                        "grounded_fraction": 1.0,
-                        "below_support_floor": False,
-                    }
-                ],
-            },
-        )
-        return path
-
     def test_the_experiment_directory_anchors_the_snapshot(
         self, experiment: Path, tmp_path: Path
     ) -> None:
-        before = self.bundle(tmp_path / "before.json", 1, 5)
-        after = self.bundle(tmp_path / "after.json", 2, 2)
+        before = write_bundle(tmp_path / "before.json", 1, support=5, n_runs=10)
+        after = write_bundle(tmp_path / "after.json", 2, support=2, n_runs=10)
 
         assert diff_main([str(experiment), str(before), str(after)]) == 0
 
@@ -515,8 +492,8 @@ class TestPatternFrequencyDiffCli:
         assert len(payload["sources"]) == 2
 
     def test_out_overrides_the_snapshot_parent(self, experiment: Path, tmp_path: Path) -> None:
-        before = self.bundle(tmp_path / "before.json", 1, 5)
-        after = self.bundle(tmp_path / "after.json", 2, 2)
+        before = write_bundle(tmp_path / "before.json", 1, support=5, n_runs=10)
+        after = write_bundle(tmp_path / "after.json", 2, support=2, n_runs=10)
         parent = tmp_path / "published"
 
         assert diff_main([str(experiment), str(before), str(after), "--out", str(parent)]) == 0
@@ -526,8 +503,8 @@ class TestPatternFrequencyDiffCli:
     def test_the_json_summary_carries_the_experiment_identity_and_creation_time(
         self, experiment: Path, tmp_path: Path
     ) -> None:
-        before = self.bundle(tmp_path / "before.json", 1, 5)
-        after = self.bundle(tmp_path / "after.json", 2, 2)
+        before = write_bundle(tmp_path / "before.json", 1, support=5, n_runs=10)
+        after = write_bundle(tmp_path / "after.json", 2, support=2, n_runs=10)
         recorded = json.loads((experiment / CONFIG_FILENAME).read_text())
 
         assert diff_main([str(experiment), str(before), str(after)]) == 0

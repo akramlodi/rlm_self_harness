@@ -40,6 +40,7 @@ from typing import Any
 
 import pytest
 
+from shrlm.experiment.analysis_io import ANALYSIS_DIR
 from shrlm.experiment.config import ExperimentConfig, GpuScenario, load_config
 from shrlm.experiment.orchestrator import (
     MINING_DIR,
@@ -312,6 +313,22 @@ class TestMeasured:
         assert disk["projected_bytes"] == pytest.approx(
             disk["bytes_per_run"] * report.run_counts.total_runs
         )
+
+    def test_analysis_snapshots_do_not_inflate_the_footprint(self, config, experiment):
+        """The post-round hook writes one snapshot per executed round, so counting
+        them would make bytes-per-run climb with how often the analyses ran rather
+        than with the experiment's own data -- and this figure feeds the projection
+        the disk-constraint argument rests on."""
+        before = build_report(config, experiment).disk
+
+        snapshot_dir = experiment / ANALYSIS_DIR / "20260819T000000Z"
+        snapshot_dir.mkdir(parents=True)
+        (snapshot_dir / "surface_activity.csv").write_text("x" * 100_000)
+
+        after = build_report(config, experiment).disk
+
+        assert after["measured_bytes"] == before["measured_bytes"]
+        assert after["projected_bytes"] == pytest.approx(before["projected_bytes"])
 
 
 # ---------------------------------------------------------------------------

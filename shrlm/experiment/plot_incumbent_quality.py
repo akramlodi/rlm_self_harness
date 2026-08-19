@@ -56,6 +56,7 @@ from shrlm.experiment.plot_style import (
     PRIMARY_INK,
     SECONDARY_INK,
     PlotInputError,
+    add_snapshot_arguments,
     apply_style,
     draw_footer,
     partial_caption,
@@ -319,13 +320,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "incumbent_quality.csv."
         ),
     )
-    parser.add_argument("out_dir", help="the experiment directory holding analysis/")
-    parser.add_argument(
-        "--snapshot",
-        default=None,
-        metavar="STAMP_OR_PATH",
-        help="the analysis snapshot to read (default: the latest published one)",
-    )
+    add_snapshot_arguments(parser)
     parser.add_argument(
         "--show-candidates",
         action="store_true",

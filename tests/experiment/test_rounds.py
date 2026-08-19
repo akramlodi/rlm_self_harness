@@ -24,6 +24,7 @@ false completeness this module exists to remove, so the unknown case asserts
 ``is None`` and ``is not False`` rather than merely a falsy value.
 """
 
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -248,6 +249,38 @@ def eval_set_payload(
         "outcome": outcome,
         "skipped_run_ids": list(skipped),
     }
+
+
+def write_bundle(
+    path: Path, round_index: int, *, support: int, n_runs: int = 10, environment: str = "graphwalks"
+) -> Path:
+    """A ``bundle.json`` carrying one mined pattern, in mining's own shape."""
+    write_json(
+        path,
+        {
+            "config": {"round_index": round_index, "verifier_config": {"environment": environment}},
+            "totals": {"n_runs": n_runs},
+            "patterns": [
+                {
+                    "signature": {
+                        "verifier_cause": "wrong_answer",
+                        "failing_level": "child",
+                        "causal_status": "causal",
+                        "agent_mechanism": "routed_whole_input",
+                    },
+                    "instance_support": support,
+                    "grounded_fraction": 1.0,
+                    "below_support_floor": False,
+                }
+            ],
+        },
+    )
+    return path
+
+
+def read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
 
 
 @pytest.fixture

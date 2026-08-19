@@ -697,7 +697,7 @@ def resolve_surface(record: Mapping[str, Any], round_record: RoundRecord) -> Sur
 
 
 def iter_promotion_rounds(
-    out_dir: Path | str,
+    out_dir: Path | str, *, inventory: ExperimentInventory | None = None
 ) -> Iterator[tuple[int, list[dict[str, Any]], dict[str, Any]]]:
     """``(round_index, records, decision)`` for every ledgered round, in order.
 
@@ -712,8 +712,18 @@ def iter_promotion_rounds(
     ``shrlm.optimization.validation._ledger_record``); it is recoverable only
     from the directory the ledger sits in, which is why it comes from discovery
     rather than from the record payloads.
+
+    Args:
+        out_dir: The experiment directory, used when no inventory is passed.
+        inventory: The discovery the caller already ran over ``out_dir``.
+            ``discover_rounds`` globs, parses every stage marker, counts
+            manifest lines, and re-reads the experiment TOML, so a caller that
+            already holds an inventory passes it instead of paying for an
+            identical second pass -- identical because nothing rewrites the
+            tree between the two. Omitted, it is discovered here.
     """
-    for record in discover_rounds(out_dir).rounds:
+    resolved = inventory if inventory is not None else discover_rounds(out_dir)
+    for record in resolved.rounds:
         if not record.has_ledger:
             continue
         records, decision = load_promotion_ledger(record.validation_round_path)

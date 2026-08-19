@@ -86,14 +86,19 @@ from typing import Any
 
 from shrlm.environments.graphwalks import GraphWalksSubVerifier
 from shrlm.experiment.analysis_io import (
-    PROVENANCE_FILENAME,
     Snapshot,
+    add_snapshot_parent_argument,
     allocate_snapshot,
     tristate,
     write_csv,
 )
 from shrlm.experiment.evaluation import EVAL_DIR, EVAL_SUMMARY_FILENAME
-from shrlm.experiment.rounds import EvalSetRecord, RoundRecord, discover_rounds
+from shrlm.experiment.rounds import (
+    EvalSetRecord,
+    ExperimentInventory,
+    RoundRecord,
+    discover_rounds,
+)
 from shrlm.optimization.bundle import BUNDLE_FILENAME
 from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, TRACES_DIR, load_round
 from shrlm.optimization.grounding import apply_sub_verifier
@@ -347,7 +352,9 @@ def _environment_for_round(mining_round_path: Path) -> str | None:
     return str(environment) if environment else None
 
 
-def collapse_and_attribution_optimization(out_dir: Path | str) -> list[OptimizationRow]:
+def collapse_and_attribution_optimization(
+    out_dir: Path | str, *, inventory: ExperimentInventory | None = None
+) -> list[OptimizationRow]:
     """One row per discovered round: collapse rate + failure-attribution shares, re-walked from traces.
 
     Every round discovery finds gets a row, flagged with its completeness
@@ -355,9 +362,13 @@ def collapse_and_attribution_optimization(out_dir: Path | str) -> list[Optimizat
     walk, so its metrics are explicit nulls rather than zeros -- but it stays in
     the table, because a completed no-op round is a real outcome and dropping
     it would silently shorten the series a reader plots.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_collapse_and_attribution``); omitted, one is discovered here.
     """
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     rows: list[OptimizationRow] = []
-    for record in discover_rounds(out_dir).rounds:
+    for record in inventory.rounds:
         environment = _environment_for_round(record.mining_round_path)
         sub_verifier = SUB_VERIFIERS.get(environment) if environment else None
         if not record.has_manifest:
@@ -408,7 +419,9 @@ def eval_summary_path(out_dir: Path | str) -> Path:
     return Path(out_dir) / EVAL_DIR / EVAL_SUMMARY_FILENAME
 
 
-def collapse_and_attribution_evaluation(out_dir: Path | str) -> list[EvaluationRow]:
+def collapse_and_attribution_evaluation(
+    out_dir: Path | str, *, inventory: ExperimentInventory | None = None
+) -> list[EvaluationRow]:
     """One row per condition x test set from the shared inventory, re-walked from traces.
 
     The grid comes from ``rounds.discover_rounds`` rather than from
@@ -419,9 +432,13 @@ def collapse_and_attribution_evaluation(out_dir: Path | str) -> list[EvaluationR
     set is emitted with ``complete`` unknown, which is the honest reading;
     ``outcome`` and the skipped-run count come from the same inventory, so this
     table and every other analysis agree on one verdict per set.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_collapse_and_attribution``); omitted, one is discovered here.
     """
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     rows: list[EvaluationRow] = []
-    for record in discover_rounds(out_dir).eval_sets:
+    for record in inventory.eval_sets:
         environment = record.environment
         sub_verifier = SUB_VERIFIERS.get(environment) if environment else None
         if not (record.round_path / MANIFEST_FILE).exists():
@@ -464,11 +481,20 @@ def _record_round_sources(snapshot: Snapshot, round_path: Path) -> None:
 
 
 def write_collapse_and_attribution_optimization(
-    snapshot: Snapshot, out_dir: Path | str, rows: Sequence[OptimizationRow]
+    snapshot: Snapshot,
+    out_dir: Path | str,
+    rows: Sequence[OptimizationRow],
+    *,
+    inventory: ExperimentInventory | None = None,
 ) -> Path:
-    """Write the optimization table into an allocated snapshot, with sources."""
+    """Write the optimization table into an allocated snapshot, with sources.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_collapse_and_attribution``); omitted, one is discovered here.
+    """
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     analyzed: list[int] = []
-    for record in discover_rounds(out_dir).rounds:
+    for record in inventory.rounds:
         analyzed.append(record.round_index)
         _record_round_sources(snapshot, record.mining_round_path)
         snapshot.record_source(record.mining_round_path / BUNDLE_FILENAME)
@@ -480,14 +506,23 @@ def write_collapse_and_attribution_optimization(
 
 
 def write_collapse_and_attribution_evaluation(
-    snapshot: Snapshot, out_dir: Path | str, rows: Sequence[EvaluationRow]
+    snapshot: Snapshot,
+    out_dir: Path | str,
+    rows: Sequence[EvaluationRow],
+    *,
+    inventory: ExperimentInventory | None = None,
 ) -> Path:
-    """Write the evaluation table into an allocated snapshot, with sources."""
+    """Write the evaluation table into an allocated snapshot, with sources.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_collapse_and_attribution``); omitted, one is discovered here.
+    """
     out_dir = Path(out_dir)
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     snapshot.record_source(eval_summary_path(out_dir))
     # Paths come from the inventory rather than being rebuilt here, so the
     # provenance manifest names exactly the files the rows were read from.
-    for record in discover_rounds(out_dir).eval_sets:
+    for record in inventory.eval_sets:
         _record_round_sources(snapshot, record.round_path)
     snapshot.record_eval_sets(f"{row.condition_id}/{row.test_set_id}" for row in rows)
 
@@ -502,14 +537,25 @@ def run_collapse_and_attribution(out_dir: Path | str, snapshot: Snapshot, *, pha
     Takes an allocated snapshot rather than allocating one, so a batch that
     aggregates both phases -- or this phase alongside the other analyses --
     leaves one directory a reader can compare across, not four.
+
+    Discovery runs ONCE per phase and is threaded into both the row build and
+    the provenance recording, which otherwise walk the same unchanging tree
+    twice to reach the same paths.
     """
     out_dir = Path(out_dir)
+    inventory = discover_rounds(out_dir)
     if phase == PHASE_OPTIMIZATION:
         return write_collapse_and_attribution_optimization(
-            snapshot, out_dir, collapse_and_attribution_optimization(out_dir)
+            snapshot,
+            out_dir,
+            collapse_and_attribution_optimization(out_dir, inventory=inventory),
+            inventory=inventory,
         )
     return write_collapse_and_attribution_evaluation(
-        snapshot, out_dir, collapse_and_attribution_evaluation(out_dir)
+        snapshot,
+        out_dir,
+        collapse_and_attribution_evaluation(out_dir, inventory=inventory),
+        inventory=inventory,
     )
 
 
@@ -525,19 +571,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--phase", choices=[PHASE_OPTIMIZATION, PHASE_EVALUATION], required=True, help="which phase to aggregate"
     )
-    parser.add_argument(
-        "--out",
-        dest="snapshot_parent",
-        metavar="DIR",
-        default=None,
-        help=(
-            "parent directory for the timestamped analysis snapshot "
-            "(default: <out_dir>/analysis)"
-        ),
-    )
+    add_snapshot_parent_argument(parser)
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
+    inventory = discover_rounds(out_dir)
 
     # The two phases are written out separately rather than dispatched through
     # one variable: their row types are different, and a shared call site would
@@ -546,38 +584,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     # The emptiness check comes before allocation in both, so a phase with
     # nothing to analyze leaves no empty unpublished directory behind.
     if args.phase == PHASE_OPTIMIZATION:
-        optimization_rows = collapse_and_attribution_optimization(out_dir)
+        optimization_rows = collapse_and_attribution_optimization(out_dir, inventory=inventory)
         if not optimization_rows:
             sys.stderr.write(f"no {args.phase} groups found under {out_dir}\n")
             return 1
         snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
         tool_name = TOOL_NAME_OPTIMIZATION
         filename = OPTIMIZATION_FILENAME
-        ok = snapshot.run_tool(
+        snapshot.run_tool(
             tool_name,
             lambda: write_collapse_and_attribution_optimization(
-                snapshot, out_dir, optimization_rows
+                snapshot, out_dir, optimization_rows, inventory=inventory
             ),
         )
     else:
         if not eval_summary_path(out_dir).exists():
             sys.stderr.write(f"{eval_summary_path(out_dir)} not found\n")
             return 1
-        evaluation_rows = collapse_and_attribution_evaluation(out_dir)
+        evaluation_rows = collapse_and_attribution_evaluation(out_dir, inventory=inventory)
         if not evaluation_rows:
             sys.stderr.write(f"no {args.phase} groups found under {out_dir}\n")
             return 1
         snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
         tool_name = TOOL_NAME_EVALUATION
         filename = EVALUATION_FILENAME
-        ok = snapshot.run_tool(
+        snapshot.run_tool(
             tool_name,
-            lambda: write_collapse_and_attribution_evaluation(snapshot, out_dir, evaluation_rows),
+            lambda: write_collapse_and_attribution_evaluation(
+                snapshot, out_dir, evaluation_rows, inventory=inventory
+            ),
         )
 
-    snapshot.publish()
-    if not ok:
-        sys.stderr.write(f"{tool_name} failed; see {snapshot.path / PROVENANCE_FILENAME}\n")
+    if not snapshot.publish():
+        sys.stderr.write(snapshot.failure_message(tool_name))
         return 1
 
     sys.stdout.write(f"Wrote {snapshot.path / filename}\n")

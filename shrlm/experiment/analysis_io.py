@@ -82,6 +82,7 @@ Provenance, and why the source hashes are the load-bearing part
     unknown, and is never worth failing an analysis over.
 """
 
+import argparse
 import csv
 import hashlib
 import io
@@ -94,7 +95,7 @@ from typing import Any, Protocol
 
 from shrlm.experiment.errors import ExperimentError
 from shrlm.experiment.orchestrator import CONFIG_FILENAME, CONFIG_FORMAT
-from shrlm.experiment.rounds import discover_rounds
+from shrlm.experiment.rounds import ExperimentInventory, discover_rounds
 from shrlm.optimization.validation import DECISION_FILENAME, PROMOTIONS_FILENAME
 
 ANALYSIS_DIR = "analysis"
@@ -281,11 +282,14 @@ def analysis_revision() -> str | None:
 
 
 def _hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
+    """One artifact's sha256, read in chunks rather than into memory.
+
+    ``hashlib.file_digest`` is the standard library's own chunked reader (3.11+,
+    which this package already requires), so the loop this used to spell by
+    hand is the same loop with one fewer place to get the buffer size wrong.
+    """
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _relative_source_path(path: Path, out_dir: Path) -> str:
@@ -329,6 +333,7 @@ class Snapshot:
         self._eval_sets: set[str] = set()
         self._tools: list[dict[str, Any]] = []
         self._identity: tuple[str, str] | None = None
+        self._digests: dict[Path, str] = {}
 
     # -- outputs ----------------------------------------------------------
 
@@ -364,6 +369,24 @@ class Snapshot:
 
     # -- provenance accumulation -----------------------------------------
 
+    def _digest(self, path: Path) -> str:
+        """One artifact's sha256, hashed at most once per snapshot.
+
+        The batch is a set of independent readings over ONE tree that nothing
+        rewrites while it runs, so two tools consuming the same artifact --
+        which the ledger-reading pair do for every ``promotions.jsonl`` and
+        ``decision.json`` in the experiment -- must agree on its hash, and a
+        second full read to reach that same answer is pure cost. Keyed on the
+        resolved path, so the same file reached by two spellings is hashed
+        once and recorded once.
+        """
+        resolved = path.resolve()
+        digest = self._digests.get(resolved)
+        if digest is None:
+            digest = _hash_file(path)
+            self._digests[resolved] = digest
+        return digest
+
     def record_source(self, path: Path | str) -> None:
         """Record one consumed artifact's content hash.
 
@@ -377,7 +400,7 @@ class Snapshot:
         self._sources[name] = {
             "path": name,
             "kind": SOURCE_KIND_FILE,
-            "sha256": _hash_file(resolved) if resolved.is_file() else None,
+            "sha256": self._digest(resolved) if resolved.is_file() else None,
         }
 
     def record_sources(self, paths: Iterable[Path | str]) -> None:
@@ -409,7 +432,7 @@ class Snapshot:
                 continue
             n_files += 1
             digest.update(child.name.encode())
-            digest.update(_hash_file(child).encode())
+            digest.update(self._digest(child).encode())
         self._sources[name] = {
             "path": name,
             "kind": SOURCE_KIND_DIRECTORY,
@@ -444,6 +467,15 @@ class Snapshot:
             return False
         self.record_tool(name, ok=True)
         return True
+
+    def failure_message(self, name: str) -> str:
+        """The one line a CLI writes to stderr when its tool failed.
+
+        One wording, owned beside ``publish`` -- the provenance record it points
+        at is the only place the failure itself is written down, so every
+        aggregation CLI has to say the same thing about where to look.
+        """
+        return f"{name} failed; see {self.path / PROVENANCE_FILENAME}\n"
 
     # -- identity ---------------------------------------------------------
 
@@ -536,6 +568,25 @@ def snapshot_parent(out_dir: Path | str, parent: Path | str | None = None) -> Pa
     return Path(parent) if parent is not None else Path(out_dir) / ANALYSIS_DIR
 
 
+def add_snapshot_parent_argument(parser: argparse.ArgumentParser) -> None:
+    """Add the ``--out`` option every aggregation CLI takes, one definition.
+
+    ``--out`` is the ``snapshot_parent`` question, which this module owns, so
+    the flag that asks it is defined here rather than copied into each CLI: a
+    help text that drifted in one copy would describe an option the other three
+    do not have.
+    """
+    parser.add_argument(
+        "--out",
+        dest="snapshot_parent",
+        metavar="DIR",
+        default=None,
+        help=(
+            "parent directory for the timestamped analysis snapshot (default: <out_dir>/analysis)"
+        ),
+    )
+
+
 def allocate_snapshot(
     out_dir: Path | str,
     *,
@@ -606,16 +657,28 @@ def latest_snapshot(out_dir: Path | str, *, parent: Path | str | None = None) ->
 # ---------------------------------------------------------------------------
 
 
-def record_ledger_sources(snapshot: Snapshot, out_dir: Path | str) -> list[int]:
+def record_ledger_sources(
+    snapshot: Snapshot, out_dir: Path | str, *, inventory: ExperimentInventory | None = None
+) -> list[int]:
     """Record every promotion ledger the inventory holds; return its rounds.
 
     Shared by the two ledger-reading aggregations, which consume exactly the
     same artifacts (``promotions.jsonl`` plus the round's ``decision.json``)
     through the same discovery. Recording them here rather than in each CLI
     keeps the provenance manifest and the reader in agreement by construction.
+
+    Args:
+        snapshot: The batch's snapshot; the sources land in its provenance.
+        out_dir: The experiment directory, used when no inventory is passed.
+        inventory: The discovery the caller already ran over ``out_dir``.
+            Discovery does real per-round IO and re-reads the experiment TOML,
+            and nothing rewrites the tree mid-batch, so a caller that already
+            holds one passes it rather than paying for an identical second
+            pass. Omitted, it is discovered here.
     """
+    resolved = inventory if inventory is not None else discover_rounds(out_dir)
     analyzed: list[int] = []
-    for record in discover_rounds(out_dir).rounds:
+    for record in resolved.rounds:
         if not record.has_ledger:
             continue
         analyzed.append(record.round_index)
@@ -641,6 +704,7 @@ __all__ = [
     "AnalysisOutputError",
     "CsvRow",
     "Snapshot",
+    "add_snapshot_parent_argument",
     "allocate_snapshot",
     "analysis_revision",
     "is_published",

@@ -60,14 +60,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shrlm.experiment.analysis_io import (
-    PROVENANCE_FILENAME,
     Snapshot,
+    add_snapshot_parent_argument,
     allocate_snapshot,
     record_ledger_sources,
     tristate,
     write_csv,
 )
-from shrlm.experiment.rounds import RoundRecord, discover_rounds, iter_promotion_rounds
+from shrlm.experiment.rounds import (
+    ExperimentInventory,
+    RoundRecord,
+    discover_rounds,
+    iter_promotion_rounds,
+)
 from shrlm.optimization.promotion import DECISION_PROMOTED
 
 INCUMBENT_QUALITY_FILENAME = "incumbent_quality.csv"
@@ -184,17 +189,22 @@ def _structural_rejection_annotation(records: list[dict]) -> str | None:
     return "; ".join(parts) if parts else None
 
 
-def incumbent_quality_over_rounds(out_dir: Path | str) -> list[IncumbentQualityRow]:
-    """One row per validation round: the incumbent's pass rates and whether it changed."""
+def incumbent_quality_over_rounds(
+    out_dir: Path | str, *, inventory: ExperimentInventory | None = None
+) -> list[IncumbentQualityRow]:
+    """One row per validation round: the incumbent's pass rates and whether it changed.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_incumbent_quality``); omitted, one is discovered here.
+    """
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     rows: list[IncumbentQualityRow] = []
     state: _IncumbentState | None = None
     # The same inventory the ledger iteration below walks, kept by round index
     # so every emitted row carries that round's completeness (R2).
-    discovered: dict[int, RoundRecord] = {
-        record.round_index: record for record in discover_rounds(out_dir).rounds
-    }
+    discovered: dict[int, RoundRecord] = {record.round_index: record for record in inventory.rounds}
 
-    for round_index, records, _decision in iter_promotion_rounds(out_dir):
+    for round_index, records, _decision in iter_promotion_rounds(out_dir, inventory=inventory):
         discovery = discovered.get(round_index)
         round_complete = discovery is not None and discovery.round_complete
         runs_complete = None if discovery is None else discovery.mining_runs.runs_complete
@@ -243,10 +253,16 @@ def incumbent_quality_over_rounds(out_dir: Path | str) -> list[IncumbentQualityR
     return rows
 
 
-def all_candidate_quality_over_rounds(out_dir: Path | str) -> list[CandidateQualityRow]:
-    """One row per scored candidate record, across every round (the scatter table)."""
+def all_candidate_quality_over_rounds(
+    out_dir: Path | str, *, inventory: ExperimentInventory | None = None
+) -> list[CandidateQualityRow]:
+    """One row per scored candidate record, across every round (the scatter table).
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_incumbent_quality``); omitted, one is discovered here.
+    """
     rows: list[CandidateQualityRow] = []
-    for round_index, records, _decision in iter_promotion_rounds(out_dir):
+    for round_index, records, _decision in iter_promotion_rounds(out_dir, inventory=inventory):
         for record in records:
             rule = record.get("rule")
             if rule is None:
@@ -270,14 +286,19 @@ def write_incumbent_quality(
     out_dir: Path | str,
     rows: Sequence[IncumbentQualityRow],
     candidates: Sequence[CandidateQualityRow],
+    *,
+    inventory: ExperimentInventory | None = None,
 ) -> list[Path]:
     """Write both tables into an already-allocated snapshot, recording sources.
 
     Sources are recorded before the outputs are written, which is the ordering
     the snapshot's identity resolution assumes for a legacy tree carrying no
     recorded identity of its own.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_incumbent_quality``); omitted, one is discovered here.
     """
-    record_ledger_sources(snapshot, out_dir)
+    record_ledger_sources(snapshot, out_dir, inventory=inventory)
     quality_path = snapshot.path / INCUMBENT_QUALITY_FILENAME
     candidates_path = snapshot.path / INCUMBENT_QUALITY_CANDIDATES_FILENAME
     write_csv(quality_path, rows, fieldnames=INCUMBENT_QUALITY_FIELDNAMES)
@@ -292,13 +313,21 @@ def run_incumbent_quality(out_dir: Path | str, snapshot: Snapshot) -> list[Path]
     in one invocation belongs in the same snapshot, so the quality series and
     the surface series a reader plots together are guaranteed to describe one
     pass over one tree.
+
+    Discovery runs ONCE here and is threaded through both tables and the source
+    recording. All three ask the same question of the same unchanging tree, so
+    three separate walks would only re-derive the same answer at three times
+    the IO -- and a tree that somehow did change under them would be worse than
+    slow, it would put two different inventories in one snapshot.
     """
     out_dir = Path(out_dir)
+    inventory = discover_rounds(out_dir)
     return write_incumbent_quality(
         snapshot,
         out_dir,
-        incumbent_quality_over_rounds(out_dir),
-        all_candidate_quality_over_rounds(out_dir),
+        incumbent_quality_over_rounds(out_dir, inventory=inventory),
+        all_candidate_quality_over_rounds(out_dir, inventory=inventory),
+        inventory=inventory,
     )
 
 
@@ -309,20 +338,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Per-round incumbent held-in/held-out pass rates (feeds Graph 2).",
     )
     parser.add_argument("out_dir", help="the experiment directory to read (holds opt/)")
-    parser.add_argument(
-        "--out",
-        dest="snapshot_parent",
-        metavar="DIR",
-        default=None,
-        help=(
-            "parent directory for the timestamped analysis snapshot "
-            "(default: <out_dir>/analysis)"
-        ),
-    )
+    add_snapshot_parent_argument(parser)
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
-    rows = incumbent_quality_over_rounds(out_dir)
+    inventory = discover_rounds(out_dir)
+    rows = incumbent_quality_over_rounds(out_dir, inventory=inventory)
     if not rows:
         # Checked before a snapshot is allocated: an experiment with nothing to
         # analyze should not leave an empty unpublished directory behind.
@@ -330,15 +351,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
-    ok = snapshot.run_tool(
+    snapshot.run_tool(
         TOOL_NAME,
         lambda: write_incumbent_quality(
-            snapshot, out_dir, rows, all_candidate_quality_over_rounds(out_dir)
+            snapshot,
+            out_dir,
+            rows,
+            all_candidate_quality_over_rounds(out_dir, inventory=inventory),
+            inventory=inventory,
         ),
     )
-    snapshot.publish()
-    if not ok:
-        sys.stderr.write(f"{TOOL_NAME} failed; see {snapshot.path / PROVENANCE_FILENAME}\n")
+    if not snapshot.publish():
+        sys.stderr.write(snapshot.failure_message(TOOL_NAME))
         return 1
 
     sys.stdout.write(f"Wrote {snapshot.path / INCUMBENT_QUALITY_FILENAME}\n")

@@ -33,6 +33,7 @@ Marking what is not confirmed complete
     for both: can I trust this point as a finished round?
 """
 
+import argparse
 import csv
 import json
 from collections.abc import Iterable, Mapping, Sequence
@@ -147,6 +148,23 @@ def resolve_snapshot(out_dir: Path | str, pinned: str | None = None) -> Path:
             f"aggregation for this figure against {out_dir} first"
         )
     return latest
+
+
+def add_snapshot_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the ``out_dir`` positional and ``--snapshot`` every plot CLI takes.
+
+    Defined beside ``resolve_snapshot``, which is what consumes both: the pair
+    of arguments and the resolution rule are one contract, and a CLI that
+    described ``--snapshot`` differently from the function that resolves it
+    would be documenting a behavior nothing implements.
+    """
+    parser.add_argument("out_dir", help="the experiment directory holding analysis/")
+    parser.add_argument(
+        "--snapshot",
+        default=None,
+        metavar="STAMP_OR_PATH",
+        help="the analysis snapshot to read (default: the latest published one)",
+    )
 
 
 def read_rows(snapshot_dir: Path, filename: str) -> list[dict[str, Any]]:
@@ -285,6 +303,7 @@ __all__ = [
     "SECONDARY_INK",
     "SURFACE",
     "PlotInputError",
+    "add_snapshot_arguments",
     "apply_style",
     "draw_footer",
     "footer_text",

@@ -55,8 +55,8 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.experiment.analysis_io import (
-    PROVENANCE_FILENAME,
     Snapshot,
+    add_snapshot_parent_argument,
     allocate_snapshot,
     tristate,
     write_csv,
@@ -393,7 +393,11 @@ def bundle_completeness(
 
 
 def run_pattern_frequency_diff(
-    bundle_paths: Sequence[Path | str], snapshot: Snapshot, labels: Sequence[str] | None = None
+    bundle_paths: Sequence[Path | str],
+    snapshot: Snapshot,
+    labels: Sequence[str] | None = None,
+    *,
+    inventory: ExperimentInventory | None = None,
 ) -> list[Path]:
     """Load every bundle, flag its completeness, diff every includable pair.
 
@@ -410,6 +414,16 @@ def run_pattern_frequency_diff(
     why it compared nothing -- an empty snapshot would say only that the
     analysis ran.
 
+    Args:
+        bundle_paths: Two or more ``bundle.json`` paths, chronological.
+        snapshot: The batch's allocated snapshot; everything is written there.
+        labels: One label per bundle, for bundles carrying no round index.
+        inventory: The caller's already-computed discovery over the snapshot's
+            experiment directory, used to match each bundle to its round.
+            Discovery does real per-round IO and nothing rewrites the tree
+            mid-batch, so a caller that already holds one passes it. Omitted,
+            it is discovered here.
+
     Returns every written CSV path: the completeness table, then one per
     diffed pair.
     """
@@ -425,7 +439,8 @@ def run_pattern_frequency_diff(
     bundles = _dedupe_labels(bundles)
     snapshot.record_sources(bundle.path for bundle in bundles)
 
-    inventory = discover_rounds(snapshot.out_dir)
+    if inventory is None:
+        inventory = discover_rounds(snapshot.out_dir)
     completeness = bundle_completeness(bundles, inventory)
     snapshot.record_rounds(row.round_index for row in completeness if row.round_index is not None)
     bundles_path = snapshot.path / BUNDLES_FILENAME
@@ -500,16 +515,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         nargs="+",
         help="two or more bundle.json paths, in chronological order (round 0 first)",
     )
-    parser.add_argument(
-        "--out",
-        dest="snapshot_parent",
-        metavar="DIR",
-        default=None,
-        help=(
-            "parent directory for the timestamped analysis snapshot "
-            "(default: <out_dir>/analysis)"
-        ),
-    )
+    add_snapshot_parent_argument(parser)
     parser.add_argument(
         "--labels",
         nargs="+",
@@ -527,19 +533,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     out_dir = Path(args.out_dir)
     snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
-    try:
-        run_pattern_frequency_diff(args.bundle_paths, snapshot, labels=args.labels)
-    except ValueError as error:
-        # Recorded as a failed tool and left unpublished, rather than simply
-        # reported: the directory stays on disk as the audit trail for what was
-        # attempted, but nothing will ever select it as "the latest results".
-        snapshot.record_tool(TOOL_NAME, ok=False, error=str(error))
-        snapshot.publish()
-        sys.stderr.write(f"{error}\n")
-        sys.stderr.write(f"see {snapshot.path / PROVENANCE_FILENAME}\n")
+    # Isolated through ``run_tool``, exactly as the three sibling aggregation
+    # CLIs are: a hand-rolled ``except ValueError`` here caught the diff's own
+    # argument checks and nothing else, so a malformed bundle (a ``KeyError``
+    # out of the signature extraction) or an unreadable bundle path (an
+    # ``OSError``) escaped as a traceback and left the allocated directory with
+    # no provenance at all. Every failure is now recorded against the tool
+    # name, and the snapshot stays on disk as the audit trail while never
+    # being selectable as "the latest results".
+    snapshot.run_tool(
+        TOOL_NAME,
+        lambda: run_pattern_frequency_diff(args.bundle_paths, snapshot, labels=args.labels),
+    )
+    if not snapshot.publish():
+        sys.stderr.write(snapshot.failure_message(TOOL_NAME))
         return 1
-    snapshot.record_tool(TOOL_NAME, ok=True)
-    snapshot.publish()
     return 0
 
 

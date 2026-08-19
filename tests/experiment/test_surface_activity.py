@@ -29,7 +29,6 @@ build them with the loop's own layout functions; proposal artifacts are written
 at the path discovery reports for the round, never at a locally assembled one.
 """
 
-import csv
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -71,6 +70,7 @@ from shrlm.optimization.validation import (
 )
 from tests.experiment.test_rounds import (
     complete_round,
+    read_csv,
     record_for,
     write_config,
     write_json,
@@ -155,11 +155,6 @@ def experiment(tmp_path: Path) -> Path:
 @pytest.fixture
 def snapshot(experiment: Path) -> Snapshot:
     return allocate_snapshot(experiment, now=FROZEN)
-
-
-def read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
 
 
 def written_activity(snapshot: Snapshot, out_dir: Path) -> list[dict[str, str]]:

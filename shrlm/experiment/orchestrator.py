@@ -881,6 +881,13 @@ def _validation_usage(validation_round_path: Path) -> UsageTotals:
 # not a failure worth recording -- so it is left out of the batch instead.
 MIN_DIFFABLE_BUNDLES = 2
 
+# The name a failure of the BATCH ITSELF is recorded under, as opposed to a
+# failure of one of the aggregations it runs (each of those is recorded under
+# its own tool name by ``Snapshot.run_tool``). It names the hook rather than
+# any analysis because that is what failed: the batch never got as far as
+# deciding which analyses to run.
+POST_ROUND_BATCH_TOOL = "post_round_analysis"
+
 
 def _post_round_analyses(
     out_dir: Path, snapshot: "Snapshot"
@@ -974,13 +981,26 @@ def _run_post_round_analysis(out_dir: Path) -> None:
     unconditionally -- ``publish`` writes ``provenance.json`` either way and
     withholds only the completion marker when a tool failed, so a partial batch
     leaves a readable audit trail that no reader will mistake for the latest
-    results.
+    results. "Unconditionally" includes the failures that happen OUTSIDE any
+    tool's own guard, between allocating the directory and publishing it: those
+    take the same path through ``_publish_failed_batch``, because a stamped
+    directory holding neither provenance nor a completion marker would be an
+    empty snapshot with nothing on disk saying why -- the one outcome this
+    module and ``analysis_io`` both promise never to produce.
 
     Args:
         out_dir: The experiment directory; the snapshot lands under its
             ``analysis/``.
     """
+    # A local annotation is never evaluated at runtime (PEP 526), so this one
+    # names the TYPE_CHECKING-only import without quoting it.
+    snapshot: Snapshot | None = None
     try:
+        # Function-local because ``analysis_io`` imports THIS module: at module
+        # scope this is a circular import that fails while ``orchestrator`` is
+        # still half-initialized (the direction ``_post_round_analyses``'s
+        # docstring spells out). The position is structurally required, not
+        # merely defensive.
         from shrlm.experiment.analysis_io import PROVENANCE_FILENAME, allocate_snapshot
 
         snapshot = allocate_snapshot(out_dir)
@@ -989,16 +1009,47 @@ def _run_post_round_analysis(out_dir: Path) -> None:
             for name, call in _post_round_analyses(out_dir, snapshot)
             if not snapshot.run_tool(name, call)
         ]
-        snapshot.publish()
+        published = snapshot.publish()
     except Exception as error:  # noqa: BLE001 -- isolation from the loop is the point
         sys.stderr.write(
             f"post-round analysis skipped for {out_dir}: {type(error).__name__}: {error}\n"
         )
+        _publish_failed_batch(snapshot, error)
         return
-    if failed:
+    if not published:
         sys.stderr.write(
             f"post-round analysis: {', '.join(failed)} failed; {snapshot.path} is unpublished, "
             f"see {snapshot.path / PROVENANCE_FILENAME}\n"
+        )
+
+
+def _publish_failed_batch(snapshot: "Snapshot | None", error: Exception) -> None:
+    """Leave provenance behind for a batch that failed outside any tool's guard.
+
+    ``allocate_snapshot`` claims its directory before a single aggregation
+    runs, so anything that raises between the claim and ``publish`` -- the
+    function-local import of the analysis modules, or building the list of
+    analyses -- used to leave a stamped directory with no ``provenance.json``
+    and no ``published.json``. Recording the failure as a tool outcome and
+    publishing gives that directory the audit trail every other failure mode
+    gets, and (because the outcome is a failed one) withholds the completion
+    marker, so it can never be read as the latest results.
+
+    Nothing here may reach the loop either, so the recovery write is guarded in
+    turn: if the reason the batch failed was that this snapshot cannot be
+    written to at all, saying so on stderr is the end of it.
+    """
+    if snapshot is None:
+        return
+    try:
+        snapshot.record_tool(
+            POST_ROUND_BATCH_TOOL, ok=False, error=f"{type(error).__name__}: {error}"
+        )
+        snapshot.publish()
+    except Exception as write_error:  # noqa: BLE001 -- isolation from the loop is the point
+        sys.stderr.write(
+            f"post-round analysis: could not record that failure under {snapshot.path}: "
+            f"{type(write_error).__name__}: {write_error}\n"
         )
 
 
@@ -1070,6 +1121,7 @@ __all__ = [
     "EVIDENCE_MARKER_FILENAME",
     "FROZEN_DIR",
     "FROZEN_HARNESS_FILENAME",
+    "POST_ROUND_BATCH_TOOL",
     "PROPOSALS_MARKER_FILENAME",
     "ROUND_MARKER_FILENAME",
     "STOP_MAX_ROUNDS",

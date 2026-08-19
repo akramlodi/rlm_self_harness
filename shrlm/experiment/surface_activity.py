@@ -65,8 +65,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shrlm.experiment.analysis_io import (
-    PROVENANCE_FILENAME,
     Snapshot,
+    add_snapshot_parent_argument,
     allocate_snapshot,
     record_ledger_sources,
     tristate,
@@ -78,6 +78,7 @@ from shrlm.experiment.rounds import (
     SURFACE_SOURCE_LEDGER,
     SURFACE_SOURCE_MERGED,
     SURFACE_SOURCE_NONE,
+    ExperimentInventory,
     RoundRecord,
     discover_rounds,
     iter_promotion_rounds,
@@ -215,9 +216,14 @@ def _cell_source(category: str, cell_sources: set[str] | None) -> str:
 
 
 def surface_activity_over_rounds(
-    out_dir: Path | str,
+    out_dir: Path | str, *, inventory: ExperimentInventory | None = None
 ) -> tuple[list[SurfaceActivityRow], list[UnattributedRow]]:
     """Build the tidy surface-activity table plus the unattributed-rows tally.
+
+    Args:
+        out_dir: The experiment directory to read.
+        inventory: The caller's already-computed discovery (see
+            ``run_surface_activity``); omitted, one is discovered here.
 
     Returns:
         ``(rows, unattributed)``: ``rows`` has one entry per
@@ -230,9 +236,8 @@ def surface_activity_over_rounds(
     # proposals the backfill joins against; the ledger iteration below is built
     # on the same inventory, so the two agree on which rounds exist by
     # construction.
-    discovered: dict[int, RoundRecord] = {
-        record.round_index: record for record in discover_rounds(out_dir).rounds
-    }
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
+    discovered: dict[int, RoundRecord] = {record.round_index: record for record in inventory.rounds}
 
     # counts[(round_index, category)] = {"attempted_count": n, "promoted_count": n}
     counts: dict[tuple[int, str], dict[str, int]] = {}
@@ -243,7 +248,7 @@ def surface_activity_over_rounds(
     total_by_round: dict[int, int] = {}
     round_indices: list[int] = []
 
-    for round_index, records, _decision in iter_promotion_rounds(out_dir):
+    for round_index, records, _decision in iter_promotion_rounds(out_dir, inventory=inventory):
         round_indices.append(round_index)
         total_by_round[round_index] = len(records)
         unattributed_by_round[round_index] = 0
@@ -317,14 +322,19 @@ def write_surface_activity(
     out_dir: Path | str,
     rows: Sequence[SurfaceActivityRow],
     unattributed: Sequence[UnattributedRow],
+    *,
+    inventory: ExperimentInventory | None = None,
 ) -> list[Path]:
     """Write both tables into an already-allocated snapshot, recording sources.
 
     Sources are recorded before the outputs are written, which is the ordering
     the snapshot's identity resolution assumes for a legacy tree carrying no
     recorded identity of its own.
+
+    ``inventory`` is the caller's already-computed discovery (see
+    ``run_surface_activity``); omitted, one is discovered here.
     """
-    record_ledger_sources(snapshot, out_dir)
+    record_ledger_sources(snapshot, out_dir, inventory=inventory)
     activity_path = snapshot.path / SURFACE_ACTIVITY_FILENAME
     unattributed_path = snapshot.path / UNATTRIBUTED_FILENAME
     write_csv(activity_path, rows, fieldnames=SURFACE_ACTIVITY_FIELDNAMES)
@@ -340,10 +350,15 @@ def run_surface_activity(out_dir: Path | str, snapshot: Snapshot) -> list[Path]:
     every aggregation in one invocation belongs in ONE snapshot (KTD2) --
     tables a reader compares against each other must have come from a single
     pass over a single tree.
+
+    Discovery likewise runs ONCE here and is threaded into both the table build
+    and the source recording: the two ask the same question of the same
+    unchanging tree, so a second walk would buy nothing but IO.
     """
     out_dir = Path(out_dir)
-    rows, unattributed = surface_activity_over_rounds(out_dir)
-    return write_surface_activity(snapshot, out_dir, rows, unattributed)
+    inventory = discover_rounds(out_dir)
+    rows, unattributed = surface_activity_over_rounds(out_dir, inventory=inventory)
+    return write_surface_activity(snapshot, out_dir, rows, unattributed, inventory=inventory)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -353,20 +368,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Per-round, per-surface attempted/promoted counts (feeds Graph 1).",
     )
     parser.add_argument("out_dir", help="the experiment directory to read (holds opt/)")
-    parser.add_argument(
-        "--out",
-        dest="snapshot_parent",
-        metavar="DIR",
-        default=None,
-        help=(
-            "parent directory for the timestamped analysis snapshot "
-            "(default: <out_dir>/analysis)"
-        ),
-    )
+    add_snapshot_parent_argument(parser)
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
-    rows, unattributed = surface_activity_over_rounds(out_dir)
+    inventory = discover_rounds(out_dir)
+    rows, unattributed = surface_activity_over_rounds(out_dir, inventory=inventory)
     if not rows:
         # Checked before a snapshot is allocated: an experiment with nothing to
         # analyze should not leave an empty unpublished directory behind.
@@ -374,12 +381,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     snapshot = allocate_snapshot(out_dir, parent=args.snapshot_parent)
-    ok = snapshot.run_tool(
-        TOOL_NAME, lambda: write_surface_activity(snapshot, out_dir, rows, unattributed)
+    snapshot.run_tool(
+        TOOL_NAME,
+        lambda: write_surface_activity(snapshot, out_dir, rows, unattributed, inventory=inventory),
     )
-    snapshot.publish()
-    if not ok:
-        sys.stderr.write(f"{TOOL_NAME} failed; see {snapshot.path / PROVENANCE_FILENAME}\n")
+    if not snapshot.publish():
+        sys.stderr.write(snapshot.failure_message(TOOL_NAME))
         return 1
     activity_path = snapshot.path / SURFACE_ACTIVITY_FILENAME
     unattributed_path = snapshot.path / UNATTRIBUTED_FILENAME

@@ -51,6 +51,7 @@ from shrlm.experiment.orchestrator import (
     EVIDENCE_MARKER_FILENAME,
     FROZEN_DIR,
     FROZEN_HARNESS_FILENAME,
+    POST_ROUND_BATCH_TOOL,
     PROPOSALS_MARKER_FILENAME,
     ROUND_MARKER_FILENAME,
     STOP_MAX_ROUNDS,
@@ -1115,6 +1116,49 @@ class TestPostRoundAnalysisIsolation:
         ]
         assert persisted_tree(out) == persisted_tree(baseline)
         assert snapshots(out) == []
+
+    def test_a_batch_that_fails_before_any_tool_still_explains_its_snapshot(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The directory is claimed before a single aggregation runs, so a
+        failure between the claim and ``publish`` -- the function-local import
+        of the analysis modules, or building the list of analyses -- must still
+        leave provenance behind. An ``analysis/<stamp>/`` holding neither
+        ``provenance.json`` nor ``published.json`` would be an empty snapshot
+        with nothing on disk saying why it is empty."""
+        config = make_config(tmp_path)
+
+        baseline = tmp_path / "baseline"
+        disable_hook(monkeypatch)
+        without_hook = complete_one_promoted_round(config, baseline, monkeypatch)
+
+        monkeypatch.undo()
+
+        def explode(out_dir: Path, snapshot: Any) -> Any:
+            raise ImportError("analysis modules unavailable")
+
+        monkeypatch.setattr(orchestrator_module, "_post_round_analyses", explode)
+        out = tmp_path / "exp"
+        with_hook = complete_one_promoted_round(config, out, monkeypatch)
+
+        # The experiment is untouched: same result, same persisted bytes.
+        assert with_hook.final_harness_hash == without_hook.final_harness_hash
+        assert [outcome.to_payload() for outcome in with_hook.rounds] == [
+            outcome.to_payload() for outcome in without_hook.rounds
+        ]
+        assert persisted_tree(out) == persisted_tree(baseline)
+
+        # The claimed directory says what happened to it...
+        (snapshot,) = snapshots(out)
+        provenance = json.loads((snapshot / PROVENANCE_FILENAME).read_text())
+        outcomes = {tool["name"]: tool for tool in provenance["tools"]}
+        assert outcomes[POST_ROUND_BATCH_TOOL]["ok"] is False
+        assert "analysis modules unavailable" in outcomes[POST_ROUND_BATCH_TOOL]["error"]
+
+        # ...and is never presented as a finished batch.
+        assert not is_published(snapshot)
+        assert latest_snapshot(out) is None
+        assert "analysis modules unavailable" in capsys.readouterr().err
 
     def test_one_failing_aggregation_costs_only_its_own_output(self, tmp_path, monkeypatch, capsys):
         config = make_config(tmp_path)

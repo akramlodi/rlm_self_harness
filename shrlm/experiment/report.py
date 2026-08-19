@@ -81,6 +81,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from shrlm.experiment.analysis_io import ANALYSIS_DIR
 from shrlm.experiment.config import CONFIG_PATH, ExperimentConfig, load_config
 from shrlm.experiment.evaluation import EVAL_DIR, EVAL_SUMMARY_FILENAME, STAGE_EVAL
 from shrlm.experiment.orchestrator import (
@@ -268,6 +269,19 @@ def optimization_manifests(out_dir: Path) -> list[Path]:
     return [path for _, path in _stage_manifests(out_dir)]
 
 
+def _stage_manifest_entries(out_dir: Path) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Every optimization-stage manifest, READ, paired with the stage that wrote it.
+
+    The measured section asks two questions of one set of files -- how many
+    runs each stage executed, and what they cost -- and each used to walk
+    ``opt/`` and re-parse every manifest for itself. One read, threaded to both
+    (see ``build_report``): the answers are functions of the same bytes, so a
+    second parse can only agree at twice the cost, and the manifests are the
+    largest thing the report reads.
+    """
+    return [(stage, read_jsonl(path)) for stage, path in _stage_manifests(out_dir)]
+
+
 def read_eval_summary(out_dir: Path) -> dict[str, Any] | None:
     """The persisted ``eval/eval_summary.json``; ``None`` when eval never ran.
 
@@ -317,20 +331,25 @@ def run_buckets(out_dir: Path) -> list[RunBucket]:
     and evaluation aggregates land in the bucket their ``eval_summary.json``
     entry names.
     """
+    return _run_buckets(_stage_manifest_entries(out_dir), read_eval_summary(out_dir))
+
+
+def _run_buckets(
+    manifests: Sequence[tuple[str, list[dict[str, Any]]]], summary: dict[str, Any] | None
+) -> list[RunBucket]:
+    """``run_buckets`` over inputs the caller already read (see ``build_report``)."""
     accumulators: dict[tuple[str, str], _BucketAccumulator] = {}
 
     def accumulator(environment: str, length: str) -> _BucketAccumulator:
         return accumulators.setdefault((environment, length), _BucketAccumulator())
 
-    for path in optimization_manifests(out_dir):
-        entries = read_jsonl(path)
+    for _stage, entries in manifests:
         if not entries:
             continue
         accumulator(SPLIT_ENVIRONMENT, SPLIT_LENGTH).add(
             SOURCE_OPTIMIZATION, len(entries), aggregate_manifest_usage(entries)
         )
 
-    summary = read_eval_summary(out_dir)
     if summary is not None:
         for condition in summary["conditions"].values():
             for aggregate in condition["test_sets"].values():
@@ -365,10 +384,16 @@ def run_buckets(out_dir: Path) -> list[RunBucket]:
 
 def stage_run_counts(out_dir: Path) -> dict[str, int]:
     """Executed runs per stage: manifest lines for the run-executing stages."""
+    return _stage_run_counts(_stage_manifest_entries(out_dir), read_eval_summary(out_dir))
+
+
+def _stage_run_counts(
+    manifests: Sequence[tuple[str, list[dict[str, Any]]]], summary: dict[str, Any] | None
+) -> dict[str, int]:
+    """``stage_run_counts`` over inputs the caller already read."""
     counts: Counter[str] = Counter()
-    for stage, path in _stage_manifests(out_dir):
-        counts[stage] += len(read_jsonl(path))
-    summary = read_eval_summary(out_dir)
+    for stage, entries in manifests:
+        counts[stage] += len(entries)
     if summary is not None:
         counts[STAGE_EVAL] += sum(
             int(aggregate["n_runs"])
@@ -380,6 +405,17 @@ def stage_run_counts(out_dir: Path) -> dict[str, int]:
 
 def stage_measurements(out_dir: Path) -> list[StageMeasurement]:
     """The measured per-stage table, exactly-once over ``stage_usage.jsonl``."""
+    return _stage_measurements(
+        out_dir, _stage_manifest_entries(out_dir), read_eval_summary(out_dir)
+    )
+
+
+def _stage_measurements(
+    out_dir: Path,
+    manifests: Sequence[tuple[str, list[dict[str, Any]]]],
+    summary: dict[str, Any] | None,
+) -> list[StageMeasurement]:
+    """``stage_measurements`` over run counts the caller's inputs already hold."""
     usage_path = out_dir / STAGE_USAGE_FILE
     totals = read_stage_usage(usage_path)
     # Tolerant reader: a torn final line must not kill a report over work
@@ -388,7 +424,7 @@ def stage_measurements(out_dir: Path) -> list[StageMeasurement]:
     records = read_usage_records(usage_path).records
     stage_of = {str(record["stage_work_id"]): str(record["stage"]) for record in records}
     resumed = Counter(str(record["stage_work_id"]) for record in records if bool(record["resumed"]))
-    runs = stage_run_counts(out_dir)
+    runs = _stage_run_counts(manifests, summary)
 
     per_stage: dict[str, UsageTotals] = {}
     resumed_attempts: Counter[str] = Counter()
@@ -425,10 +461,20 @@ def disk_footprint(out_dir: Path, measured_runs: int, projected_runs: float) -> 
     is excluded -- it is this function's own output, and counting it would
     make the footprint (and therefore the report) depend on whether a previous
     report had already been written.
+
+    ``analysis/`` is excluded for the same reason, and it matters more: the
+    post-round hook writes one snapshot per executed round, so counting them
+    would make bytes-per-run climb with the number of rounds analyzed rather
+    than with the experiment's own data. The projection this feeds is the
+    disk-constraint argument, so it must measure the experiment, not how often
+    the analyses ran over it.
     """
     report_path = out_dir / REPORT_FILENAME
+    analysis_dir = out_dir / ANALYSIS_DIR
     measured_bytes = sum(
-        path.stat().st_size for path in out_dir.rglob("*") if path.is_file() and path != report_path
+        path.stat().st_size
+        for path in out_dir.rglob("*")
+        if path.is_file() and path != report_path and not path.is_relative_to(analysis_dir)
     )
     bytes_per_run = measured_bytes / measured_runs
     return {
@@ -724,13 +770,19 @@ class CostReport:
 
 def collect_warnings(
     config: ExperimentConfig,
-    out_dir: Path,
     buckets: Sequence[RunBucket],
     counts: RunCounts,
     point: Projection,
     optimization_basis: RunBucket,
+    summary: dict[str, Any] | None,
 ) -> list[str]:
-    """Every caveat the extrapolation inputs carry, named rather than hidden."""
+    """Every caveat the extrapolation inputs carry, named rather than hidden.
+
+    ``summary`` is the parsed ``eval_summary.json`` (``None`` when evaluation
+    never ran), handed in by ``build_report`` rather than re-read here: the
+    caller already holds it, and the only question asked of it below is how
+    many conditions it covers.
+    """
     warnings: list[str] = []
     if not point.long_measured:
         warnings.append(
@@ -759,7 +811,6 @@ def collect_warnings(
             f"optimization leg falls back to the pooled {SHORT} basis "
             f"({optimization_basis.environment})"
         )
-    summary = read_eval_summary(out_dir)
     measured_conditions = len(summary["conditions"]) if summary is not None else 0
     if measured_conditions != counts.eval_conditions:
         warnings.append(
@@ -798,8 +849,16 @@ def build_report(
             missing a context's throughput.
     """
     out = Path(out_dir)
-    stages = stage_measurements(out)
-    buckets = run_buckets(out)
+    # The manifests and the evaluation summary are read ONCE here and threaded
+    # into everything below. The measured table, the run buckets, and the
+    # warnings each used to reach for them independently -- three walks of
+    # ``opt/``, two full re-parses of every run manifest, and three reads of
+    # ``eval_summary.json`` -- to produce, necessarily, the same answers from
+    # the same bytes.
+    manifests = _stage_manifest_entries(out)
+    summary = read_eval_summary(out)
+    stages = _stage_measurements(out, manifests, summary)
+    buckets = _run_buckets(manifests, summary)
     if not buckets:
         raise ReportInputError(
             f"{out} records no runs; a cost report extrapolates from measured per-run "
@@ -851,7 +910,7 @@ def build_report(
         pessimistic=pessimistic,
         scenarios=scenarios,
         recommendation=recommend(scenarios, gates, accept_quantization=accept_quantization),
-        warnings=collect_warnings(config, out, buckets, counts, point, optimization_basis),
+        warnings=collect_warnings(config, buckets, counts, point, optimization_basis, summary),
         disk=disk_footprint(out, sum(bucket.n_runs for bucket in buckets), counts.total_runs),
     )
 

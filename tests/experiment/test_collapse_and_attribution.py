@@ -33,7 +33,6 @@ from the persisted manifest and ``instances.jsonl`` through discovery, not from
 the stub.
 """
 
-import csv
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -66,7 +65,6 @@ from shrlm.experiment.pattern_frequency_diff import (
     BUNDLES_FILENAME,
     run_pattern_frequency_diff,
 )
-from shrlm.experiment.rounds import discover_rounds
 from shrlm.experiment.surface_activity import (
     SURFACE_ACTIVITY_FILENAME,
     surface_activity_over_rounds,
@@ -77,11 +75,13 @@ from shrlm.optimization.costs import OUTCOME_COMPLETED, OUTCOME_OVER_BUDGET
 from tests.experiment.test_rounds import (
     complete_round,
     eval_set_payload,
+    read_csv,
+    record_for,
+    write_bundle,
     write_config,
     write_eval_set,
     write_eval_summary,
     write_evidence,
-    write_json,
     write_ledger,
     write_mining_round,
     write_round_marker,
@@ -129,11 +129,6 @@ def no_traces(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("shrlm.experiment.collapse_and_attribution.load_round", load_nothing)
 
 
-def read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
 def written_optimization(snapshot: Snapshot, out_dir: Path) -> list[dict[str, str]]:
     write_collapse_and_attribution_optimization(
         snapshot, out_dir, collapse_and_attribution_optimization(out_dir)
@@ -148,39 +143,9 @@ def written_evaluation(snapshot: Snapshot, out_dir: Path) -> list[dict[str, str]
     return read_csv(snapshot.path / EVALUATION_FILENAME)
 
 
-def write_bundle(
-    path: Path, round_index: int, *, support: int, n_runs: int = 10, environment: str = "graphwalks"
-) -> Path:
-    """A ``bundle.json`` carrying one mined pattern, in mining's own shape."""
-    write_json(
-        path,
-        {
-            "config": {"round_index": round_index, "verifier_config": {"environment": environment}},
-            "totals": {"n_runs": n_runs},
-            "patterns": [
-                {
-                    "signature": {
-                        "verifier_cause": "wrong_answer",
-                        "failing_level": "child",
-                        "causal_status": "causal",
-                        "agent_mechanism": "routed_whole_input",
-                    },
-                    "instance_support": support,
-                    "grounded_fraction": 1.0,
-                    "below_support_floor": False,
-                }
-            ],
-        },
-    )
-    return path
-
-
 def bundle_path_for(out_dir: Path, round_index: int) -> Path:
     """Where the loop writes a round's bundle, asked of discovery rather than built."""
-    (record,) = [
-        record for record in discover_rounds(out_dir).rounds if record.round_index == round_index
-    ]
-    return record.mining_round_path / BUNDLE_FILENAME
+    return record_for(out_dir, round_index).mining_round_path / BUNDLE_FILENAME
 
 
 # ---------------------------------------------------------------------------
