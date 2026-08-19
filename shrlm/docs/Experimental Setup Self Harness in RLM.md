@@ -160,5 +160,186 @@ Prior to the main experiment, a small-scale pilot is run on both environments (s
 | 12 | Leave-one-edit-out ablation | Remove each promoted edit individually and re-evaluate, to attribute gains to specific edits rather than the harness as a whole |
 | 13 | Sub-verification ablation (contingent) | Re-run optimization with child-level verifier signal withheld, to isolate its contribution to mined-weakness quality |
 | 14 | Statistical \+ trace analysis | Compute CIs, paired significance tests, failure-pattern frequency before/after, whole-input collapse rate, root/child failure attribution |
-| 15 | Alignment drift probe (optional) | Score refusal/harmful-answer rates across the promoted-harness lineage to check for unintended compliance drift |
+| 15  | Alignment drift probe (optional) | Score refusal/harmful-answer rates across the promoted-harness lineage to check for unintended compliance drift  |
 
+# Graphs: **Graph 1 — Harness complexity / levers touched**
+
+## **Simple version:** Your harness has 9 editable "levers" (surfaces S1–S9). Most start empty or generic. As the optimization loop runs round after round, it tries changing different levers, and some of those changes stick. This graph shows, over time, how many levers have been touched and how often.
+
+## **In detail, two panels:**
+
+## *Panel A — the running totals (line chart)*
+
+* ## X-axis: round number (1, 2, 3...)
+
+* ## Two lines, both step functions (they jump up, then stay flat until the next jump):
+
+  * ## **Dashed line \= "attempted"** — counts a lever the moment *any* candidate edit targets it, whether that edit succeeds or fails. This tells you where the model is *trying* things.
+
+  * ## **Solid line \= "promoted"** — counts a lever only once an edit to it actually survives validation and becomes part of the harness. This tells you where the harness *actually ended up different*.
+
+* ## Since every promoted edit was necessarily attempted first, the promoted line is always at or below the attempted line — same color, different line style, to show that relationship rather than looking like two unrelated things.
+
+* ## A horizontal line at y=9 marks the ceiling — all levers touched.
+
+## *Panel B — the heatmaps (where, not just how many)*
+
+* ## Two grids: surfaces S1–S9 down one axis, rounds across the other.
+
+* ## One grid colored by attempt count, one by promotion count, sharing a single color scale so you can compare them directly.
+
+* ## Cells with zero activity are left blank (not a faint color), so you can immediately see which levers were never touched at all — this matters because your harness starts with 7 of 9 levers empty/generic by design, so "still blank at round 10" is meaningful information.
+
+## **What it tells you, together:** whether the loop explores broadly (many surfaces get attempted) or narrowly (it keeps hammering the same one or two), and separately, whether that exploration converts into real change (attempted stays much higher than promoted \= lots of wasted effort) or converges efficiently (the two lines stay close together).
+
+![][image1]
+
+## **Graph 2 — Harness quality while looping**
+
+## **Simple version:** Does the harness actually get better as the loop runs, or does it plateau, or bounce around? This graph plots accuracy over rounds, so you can see the improvement (or lack of it) directly.
+
+## **In detail:**
+
+* ## X-axis: round number.
+
+* ## Two step-function lines:
+
+  * ## **Held-in pass rate** (blue, circles) — accuracy on the split the loop is optimizing against.
+
+  * ## **Held-out pass rate** (orange, squares) — accuracy on a split never shown to the proposer, used as a guard against overfitting to the held-in set.
+
+* ## Both lines are flat except at rounds where a new harness got promoted — at that point they jump to the new incumbent's measured accuracy. A **black ring marker** sits at every round where a promotion actually happened, so the jumps are visually distinct from noise.
+
+* ## Rounds where a candidate was rejected *before* it could even be scored (e.g. it blew the cost/resource budget) get a small **triangle tick** below the axis, keyed to a footnote list explaining why — so you can tell "the loop tried and failed on merit" apart from "the loop's candidate never got a fair evaluation."
+
+* ## Optional flag (`--show-candidates`): overlays every scored candidate that round as a faint background dot, so you can see how close the *losing* candidates came, not just what won.
+
+## **What it tells you:** the shape of the improvement curve — early rounds vs. late rounds, whether held-out tracks held-in closely (good sign, generalizes) or diverges (bad sign, overfitting to held-in), and whether progress is front-loaded, steady, or has long dry stretches.
+
+## **How the two graphs relate:** Graph 1 tells you *what the loop is doing to the harness* (mechanically — which knobs, how often); Graph 2 tells you *whether it's working* (in outcome — did accuracy go up). Reading them side by side, you can spot things like "a burst of promotions on surface S2 around round 4 lines up with the accuracy jump right there" — connecting a specific structural change to its measured effect.
+
+![][image2]
+
+## 
+
+# **Evaluation Plan**
+
+This specifies the two evaluation components for SH-RLM: (1) quality of final results relative to baselines, and (2) quality relative to cost.
+
+---
+
+## **1\. Eval of Quality vs. Baseline**
+
+### **1.1 Purpose**
+
+Determine whether the Self-Harnessed RLM (SH-RLM) produces higher-quality outputs than (a) an unmodified reference harness and (b) a hand-engineered harness, and whether any gains survive a length shift and a change of task environment.
+
+### **1.2 Conditions compared**
+
+| Condition | Description | Role |
+| ----- | ----- | ----- |
+| **B1 — Initial RLM (H₀)** | Unmodified reference harness; every editable surface at its sparse default | Zero-intervention baseline; starting point of optimization |
+| **H1 — λ-RLM** | Hand-designed harness (typed functional runtime, bounded leaf sub-problems), unmodified | Expert-engineered baseline; tests SH-RLM against human harness engineering |
+| **SH-RLM** | Frozen harness produced by the propose-validate-promote optimization loop | System under test |
+| **F1 — Fine-tuned RLM**(secondary, reported separately) | Same backbone, RL-trained inside the initial harness on the source-short split | Reference point only — not weight-matched to the other three, so excluded from primary comparisons |
+
+### **1.3 Test sets**
+
+Each condition (excluding F1's separate budget) is evaluated on four untouched categories, held out from optimization:
+
+1. **Source-short** — measures improvement at the optimization length (in-distribution check).  
+2. **Source-long** — measures length generalization (8–32× longer inputs than seen during optimization).  
+3. **Target-short** — measures cross-environment transfer with no length shift.  
+4. **Target-long** — measures cross-environment transfer *and* a length shift simultaneously (hardest test).
+
+Source and target are two different task environments (e.g., GraphWalks and OOLONG-Pairs) with matched short/long splits and deterministic verifiers. Only the source environment is touched during optimization; the target environment is never seen until final evaluation.
+
+### **1.4 Primary metric**
+
+* **Verifier accuracy**, reported separately for each of the four test sets, for each of the three primary conditions (B1, H1, SH-RLM).
+
+### **1.5 Primary comparisons**
+
+* **SH-RLM vs. B1** on source-long, target-short, and target-long — tests whether self-discovered harness improvements generalize beyond the conditions they were mined from.  
+* **SH-RLM vs. H1** on the same three sets — tests whether a self-discovered harness is competitive with hand-designed harness engineering.
+
+Interpretation of each test set:
+
+* Source-long improvement → learned edits survive a length shift within the same environment.  
+* Target-short improvement → edits capture a transferable compositional strategy, not a source-specific rule.  
+* Target-long improvement → transfer holds even when environment and length change together.
+
+### **1.6 Statistical treatment**
+
+* Results averaged over repeated seeded runs.  
+* **Bootstrap confidence intervals** computed over task instances.  
+* **Paired per-instance significance test** between B1 and SH-RLM (exact test and repetition-to-instance aggregation rule to be preregistered).
+
+### **1.7 Supporting / diagnostic evals**
+
+These don't stand alone as "quality" numbers but explain *why* quality differs between conditions:
+
+* **Failure pattern frequency, pre- vs. post-optimization** — are the specific failure mechanisms SH-RLM targeted actually reduced?  
+* **Whole-input sub-call collapse rate** — how often a run delegates almost the entire input to a single child or skips meaningful decomposition (a specific, known failure mode).  
+* **Root vs. child failure attribution** (via sub-verifiers) — for each condition/split, what share of failures originate at the root (bad aggregation of correct children) vs. at a child (a bad local sub-answer faithfully aggregated). Shows whether optimization repaired errors or just relocated them in the call tree.
+
+### **1.8 Ablations that inform the baseline comparison**
+
+* **Sub-verification ablation**: repeat optimization with the sub-verifier signal withheld from weakness mining (proposer sees only root outcomes and traces); compare resulting frozen harness against SH-RLM on all four test sets. Tests whether checkable child-level evidence is what makes mined failure attributions actionable.  
+* **Leave-one-edit-out**: remove each promoted edit individually from the final harness and re-evaluate affected test conditions. Identifies which edits are responsible for the measured gains vs. sampling noise.
+
+---
+
+## **2\. Eval of Quality Relative to Cost**
+
+### **2.1 Purpose**
+
+Establish whether SH-RLM's quality gains are worth the compute/token cost they require — both the one-time cost of running the optimization loop and the per-inference cost of the resulting harness — and how that cost compares to the alternative of fine-tuning weights (F1).
+
+### **2.2 Secondary efficiency metrics (per condition, per test set)**
+
+| Metric | What it captures |
+| ----- | ----- |
+| Total input \+ output tokens | Raw token cost of a run |
+| Recursive-call count | How many sub-calls a run issues |
+| Maximum recursion depth | How deep the recursion tree goes |
+| **Accuracy per million tokens** | Direct quality-for-cost ratio; the core cost-efficiency metric |
+
+### **2.3 Cost accounting (from feasibility budget)**
+
+* **Optimization cost**: driven by weakness-mining runs plus validation runs across held-in/held-out splits and candidate harnesses per round, capped at a preregistered number of rounds (early-stopped after several rounds without a promotion). Estimated at roughly 2.4×10⁹ tokens for the full optimization run.  
+* **Evaluation cost**: dominated by long-instance runs (8–32× larger inputs), estimated at roughly 3.2×10⁹ tokens for final evaluation across all four test sets, vs. \~9×10⁷ tokens for the short-test runs.  
+* **Total project cost**: approximately 5–6×10⁹ tokens end-to-end (optimization \+ source evaluation \+ target evaluation), roughly 650 H100-hours if served locally, or approximately $1,200–$2,000 at current hosted open-weights inference rates.  
+* **Sub-verification ablation** adds one further full optimization run (\~2.4×10⁹ tokens), budgeted as contingent.  
+* A **pilot run** (small sample, both environments) precedes full optimization specifically to measure tokens per run, recursive-call counts, and effective passes over the stored context — these pilot measurements fix the final test sizes and token budget before optimization begins, and can trigger a preregistered reduction in long-test sample size if costs run high.
+
+### **2.4 Cost comparison against the fine-tuning alternative (F1)**
+
+F1 (RL fine-tuning the same backbone inside the initial harness) is budgeted **separately** from the harness-optimization cost above, since weight-training and harness-optimization costs are not directly comparable (F1 requires 8×H100 nodes and dedicated training compute). F1 is therefore used as a **reference point**, not a matched cost-quality comparison:
+
+* If a published F1 checkpoint is available, it's evaluated directly rather than retrained, and this is disclosed.  
+* If neither checkpoint nor training compute is available, F1 is dropped, and its absence is reported alongside published figures for the same environment/backbone.
+
+This framing lets the write-up show, qualitatively, how much *quality* a much more expensive fine-tuning approach buys relative to a comparatively cheap harness-optimization approach — even though it's not a strict apples-to-apples cost comparison.
+
+### **2.5 How to present this in the paper**
+
+* Report accuracy-per-million-tokens alongside raw verifier accuracy for every condition/test-set pair, so the reader sees quality and cost side by side rather than in separate tables.  
+* Consider a cost-quality plot (tokens or $ on x-axis, verifier accuracy on y-axis) with B1, H1, SH-RLM (and F1, marked as a non-matched reference) as separate points/series — this is the natural way to visualize a Pareto-style tradeoff.  
+* Call out explicitly that optimization cost is a **one-time, amortized** cost (paid once to produce the frozen harness) whereas the efficiency metrics per test run reflect the **marginal, per-inference** cost of using that harness going forward — these are different cost regimes and shouldn't be conflated in the writeup.
+
+---
+
+## **Quick Reference: Metric → Section Mapping**
+
+| Metric | Belongs to |
+| ----- | ----- |
+| Verifier accuracy (4 test sets) | Quality vs. Baseline |
+| Bootstrap CIs, paired tests | Quality vs. Baseline |
+| Failure pattern frequency pre/post | Quality vs. Baseline (diagnostic) |
+| Sub-call collapse rate | Quality vs. Baseline (diagnostic) |
+| Root vs. child failure share | Quality vs. Baseline (diagnostic) |
+| Total tokens, call count, recursion depth | Quality vs. Cost |
+| Accuracy per million tokens | Quality vs. Cost |
+| Optimization cost (tokens, $, H100-hrs) | Quality vs. Cost |
+| F1 fine-tuning cost comparison | Quality vs. Cost (reference only) |

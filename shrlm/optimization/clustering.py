@@ -25,6 +25,13 @@ DEFAULT_MIN_SUPPORT = 2
 
 DEFAULT_REPRESENTATIVES = 3
 
+# The cutoff a run's ``collapse_ratio`` must clear to count as "collapsed"
+# (mostly delegated to sub-calls rather than reasoned about directly). This is
+# the one place the threshold is defined; other modules reporting the same
+# signal (e.g. ``shrlm.experiment.collapse_and_attribution``) import it rather
+# than hardcoding their own copy of the cutoff.
+COLLAPSE_RATIO_THRESHOLD = 0.8
+
 # Weights of the actionability terms. Recorded in the bundle config so a change
 # is visible in the artifact rather than only in the code.
 ACTIONABILITY_WEIGHTS: dict[str, float] = {
@@ -106,7 +113,7 @@ def shared_symptoms(records: list[FailureRecord]) -> list[str]:
     n = len(records)
     stats = [record.stats for record in records]
 
-    collapsed = sum(1 for s in stats if s.collapse_ratio > 0.8)
+    collapsed = sum(1 for s in stats if s.collapse_ratio > COLLAPSE_RATIO_THRESHOLD)
     fallback = sum(1 for s in stats if s.terminated_by_fallback)
     degraded = sum(1 for s in stats if s.suspected_lost_subcalls > 0)
     no_children = sum(1 for s in stats if s.n_nodes <= 1)

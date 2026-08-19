@@ -40,17 +40,29 @@ from typing import Any
 
 import pytest
 
+from shrlm.experiment.analysis_io import ANALYSIS_DIR
 from shrlm.experiment.config import ExperimentConfig, GpuScenario, load_config
+from shrlm.experiment.orchestrator import (
+    MINING_DIR,
+    ROUND_MARKER_FILENAME,
+    RoundOutcome,
+    experiment_round_dir,
+)
 from shrlm.experiment.report import (
     MIN_LONG_RUN_SAMPLES,
     REPORT_FILENAME,
     STATUS_PROVISIONAL,
     STATUS_RECOMMENDED,
     build_report,
+    optimization_manifests,
     render_markdown,
     run_counts,
+    stage_run_counts,
     write_report,
 )
+from shrlm.experiment.rounds import discover_rounds
+from shrlm.optimization.bundle import round_dir
+from shrlm.optimization.driver import MANIFEST_FILE
 
 FIXTURE = Path(__file__).parent / "fixtures" / "report_experiment"
 
@@ -118,6 +130,40 @@ def drop_sets(out_dir: Path, length: str) -> None:
     write_summary(out_dir, summary)
 
 
+def write_no_op_round(out_dir: Path, round_index: int, *, n_runs: int = 1) -> Path:
+    """Add a completed round that promoted nothing: marker and mined runs, no ledger.
+
+    Exactly the shape the review flagged as invisible: ``_execute_round``
+    persists ``round.json`` for every round it finishes, including one whose
+    proposal stage produced no candidate -- so validation never ran and no
+    ``promotions.jsonl`` exists. Its manifest lines are copies of the fixture's
+    own, so the round's runs land in the same short bucket with the same means.
+    """
+    template = json.loads(
+        (round_dir(experiment_round_dir(out_dir, 1) / MINING_DIR, 1) / MANIFEST_FILE)
+        .read_text()
+        .splitlines()[0]
+    )
+    round_path = experiment_round_dir(out_dir, round_index)
+    mining_round_path = round_dir(round_path / MINING_DIR, round_index)
+    mining_round_path.mkdir(parents=True)
+    (mining_round_path / MANIFEST_FILE).write_text(
+        "".join(
+            json.dumps({**template, "instance_id": f"noop-{index}", "run_id": f"noop-{index}__a01"})
+            + "\n"
+            for index in range(n_runs)
+        )
+    )
+    outcome = RoundOutcome(
+        round_index=round_index,
+        promoted=False,
+        promoted_harness_hash=None,
+        has_ledger=False,
+    )
+    (round_path / ROUND_MARKER_FILENAME).write_text(json.dumps(outcome.to_payload()) + "\n")
+    return round_path
+
+
 def scenario_by_name(report: Any, name: str) -> Any:
     matches = [scenario for scenario in report.scenarios if scenario.name == name]
     assert len(matches) == 1, f"{name} not found among {[s.name for s in report.scenarios]}"
@@ -126,6 +172,83 @@ def scenario_by_name(report: Any, name: str) -> Any:
 
 def gate_names(report: Any) -> list[str]:
     return [gate["gate"] for gate in report.recommendation.failing_gates]
+
+
+# ---------------------------------------------------------------------------
+# Round discovery: the report reads the shared inventory (R1, KTD1)
+# ---------------------------------------------------------------------------
+
+
+class TestRoundDiscovery:
+    """What the report counts is what ``rounds.discover_rounds`` reports.
+
+    The equality assertions below are the migration's contract: they were
+    written against the report's own ``opt/`` walk and must read identically
+    once the walk is gone, because the swap changes how rounds are found and
+    nothing about what the report says.
+    """
+
+    def test_optimization_manifests_are_the_loop_written_round_manifests(self, experiment):
+        assert [
+            path.relative_to(experiment).as_posix() for path in optimization_manifests(experiment)
+        ] == [
+            "opt/round_01/mining/round_01/runs.jsonl",
+            "opt/round_01/validation/round_01/incumbent/held_in/round_00/runs.jsonl",
+        ]
+
+    def test_manifests_come_from_the_rounds_discovery_reports(self, experiment):
+        rounds = discover_rounds(experiment).rounds
+        manifests = optimization_manifests(experiment)
+
+        assert [record.round_index for record in rounds] == [1]
+        assert set(manifests) == {
+            path
+            for record in rounds
+            for root in (record.mining_round_path, record.validation_round_path)
+            for path in root.rglob(MANIFEST_FILE)
+        }
+
+    def test_stage_run_counts_separate_mining_from_validation(self, experiment):
+        assert stage_run_counts(experiment) == {"mining": 2, "validation": 2, "eval": 20}
+
+    def test_completed_no_op_round_is_counted(self, config, experiment):
+        """A round that promoted nothing is a real outcome, not missing data.
+
+        Discovery reports it (marker present, ``has_ledger`` false), so its
+        mined runs reach the report's stage table rather than depending on
+        whether a private walk happened to descend into the round.
+        """
+        write_no_op_round(experiment, 2, n_runs=2)
+
+        inventory = discover_rounds(experiment)
+        no_op = inventory.rounds[-1]
+        assert [record.round_index for record in inventory.rounds] == [1, 2]
+        assert (no_op.round_complete, no_op.has_ledger) == (True, False)
+
+        assert no_op.mining_round_path / MANIFEST_FILE in optimization_manifests(experiment)
+        assert stage_run_counts(experiment)["mining"] == 4
+        report = build_report(config, experiment)
+        assert {stage.stage: stage.runs for stage in report.stages}["mining"] == 4
+
+    def test_an_entry_that_is_not_a_round_contributes_no_runs(self, config, experiment):
+        """Only what the loop's own naming would have produced is a round.
+
+        The report's former walk listed every entry under ``opt/`` and
+        descended into each, so anything parked there carrying a driver tree
+        -- a partial copy, a scratch directory -- was counted as measured
+        optimization runs. Discovery names rounds the way the loop does, so it
+        cannot.
+        """
+        round_path = write_no_op_round(experiment, 2, n_runs=2)
+        stray = experiment / "opt" / "round_02.bak"
+        shutil.copytree(round_path, stray)
+        assert (round_dir(stray / MINING_DIR, 2) / MANIFEST_FILE).exists()
+
+        assert not any(path.is_relative_to(stray) for path in optimization_manifests(experiment))
+        assert stage_run_counts(experiment)["mining"] == 4  # 2 fixture + 2 no-op, not 6
+        assert {stage.stage: stage.runs for stage in build_report(config, experiment).stages}[
+            "mining"
+        ] == 4
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +313,22 @@ class TestMeasured:
         assert disk["projected_bytes"] == pytest.approx(
             disk["bytes_per_run"] * report.run_counts.total_runs
         )
+
+    def test_analysis_snapshots_do_not_inflate_the_footprint(self, config, experiment):
+        """The post-round hook writes one snapshot per executed round, so counting
+        them would make bytes-per-run climb with how often the analyses ran rather
+        than with the experiment's own data -- and this figure feeds the projection
+        the disk-constraint argument rests on."""
+        before = build_report(config, experiment).disk
+
+        snapshot_dir = experiment / ANALYSIS_DIR / "20260819T000000Z"
+        snapshot_dir.mkdir(parents=True)
+        (snapshot_dir / "surface_activity.csv").write_text("x" * 100_000)
+
+        after = build_report(config, experiment).disk
+
+        assert after["measured_bytes"] == before["measured_bytes"]
+        assert after["projected_bytes"] == pytest.approx(before["projected_bytes"])
 
 
 # ---------------------------------------------------------------------------

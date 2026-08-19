@@ -24,13 +24,34 @@ from typing import Any
 import pytest
 
 import rlm.core.rlm as rlm_module
+import shrlm.experiment.analysis_io as analysis_io_module
+import shrlm.experiment.incumbent_quality as incumbent_quality_module
 import shrlm.experiment.orchestrator as orchestrator_module
+from shrlm.experiment.analysis_io import (
+    ANALYSIS_DIR,
+    PROVENANCE_FILENAME,
+    is_published,
+    latest_snapshot,
+)
+from shrlm.experiment.collapse_and_attribution import (
+    EVALUATION_FILENAME,
+    OPTIMIZATION_FILENAME,
+    TOOL_NAME_EVALUATION,
+    TOOL_NAME_OPTIMIZATION,
+)
 from shrlm.experiment.config import ExperimentConfig, load_config
+from shrlm.experiment.evaluation import EVAL_DIR
+from shrlm.experiment.incumbent_quality import (
+    INCUMBENT_QUALITY_CANDIDATES_FILENAME,
+    INCUMBENT_QUALITY_FILENAME,
+)
+from shrlm.experiment.incumbent_quality import TOOL_NAME as TOOL_NAME_INCUMBENT_QUALITY
 from shrlm.experiment.orchestrator import (
     CONFIG_FILENAME,
     EVIDENCE_MARKER_FILENAME,
     FROZEN_DIR,
     FROZEN_HARNESS_FILENAME,
+    POST_ROUND_BATCH_TOOL,
     PROPOSALS_MARKER_FILENAME,
     ROUND_MARKER_FILENAME,
     STOP_MAX_ROUNDS,
@@ -42,6 +63,8 @@ from shrlm.experiment.orchestrator import (
     experiment_round_dir,
     run_experiment,
 )
+from shrlm.experiment.pattern_frequency_diff import BUNDLES_FILENAME
+from shrlm.experiment.pattern_frequency_diff import TOOL_NAME as TOOL_NAME_DIFF
 from shrlm.experiment.splits import (
     MANIFEST_FILE,
     SPLITS_DIR,
@@ -49,6 +72,8 @@ from shrlm.experiment.splits import (
     sha256_text,
     split_file_name,
 )
+from shrlm.experiment.surface_activity import SURFACE_ACTIVITY_FILENAME, UNATTRIBUTED_FILENAME
+from shrlm.experiment.surface_activity import TOOL_NAME as TOOL_NAME_SURFACE_ACTIVITY
 from shrlm.experiment.usage import STAGE_USAGE_FILE, read_jsonl, read_stage_usage
 from shrlm.harness_identity import harness_hash, write_harness_json
 from shrlm.optimization.bundle import (
@@ -58,7 +83,7 @@ from shrlm.optimization.bundle import (
     write_bundle,
 )
 from shrlm.optimization.candidates import materialize_harness
-from shrlm.optimization.driver import load_manifest
+from shrlm.optimization.driver import TRACES_DIR, load_manifest
 from shrlm.optimization.proposal import _import_candidate_function
 from shrlm.optimization.validation import SPLIT_HELDIN, load_promotion_ledger
 from shrlm.rlm_harness import H0
@@ -829,6 +854,19 @@ def complete_one_promoted_round(config, out: Path, monkeypatch) -> Any:
     return run(config, out, attributor, proposer)
 
 
+def complete_two_promoted_rounds(config, out: Path, monkeypatch) -> Any:
+    """Two finished, promoting rounds -- one refresh per executed round."""
+    patch_runner(
+        monkeypatch,
+        MINING_FAIL + SUBJECT_FAIL + SUBJECT_PASS + MINING_FAIL_V2 + SUBJECT_FAIL + SUBJECT_PASS,
+    )
+    attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
+    proposer = MockLM(
+        responses=[proposer_batch((0, TEXT_ROUND_1)), proposer_batch((0, TEXT_ROUND_2))]
+    )
+    return run(config, out, attributor, proposer)
+
+
 def rewrite_json(path: Path, **changes: Any) -> None:
     payload = json.loads(path.read_text())
     payload.update(changes)
@@ -979,3 +1017,342 @@ class TestZeroCandidateRound:
         assert not validation_round_path(out, 1).exists()
         # ...and contributes no prior history to the next round's proposal.
         assert histories == [0, 0]
+
+
+# ---------------------------------------------------------------------------
+# The post-round analysis hook (U5/KTD4): refreshes snapshots, never the
+# experiment
+# ---------------------------------------------------------------------------
+
+# Every value a persisted artifact takes from the clock (or from a trace hash
+# that is itself a function of the clock and of a temp directory name) rather
+# than from the experiment's decisions. Two identical experiments agree on
+# every other byte -- verified: with these five keys scrubbed and the per-run
+# traces compared by presence, two runs of the same config over the same script
+# produce identical trees -- so scrubbing exactly these is what makes
+# "unchanged by the hook" a checkable claim rather than a hope.
+CLOCK_KEYS = frozenset(
+    {"created_at", "execution_time", "timestamp", "trace_sha256", "wall_seconds"}
+)
+
+
+def scrub_clock(payload: Any) -> Any:
+    """A JSON payload with every clock-derived value removed, recursively."""
+    if isinstance(payload, dict):
+        return {key: scrub_clock(value) for key, value in payload.items() if key not in CLOCK_KEYS}
+    if isinstance(payload, list):
+        return [scrub_clock(item) for item in payload]
+    return payload
+
+
+def persisted_tree(out: Path) -> dict[str, Any]:
+    """Everything the loop persisted, keyed by relative path.
+
+    The analysis snapshots are excluded because they are precisely what the
+    hook is allowed to add; everything else -- ledgers, manifests, markers,
+    bundles, proposals, splits, the frozen harness -- is compared. Per-run
+    trace files carry the REPL's temp directory names and per-iteration
+    timings, so they are compared by presence rather than by content; the
+    manifest line and the bundle record that summarize each of them are
+    compared in full (minus the clock keys), so a trace that changed identity
+    would still show up here.
+    """
+    tree: dict[str, Any] = {}
+    for path in sorted(out.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(out).as_posix()
+        if rel.startswith(f"{ANALYSIS_DIR}/") or "__pycache__" in rel:
+            continue
+        if f"/{TRACES_DIR}/" in rel:
+            tree[rel] = "<trace>"
+        elif rel.endswith(".jsonl"):
+            tree[rel] = [
+                scrub_clock(json.loads(line)) for line in path.read_text().splitlines() if line
+            ]
+        elif rel.endswith(".json"):
+            tree[rel] = scrub_clock(json.loads(path.read_text()))
+        else:
+            tree[rel] = path.read_bytes()
+    return tree
+
+
+def snapshots(out: Path) -> list[Path]:
+    """Every allocated analysis snapshot, oldest first."""
+    parent = out / ANALYSIS_DIR
+    return sorted(path for path in parent.iterdir() if path.is_dir()) if parent.is_dir() else []
+
+
+def disable_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pre-hook loop: what the experiment persisted before U5 existed."""
+    monkeypatch.setattr(orchestrator_module, "_run_post_round_analysis", lambda out_dir: None)
+
+
+class TestPostRoundAnalysisIsolation:
+    """The guarantee that comes before any output the hook produces."""
+
+    def test_analysis_that_cannot_even_start_leaves_the_experiment_untouched(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path)
+
+        baseline = tmp_path / "baseline"
+        disable_hook(monkeypatch)
+        without_hook = complete_one_promoted_round(config, baseline, monkeypatch)
+
+        monkeypatch.undo()
+
+        def explode(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("analysis exploded")
+
+        monkeypatch.setattr(analysis_io_module, "allocate_snapshot", explode)
+        out = tmp_path / "exp"
+        with_hook = complete_one_promoted_round(config, out, monkeypatch)
+
+        assert with_hook.stopped == without_hook.stopped
+        assert with_hook.final_harness_hash == without_hook.final_harness_hash
+        assert [outcome.to_payload() for outcome in with_hook.rounds] == [
+            outcome.to_payload() for outcome in without_hook.rounds
+        ]
+        assert persisted_tree(out) == persisted_tree(baseline)
+        assert snapshots(out) == []
+
+    def test_a_batch_that_fails_before_any_tool_still_explains_its_snapshot(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The directory is claimed before a single aggregation runs, so a
+        failure between the claim and ``publish`` -- the function-local import
+        of the analysis modules, or building the list of analyses -- must still
+        leave provenance behind. An ``analysis/<stamp>/`` holding neither
+        ``provenance.json`` nor ``published.json`` would be an empty snapshot
+        with nothing on disk saying why it is empty."""
+        config = make_config(tmp_path)
+
+        baseline = tmp_path / "baseline"
+        disable_hook(monkeypatch)
+        without_hook = complete_one_promoted_round(config, baseline, monkeypatch)
+
+        monkeypatch.undo()
+
+        def explode(out_dir: Path, snapshot: Any) -> Any:
+            raise ImportError("analysis modules unavailable")
+
+        monkeypatch.setattr(orchestrator_module, "_post_round_analyses", explode)
+        out = tmp_path / "exp"
+        with_hook = complete_one_promoted_round(config, out, monkeypatch)
+
+        # The experiment is untouched: same result, same persisted bytes.
+        assert with_hook.final_harness_hash == without_hook.final_harness_hash
+        assert [outcome.to_payload() for outcome in with_hook.rounds] == [
+            outcome.to_payload() for outcome in without_hook.rounds
+        ]
+        assert persisted_tree(out) == persisted_tree(baseline)
+
+        # The claimed directory says what happened to it...
+        (snapshot,) = snapshots(out)
+        provenance = json.loads((snapshot / PROVENANCE_FILENAME).read_text())
+        outcomes = {tool["name"]: tool for tool in provenance["tools"]}
+        assert outcomes[POST_ROUND_BATCH_TOOL]["ok"] is False
+        assert "analysis modules unavailable" in outcomes[POST_ROUND_BATCH_TOOL]["error"]
+
+        # ...and is never presented as a finished batch.
+        assert not is_published(snapshot)
+        assert latest_snapshot(out) is None
+        assert "analysis modules unavailable" in capsys.readouterr().err
+
+    def test_one_failing_aggregation_costs_only_its_own_output(self, tmp_path, monkeypatch, capsys):
+        config = make_config(tmp_path)
+
+        baseline = tmp_path / "baseline"
+        disable_hook(monkeypatch)
+        without_hook = complete_one_promoted_round(config, baseline, monkeypatch)
+
+        monkeypatch.undo()
+
+        def explode(out_dir: Path, snapshot: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("quality exploded")
+
+        monkeypatch.setattr(incumbent_quality_module, "run_incumbent_quality", explode)
+        out = tmp_path / "exp"
+        with_hook = complete_one_promoted_round(config, out, monkeypatch)
+
+        # The experiment is untouched: same result, same persisted bytes.
+        assert with_hook.final_harness_hash == without_hook.final_harness_hash
+        assert persisted_tree(out) == persisted_tree(baseline)
+
+        # The batch went on: the surviving aggregations wrote their tables...
+        (snapshot,) = snapshots(out)
+        written = {path.name for path in snapshot.iterdir()}
+        assert OPTIMIZATION_FILENAME in written
+        assert SURFACE_ACTIVITY_FILENAME in written
+        assert UNATTRIBUTED_FILENAME in written
+        assert INCUMBENT_QUALITY_FILENAME not in written
+
+        # ...provenance names the one that failed and how...
+        provenance = json.loads((snapshot / PROVENANCE_FILENAME).read_text())
+        outcomes = {tool["name"]: tool for tool in provenance["tools"]}
+        assert outcomes[TOOL_NAME_INCUMBENT_QUALITY]["ok"] is False
+        assert "quality exploded" in outcomes[TOOL_NAME_INCUMBENT_QUALITY]["error"]
+        assert outcomes[TOOL_NAME_OPTIMIZATION]["ok"] is True
+        assert outcomes[TOOL_NAME_SURFACE_ACTIVITY]["ok"] is True
+
+        # ...and the partial batch is never presented as a finished one.
+        assert not is_published(snapshot)
+        assert latest_snapshot(out) is None
+        assert TOOL_NAME_INCUMBENT_QUALITY in capsys.readouterr().err
+
+
+class TestPostRoundAnalysisInterrupts:
+    """Ctrl-C is not an analysis failure, and must not be treated as one.
+
+    ``allocate_snapshot`` stamps its directory before a single tool runs, and
+    ``KeyboardInterrupt`` is not an ``Exception`` -- so an interrupt landing in
+    the hook used to leave exactly the stamped-but-empty snapshot the hook's own
+    docstring says it never produces, with nothing on disk saying why.
+    """
+
+    def test_an_interrupt_leaves_provenance_and_still_stops_the_experiment(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        out = tmp_path / "exp"
+        out.mkdir()
+
+        def interrupt(out_dir: Path, snapshot: Any) -> Any:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(orchestrator_module, "_post_round_analyses", interrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator_module._run_post_round_analysis(out)
+
+        # The claimed directory explains itself instead of being empty...
+        (snapshot,) = snapshots(out)
+        assert (snapshot / PROVENANCE_FILENAME).exists(), sorted(snapshot.iterdir())
+        provenance = json.loads((snapshot / PROVENANCE_FILENAME).read_text())
+        outcomes = {tool["name"]: tool for tool in provenance["tools"]}
+        assert outcomes[POST_ROUND_BATCH_TOOL]["ok"] is False
+        assert "KeyboardInterrupt" in outcomes[POST_ROUND_BATCH_TOOL]["error"]
+
+        # ...and is never presented as a finished batch.
+        assert not is_published(snapshot)
+        assert latest_snapshot(out) is None
+        assert "interrupted" in capsys.readouterr().err
+
+    def test_a_systemexit_takes_the_same_path(self, tmp_path, monkeypatch):
+        out = tmp_path / "exp"
+        out.mkdir()
+
+        def interrupt(out_dir: Path, snapshot: Any) -> Any:
+            raise SystemExit(2)
+
+        monkeypatch.setattr(orchestrator_module, "_post_round_analyses", interrupt)
+
+        with pytest.raises(SystemExit):
+            orchestrator_module._run_post_round_analysis(out)
+
+        (snapshot,) = snapshots(out)
+        assert (snapshot / PROVENANCE_FILENAME).exists()
+        assert not is_published(snapshot)
+
+
+class TestPostRoundAnalysisSnapshots:
+    """What a round's refresh actually produces (KTD2/KTD4)."""
+
+    def test_every_executed_round_publishes_a_snapshot_of_every_aggregation(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path, t=2)
+        out = tmp_path / "exp"
+        complete_two_promoted_rounds(config, out, monkeypatch)
+
+        first, second = snapshots(out)  # one per executed round, never shared
+        assert is_published(first)
+        assert is_published(second)
+        assert latest_snapshot(out) == second
+
+        written = {path.name for path in second.iterdir()}
+        assert {
+            OPTIMIZATION_FILENAME,
+            INCUMBENT_QUALITY_FILENAME,
+            INCUMBENT_QUALITY_CANDIDATES_FILENAME,
+            SURFACE_ACTIVITY_FILENAME,
+            UNATTRIBUTED_FILENAME,
+            BUNDLES_FILENAME,
+        } <= written
+
+        provenance = json.loads((second / PROVENANCE_FILENAME).read_text())
+        assert [tool["ok"] for tool in provenance["tools"]] == [True] * 4
+        assert {tool["name"] for tool in provenance["tools"]} == {
+            TOOL_NAME_OPTIMIZATION,
+            TOOL_NAME_INCUMBENT_QUALITY,
+            TOOL_NAME_SURFACE_ACTIVITY,
+            TOOL_NAME_DIFF,
+        }
+        assert provenance["rounds"] == [1, 2]
+        assert provenance["identity_hash"] == check_identity(config, out)
+        assert provenance["sources"]  # every consumed artifact, hashed
+
+    def test_an_optimization_run_says_nothing_about_the_absent_evaluation_phase(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``eval/`` is written by the evaluation runner, never by this loop:
+        for a whole optimization study it is absent, which is not a fault."""
+        config = make_config(tmp_path)
+        out = tmp_path / "exp"
+        complete_one_promoted_round(config, out, monkeypatch)
+
+        assert not (out / EVAL_DIR).exists()
+        (snapshot,) = snapshots(out)
+        assert is_published(snapshot)
+        assert EVALUATION_FILENAME not in {path.name for path in snapshot.iterdir()}
+        provenance = json.loads((snapshot / PROVENANCE_FILENAME).read_text())
+        assert TOOL_NAME_EVALUATION not in {tool["name"] for tool in provenance["tools"]}
+        assert provenance["eval_sets"] == []
+        assert capsys.readouterr().err == ""
+
+
+class TestPostRoundAnalysisOnResume:
+    """A resume refreshes once when it catches up -- not once per replay."""
+
+    def test_a_fully_replayed_resume_refreshes_exactly_once(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path, t=2)
+        out = tmp_path / "exp"
+        first = complete_two_promoted_rounds(config, out, monkeypatch)
+        assert len(snapshots(out)) == 2  # one per executed round
+
+        idle = patch_runner(monkeypatch, [])
+        second = run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+
+        assert idle.total_calls == 0  # nothing re-executed...
+        assert second.final_harness_hash == first.final_harness_hash
+        refreshed = snapshots(out)
+        assert len(refreshed) == 3  # ...and one refresh, not one per replayed round
+        assert is_published(refreshed[-1])
+        provenance = json.loads((refreshed[-1] / PROVENANCE_FILENAME).read_text())
+        assert provenance["rounds"] == [1, 2]
+
+    def test_a_resume_that_catches_up_then_executes_refreshes_once(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path, t=2)
+        out = tmp_path / "exp"
+
+        # Round 1 completes; round 2's first mining call raises, exactly like a
+        # crash partway through the second round.
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_PASS)
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
+        with pytest.raises(IndexError):
+            run(config, out, attributor, proposer)
+        assert len(snapshots(out)) == 1  # round 1's refresh, and nothing else
+
+        patch_runner(monkeypatch, MINING_FAIL_V2 + SUBJECT_FAIL + SUBJECT_PASS)
+        resumed_attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        resumed_proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_2))])
+        result = run(config, out, resumed_attributor, resumed_proposer)
+
+        assert [outcome.promoted for outcome in result.rounds] == [True, True]
+        refreshed = snapshots(out)
+        # Round 1 was replayed and round 2 executed: the executed round's
+        # refresh IS the replay phase's catch-up, so there is one new snapshot.
+        assert len(refreshed) == 2
+        provenance = json.loads((refreshed[-1] / PROVENANCE_FILENAME).read_text())
+        assert provenance["rounds"] == [1, 2]
