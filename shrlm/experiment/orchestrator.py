@@ -21,6 +21,8 @@ Directory contract under ``out_dir``::
         work/                 # scratch for generated-source modules
         round.json            # stage marker: the round's final outcome
     sh_rlm/harness.json       # the frozen final harness (write_harness_json envelope)
+    analysis/<UTC stamp>/     # post-round analysis snapshots (KTD4); never read
+                              # by the loop, and never experiment state
 
 Identity enforcement (R3). ``identity_hash(config)`` is persisted in the root
 ``config.json`` on the first invocation and compared on every later one;
@@ -85,6 +87,13 @@ error states that the round is uncompletable in this directory, why, and the
 operator's two options (a larger budget in a fresh out_dir, or a smaller
 scale).
 
+Post-round analysis (KTD4). After every EXECUTED round the loop refreshes the
+aggregation snapshots under ``analysis/`` from what it has just persisted, so a
+long study's outputs never go stale. That refresh is strictly one-way: it reads
+persisted artifacts, writes only under ``analysis/``, and cannot fail, block, or
+alter a round -- ``_run_post_round_analysis`` swallows everything, including its
+own imports. Nothing in the loop ever reads ``analysis/`` back.
+
 Single-threaded, main thread only: the SIGALRM hard-deadline backstop in
 ``shrlm.optimization.costs`` binds only there (POSIX main thread), and this
 module never spawns threads around run execution.
@@ -92,9 +101,11 @@ module never spawns threads around run execution.
 
 import json
 import os
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
@@ -149,6 +160,9 @@ from shrlm.optimization.validation import (
     validate_round,
 )
 from shrlm.rlm_harness import HARNESSES, Harness
+
+if TYPE_CHECKING:  # analysis_io imports this module, so its types are annotations only
+    from shrlm.experiment.analysis_io import Snapshot
 
 CONFIG_FILENAME = "config.json"
 CONFIG_FORMAT = "shrlm-experiment-config/v1"
@@ -533,14 +547,26 @@ class _Experiment:
         rounds: list[RoundOutcome] = []
         without_promotion = 0
         stopped = STOP_MAX_ROUNDS
+        # A replay phase refreshes the analyses ONCE, when it catches up --
+        # never per replayed round. Every replayed round is already finished,
+        # so a per-round refresh would run one full pass over the tree for each
+        # of them before any new work happened, and only the last of those
+        # passes would carry current information.
+        replay_unanalyzed = False
         for round_index in range(1, self.config.loop.t + 1):
             round_path = experiment_round_dir(self.out_dir, round_index)
             marker_path = round_path / ROUND_MARKER_FILENAME
-            if marker_path.exists():
+            replayed = marker_path.exists()
+            if replayed:
                 outcome = self._replay_round(round_path, round_index)
             else:
                 outcome = self._execute_round(round_path, round_index, incumbent)
             rounds.append(outcome)
+            if replayed:
+                replay_unanalyzed = True
+            else:
+                _run_post_round_analysis(self.out_dir)
+                replay_unanalyzed = False
             if outcome.promoted:
                 incumbent = self._promoted_harness(round_path, round_index, outcome)
                 without_promotion = 0
@@ -552,6 +578,12 @@ class _Experiment:
             if without_promotion >= self.config.loop.patience:
                 stopped = STOP_PATIENCE
                 break
+
+        # The loop ended while still replaying: a resume that executed nothing
+        # (the experiment was already finished, or stopped on patience) still
+        # gets its one catch-up refresh here.
+        if replay_unanalyzed:
+            _run_post_round_analysis(self.out_dir)
 
         frozen_path = _freeze_harness(incumbent, self.out_dir)
         return ExperimentResult(
@@ -838,6 +870,136 @@ def _validation_usage(validation_round_path: Path) -> UsageTotals:
     for manifest_path in sorted(validation_round_path.rglob("runs.jsonl")):
         total = total + aggregate_manifest_usage(read_jsonl(manifest_path))
     return total
+
+
+# ---------------------------------------------------------------------------
+# Post-round analysis: best-effort, isolated, one snapshot per invocation (KTD4)
+# ---------------------------------------------------------------------------
+
+# A frequency diff needs a pair to compare. Below this the aggregation refuses
+# its arguments (correctly), which for a first round is the normal state and
+# not a failure worth recording -- so it is left out of the batch instead.
+MIN_DIFFABLE_BUNDLES = 2
+
+
+def _post_round_analyses(
+    out_dir: Path, snapshot: "Snapshot"
+) -> list[tuple[str, Callable[[], Any]]]:
+    """The aggregations this invocation should run, in the order they run.
+
+    Every import here is function-local and must stay that way: ``analysis_io``
+    and ``rounds`` both import THIS module for its layout constants and
+    filenames (KTD1), so an import of either at module scope is a circular
+    import that fails while ``orchestrator`` is still half-initialized. The
+    dependency direction is analyses -> loop, never the reverse, and keeping
+    the import inside the call is what preserves it.
+
+    Two aggregations are conditional, and their absence is silent because it is
+    the normal mid-experiment state rather than a fault:
+
+    * the evaluation phase runs only once ``eval/eval_summary.json`` exists --
+      the evaluation runner writes it, never this loop, so it is absent for the
+      whole optimization run;
+    * the frequency diff runs only once two rounds have persisted a bundle.
+
+    Args:
+        out_dir: The experiment directory to analyze.
+        snapshot: The batch's allocated ``analysis_io.Snapshot``; every
+            aggregation writes into that one directory (KTD2).
+
+    Returns:
+        ``(tool name, thunk)`` pairs. Nothing has run yet -- the caller runs
+        each one under the snapshot's own guard.
+    """
+    from shrlm.experiment.collapse_and_attribution import (
+        PHASE_EVALUATION,
+        PHASE_OPTIMIZATION,
+        TOOL_NAME_EVALUATION,
+        TOOL_NAME_OPTIMIZATION,
+        eval_summary_path,
+        run_collapse_and_attribution,
+    )
+    from shrlm.experiment.incumbent_quality import TOOL_NAME as TOOL_NAME_INCUMBENT_QUALITY
+    from shrlm.experiment.incumbent_quality import run_incumbent_quality
+    from shrlm.experiment.pattern_frequency_diff import TOOL_NAME as TOOL_NAME_DIFF
+    from shrlm.experiment.pattern_frequency_diff import run_pattern_frequency_diff
+    from shrlm.experiment.rounds import discover_rounds
+    from shrlm.experiment.surface_activity import TOOL_NAME as TOOL_NAME_SURFACE_ACTIVITY
+    from shrlm.experiment.surface_activity import run_surface_activity
+
+    analyses: list[tuple[str, Callable[[], Any]]] = [
+        (
+            TOOL_NAME_OPTIMIZATION,
+            lambda: run_collapse_and_attribution(out_dir, snapshot, phase=PHASE_OPTIMIZATION),
+        ),
+        (TOOL_NAME_INCUMBENT_QUALITY, lambda: run_incumbent_quality(out_dir, snapshot)),
+        (TOOL_NAME_SURFACE_ACTIVITY, lambda: run_surface_activity(out_dir, snapshot)),
+    ]
+
+    # The bundles come from the shared inventory rather than a local walk, so
+    # the diff reads exactly the rounds the loop wrote (KTD1). Incomplete ones
+    # are NOT filtered out here: the aggregation flags every bundle it is given
+    # and compares only the evidence-complete ones (KTD5), which is how a
+    # partial round stays visible instead of silently vanishing.
+    bundles = [
+        record.mining_round_path / BUNDLE_FILENAME
+        for record in discover_rounds(out_dir).rounds
+        if (record.mining_round_path / BUNDLE_FILENAME).is_file()
+    ]
+    if len(bundles) >= MIN_DIFFABLE_BUNDLES:
+        analyses.append((TOOL_NAME_DIFF, lambda: run_pattern_frequency_diff(bundles, snapshot)))
+    if eval_summary_path(out_dir).is_file():
+        analyses.append(
+            (
+                TOOL_NAME_EVALUATION,
+                lambda: run_collapse_and_attribution(out_dir, snapshot, phase=PHASE_EVALUATION),
+            )
+        )
+    return analyses
+
+
+def _run_post_round_analysis(out_dir: Path) -> None:
+    """Refresh the analysis snapshot from what the loop has persisted (KTD4).
+
+    Best-effort in the strongest sense: NO failure in here may reach the
+    experiment. A broken aggregation, an unreadable artifact, an unallocatable
+    snapshot, even an ImportError raised while loading the analysis modules --
+    each ends in a warning on stderr and a return. The experiment's outcome must never
+    depend on whether its analyses ran, which is why the whole body sits under
+    one blanket guard and why the individual tools sit under a second one
+    (``Snapshot.run_tool``) inside it: one failing aggregation must not cost the
+    others their output either.
+
+    The batch allocates exactly ONE snapshot (KTD2) and publishes it
+    unconditionally -- ``publish`` writes ``provenance.json`` either way and
+    withholds only the completion marker when a tool failed, so a partial batch
+    leaves a readable audit trail that no reader will mistake for the latest
+    results.
+
+    Args:
+        out_dir: The experiment directory; the snapshot lands under its
+            ``analysis/``.
+    """
+    try:
+        from shrlm.experiment.analysis_io import PROVENANCE_FILENAME, allocate_snapshot
+
+        snapshot = allocate_snapshot(out_dir)
+        failed = [
+            name
+            for name, call in _post_round_analyses(out_dir, snapshot)
+            if not snapshot.run_tool(name, call)
+        ]
+        snapshot.publish()
+    except Exception as error:  # noqa: BLE001 -- isolation from the loop is the point
+        sys.stderr.write(
+            f"post-round analysis skipped for {out_dir}: {type(error).__name__}: {error}\n"
+        )
+        return
+    if failed:
+        sys.stderr.write(
+            f"post-round analysis: {', '.join(failed)} failed; {snapshot.path} is unpublished, "
+            f"see {snapshot.path / PROVENANCE_FILENAME}\n"
+        )
 
 
 def run_experiment(
