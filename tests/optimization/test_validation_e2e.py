@@ -198,21 +198,40 @@ class TestMergePromotion:
         assert bad["decision"] == DECISION_REJECTED
         assert bad["upstream"]["gate"] == GATE_BASE_HASH
         assert bad["links"] is None  # never evaluated: nothing on disk to link
+        # A loader rejection never produced a LoadedCandidate, so no surface was
+        # ever resolved for it and the ledger records an explicit null. That is
+        # the ledger's contract, not a gap: the analysis layer recovers the
+        # surface by joining this subject id back to its persisted proposal.
+        assert "surface" in bad
+        assert bad["surface"] is None
 
         assert by_id["cand-burn"]["decision"] == DECISION_OVER_BUDGET
+        # Never scored, but the loader knew its surface, so the ledger has it.
+        assert by_id["cand-burn"]["surface"] == "S5"
         regress = by_id["cand-regress"]
         assert regress["decision"] == DECISION_REJECTED
         assert regress["reasons"]
+        assert regress["surface"] == "S4"
 
-        for constituent_id in ("cand-s2", "cand-s3"):
+        for constituent_id, surface in (("cand-s2", "S2"), ("cand-s3", "S3")):
             record = by_id[constituent_id]
             assert record["decision"] == DECISION_ACCEPTED
             assert record["merge"]["role"] == "constituent"
             assert record["merge"]["constituent_ids"] == ["cand-s2", "cand-s3"]
+            # Threaded from the LoadedCandidate through ``assess_round``, whose
+            # surfaces mapping is keyed by candidate id while a scored subject
+            # is looked up by subject id -- these two assertions are what pin
+            # that ``evaluate_subject`` keeps the two names equal.
+            assert record["surface"] == surface
 
         merged = by_id[MERGED_SUBJECT_ID]
         assert merged["decision"] == DECISION_PROMOTED
         assert merged["merge"]["role"] == "merged"
+        # The merged harness composes several surfaces by construction, so null
+        # is the correct record for it -- never missing data (KTD7), and never
+        # something the analysis layer's backfill should try to recover.
+        assert "surface" in merged
+        assert merged["surface"] is None
         for record in records:
             if record["links"] is not None:
                 assert_subject_links_resolve(

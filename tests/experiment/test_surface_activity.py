@@ -50,6 +50,7 @@ from shrlm.experiment.surface_activity import (
     SURFACE_ACTIVITY_FIELDNAMES,
     SURFACE_ACTIVITY_FILENAME,
     UNATTRIBUTED_FILENAME,
+    _is_promoted,
     main,
     surface_activity_over_rounds,
     write_surface_activity,
@@ -65,6 +66,7 @@ from shrlm.optimization.proposal import PROPOSAL_FILENAME, PROPOSAL_FORMAT
 from shrlm.optimization.validation import (
     LEDGER_RECORD_FORMAT,
     PROMOTIONS_FILENAME,
+    ROLE_CONSTITUENT,
     ROLE_MERGED,
 )
 from tests.experiment.test_rounds import (
@@ -367,6 +369,116 @@ class TestSurfaceActivityBackfill:
 
     def test_the_table_declares_the_surface_source_column(self) -> None:
         assert "surface_source" in SURFACE_ACTIVITY_FIELDNAMES
+
+
+# ---------------------------------------------------------------------------
+# What ``promoted_count`` credits (U6: the merge-constituent crediting rule)
+# ---------------------------------------------------------------------------
+
+
+class TestPromotedCrediting:
+    """Which ledger rows count as promoted, and which surfaces they credit.
+
+    ``decision`` only ever reads ``promoted`` on the single winner's record or
+    on the merged harness's own re-evaluation record. A constituent that won
+    its slot and was folded into a *successful* merge keeps ``accepted``
+    forever -- ``apply_merge_verdict`` re-marks constituents only when the
+    merge FAILS -- so its promotion is visible only through
+    ``merge.role == "constituent"``. Reading ``decision`` alone would leave
+    every merged round's ``cumulative_surfaces_promoted`` undercounting the
+    surfaces the incumbent actually gained.
+    """
+
+    def test_a_promoted_decision_is_credited(self) -> None:
+        record = ledger_record("r01-c01-s2", decision=DECISION_PROMOTED, surface="S2")
+        assert _is_promoted(record) is True
+
+    def test_an_accepted_merge_constituent_is_credited(self) -> None:
+        record = ledger_record(
+            "r01-c01-s2", decision=DECISION_ACCEPTED, surface="S2", role=ROLE_CONSTITUENT
+        )
+        # The record's own decision never flips; only the merged subject's does.
+        assert record["decision"] == DECISION_ACCEPTED
+        assert _is_promoted(record) is True
+
+    def test_a_plain_accepted_row_is_not_credited(self) -> None:
+        """Accepted with no merge role lost its slot or its round promoted nothing."""
+        record = ledger_record("r01-c01-s2", decision=DECISION_ACCEPTED, surface="S2")
+        assert record["merge"]["role"] is None
+        assert _is_promoted(record) is False
+
+    def test_a_record_with_no_merge_block_at_all_is_not_credited(self) -> None:
+        """A pre-merge-field ledger row is read, not crashed on."""
+        record = ledger_record("r01-c01-s2", decision=DECISION_ACCEPTED, surface="S2")
+        del record["merge"]
+        assert _is_promoted(record) is False
+
+    def test_a_promoted_merge_credits_its_constituent_surfaces(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        """End to end: both folded-in surfaces show as promoted, not just ``merged``."""
+        write_round(
+            experiment,
+            1,
+            [
+                ledger_record(
+                    "r01-c01-s2", decision=DECISION_ACCEPTED, surface="S2", role=ROLE_CONSTITUENT
+                ),
+                ledger_record(
+                    "r01-c02-s3", decision=DECISION_ACCEPTED, surface="S3", role=ROLE_CONSTITUENT
+                ),
+                ledger_record("r01-c03-s4", decision=DECISION_ACCEPTED, surface="S4"),
+                ledger_record(MERGED_SUBJECT_ID, decision=DECISION_PROMOTED, role=ROLE_MERGED),
+            ],
+        )
+
+        rows = written_activity(snapshot, experiment)
+        assert cell(rows, 1, "S2")["promoted_count"] == "1"
+        assert cell(rows, 1, "S3")["promoted_count"] == "1"
+        # Accepted without a merge role: attempted, but nothing promoted it.
+        assert cell(rows, 1, "S4")["attempted_count"] == "1"
+        assert cell(rows, 1, "S4")["promoted_count"] == "0"
+        assert cell(rows, 1, MERGED_CATEGORY)["promoted_count"] == "1"
+        # Two of the nine surfaces actually reached the incumbent this round;
+        # reading ``decision`` alone would have reported zero.
+        assert cell(rows, 1, "S2")["cumulative_surfaces_promoted"] == "2"
+
+    def test_an_unplaceable_row_is_excluded_and_tallied_while_merged_is_a_category(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        """The two null-surface rows that are NOT the same case (KTD7).
+
+        A non-merged row nothing on disk can place is excluded from every
+        surface count and tallied unattributed. The merged record's null
+        surface is *correct* -- it spans several surfaces by construction -- so
+        it is counted in its own ``merged`` category and never tallied
+        unattributed; asserting it as unattributed would contradict KTD7.
+        """
+        write_round(
+            experiment,
+            1,
+            [
+                ledger_record(
+                    "r01-c01-s2", decision=DECISION_ACCEPTED, surface="S2", role=ROLE_CONSTITUENT
+                ),
+                # No ledger surface and no proposal written for it: unplaceable.
+                ledger_record("r01-c02-lost", decision=DECISION_PROMOTED),
+                ledger_record(MERGED_SUBJECT_ID, decision=DECISION_PROMOTED, role=ROLE_MERGED),
+            ],
+        )
+
+        rows = written_activity(snapshot, experiment)
+        counted = {
+            row["surface"]: (row["attempted_count"], row["promoted_count"])
+            for row in rows
+            if row["attempted_count"] != "0"
+        }
+        assert counted == {"S2": ("1", "1"), MERGED_CATEGORY: ("1", "1")}
+
+        (tally,) = written_unattributed(snapshot, experiment)
+        # Exactly one row: the unplaceable one. The merged row is not in it.
+        assert tally["unattributed_count"] == "1"
+        assert tally["total_rows"] == "3"
 
 
 # ---------------------------------------------------------------------------
