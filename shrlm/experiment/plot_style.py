@@ -250,7 +250,9 @@ def footer_text(snapshot_dir: Path | str, *, rendered_at: datetime | None = None
     return f"experiment {short} | snapshot {snapshot_dir.name} | rendered {stamped}{unpublished}"
 
 
-def draw_footer(fig: "plt.Figure", snapshot_dir: Path | str, *, rendered_at: datetime | None = None) -> None:
+def draw_footer(
+    fig: "plt.Figure", snapshot_dir: Path | str, *, rendered_at: datetime | None = None
+) -> None:
     """Put the provenance footer in the figure's bottom-right corner."""
     fig.text(
         0.98,
