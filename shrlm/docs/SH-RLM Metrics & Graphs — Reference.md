@@ -112,7 +112,7 @@ Cumulative series (`cumulative_surfaces_attempted`, `cumulative_surfaces_promote
 
 Rows with `surface = None` (loader-gate rejections, the synthetic merged record itself) are excluded from surface-level counts but logged separately per round as `unattributed_rows_by_round`, so the exclusion is visible rather than silent.
 
-**Plotting:** `shrlm/experiment/plot_surface_activity.py`, run via `python -m shrlm.experiment.plot_surface_activity <out_dir>`, writes `<out_dir>/plots/surface_activity.png` (static, matplotlib).
+**Plotting:** `shrlm/experiment/plot_surface_activity.py`, run via `python -m shrlm.experiment.plot_surface_activity <out_dir> [--snapshot STAMP]`, reads the latest published analysis snapshot (or the pinned one) and writes `<out_dir>/analysis/<stamp>/plots/surface_activity.png` (static, matplotlib). `plots/` is the one re-renderable part of a published snapshot; the figure's footer carries the experiment identity, the snapshot stamp, and the render time.
 - **Panel A**: dashed "attempted" vs. solid "promoted" step lines, deliberately the **same color/hue** rather than two distinct colors — since promoted is always a subset of attempted each round, same-hue communicates the containment relationship rather than implying two independent series. Y-axis capped with a horizontal reference line at y=9 ("all surfaces"), end-of-line value labels.
 - **Panel B**: two S1–S9 × round heatmaps (attempted, promoted) sharing a single color scale/colorbar so the two are directly comparable. Zero-activity cells render fully blank (masked to background), not a pale tint, so untouched surfaces are visually distinct from barely-touched ones — this was a bug caught and fixed during visual review (zero cells originally rendered as a visible pale blue). All 9 surfaces are always shown as rows even if some have zero activity across every round, to keep the "7 of 9 surfaces start empty" framing visible.
 - A footnote reports total unattributed rows and flags any round exceeding 25% unattributed.
@@ -128,7 +128,7 @@ Rows with `surface = None` (loader-gate rejections, the synthetic merged record 
 
 **Decision — handling of `rule: null` rows** (candidates rejected upstream of scoring, e.g. `over_budget`, no delta to speak of): **skip with optional annotation** — the incumbent line stays flat through that round (correct, since the incumbent genuinely didn't change), and a separate annotation record is emitted with the rejection reason, for optional plotting as a marker rather than being silently dropped.
 
-**Plotting:** `shrlm/experiment/plot_incumbent_quality.py`, run via `python -m shrlm.experiment.plot_incumbent_quality <out_dir> [--show-candidates]`, writes `<out_dir>/plots/incumbent_quality.png` (static, matplotlib).
+**Plotting:** `shrlm/experiment/plot_incumbent_quality.py`, run via `python -m shrlm.experiment.plot_incumbent_quality <out_dir> [--snapshot STAMP] [--show-candidates]`, reads the latest published analysis snapshot (or the pinned one) and writes `<out_dir>/analysis/<stamp>/plots/incumbent_quality.png` (static, matplotlib), with the same identity / snapshot / render-time footer.
 - Held-in (blue/circle) vs. held-out (orange/square) step lines.
 - Black ring markers at rounds where `incumbent_changed == True`.
 - Small triangle ticks below the axis at annotated (`rule: null`) rounds, keyed to a numbered footnote list with the rejection reason text (static output, so no hover tooltip — footnote list instead).
