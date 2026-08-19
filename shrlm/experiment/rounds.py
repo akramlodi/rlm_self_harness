@@ -405,6 +405,14 @@ class ExperimentInventory:
     eval_sets: tuple[EvalSetRecord, ...]
     repetitions: StageRepetitions | None
 
+    def rounds_by_index(self) -> dict[int, RoundRecord]:
+        """``rounds`` keyed by ``round_index``, for callers that look one up by number.
+
+        One place to build this lookup rather than every caller repeating the
+        same comprehension over ``rounds``.
+        """
+        return {record.round_index: record for record in self.rounds}
+
 
 # ---------------------------------------------------------------------------
 # Marker reading: presence and payload agreement, never an exception

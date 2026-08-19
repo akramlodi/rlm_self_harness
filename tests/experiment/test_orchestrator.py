@@ -1169,7 +1169,7 @@ class TestPostRoundAnalysisIsolation:
 
         monkeypatch.undo()
 
-        def explode(out_dir: Path, snapshot: Any) -> Any:
+        def explode(out_dir: Path, snapshot: Any, **kwargs: Any) -> Any:
             raise RuntimeError("quality exploded")
 
         monkeypatch.setattr(incumbent_quality_module, "run_incumbent_quality", explode)

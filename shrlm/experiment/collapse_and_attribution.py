@@ -55,6 +55,16 @@ Denominators, deliberately different per metric
     structurally, not because grounding failed at any individual run -- this
     column exists so a reader can tell the two apart at a glance.
 
+    ``sub_verifier_available`` is ``None`` -- not ``False`` -- when the
+    environment itself could not be resolved (e.g. a round whose mining stage
+    persisted its manifest and traces but was interrupted before ``bundle.json``
+    was written): a genuinely-covered environment misread as uncovered would
+    silently misreport real, attributable failures as ``ungrounded_share=1.0``.
+    Attribution shares (``root_failure_share`` / ``child_failure_share`` /
+    ``no_recursion_failure_share`` / ``ungrounded_share``) are ``None`` in that
+    case too -- unknown, not zero -- while ``collapse_rate`` is unaffected,
+    since it never depends on the sub-verifier.
+
 Completeness, carried beside every rate (R2, KTD5, KTD9)
     A rate computed over a truncated round is not wrong, but read as if it
     were complete it is misleading -- and before this the two were
@@ -103,6 +113,7 @@ from shrlm.experiment.rounds import (
     discover_rounds,
 )
 from shrlm.optimization.bundle import BUNDLE_FILENAME
+from shrlm.optimization.clustering import COLLAPSE_RATIO_THRESHOLD as COLLAPSE_THRESHOLD
 from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, TRACES_DIR, load_round
 from shrlm.optimization.grounding import apply_sub_verifier
 from shrlm.optimization.taxonomy import FailingLevel
@@ -110,10 +121,10 @@ from shrlm.optimization.types import SubVerifier
 from shrlm.optimization.validation import EVAL_ROUND_INDEX
 from shrlm.optimization.walker import walk
 
-# clustering.py's own convention for "collapsed" (clustering.py:109,
-# the >0.8 threshold behind its shared_symptoms prose) -- reused here rather
-# than inventing a second threshold for the same signal.
-COLLAPSE_THRESHOLD = 0.8
+# clustering.py owns the "collapsed" convention (its own shared_symptoms
+# prose); imported here rather than redeclared, so tuning it in one place
+# tunes both this module's collapse_rate and clustering's shared_symptoms
+# together instead of silently diverging.
 
 # oolong_pairs deliberately has no SubVerifier; see this module's docstring.
 SUB_VERIFIERS: dict[str, SubVerifier] = {"graphwalks": GraphWalksSubVerifier()}
@@ -196,7 +207,7 @@ class GroupMetrics:
     child_failure_share: float | None
     no_recursion_failure_share: float | None
     ungrounded_share: float | None
-    sub_verifier_available: bool
+    sub_verifier_available: bool | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -209,7 +220,7 @@ class GroupMetrics:
             "child_failure_share": self.child_failure_share,
             "no_recursion_failure_share": self.no_recursion_failure_share,
             "ungrounded_share": self.ungrounded_share,
-            "sub_verifier_available": self.sub_verifier_available,
+            "sub_verifier_available": tristate(self.sub_verifier_available),
         }
 
 
@@ -302,7 +313,7 @@ class EvalCompleteness:
         }
 
 
-def empty_group_metrics(*, sub_verifier_available: bool) -> GroupMetrics:
+def empty_group_metrics(*, sub_verifier_available: bool | None) -> GroupMetrics:
     """A group with zero runs on disk (e.g. entirely spend-skipped) -- explicit nulls, not zeros."""
     return GroupMetrics(
         n_runs=0,
@@ -322,11 +333,25 @@ def compute_group_metrics(
     runs: list[tuple[dict[str, Any], Any]],
     verdicts: list[Any],
     sub_verifier: SubVerifier | None,
+    *,
+    environment_known: bool,
 ) -> GroupMetrics:
-    """Walk every run's trace once; collapse over all walked runs, attribution over failures only."""
+    """Walk every run's trace once; collapse over all walked runs, attribution over failures only.
+
+    ``environment_known`` distinguishes a real fact ("this environment has no
+    registered SubVerifier", e.g. oolong_pairs) from missing information ("the
+    environment itself could not be resolved"). Only the former lets
+    attribution shares be reported with confidence; when the environment is
+    unknown, ``failure_levels`` is never populated, so every share below comes
+    out ``None`` via the same "empty denominator -> null" rule already used for
+    a group with no failures -- unknown stays unknown rather than reading as a
+    confident ``ungrounded_share=1.0``. ``n_failures`` and ``collapse_rate``
+    are unaffected, since neither depends on the sub-verifier.
+    """
     n_unwalkable = 0
     n_walked = 0
     collapsed = 0
+    n_failures = 0
     failure_levels: list[FailingLevel | None] = []  # None means ungrounded
 
     for (instance, completion), verdict in zip(runs, verdicts, strict=True):
@@ -339,14 +364,16 @@ def compute_group_metrics(
         if stats.collapse_ratio > COLLAPSE_THRESHOLD:
             collapsed += 1
         if not verdict.passed:
-            grounding = apply_sub_verifier(instance, root, sub_verifier)
-            failure_levels.append(grounding.failing_level if grounding.grounded else None)
+            n_failures += 1
+            if environment_known:
+                grounding = apply_sub_verifier(instance, root, sub_verifier)
+                failure_levels.append(grounding.failing_level if grounding.grounded else None)
 
-    n_failures = len(failure_levels)
     root_count = sum(1 for level in failure_levels if level is FailingLevel.ROOT)
     child_count = sum(1 for level in failure_levels if level is FailingLevel.CHILD)
     no_recursion_count = sum(1 for level in failure_levels if level is FailingLevel.NO_RECURSION)
     ungrounded_count = sum(1 for level in failure_levels if level is None)
+    attribution_known = len(failure_levels)  # 0 when unattributed OR no failures -- both mean "no share"
 
     return GroupMetrics(
         n_runs=len(runs),
@@ -354,11 +381,11 @@ def compute_group_metrics(
         n_unwalkable=n_unwalkable,
         n_failures=n_failures,
         collapse_rate=(collapsed / n_walked) if n_walked else None,
-        root_failure_share=(root_count / n_failures) if n_failures else None,
-        child_failure_share=(child_count / n_failures) if n_failures else None,
-        no_recursion_failure_share=(no_recursion_count / n_failures) if n_failures else None,
-        ungrounded_share=(ungrounded_count / n_failures) if n_failures else None,
-        sub_verifier_available=sub_verifier is not None,
+        root_failure_share=(root_count / attribution_known) if attribution_known else None,
+        child_failure_share=(child_count / attribution_known) if attribution_known else None,
+        no_recursion_failure_share=(no_recursion_count / attribution_known) if attribution_known else None,
+        ungrounded_share=(ungrounded_count / attribution_known) if attribution_known else None,
+        sub_verifier_available=(sub_verifier is not None) if environment_known else None,
     )
 
 
@@ -410,14 +437,19 @@ def collapse_and_attribution_optimization(
     rows: list[OptimizationRow] = []
     for record in inventory.rounds:
         environment = _environment_for_round(record.mining_round_path)
+        environment_known = environment is not None
         sub_verifier = SUB_VERIFIERS.get(environment) if environment else None
         if not record.has_manifest:
-            metrics = empty_group_metrics(sub_verifier_available=sub_verifier is not None)
+            metrics = empty_group_metrics(
+                sub_verifier_available=(sub_verifier is not None) if environment_known else None
+            )
         else:
             runs, verdicts, _envelope, _entries = load_round(
                 record.mining_parent, record.round_index
             )
-            metrics = compute_group_metrics(runs, verdicts, sub_verifier)
+            metrics = compute_group_metrics(
+                runs, verdicts, sub_verifier, environment_known=environment_known
+            )
         rows.append(
             OptimizationRow(
                 round_index=record.round_index,
@@ -480,14 +512,19 @@ def collapse_and_attribution_evaluation(
     rows: list[EvaluationRow] = []
     for record in inventory.eval_sets:
         environment = record.environment
+        environment_known = environment is not None
         sub_verifier = SUB_VERIFIERS.get(environment) if environment else None
         if not (record.round_path / MANIFEST_FILE).exists():
             # Entirely skipped -- e.g. the spend breaker tripped before this set
             # ran a single instance. Emitted with explicit nulls, not dropped.
-            metrics = empty_group_metrics(sub_verifier_available=sub_verifier is not None)
+            metrics = empty_group_metrics(
+                sub_verifier_available=(sub_verifier is not None) if environment_known else None
+            )
         else:
             runs, verdicts, _envelope, _entries = load_round(record.set_path, EVAL_ROUND_INDEX)
-            metrics = compute_group_metrics(runs, verdicts, sub_verifier)
+            metrics = compute_group_metrics(
+                runs, verdicts, sub_verifier, environment_known=environment_known
+            )
         rows.append(
             EvaluationRow(
                 condition_id=record.condition_id,
@@ -576,7 +613,13 @@ def write_collapse_and_attribution_evaluation(
     return csv_path
 
 
-def run_collapse_and_attribution(out_dir: Path | str, snapshot: Snapshot, *, phase: str) -> Path:
+def run_collapse_and_attribution(
+    out_dir: Path | str,
+    snapshot: Snapshot,
+    *,
+    phase: str,
+    inventory: ExperimentInventory | None = None,
+) -> Path:
     """Aggregate one phase into the caller's snapshot (KTD2).
 
     Takes an allocated snapshot rather than allocating one, so a batch that
@@ -585,10 +628,12 @@ def run_collapse_and_attribution(out_dir: Path | str, snapshot: Snapshot, *, pha
 
     Discovery runs ONCE per phase and is threaded into both the row build and
     the provenance recording, which otherwise walk the same unchanging tree
-    twice to reach the same paths.
+    twice to reach the same paths. ``inventory`` lets a caller running both
+    phases, or this alongside the other post-round analyses, reuse one
+    discovery pass across all of them; omitted, it is discovered here.
     """
     out_dir = Path(out_dir)
-    inventory = discover_rounds(out_dir)
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     if phase == PHASE_OPTIMIZATION:
         return write_collapse_and_attribution_optimization(
             snapshot,

@@ -66,6 +66,7 @@ from shrlm.experiment.plot_style import (
     draw_footer,
     partial_caption,
     partial_rounds,
+    partial_tick_labels,
     read_rows,
     resolve_snapshot,
     save_figure,
@@ -123,11 +124,6 @@ def _read_unattributed_csv(snapshot_dir: Path) -> list[dict]:
         row["unattributed_count"] = int(row["unattributed_count"])
         row["total_rows"] = int(row["total_rows"])
     return rows
-
-
-def _tick_labels(rounds: Sequence[int], partial: set[int]) -> list[str]:
-    """Round tick labels, starred where the round is not confirmed complete."""
-    return [f"{index}*" if index in partial else str(index) for index in rounds]
 
 
 def _mark_partial_rounds(ax: "plt.Axes", rounds: Sequence[int], partial: set[int]) -> None:
@@ -191,7 +187,7 @@ def _plot_cumulative_panel(
     ax.set_ylim(0, 9.6)
     ax.set_yticks(range(0, 10))
     ax.set_xticks(rounds)
-    ax.set_xticklabels(_tick_labels(rounds, partial))
+    ax.set_xticklabels(partial_tick_labels(rounds, partial))
     ax.set_xlabel("round")
     ax.set_ylabel("distinct surfaces (of 9)")
     ax.set_title("Surfaces touched over time", color=PRIMARY_INK, fontsize=12, loc="left")
@@ -228,7 +224,9 @@ def _grid_for(activity_rows: list[dict], rounds: list[int], metric: str) -> list
     the shared color scale.
     """
     by_key = {(row["round_index"], row["surface"]): row[metric] for row in activity_rows}
-    return [[by_key.get((r, s), 0) for r in rounds] for s in reversed(CANONICAL_SURFACES)]
+    # imshow's default origin is "upper" (row 0 draws at the top), so building
+    # row 0 = S1 here is what actually puts S1 at the top of the rendered plot.
+    return [[by_key.get((r, s), 0) for r in rounds] for s in CANONICAL_SURFACES]
 
 
 def _plot_heatmaps(
@@ -259,9 +257,9 @@ def _plot_heatmaps(
         )
         images.append(image)
         ax.set_xticks(range(len(rounds)))
-        ax.set_xticklabels(_tick_labels(rounds, partial))
+        ax.set_xticklabels(partial_tick_labels(rounds, partial))
         ax.set_yticks(range(len(CANONICAL_SURFACES)))
-        ax.set_yticklabels(list(reversed(CANONICAL_SURFACES)))
+        ax.set_yticklabels(list(CANONICAL_SURFACES))
         ax.set_xlabel("round")
         ax.set_title(title, color=PRIMARY_INK, fontsize=11, loc="left")
         ax.tick_params(length=0)

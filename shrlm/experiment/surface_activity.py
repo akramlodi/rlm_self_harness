@@ -29,10 +29,12 @@ every output cell carries the ``surface_source`` that placed it (KTD3):
     unattributed.
 ``none``
     Nothing on disk can place the row: no ledger value and no proposal to
-    recover one from. Only these rows are unattributed, and they are not
-    silently dropped -- they are tallied into a parallel
-    ``unattributed_rows_by_round`` table so a caller can see, per round, how
-    many rows the surface-level view genuinely could not place.
+    recover one from, OR the value found names something outside this table's
+    fixed S1-S9/``merged`` vocabulary (a malformed or future-vocabulary ledger
+    entry) and so cannot become a column here either way. Only these rows are
+    unattributed, and they are not silently dropped -- they are tallied into a
+    parallel ``unattributed_rows_by_round`` table so a caller can see, per
+    round, how many rows the surface-level view genuinely could not place.
 
 A cell whose count mixes recorded and recovered rows reports ``backfilled``:
 the weaker claim is the true one for the cell as a whole. A cell nothing landed
@@ -239,7 +241,7 @@ def surface_activity_over_rounds(
     # on the same inventory, so the two agree on which rounds exist by
     # construction.
     inventory = inventory if inventory is not None else discover_rounds(out_dir)
-    discovered: dict[int, RoundRecord] = {record.round_index: record for record in inventory.rounds}
+    discovered: dict[int, RoundRecord] = inventory.rounds_by_index()
 
     # counts[(round_index, category)] = {"attempted_count": n, "promoted_count": n}
     counts: dict[tuple[int, str], dict[str, int]] = {}
@@ -257,7 +259,13 @@ def surface_activity_over_rounds(
         round_record = discovered[round_index]
         for record in records:
             attribution = resolve_surface(record, round_record)
-            if attribution.category is None:
+            if attribution.category is None or attribution.category not in ROW_CATEGORIES:
+                # A category outside the fixed S1-S9/merged vocabulary this
+                # table emits (a malformed or future-vocabulary ledger value)
+                # is tallied here rather than silently dropped: the row loop
+                # below only ever reads ROW_CATEGORIES keys out of ``counts``,
+                # so anything else would vanish from both this table's totals
+                # and the unattributed count with no signal that it happened.
                 unattributed_by_round[round_index] += 1
                 continue
             key = (round_index, attribution.category)
@@ -352,7 +360,9 @@ def write_surface_activity(
     return [activity_path, unattributed_path]
 
 
-def run_surface_activity(out_dir: Path | str, snapshot: Snapshot) -> list[Path]:
+def run_surface_activity(
+    out_dir: Path | str, snapshot: Snapshot, *, inventory: ExperimentInventory | None = None
+) -> list[Path]:
     """Compute both tables and write them into the caller's snapshot.
 
     The entry point a batch caller (a CLI run, or the post-round hook) invokes:
@@ -361,12 +371,15 @@ def run_surface_activity(out_dir: Path | str, snapshot: Snapshot) -> list[Path]:
     tables a reader compares against each other must have come from a single
     pass over a single tree.
 
-    Discovery likewise runs ONCE here and is threaded into both the table build
-    and the source recording: the two ask the same question of the same
-    unchanging tree, so a second walk would buy nothing but IO.
+    Discovery runs ONCE and is threaded into both the table build and the
+    source recording: the two ask the same question of the same unchanging
+    tree, so a second walk would buy nothing but IO. ``inventory`` lets a
+    caller already discovering rounds for other analyses in the same batch
+    (the post-round hook) reuse that pass instead of walking the tree again;
+    omitted, it is discovered here.
     """
     out_dir = Path(out_dir)
-    inventory = discover_rounds(out_dir)
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     rows, unattributed = surface_activity_over_rounds(out_dir, inventory=inventory)
     return write_surface_activity(snapshot, out_dir, rows, unattributed, inventory=inventory)
 

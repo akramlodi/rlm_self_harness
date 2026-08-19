@@ -756,7 +756,7 @@ def record_surface_sources(
     mid-batch.
     """
     resolved = inventory if inventory is not None else discover_rounds(out_dir)
-    by_index = {record.round_index: record for record in resolved.rounds}
+    by_index = resolved.rounds_by_index()
     for round_index, records, _decision in iter_promotion_rounds(out_dir, inventory=resolved):
         round_record = by_index[round_index]
         for record in records:

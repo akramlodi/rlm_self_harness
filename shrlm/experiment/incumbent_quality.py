@@ -224,7 +224,7 @@ def incumbent_quality_over_rounds(
     state: _IncumbentState | None = None
     # The same inventory the ledger iteration below walks, kept by round index
     # so every emitted row carries that round's completeness (R2).
-    discovered: dict[int, RoundRecord] = {record.round_index: record for record in inventory.rounds}
+    discovered: dict[int, RoundRecord] = inventory.rounds_by_index()
 
     for round_index, records, _decision in iter_promotion_rounds(out_dir, inventory=inventory):
         discovery = discovered.get(round_index)
@@ -292,7 +292,7 @@ def all_candidate_quality_over_rounds(
     inventory = inventory if inventory is not None else discover_rounds(out_dir)
     # The proposal artifacts the backfill joins against live at paths only
     # discovery knows, so the round's own record travels with its ledger rows.
-    discovered: dict[int, RoundRecord] = {record.round_index: record for record in inventory.rounds}
+    discovered: dict[int, RoundRecord] = inventory.rounds_by_index()
 
     rows: list[CandidateQualityRow] = []
     for round_index, records, _decision in iter_promotion_rounds(out_dir, inventory=inventory):
@@ -349,7 +349,9 @@ def write_incumbent_quality(
     return [quality_path, candidates_path]
 
 
-def run_incumbent_quality(out_dir: Path | str, snapshot: Snapshot) -> list[Path]:
+def run_incumbent_quality(
+    out_dir: Path | str, snapshot: Snapshot, *, inventory: ExperimentInventory | None = None
+) -> list[Path]:
     """Compute both tables and write them into the caller's snapshot (KTD2).
 
     Takes an allocated snapshot rather than allocating one: every aggregation
@@ -357,14 +359,17 @@ def run_incumbent_quality(out_dir: Path | str, snapshot: Snapshot) -> list[Path]
     the surface series a reader plots together are guaranteed to describe one
     pass over one tree.
 
-    Discovery runs ONCE here and is threaded through both tables and the source
+    Discovery runs ONCE and is threaded through both tables and the source
     recording. All three ask the same question of the same unchanging tree, so
     three separate walks would only re-derive the same answer at three times
     the IO -- and a tree that somehow did change under them would be worse than
-    slow, it would put two different inventories in one snapshot.
+    slow, it would put two different inventories in one snapshot. ``inventory``
+    lets a caller already discovering rounds for other analyses in the same
+    batch (the post-round hook) reuse that pass; omitted, it is discovered
+    here.
     """
     out_dir = Path(out_dir)
-    inventory = discover_rounds(out_dir)
+    inventory = inventory if inventory is not None else discover_rounds(out_dir)
     return write_incumbent_quality(
         snapshot,
         out_dir,

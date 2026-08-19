@@ -879,11 +879,6 @@ def _validation_usage(validation_round_path: Path) -> UsageTotals:
 # Post-round analysis: best-effort, isolated, one snapshot per invocation (KTD4)
 # ---------------------------------------------------------------------------
 
-# A frequency diff needs a pair to compare. Below this the aggregation refuses
-# its arguments (correctly), which for a first round is the normal state and
-# not a failure worth recording -- so it is left out of the batch instead.
-MIN_DIFFABLE_BUNDLES = 2
-
 # The name a failure of the BATCH ITSELF is recorded under, as opposed to a
 # failure of one of the aggregations it runs (each of those is recorded under
 # its own tool name by ``Snapshot.run_tool``). It names the hook rather than
@@ -931,19 +926,34 @@ def _post_round_analyses(
     )
     from shrlm.experiment.incumbent_quality import TOOL_NAME as TOOL_NAME_INCUMBENT_QUALITY
     from shrlm.experiment.incumbent_quality import run_incumbent_quality
+    from shrlm.experiment.pattern_frequency_diff import MIN_DIFFABLE_BUNDLES
     from shrlm.experiment.pattern_frequency_diff import TOOL_NAME as TOOL_NAME_DIFF
     from shrlm.experiment.pattern_frequency_diff import run_pattern_frequency_diff
     from shrlm.experiment.rounds import discover_rounds
     from shrlm.experiment.surface_activity import TOOL_NAME as TOOL_NAME_SURFACE_ACTIVITY
     from shrlm.experiment.surface_activity import run_surface_activity
 
+    # One discovery pass for the whole batch: every analysis below, and the
+    # bundle list, ask the same question of the same unchanging tree, so a
+    # separate walk per analysis would only re-derive the same answer several
+    # times over.
+    inventory = discover_rounds(out_dir)
+
     analyses: list[tuple[str, Callable[[], Any]]] = [
         (
             TOOL_NAME_OPTIMIZATION,
-            lambda: run_collapse_and_attribution(out_dir, snapshot, phase=PHASE_OPTIMIZATION),
+            lambda: run_collapse_and_attribution(
+                out_dir, snapshot, phase=PHASE_OPTIMIZATION, inventory=inventory
+            ),
         ),
-        (TOOL_NAME_INCUMBENT_QUALITY, lambda: run_incumbent_quality(out_dir, snapshot)),
-        (TOOL_NAME_SURFACE_ACTIVITY, lambda: run_surface_activity(out_dir, snapshot)),
+        (
+            TOOL_NAME_INCUMBENT_QUALITY,
+            lambda: run_incumbent_quality(out_dir, snapshot, inventory=inventory),
+        ),
+        (
+            TOOL_NAME_SURFACE_ACTIVITY,
+            lambda: run_surface_activity(out_dir, snapshot, inventory=inventory),
+        ),
     ]
 
     # The bundles come from the shared inventory rather than a local walk, so
@@ -953,16 +963,27 @@ def _post_round_analyses(
     # partial round stays visible instead of silently vanishing.
     bundles = [
         record.mining_round_path / BUNDLE_FILENAME
-        for record in discover_rounds(out_dir).rounds
+        for record in inventory.rounds
         if (record.mining_round_path / BUNDLE_FILENAME).is_file()
     ]
+    # A frequency diff needs a pair to compare. Below this the aggregation
+    # refuses its arguments (correctly), which for a first round is the normal
+    # state and not a failure worth recording -- so it is left out of the
+    # batch instead.
     if len(bundles) >= MIN_DIFFABLE_BUNDLES:
-        analyses.append((TOOL_NAME_DIFF, lambda: run_pattern_frequency_diff(bundles, snapshot)))
+        analyses.append(
+            (
+                TOOL_NAME_DIFF,
+                lambda: run_pattern_frequency_diff(bundles, snapshot, inventory=inventory),
+            )
+        )
     if eval_summary_path(out_dir).is_file():
         analyses.append(
             (
                 TOOL_NAME_EVALUATION,
-                lambda: run_collapse_and_attribution(out_dir, snapshot, phase=PHASE_EVALUATION),
+                lambda: run_collapse_and_attribution(
+                    out_dir, snapshot, phase=PHASE_EVALUATION, inventory=inventory
+                ),
             )
         )
     return analyses

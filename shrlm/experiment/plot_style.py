@@ -215,6 +215,11 @@ def partial_rounds(rows: Iterable[Mapping[str, Any]]) -> set[int]:
     return partial
 
 
+def partial_tick_labels(rounds: Sequence[int], partial: Sequence[int] | set[int]) -> list[str]:
+    """Round tick labels, starred where the round is not confirmed complete (KTD9)."""
+    return [f"{index}*" if index in partial else str(index) for index in rounds]
+
+
 def partial_caption(
     partial: Sequence[int] | set[int], n_rounds: int, *, marker: str, source: str
 ) -> str | None:
@@ -310,6 +315,7 @@ __all__ = [
     "is_complete",
     "partial_caption",
     "partial_rounds",
+    "partial_tick_labels",
     "read_rows",
     "resolve_snapshot",
     "save_figure",

@@ -71,6 +71,11 @@ from shrlm.optimization.bundle import BUNDLE_FILENAME
 # improved/worsened flip.
 RATE_EPSILON = 1e-9
 
+# A diff needs two sides to compare; the orchestrator imports this rather than
+# hardcoding its own copy to decide whether this analysis is even worth
+# scheduling.
+MIN_DIFFABLE_BUNDLES = 2
+
 FILESYSTEM_SAFE_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
 STATUS_RESOLVED = "resolved"
@@ -355,21 +360,19 @@ def _dedupe_labels(bundles: list[_BundleSummary]) -> list[_BundleSummary]:
     return deduped
 
 
-def _matching_round(bundle_path: Path, inventory: ExperimentInventory) -> RoundRecord | None:
-    """The discovered round a bundle belongs to, or None when it belongs to none.
+def _rounds_by_bundle_path(inventory: ExperimentInventory) -> dict[Path, RoundRecord]:
+    """Every discovered round, keyed by the path the loop itself would have written its bundle to.
 
-    Matched on the path the loop itself would have written the bundle to
-    (``<mining round>/bundle.json``, from discovery) rather than on the
-    ``config.round_index`` the bundle carries: a bundle copied out of the tree,
-    or one from a different experiment, records a round index just as
-    convincingly as an in-tree one, and treating it as that round's evidence
-    would attach another experiment's completeness to it.
+    Built once per call rather than scanned per bundle: matching is on this
+    path (from discovery) rather than on the ``config.round_index`` the bundle
+    carries, because a bundle copied out of the tree, or one from a different
+    experiment, records a round index just as convincingly as an in-tree one,
+    and treating it as that round's evidence would attach another
+    experiment's completeness to it.
     """
-    resolved = bundle_path.resolve()
-    for record in inventory.rounds:
-        if (record.mining_round_path / BUNDLE_FILENAME).resolve() == resolved:
-            return record
-    return None
+    return {
+        (record.mining_round_path / BUNDLE_FILENAME).resolve(): record for record in inventory.rounds
+    }
 
 
 def bundle_completeness(
@@ -380,9 +383,10 @@ def bundle_completeness(
     Only a bundle whose round is KNOWN incomplete is excluded; unknown
     completeness is reported and included (see this module's docstring).
     """
+    rounds_by_path = _rounds_by_bundle_path(inventory)
     rows: list[BundleCompletenessRow] = []
     for bundle in bundles:
-        record = _matching_round(bundle.path, inventory)
+        record = rounds_by_path.get(bundle.path.resolve())
         excluded = record is not None and not record.evidence_complete
         reason = (
             f"round {record.round_index} is not evidence-complete: its mining evidence "
@@ -440,8 +444,10 @@ def run_pattern_frequency_diff(
     Returns every written CSV path: the completeness table, then one per
     diffed pair.
     """
-    if len(bundle_paths) < 2:
-        raise ValueError(f"need at least 2 bundle paths to diff, got {len(bundle_paths)}")
+    if len(bundle_paths) < MIN_DIFFABLE_BUNDLES:
+        raise ValueError(
+            f"need at least {MIN_DIFFABLE_BUNDLES} bundle paths to diff, got {len(bundle_paths)}"
+        )
     if labels is not None and len(labels) != len(bundle_paths):
         raise ValueError(
             f"--labels has {len(labels)} entries but {len(bundle_paths)} bundles were given"
@@ -473,7 +479,7 @@ def run_pattern_frequency_diff(
             continue
         sys.stderr.write(f"excluded {row.label} from the comparison: {row.exclusion_reason}\n")
     includable = [bundle for bundle, row in zip(bundles, completeness, strict=True) if row.included]
-    if len(includable) < 2:
+    if len(includable) < MIN_DIFFABLE_BUNDLES:
         sys.stderr.write(
             f"{len(includable)} of {len(bundles)} bundles are comparable; no pair was diffed. "
             f"See {bundles_path}\n"
@@ -548,8 +554,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if len(args.bundle_paths) < 2:
-        sys.stderr.write("need at least 2 bundle paths to diff\n")
+    if len(args.bundle_paths) < MIN_DIFFABLE_BUNDLES:
+        sys.stderr.write(f"need at least {MIN_DIFFABLE_BUNDLES} bundle paths to diff\n")
         return 1
 
     out_dir = Path(args.out_dir)
@@ -580,6 +586,7 @@ __all__ = [
     "BUNDLES_FILENAME",
     "BUNDLE_FIELDNAMES",
     "DIFF_FIELDNAMES",
+    "MIN_DIFFABLE_BUNDLES",
     "RATE_EPSILON",
     "STATUS_NEW",
     "STATUS_PERSISTED_IMPROVED",

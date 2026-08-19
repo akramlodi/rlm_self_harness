@@ -769,7 +769,6 @@ class CostReport:
 
 
 def collect_warnings(
-    config: ExperimentConfig,
     buckets: Sequence[RunBucket],
     counts: RunCounts,
     point: Projection,
@@ -910,7 +909,7 @@ def build_report(
         pessimistic=pessimistic,
         scenarios=scenarios,
         recommendation=recommend(scenarios, gates, accept_quantization=accept_quantization),
-        warnings=collect_warnings(config, buckets, counts, point, optimization_basis, summary),
+        warnings=collect_warnings(buckets, counts, point, optimization_basis, summary),
         disk=disk_footprint(out, sum(bucket.n_runs for bucket in buckets), counts.total_runs),
     )
 

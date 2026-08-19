@@ -61,6 +61,7 @@ from shrlm.experiment.plot_style import (
     draw_footer,
     partial_caption,
     partial_rounds,
+    partial_tick_labels,
     read_rows,
     resolve_snapshot,
     save_figure,
@@ -268,7 +269,7 @@ def build_figure(
     ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
     ax.set_yticklabels(["0%", "25%", "50%", "75%", "100%"])
     ax.set_xticks(rounds)
-    ax.set_xticklabels([f"{index}*" if index in partial else str(index) for index in rounds])
+    ax.set_xticklabels(partial_tick_labels(rounds, partial))
     ax.set_xlabel("round")
     ax.set_ylabel("pass rate")
     ax.set_title(
