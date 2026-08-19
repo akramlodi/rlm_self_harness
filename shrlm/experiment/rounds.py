@@ -17,7 +17,7 @@ Named ``rounds`` rather than ``walker`` because ``shrlm.optimization.walker``
 already means the trace-tree walker. The import direction is strictly
 ``shrlm.experiment`` -> ``shrlm.optimization``, never the reverse.
 
-Discovery answers two questions, and keeps them apart:
+Discovery answers three questions, and keeps them apart:
 
 *What exists.* Directory presence, not payload validity. A round directory the
 loop created is discovered even when nothing inside it finished -- including
@@ -49,6 +49,16 @@ eval set ``complete``the set's outcome is ``completed`` with no skipped runs;
 ``unknown`` is always its own value and never collapses into false: an
 unmeasurable round must never be presented as a failed one.
 
+*Which surface a ledger row touched.* ``resolve_surface`` (KTD3), the third
+question, because it is the same "read what the loop wrote" problem one level
+down: a row's ``surface`` is not always in the ledger, but the proposal
+artifact that named it is still on disk beside it. The ledger value wins when
+there is one; a missing OR null one is recovered by joining ``subject_id`` to
+the round's persisted proposals; the merged harness's record short-circuits to
+its own category, because a null surface is correct for a record that spans
+several (KTD7). Every answer carries the source it came from, so a recovered
+surface is never presented as a recorded one.
+
 Expected run counts, and why nothing is inferred from the runs (KTD6)
     ``n_expected = len(instances.jsonl) x repetitions``, with ``repetitions``
     read from the experiment config PER STAGE -- ``loop.m`` for mining,
@@ -72,7 +82,7 @@ Expected run counts, and why nothing is inferred from the runs (KTD6)
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -101,6 +111,8 @@ from shrlm.experiment.orchestrator import (
 from shrlm.optimization.bundle import ATTRIBUTIONS_FILENAME, RECORDS_FILENAME, round_dir
 from shrlm.optimization.costs import OUTCOME_COMPLETED
 from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, load_manifest
+from shrlm.optimization.promotion import MERGED_SUBJECT_ID
+from shrlm.optimization.proposal import PROPOSAL_FILENAME, PROPOSAL_FORMAT
 from shrlm.optimization.validation import (
     EVAL_ROUND_INDEX,
     PROMOTIONS_FILENAME,
@@ -119,6 +131,18 @@ ROUND_DIR_PREFIX = "round_"
 STAGE_MINING = "mining"
 STAGE_VALIDATION = "validation"
 STAGE_EVALUATION = "evaluation"
+
+# Where a ledger row's surface attribution came from (KTD3). Every analysis
+# that counts surfaces reports one of these beside the count, so a reader can
+# always tell a recorded surface from a reconstructed one.
+SURFACE_SOURCE_LEDGER = "ledger"
+SURFACE_SOURCE_BACKFILLED = "backfilled"
+SURFACE_SOURCE_MERGED = "merged"
+SURFACE_SOURCE_NONE = "none"
+
+# The tally the merged harness's own re-evaluation record belongs in: a
+# category beside the nine surfaces, never one of them (KTD7).
+MERGED_CATEGORY = MERGED_SUBJECT_ID
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +607,95 @@ def discover_rounds(
     )
 
 
+# ---------------------------------------------------------------------------
+# Surface attribution: the ledger first, the round's proposals second (KTD3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SurfaceAttribution:
+    """Which tally one ledger row belongs in, and where that came from.
+
+    ``category`` is one of the nine surface ids, the ``merged`` category, or
+    ``None`` when nothing on disk can place the row; ``source`` is the
+    ``SURFACE_SOURCE_*`` value naming the evidence. The two travel together on
+    purpose: a count of S3 touches means something different when the S3 came
+    out of a proposal artifact than when the ledger recorded it, and an output
+    that carried only the category would let the difference disappear.
+    """
+
+    category: str | None
+    source: str
+
+    @property
+    def is_merged(self) -> bool:
+        """Whether this is the merged harness's own record (never a surface)."""
+        return self.source == SURFACE_SOURCE_MERGED
+
+    @property
+    def unresolved(self) -> bool:
+        """Whether no tally could be found for the row -- the honest failure."""
+        return self.category is None
+
+
+def _proposal_surface(proposals_dir: Path, candidate_id: str) -> str | None:
+    """The surface the round's proposal for ``candidate_id`` declared, if any.
+
+    The join key is the ledger's ``subject_id`` against the proposal
+    directory's ``candidate_id`` -- ``write_proposal``'s own layout, read back
+    through the path discovery reports for the round rather than one rebuilt
+    here. A proposal that is absent, unreadable, of another format, or carrying
+    no surface resolves to ``None``: the row stays honestly unattributed rather
+    than borrowing a value from a file this analysis cannot vouch for.
+    """
+    if not candidate_id:
+        return None
+    payload = _read_marker(proposals_dir / candidate_id / PROPOSAL_FILENAME, PROPOSAL_FORMAT)
+    if payload is None:
+        return None
+    surface = payload.get("surface")
+    return None if surface is None else str(surface)
+
+
+def resolve_surface(record: Mapping[str, Any], round_record: RoundRecord) -> SurfaceAttribution:
+    """One ledger row's surface tally, backfilled from its proposal when needed.
+
+    Three steps, in this order (KTD3, KTD7):
+
+    1. ``MERGED_SUBJECT_ID`` short-circuits to the ``merged`` category. The
+       merged harness spans several surfaces by construction, so its null
+       surface is correct rather than missing -- backfilling it would invent a
+       single-surface claim the experiment never made.
+    2. A non-null ledger value is taken verbatim. The ledger is the evidence;
+       a proposal never overrides it.
+    3. A ``surface`` that is missing OR present-and-null triggers the proposal
+       join. Both spellings matter, and the second is the load-bearing one:
+       ``CandidateDecision.to_dict`` always emits the key, so every loader
+       rejection the current loop writes serializes as ``surface: null``, and a
+       backfill keyed on an absent key would never fire for anything but a
+       pre-``surface`` ledger.
+
+    Args:
+        record: One ``promotions.jsonl`` line.
+        round_record: That ledger's round, from discovery -- it carries the
+            proposals directory the join reads.
+
+    Returns:
+        The attribution: a surface id, the ``merged`` category, or ``None``
+        with ``SURFACE_SOURCE_NONE`` when no proposal survives to recover from.
+    """
+    subject_id = str(record.get("subject_id", ""))
+    if subject_id == MERGED_SUBJECT_ID:
+        return SurfaceAttribution(MERGED_CATEGORY, SURFACE_SOURCE_MERGED)
+    surface = record.get("surface")
+    if surface is not None:
+        return SurfaceAttribution(str(surface), SURFACE_SOURCE_LEDGER)
+    backfilled = _proposal_surface(round_record.proposals_dir, subject_id)
+    if backfilled is not None:
+        return SurfaceAttribution(backfilled, SURFACE_SOURCE_BACKFILLED)
+    return SurfaceAttribution(None, SURFACE_SOURCE_NONE)
+
+
 def iter_promotion_rounds(
     out_dir: Path | str,
 ) -> Iterator[tuple[int, list[dict[str, Any]], dict[str, Any]]]:
@@ -608,16 +721,23 @@ def iter_promotion_rounds(
 
 
 __all__ = [
+    "MERGED_CATEGORY",
     "STAGE_EVALUATION",
     "STAGE_MINING",
     "STAGE_VALIDATION",
+    "SURFACE_SOURCE_BACKFILLED",
+    "SURFACE_SOURCE_LEDGER",
+    "SURFACE_SOURCE_MERGED",
+    "SURFACE_SOURCE_NONE",
     "EvalSetRecord",
     "ExperimentInventory",
     "RoundRecord",
     "RunCounts",
     "StageRepetitions",
+    "SurfaceAttribution",
     "discover_rounds",
     "iter_promotion_rounds",
     "resolve_config",
+    "resolve_surface",
     "stage_repetitions",
 ]

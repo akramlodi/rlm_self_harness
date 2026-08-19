@@ -10,12 +10,33 @@ derives the running distinct-surface counts (``cumulative_surfaces_attempted``
 and the two grids (attempted, promoted) the heatmap needs -- both readable
 straight off the tidy table by pivoting on ``surface``.
 
-A record with ``surface`` null -- a loader-gate rejection whose surface was
-never resolved, or the merged harness's own re-evaluation record, which spans
-more than one surface -- is not a single-surface touch and is excluded from
-every surface-level count. It is not silently dropped, though: it is tallied
-into a parallel ``unattributed_rows_by_round`` table so a caller can see, per
-round, how many ledger rows the surface-level view could not place.
+Not every ledger row states its surface, and the ones that do not are not all
+the same case, so each row is placed through ``rounds.resolve_surface`` and
+every output cell carries the ``surface_source`` that placed it (KTD3):
+
+``ledger``
+    The ledger recorded the surface; it is used verbatim.
+``backfilled``
+    The ledger's value was missing or null and the round's persisted proposal
+    artifact supplied it. This covers every loader-gate rejection the running
+    loop writes -- ``CandidateDecision.to_dict`` always emits the key, so those
+    rows serialize as ``surface: null`` rather than as an absent key -- and
+    every pre-``surface`` ledger, whose rows have no key at all.
+``merged``
+    The merged harness's own re-evaluation record, which spans more than one
+    surface by construction. It is its own ``merged`` category row rather than
+    a missing S1-S9 touch (KTD7), so it is never backfilled and never counted
+    unattributed.
+``none``
+    Nothing on disk can place the row: no ledger value and no proposal to
+    recover one from. Only these rows are unattributed, and they are not
+    silently dropped -- they are tallied into a parallel
+    ``unattributed_rows_by_round`` table so a caller can see, per round, how
+    many rows the surface-level view genuinely could not place.
+
+A cell whose count mixes recorded and recovered rows reports ``backfilled``:
+the weaker claim is the true one for the cell as a whole. A cell nothing landed
+in reports ``none``, because no row attributed it.
 
 Every row also carries the round's completeness (R2, KTD9), read off the same
 discovery that found the ledger: ``round_complete`` (the loop's own round
@@ -51,7 +72,17 @@ from shrlm.experiment.analysis_io import (
     tristate,
     write_csv,
 )
-from shrlm.experiment.rounds import RoundRecord, discover_rounds, iter_promotion_rounds
+from shrlm.experiment.rounds import (
+    MERGED_CATEGORY,
+    SURFACE_SOURCE_BACKFILLED,
+    SURFACE_SOURCE_LEDGER,
+    SURFACE_SOURCE_MERGED,
+    SURFACE_SOURCE_NONE,
+    RoundRecord,
+    discover_rounds,
+    iter_promotion_rounds,
+    resolve_surface,
+)
 from shrlm.optimization.promotion import (
     DECISION_ACCEPTED,
     DECISION_PROMOTED,
@@ -63,6 +94,12 @@ from shrlm.optimization.validation import ROLE_CONSTITUENT
 # the output grid always has all nine columns even when a surface was never
 # touched in this run.
 CANONICAL_SURFACES: tuple[str, ...] = tuple(SURFACE_HARNESS_FIELDS)
+
+# Every row category the table emits per round: the nine surfaces plus the
+# merged harness's own category (KTD7). ``merged`` sits beside the surfaces
+# rather than among them -- it is not one of the nine, so it never joins the
+# distinct-surface cumulative counts and never appears in the S1-S9 heatmap.
+ROW_CATEGORIES: tuple[str, ...] = (*CANONICAL_SURFACES, MERGED_CATEGORY)
 
 SURFACE_ACTIVITY_FILENAME = "surface_activity.csv"
 UNATTRIBUTED_FILENAME = "surface_activity_unattributed.csv"
@@ -76,6 +113,7 @@ TOOL_NAME = "surface_activity"
 SURFACE_ACTIVITY_FIELDNAMES = (
     "round_index",
     "surface",
+    "surface_source",
     "attempted_count",
     "promoted_count",
     "cumulative_surfaces_attempted",
@@ -92,10 +130,15 @@ UNATTRIBUTED_WARN_FRACTION = 0.25
 
 @dataclass(frozen=True)
 class SurfaceActivityRow:
-    """One ``(round_index, surface)`` cell of the tidy output table."""
+    """One ``(round_index, surface)`` cell of the tidy output table.
+
+    ``surface`` is one of the nine surface ids or the ``merged`` category;
+    ``surface_source`` says what placed the rows counted here (KTD3).
+    """
 
     round_index: int
     surface: str
+    surface_source: str
     attempted_count: int
     promoted_count: int
     cumulative_surfaces_attempted: int
@@ -107,6 +150,7 @@ class SurfaceActivityRow:
         return {
             "round_index": self.round_index,
             "surface": self.surface,
+            "surface_source": self.surface_source,
             "attempted_count": self.attempted_count,
             "promoted_count": self.promoted_count,
             "cumulative_surfaces_attempted": self.cumulative_surfaces_attempted,
@@ -118,7 +162,12 @@ class SurfaceActivityRow:
 
 @dataclass(frozen=True)
 class UnattributedRow:
-    """One round's tally of surface-null ledger rows, for visibility."""
+    """One round's tally of ledger rows nothing on disk could place.
+
+    ``unattributed_count`` counts only ``SURFACE_SOURCE_NONE`` rows -- rows a
+    backfill could not recover and the merged category does not claim --
+    against ``total_rows``, every line the round's ledger holds.
+    """
 
     round_index: int
     unattributed_count: int
@@ -148,6 +197,23 @@ def _is_promoted(record: dict) -> bool:
     ) == ROLE_CONSTITUENT
 
 
+def _cell_source(category: str, cell_sources: set[str] | None) -> str:
+    """What placed the rows in one cell, as the cell reports it (KTD3).
+
+    A cell nothing landed in reports ``none`` -- no row attributed it. A cell
+    mixing recorded and recovered rows reports ``backfilled``, the weaker of
+    the two claims: part of that count was reconstructed from a proposal, and
+    a reader comparing it against a purely recorded cell must know that.
+    """
+    if category == MERGED_CATEGORY:
+        return SURFACE_SOURCE_MERGED
+    if not cell_sources:
+        return SURFACE_SOURCE_NONE
+    if SURFACE_SOURCE_BACKFILLED in cell_sources:
+        return SURFACE_SOURCE_BACKFILLED
+    return SURFACE_SOURCE_LEDGER
+
+
 def surface_activity_over_rounds(
     out_dir: Path | str,
 ) -> tuple[list[SurfaceActivityRow], list[UnattributedRow]]:
@@ -155,20 +221,24 @@ def surface_activity_over_rounds(
 
     Returns:
         ``(rows, unattributed)``: ``rows`` has one entry per
-        ``(round_index, surface)`` pair, dense over every round found and
-        every canonical S1-S9 surface (zero-filled where nothing happened);
-        ``unattributed`` has one entry per round with a nonzero row count
-        found on disk, even when its unattributed count is zero.
+        ``(round_index, category)`` pair, dense over every round found and
+        every row category -- the nine canonical surfaces plus ``merged`` --
+        zero-filled where nothing happened; ``unattributed`` has one entry per
+        round with a ledger on disk, even when its unattributed count is zero.
     """
-    # One discovery pass for the completeness every row carries; the ledger
-    # iteration below is built on the same inventory, so the two agree on which
-    # rounds exist by construction.
+    # One discovery pass for the completeness every row carries and for the
+    # proposals the backfill joins against; the ledger iteration below is built
+    # on the same inventory, so the two agree on which rounds exist by
+    # construction.
     discovered: dict[int, RoundRecord] = {
         record.round_index: record for record in discover_rounds(out_dir).rounds
     }
 
-    # counts[(round_index, surface)] = {"attempted_count": n, "promoted_count": n}
+    # counts[(round_index, category)] = {"attempted_count": n, "promoted_count": n}
     counts: dict[tuple[int, str], dict[str, int]] = {}
+    # The distinct sources that placed each cell's rows, so a cell built partly
+    # from recovered surfaces can say so.
+    sources: dict[tuple[int, str], set[str]] = {}
     unattributed_by_round: dict[int, int] = {}
     total_by_round: dict[int, int] = {}
     round_indices: list[int] = []
@@ -177,14 +247,15 @@ def surface_activity_over_rounds(
         round_indices.append(round_index)
         total_by_round[round_index] = len(records)
         unattributed_by_round[round_index] = 0
+        round_record = discovered[round_index]
         for record in records:
-            surface = record.get("surface")
-            if surface is None:
+            attribution = resolve_surface(record, round_record)
+            if attribution.category is None:
                 unattributed_by_round[round_index] += 1
                 continue
-            entry = counts.setdefault(
-                (round_index, surface), {"attempted_count": 0, "promoted_count": 0}
-            )
+            key = (round_index, attribution.category)
+            entry = counts.setdefault(key, {"attempted_count": 0, "promoted_count": 0})
+            sources.setdefault(key, set()).add(attribution.source)
             entry["attempted_count"] += 1
             if _is_promoted(record):
                 entry["promoted_count"] += 1
@@ -194,13 +265,19 @@ def surface_activity_over_rounds(
     ever_promoted: set[str] = set()
     for round_index in round_indices:
         round_entries = {
-            surface: counts.get((round_index, surface), {"attempted_count": 0, "promoted_count": 0})
-            for surface in CANONICAL_SURFACES
+            category: counts.get(
+                (round_index, category), {"attempted_count": 0, "promoted_count": 0}
+            )
+            for category in ROW_CATEGORIES
         }
         # All of this round's surfaces join the running sets before any row is
         # emitted, so every row for this round reports the *same* cumulative
-        # count -- "up through this round," independent of iteration order.
-        for surface, entry in round_entries.items():
+        # count -- "up through this round," independent of iteration order. The
+        # merged category is deliberately not a member: it is not one of the
+        # nine, and counting it would push the "distinct surfaces of 9" line
+        # above what the experiment actually touched.
+        for surface in CANONICAL_SURFACES:
+            entry = round_entries[surface]
             if entry["attempted_count"] > 0:
                 ever_attempted.add(surface)
             if entry["promoted_count"] > 0:
@@ -208,12 +285,13 @@ def surface_activity_over_rounds(
         cumulative_attempted = len(ever_attempted)
         cumulative_promoted = len(ever_promoted)
         record = discovered.get(round_index)
-        for surface in CANONICAL_SURFACES:
-            entry = round_entries[surface]
+        for category in ROW_CATEGORIES:
+            entry = round_entries[category]
             rows.append(
                 SurfaceActivityRow(
                     round_index=round_index,
-                    surface=surface,
+                    surface=category,
+                    surface_source=_cell_source(category, sources.get((round_index, category))),
                     attempted_count=entry["attempted_count"],
                     promoted_count=entry["promoted_count"],
                     cumulative_surfaces_attempted=cumulative_attempted,
@@ -310,9 +388,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if entry.total_rows and entry.unattributed_count / entry.total_rows > UNATTRIBUTED_WARN_FRACTION:
             sys.stderr.write(
                 f"warning: round {entry.round_index} has {entry.unattributed_count}/"
-                f"{entry.total_rows} ledger rows with no resolved surface (loader "
-                "rejections and/or a merged-harness record) -- surface-level counts "
-                "for this round are undercounting activity\n"
+                f"{entry.total_rows} ledger rows no surface could be resolved for: "
+                "no surface in the ledger and no proposal artifact left on disk to "
+                "recover one from -- surface-level counts for this round are "
+                "undercounting activity\n"
             )
 
     sys.stdout.write(f"Wrote {activity_path}\n")
@@ -326,6 +405,7 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
 
 __all__ = [
     "CANONICAL_SURFACES",
+    "ROW_CATEGORIES",
     "SURFACE_ACTIVITY_FIELDNAMES",
     "SURFACE_ACTIVITY_FILENAME",
     "TOOL_NAME",
