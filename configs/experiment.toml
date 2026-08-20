@@ -64,7 +64,7 @@ max_iterations = 30
 max_depth = 1
 # The one hard cost guarantee: the spend breaker terminates any run that
 # exceeds this, so total exposure is bounded by total_runs x max_budget
-# regardless of what the optimization loop does -- 25,260 x $0.10 = $2,526.
+# regardless of what the optimization loop does -- 24,270 x $0.10 = $2,427.
 # Smoke measurements put the mean run at $0.0024-$0.0134 and the single most
 # expensive run at $0.0409, so this leaves ~2.4x headroom over anything yet
 # observed. Raise it if pilot long runs start landing as lower bounds: a cap
