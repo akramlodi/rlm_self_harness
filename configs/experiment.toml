@@ -93,7 +93,11 @@ context_length_short = 8192 # tokens; 32x pairing per section 3.10 row 4
 context_length_long = 262144
 max_scan = 50000 # cap on raw dataset rows streamed while collecting windows
 n_short = 40 # target-short test size
-n_long = 150 # target-long test size
+n_long = 40 # target-long test size; the upstream ceiling, not a choice:
+# the trec_coarse validation split ships only 2 distinct context windows per
+# context length, and the loader pairs each window with the 20 task_ids above,
+# so 2 x 20 = 40 is every instance that exists at 262,144. A larger value fails
+# the coverage gate in load_oolong_pairs before any spend.
 
 [backends.runner]
 backend = "openrouter"
