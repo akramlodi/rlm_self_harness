@@ -30,6 +30,7 @@ at the path discovery reports for the round, never at a locally assembled one.
 """
 
 import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -43,10 +44,13 @@ from shrlm.experiment.rounds import (
     SURFACE_SOURCE_LEDGER,
     SURFACE_SOURCE_MERGED,
     SURFACE_SOURCE_NONE,
+    SURFACE_SOURCE_UNDECLARED,
+    SURFACE_SOURCE_UNKNOWN,
     discover_rounds,
     resolve_surface,
 )
 from shrlm.experiment.surface_activity import (
+    CANONICAL_SURFACES,
     SURFACE_ACTIVITY_FIELDNAMES,
     SURFACE_ACTIVITY_FILENAME,
     UNATTRIBUTED_FILENAME,
@@ -56,6 +60,8 @@ from shrlm.experiment.surface_activity import (
     surface_activity_over_rounds,
     write_surface_activity,
 )
+from shrlm.optimization.candidates import SURFACE_SERIALIZATION_KEYS
+from shrlm.optimization.driver import HARNESS_FILE
 from shrlm.optimization.promotion import (
     DECISION_ACCEPTED,
     DECISION_PROMOTED,
@@ -71,6 +77,7 @@ from shrlm.optimization.validation import (
     ROLE_MERGED,
 )
 from tests.experiment.test_rounds import (
+    PRE_S10_HARNESS_PATH,
     complete_round,
     read_csv,
     record_for,
@@ -366,6 +373,159 @@ class TestSurfaceActivityBackfill:
 
     def test_the_table_declares_the_surface_source_column(self) -> None:
         assert "surface_source" in SURFACE_ACTIVITY_FIELDNAMES
+
+
+# ---------------------------------------------------------------------------
+# Declared vs untouched vs unknown (U9, R13, KTD6)
+# ---------------------------------------------------------------------------
+
+
+def harness_path(out_dir: Path, round_index: int) -> Path:
+    """The round's own ``harness.json``, at the path discovery reports for it."""
+    return record_for(out_dir, round_index).mining_round_path / HARNESS_FILE
+
+
+def make_pre_s10(out_dir: Path, round_index: int) -> None:
+    """Replace the round's harness document with the pinned pre-S10 one.
+
+    The committed ``examples/mining_rounds/round_00/harness.json`` is the one
+    nine-surface document the current writer can no longer produce; copying its
+    bytes (never editing them) is how a fabricated round becomes a round of that
+    vintage.
+    """
+    shutil.copyfile(PRE_S10_HARNESS_PATH, harness_path(out_dir, round_index))
+
+
+class TestDeclaredVsUntouched:
+    """Three per-cell states, and the existing ladder untouched beneath them.
+
+    ``undeclared`` is "not in that round's harness", ``unknown`` is "that
+    round's harness could not be read", and ``none`` keeps meaning "declared,
+    and nothing touched it". None of the three is a missing attribution.
+    """
+
+    def test_s10_is_undeclared_in_a_round_whose_harness_predates_it(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        """Read from the pinned committed document, not a fabricated one."""
+        write_round(experiment, 1, [ledger_record("r01-c01-s4", surface="S4")])
+        make_pre_s10(experiment, 1)
+        document = json.loads(harness_path(experiment, 1).read_text())
+        assert "S10_skills" not in document["harness"]["surfaces"]
+
+        rows = written_activity(snapshot, experiment)
+        s10 = cell(rows, 1, "S10")
+        assert s10["surface_source"] == SURFACE_SOURCE_UNDECLARED
+        assert s10["attempted_count"] == "0"
+        # The nine it did declare keep the existing vocabulary.
+        assert cell(rows, 1, "S4")["surface_source"] == SURFACE_SOURCE_LEDGER
+        assert cell(rows, 1, "S1")["surface_source"] == SURFACE_SOURCE_NONE
+
+    def test_s10_declared_and_untouched_reads_none(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        write_round(experiment, 1, [ledger_record("r01-c01-s4", surface="S4")])
+        document = json.loads(harness_path(experiment, 1).read_text())
+        assert "S10_skills" in document["harness"]["surfaces"]
+
+        rows = written_activity(snapshot, experiment)
+        s10 = cell(rows, 1, "S10")
+        assert s10["surface_source"] == SURFACE_SOURCE_NONE
+        assert s10["attempted_count"] == "0"
+
+    def test_a_round_with_no_readable_harness_is_unknown_not_undeclared(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        write_round(experiment, 1, [ledger_record("r01-c01-s4", surface="S4")])
+        harness_path(experiment, 1).unlink()
+
+        rows = written_activity(snapshot, experiment)
+        for surface in CANONICAL_SURFACES:
+            assert cell(rows, 1, surface)["surface_source"] == SURFACE_SOURCE_UNKNOWN, surface
+        # Unknown wins over the ledger's own attribution for the cell's source;
+        # the count itself is still reported.
+        assert cell(rows, 1, "S4")["attempted_count"] == "1"
+        assert SURFACE_SOURCE_UNDECLARED not in {row["surface_source"] for row in rows}
+
+    def test_an_undeclared_cell_is_not_tallied_as_unattributed(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        """An absent surface is not a missing attribution."""
+        write_round(experiment, 1, [ledger_record("r01-c01-s4", surface="S4")])
+        make_pre_s10(experiment, 1)
+
+        written_activity(snapshot, experiment)
+        (tally,) = written_unattributed(snapshot, experiment)
+        assert tally["unattributed_count"] == "0"
+        assert tally["total_rows"] == "1"
+
+    def test_an_unknown_round_does_not_change_the_unattributed_tally(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        write_round(experiment, 1, [ledger_record("r01-c01-s4", surface="S4")])
+        harness_path(experiment, 1).unlink()
+
+        (tally,) = written_unattributed(snapshot, experiment)
+        assert tally["unattributed_count"] == "0"
+
+    @pytest.mark.parametrize("vintage", ["pre_s10", "unreadable"])
+    def test_the_merged_category_resolves_before_the_declared_check(
+        self, experiment: Path, snapshot: Snapshot, vintage: str
+    ) -> None:
+        write_round(
+            experiment,
+            1,
+            [ledger_record(MERGED_SUBJECT_ID, decision=DECISION_PROMOTED, role=ROLE_MERGED)],
+        )
+        if vintage == "pre_s10":
+            make_pre_s10(experiment, 1)
+        else:
+            harness_path(experiment, 1).write_text("not json")
+
+        rows = written_activity(snapshot, experiment)
+        merged = cell(rows, 1, MERGED_CATEGORY)
+        assert merged["surface_source"] == SURFACE_SOURCE_MERGED
+        assert merged["attempted_count"] == "1"
+
+    def test_a_mixed_vintage_tree_marks_exactly_the_pre_s10_cells_undeclared(
+        self, experiment: Path, snapshot: Snapshot
+    ) -> None:
+        """The CSV reads ``undeclared`` for every undeclared cell and nowhere else."""
+        write_round(experiment, 1, [ledger_record("r01-c01-s4", surface="S4")])
+        make_pre_s10(experiment, 1)
+        write_round(experiment, 2, [ledger_record("r02-c01-s2", surface="S2")])
+
+        rows = written_activity(snapshot, experiment)
+        undeclared = {
+            (row["round_index"], row["surface"])
+            for row in rows
+            if row["surface_source"] == SURFACE_SOURCE_UNDECLARED
+        }
+        assert undeclared == {("1", "S10")}
+        assert cell(rows, 2, "S10")["surface_source"] == SURFACE_SOURCE_NONE
+        assert SURFACE_SOURCE_UNKNOWN not in {row["surface_source"] for row in rows}
+        # The running distinct-surface counts are unaffected by declaration.
+        assert cell(rows, 2, "S2")["cumulative_surfaces_attempted"] == "2"
+        # Declared-surface rows still span every canonical surface in both rounds.
+        for round_index in (1, 2):
+            assert {row["surface"] for row in rows if row["round_index"] == str(round_index)} == {
+                *SURFACE_SERIALIZATION_KEYS,
+                MERGED_CATEGORY,
+            }
+
+    def test_the_fieldnames_are_unchanged(self) -> None:
+        """Two new values in an existing column, not a new column."""
+        assert SURFACE_ACTIVITY_FIELDNAMES == (
+            "round_index",
+            "surface",
+            "surface_source",
+            "attempted_count",
+            "promoted_count",
+            "cumulative_surfaces_attempted",
+            "cumulative_surfaces_promoted",
+            "round_complete",
+            "runs_complete",
+        )
 
 
 # ---------------------------------------------------------------------------

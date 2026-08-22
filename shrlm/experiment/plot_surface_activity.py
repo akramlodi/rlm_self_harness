@@ -7,16 +7,28 @@ one PNG with two panels into that same snapshot's ``plots/`` directory:
 - **Panel A**: the running distinct-surface counts as two step functions --
   ``cumulative_surfaces_attempted`` (dashed) and ``cumulative_surfaces_promoted``
   (solid) -- against a y=9 "all surfaces" reference line.
-- **Panel B**: two S1-S9 x round heatmaps, one for ``attempted_count`` and one
-  for ``promoted_count``, sharing one color scale and colorbar so the two are
-  directly comparable (promoted is always <= attempted, and the shared scale
-  makes that visible rather than each heatmap re-normalizing to its own max).
+- **Panel B**: two surface x round heatmaps, one for ``attempted_count`` and
+  one for ``promoted_count``, sharing one color scale and colorbar so the two
+  are directly comparable (promoted is always <= attempted, and the shared
+  scale makes that visible rather than each heatmap re-normalizing to its own
+  max).
 
-Only the nine canonical surfaces enter either panel. The table also carries a
+Only the canonical surfaces enter either panel. The table also carries a
 ``merged`` category row per round (KTD7) -- the merged harness spans several
-surfaces by construction, so it is neither a tenth heatmap row nor part of the
-distinct-surface counts; the lookups here are keyed by ``CANONICAL_SURFACES``,
-which is what keeps it inert.
+surfaces by construction, so it is neither an extra heatmap row nor part of
+the distinct-surface counts; the lookups here are keyed by
+``CANONICAL_SURFACES``, which is what keeps it inert.
+
+A zero-count heatmap cell is not one thing (R13). The table's
+``surface_source`` column says which, per cell, and Panel B draws the three
+states differently: a surface the round's harness declared and nothing touched
+is the blank cell; a surface that round's harness never declared (a pre-S10
+round's S10 cell) is a crosshatched grey cell; a cell whose round's harness
+could not be read at all is a dotted-outline cell with a ``?`` -- unknown,
+never folded into either of the other two. ``declared_surfaces_by_round``
+reads the same column back into a per-round declared set, which is what a
+per-round total has to be derived from rather than from the current code's
+surface count.
 
 Rounds the aggregation could not confirm complete (``round_complete`` or
 ``runs_complete`` not ``true``) are marked with a hatched band behind Panel A
@@ -47,6 +59,7 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import Rectangle
 
 from shrlm.experiment.analysis_io import PLOTS_DIR
 from shrlm.experiment.plot_style import (
@@ -71,6 +84,7 @@ from shrlm.experiment.plot_style import (
     resolve_snapshot,
     save_figure,
 )
+from shrlm.experiment.rounds import SURFACE_SOURCE_UNDECLARED, SURFACE_SOURCE_UNKNOWN
 from shrlm.experiment.surface_activity import (
     CANONICAL_SURFACES,
     SURFACE_ACTIVITY_FILENAME,
@@ -79,6 +93,16 @@ from shrlm.experiment.surface_activity import (
 )
 
 OUTPUT_FILENAME = "surface_activity.png"
+
+# How Panel B marks the two cell states a zero count cannot show (R13). The
+# gid prefixes are what a test reads back; the hatch is deliberately not
+# ``PARTIAL_HATCH`` (the partial-round band in Panel A), so a reader never sees
+# the same texture mean two things on one figure.
+UNDECLARED_GID_PREFIX = "undeclared-"
+UNKNOWN_GID_PREFIX = "unknown-"
+UNDECLARED_HATCH = "xxx"
+UNKNOWN_LINESTYLE = ":"
+UNKNOWN_GLYPH = "?"
 
 # The palette's blue sequential ramp, steps 100->700 (references/palette.md).
 # Single-consumer, so it stays here rather than in ``plot_style``.
@@ -229,6 +253,123 @@ def _grid_for(activity_rows: list[dict], rounds: list[int], metric: str) -> list
     return [[by_key.get((r, s), 0) for r in rounds] for s in CANONICAL_SURFACES]
 
 
+def _cell_sources(activity_rows: list[dict]) -> dict[tuple[int, str], str]:
+    """``(round_index, surface) -> surface_source`` for every canonical-surface row."""
+    return {
+        (row["round_index"], row["surface"]): row["surface_source"]
+        for row in activity_rows
+        if row["surface"] in CANONICAL_SURFACES
+    }
+
+
+def declared_surfaces_by_round(activity_rows: list[dict]) -> dict[int, frozenset[str] | None]:
+    """Each round's declared surface set, read back off the table's own cells (R13).
+
+    The aggregation already resolved every cell against the round's persisted
+    ``harness.json`` (``rounds.declared_surfaces``) and wrote the verdict into
+    ``surface_source``, so the figure re-derives the per-round set from that
+    column rather than walking the experiment tree again -- the snapshot's
+    frozen CSV is the figure's only input (KTD2). A round with any ``unknown``
+    cell is ``None``: its harness could not be read, so no count is true of
+    it. Every other round's set is the canonical surfaces minus the cells it
+    marked ``undeclared``. This is the per-round total a reference line or
+    axis label must derive from, never the current code's surface count.
+    """
+    sources = _cell_sources(activity_rows)
+    rounds = sorted({row["round_index"] for row in activity_rows})
+    declared: dict[int, frozenset[str] | None] = {}
+    for round_index in rounds:
+        per_surface = {
+            surface: sources.get((round_index, surface)) for surface in CANONICAL_SURFACES
+        }
+        if SURFACE_SOURCE_UNKNOWN in per_surface.values():
+            declared[round_index] = None
+            continue
+        declared[round_index] = frozenset(
+            surface
+            for surface, source in per_surface.items()
+            if source != SURFACE_SOURCE_UNDECLARED
+        )
+    return declared
+
+
+def _mark_cell_states(
+    ax: "plt.Axes",
+    rounds: list[int],
+    grid: list[list[int]],
+    sources: dict[tuple[int, str], str],
+) -> None:
+    """Overlay the undeclared / unknown marks on one heatmap (R13).
+
+    Drawn as patches over the image rather than as a third colour on the ramp,
+    so the colour scale keeps meaning "count" and nothing else. An undeclared
+    cell is filled grey and crosshatched; an unknown cell is a dotted outline
+    with a ``?``. The fill is only laid down over a zero count -- a non-zero
+    count under either mark (a ledger naming a surface the harness did not
+    declare) would be evidence, and evidence is never painted over.
+    """
+    for row_index, surface in enumerate(CANONICAL_SURFACES):
+        for col_index, round_index in enumerate(rounds):
+            source = sources.get((round_index, surface))
+            if source not in (SURFACE_SOURCE_UNDECLARED, SURFACE_SOURCE_UNKNOWN):
+                continue
+            value = grid[row_index][col_index]
+            if source == SURFACE_SOURCE_UNDECLARED:
+                ax.add_patch(
+                    Rectangle(
+                        (col_index - 0.5, row_index - 0.5),
+                        1,
+                        1,
+                        facecolor=GRIDLINE if value == 0 else "none",
+                        edgecolor=BASELINE,
+                        hatch=UNDECLARED_HATCH,
+                        linewidth=0,
+                        zorder=2,
+                        gid=f"{UNDECLARED_GID_PREFIX}{round_index}-{surface}",
+                    )
+                )
+                continue
+            ax.add_patch(
+                Rectangle(
+                    (col_index - 0.5, row_index - 0.5),
+                    1,
+                    1,
+                    facecolor="none",
+                    edgecolor=MUTED_INK,
+                    linestyle=UNKNOWN_LINESTYLE,
+                    linewidth=1,
+                    zorder=2,
+                    gid=f"{UNKNOWN_GID_PREFIX}{round_index}-{surface}",
+                )
+            )
+            if value == 0:
+                ax.text(
+                    col_index,
+                    row_index,
+                    UNKNOWN_GLYPH,
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color=MUTED_INK,
+                )
+
+
+def _declaration_caption(activity_rows: list[dict]) -> str | None:
+    """The legend line for whichever of the two marks the figure actually drew."""
+    present = set(_cell_sources(activity_rows).values())
+    notes = []
+    if SURFACE_SOURCE_UNDECLARED in present:
+        notes.append("Grey crosshatched cell: surface not declared in that round's harness.")
+    if SURFACE_SOURCE_UNKNOWN in present:
+        notes.append(
+            f"Dotted '{UNKNOWN_GLYPH}' cell: that round's harness could not be read, so its "
+            "declared surfaces are unknown."
+        )
+    if not notes:
+        return None
+    return " ".join(notes)
+
+
 def _plot_heatmaps(
     fig: "plt.Figure",
     axes: Sequence["plt.Axes"],
@@ -240,6 +381,7 @@ def _plot_heatmaps(
     attempted_grid = _grid_for(activity_rows, rounds, "attempted_count")
     promoted_grid = _grid_for(activity_rows, rounds, "promoted_count")
     vmax = max(1, max(max(row) for row in attempted_grid))
+    sources = _cell_sources(activity_rows)
 
     images = []
     titles = ["attempted_count", "promoted_count"]
@@ -265,6 +407,7 @@ def _plot_heatmaps(
         ax.tick_params(length=0)
         for spine in ax.spines.values():
             spine.set_visible(False)
+        _mark_cell_states(ax, rounds, grid, sources)
         # Sparing direct labels: only nonzero cells, so the grid stays legible.
         for row_index, row in enumerate(grid):
             for col_index, value in enumerate(row):
@@ -352,6 +495,7 @@ def build_figure(snapshot_dir: Path | str, *, rendered_at: datetime | None = Non
             source=SURFACE_ACTIVITY_FILENAME,
         ),
         _unattributed_caption(unattributed_rows),
+        _declaration_caption(activity_rows),
     ]
     text = "\n".join(caption for caption in captions if caption)
     if text:
@@ -420,4 +564,14 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
 
 
-__all__ = ["OUTPUT_FILENAME", "PLOTS_DIR", "build_figure", "main", "plot_surface_activity"]
+__all__ = [
+    "OUTPUT_FILENAME",
+    "PLOTS_DIR",
+    "UNDECLARED_GID_PREFIX",
+    "UNDECLARED_HATCH",
+    "UNKNOWN_GID_PREFIX",
+    "build_figure",
+    "declared_surfaces_by_round",
+    "main",
+    "plot_surface_activity",
+]

@@ -39,7 +39,13 @@ from shrlm.experiment.incumbent_quality import (  # noqa: E402
     INCUMBENT_QUALITY_FIELDNAMES,
     INCUMBENT_QUALITY_FILENAME,
 )
+from shrlm.experiment.rounds import (  # noqa: E402
+    SURFACE_SOURCE_NONE,
+    SURFACE_SOURCE_UNDECLARED,
+    SURFACE_SOURCE_UNKNOWN,
+)
 from shrlm.experiment.surface_activity import (  # noqa: E402
+    CANONICAL_SURFACES,
     SURFACE_ACTIVITY_FIELDNAMES,
     SURFACE_ACTIVITY_FILENAME,
     UNATTRIBUTED_FIELDNAMES,
@@ -69,6 +75,7 @@ def _activity_row(
     round_index: int,
     surface: str = "S1",
     *,
+    source: str = "ledger",
     attempted: int = 1,
     promoted: int = 1,
     cumulative_attempted: int = 1,
@@ -79,7 +86,7 @@ def _activity_row(
     return {
         "round_index": round_index,
         "surface": surface,
-        "surface_source": "ledger",
+        "surface_source": source,
         "attempted_count": attempted,
         "promoted_count": promoted,
         "cumulative_surfaces_attempted": cumulative_attempted,
@@ -285,6 +292,131 @@ def test_surface_merged_row_stays_inert_in_the_heatmaps(tmp_path: Path) -> None:
         )
     finally:
         plot_sa.plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Undeclared, unknown, and zero-activity-declared cells render differently (R13)
+# ---------------------------------------------------------------------------
+
+
+def _heatmap_axes(fig) -> list:
+    """Panel B's two heatmap axes: the ones carrying an image."""
+    axes = [ax for ax in fig.axes if ax.images]
+    assert len(axes) == 2, "expected exactly two heatmap axes"
+    return axes
+
+
+def _state_patches(ax, prefix: str) -> list:
+    return [patch for patch in ax.patches if (patch.get_gid() or "").startswith(prefix)]
+
+
+def test_surface_heatmap_renders_the_three_cell_states_distinctly(tmp_path: Path) -> None:
+    """Undeclared, unknown, and declared-but-untouched are three different marks.
+
+    Round 1 never declared S10 (a pre-S10 harness), round 2's harness could
+    not be read, and round 3 declared S10 and left it alone. All three S10
+    cells hold a zero count, so the count alone cannot tell them apart -- the
+    mark has to.
+    """
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [
+            _activity_row(1, "S1"),
+            _activity_row(1, "S10", source=SURFACE_SOURCE_UNDECLARED, attempted=0, promoted=0),
+            _activity_row(2, "S1", source=SURFACE_SOURCE_UNKNOWN),
+            _activity_row(2, "S10", source=SURFACE_SOURCE_UNKNOWN, attempted=0, promoted=0),
+            _activity_row(3, "S1"),
+            _activity_row(3, "S10", source=SURFACE_SOURCE_NONE, attempted=0, promoted=0),
+        ],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        for ax in _heatmap_axes(fig):
+            undeclared = _state_patches(ax, plot_sa.UNDECLARED_GID_PREFIX)
+            unknown = _state_patches(ax, plot_sa.UNKNOWN_GID_PREFIX)
+            assert {patch.get_gid() for patch in undeclared} == {
+                f"{plot_sa.UNDECLARED_GID_PREFIX}1-S10"
+            }
+            # Every cell of an unknown round is unknown, S1 included.
+            assert {patch.get_gid() for patch in unknown} == {
+                f"{plot_sa.UNKNOWN_GID_PREFIX}2-S1",
+                f"{plot_sa.UNKNOWN_GID_PREFIX}2-S10",
+            }
+            # The declared-and-untouched cell carries no mark at all: it is the
+            # blank cell the heatmap already draws for a zero count.
+            assert not [patch for patch in ax.patches if (patch.get_gid() or "").endswith("3-S10")]
+            # And the two marks are not the same mark.
+            assert all(patch.get_hatch() == plot_sa.UNDECLARED_HATCH for patch in undeclared)
+            assert all(patch.get_hatch() != plot_sa.UNDECLARED_HATCH for patch in unknown)
+            assert all(patch.get_linestyle() != undeclared[0].get_linestyle() for patch in unknown)
+        caption = _figure_text(fig)
+        assert "not declared" in caption
+        assert "could not be read" in caption
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_surface_mixed_vintage_tree_marks_only_the_pre_s10_cells(tmp_path: Path) -> None:
+    """A pre-S10 round beside a post-S10 round: one undeclared mark, at (1, S10)."""
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [
+            _activity_row(1, "S2"),
+            _activity_row(1, "S10", source=SURFACE_SOURCE_UNDECLARED, attempted=0, promoted=0),
+            _activity_row(2, "S2"),
+            _activity_row(2, "S10", attempted=1, promoted=0, cumulative_attempted=2),
+        ],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        for ax in _heatmap_axes(fig):
+            assert {
+                patch.get_gid() for patch in _state_patches(ax, plot_sa.UNDECLARED_GID_PREFIX)
+            } == {f"{plot_sa.UNDECLARED_GID_PREFIX}1-S10"}
+            assert not _state_patches(ax, plot_sa.UNKNOWN_GID_PREFIX)
+        caption = _figure_text(fig)
+        assert "not declared" in caption
+        assert "could not be read" not in caption
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_a_fully_declared_tree_draws_no_declaration_marks_or_caption(tmp_path: Path) -> None:
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [_activity_row(1, "S1"), _activity_row(1, "S10", source=SURFACE_SOURCE_NONE, attempted=0)],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        for ax in _heatmap_axes(fig):
+            assert not _state_patches(ax, plot_sa.UNDECLARED_GID_PREFIX)
+            assert not _state_patches(ax, plot_sa.UNKNOWN_GID_PREFIX)
+        caption = _figure_text(fig)
+        assert "not declared" not in caption
+        assert "could not be read" not in caption
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_declared_surfaces_by_round_is_read_off_the_table() -> None:
+    """The per-round declared set a figure may derive totals from (for U8)."""
+    rows = [
+        _activity_row(1, "S1"),
+        _activity_row(1, "S10", source=SURFACE_SOURCE_UNDECLARED, attempted=0),
+        _activity_row(2, "S1", source=SURFACE_SOURCE_UNKNOWN),
+        _activity_row(3, "S1"),
+        _activity_row(3, "S10", source=SURFACE_SOURCE_NONE, attempted=0),
+        _activity_row(3, "merged", source="merged", attempted=0),
+    ]
+
+    declared = plot_sa.declared_surfaces_by_round(rows)
+    assert declared[1] == frozenset(CANONICAL_SURFACES) - {"S10"}
+    assert declared[2] is None
+    assert declared[3] == frozenset(CANONICAL_SURFACES)
+    assert "merged" not in declared[3]
 
 
 # ---------------------------------------------------------------------------

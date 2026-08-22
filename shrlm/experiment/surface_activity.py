@@ -25,20 +25,39 @@ every output cell carries the ``surface_source`` that placed it (KTD3):
 ``merged``
     The merged harness's own re-evaluation record, which spans more than one
     surface by construction. It is its own ``merged`` category row rather than
-    a missing S1-S9 touch (KTD7), so it is never backfilled and never counted
+    a missing surface touch (KTD7), so it is never backfilled and never counted
     unattributed.
 ``none``
     Nothing on disk can place the row: no ledger value and no proposal to
     recover one from, OR the value found names something outside this table's
-    fixed S1-S9/``merged`` vocabulary (a malformed or future-vocabulary ledger
-    entry) and so cannot become a column here either way. Only these rows are
-    unattributed, and they are not silently dropped -- they are tallied into a
-    parallel ``unattributed_rows_by_round`` table so a caller can see, per
-    round, how many rows the surface-level view genuinely could not place.
+    fixed surface/``merged`` vocabulary (a malformed or future-vocabulary
+    ledger entry) and so cannot become a column here either way. Only these
+    rows are unattributed, and they are not silently dropped -- they are
+    tallied into a parallel ``unattributed_rows_by_round`` table so a caller
+    can see, per round, how many rows the surface-level view genuinely could
+    not place.
+
+Two further values describe the *cell* against the round's own declared
+surface set (R13, KTD6), read by ``rounds.declared_surfaces`` off the
+``harness.json`` the driver froze into that round -- not off the current code,
+whose surface set a back-filled round may never have had:
+
+``undeclared``
+    The round's harness did not declare this surface at all (a round persisted
+    before S10 existed has nine declared surfaces, and its S10 cell is this).
+    An absent surface, not a missing attribution: never tallied unattributed.
+``unknown``
+    The round's ``harness.json`` is absent or unreadable, so nothing can be
+    said about what it declared; the cell's count is still reported. Unknown
+    never collapses into ``undeclared`` or ``none`` (KTD9's discipline).
+
+Both are resolved ahead of the empty-cell case, so ``none`` keeps meaning
+exactly "declared, and nothing touched it"; ``merged`` still short-circuits
+first, because the merged category is never one of the declared surfaces.
 
 A cell whose count mixes recorded and recovered rows reports ``backfilled``:
-the weaker claim is the true one for the cell as a whole. A cell nothing landed
-in reports ``none``, because no row attributed it.
+the weaker claim is the true one for the cell as a whole. A declared cell
+nothing landed in reports ``none``, because no row attributed it.
 
 Every row also carries the round's completeness (R2, KTD9), read off the same
 discovery that found the ledger: ``round_complete`` (the loop's own round
@@ -81,8 +100,11 @@ from shrlm.experiment.rounds import (
     SURFACE_SOURCE_LEDGER,
     SURFACE_SOURCE_MERGED,
     SURFACE_SOURCE_NONE,
+    SURFACE_SOURCE_UNDECLARED,
+    SURFACE_SOURCE_UNKNOWN,
     ExperimentInventory,
     RoundRecord,
+    declared_surfaces,
     discover_rounds,
     iter_promotion_rounds,
     resolve_surface,
@@ -94,15 +116,17 @@ from shrlm.optimization.promotion import (
 )
 from shrlm.optimization.validation import ROLE_CONSTITUENT
 
-# S1..S9 in the codebase's canonical order (shrlm.optimization.promotion), so
-# the output grid always has all nine columns even when a surface was never
-# touched in this run.
+# Every declared surface in the codebase's canonical order
+# (shrlm.optimization.promotion), so the output grid always has a row per
+# surface the current code declares even when a surface was never touched in
+# this run. Whether a given ROUND declared each of them is a per-cell fact
+# (``surface_source`` = ``undeclared``), not a property of this tuple.
 CANONICAL_SURFACES: tuple[str, ...] = tuple(SURFACE_HARNESS_FIELDS)
 
-# Every row category the table emits per round: the nine surfaces plus the
-# merged harness's own category (KTD7). ``merged`` sits beside the surfaces
-# rather than among them -- it is not one of the nine, so it never joins the
-# distinct-surface cumulative counts and never appears in the S1-S9 heatmap.
+# Every row category the table emits per round: the canonical surfaces plus
+# the merged harness's own category (KTD7). ``merged`` sits beside the surfaces
+# rather than among them -- it is not a surface, so it never joins the
+# distinct-surface cumulative counts and never appears in the surface heatmap.
 ROW_CATEGORIES: tuple[str, ...] = (*CANONICAL_SURFACES, MERGED_CATEGORY)
 
 SURFACE_ACTIVITY_FILENAME = "surface_activity.csv"
@@ -136,8 +160,9 @@ UNATTRIBUTED_WARN_FRACTION = 0.25
 class SurfaceActivityRow:
     """One ``(round_index, surface)`` cell of the tidy output table.
 
-    ``surface`` is one of the nine surface ids or the ``merged`` category;
-    ``surface_source`` says what placed the rows counted here (KTD3).
+    ``surface`` is one of the canonical surface ids or the ``merged`` category;
+    ``surface_source`` says what placed the rows counted here (KTD3), or that
+    the round's harness did not declare the surface / could not be read (R13).
     """
 
     round_index: int
@@ -202,16 +227,28 @@ def _is_promoted(record: dict) -> bool:
     )
 
 
-def _cell_source(category: str, cell_sources: set[str] | None) -> str:
-    """What placed the rows in one cell, as the cell reports it (KTD3).
+def _cell_source(
+    category: str, cell_sources: set[str] | None, declared: frozenset[str] | None
+) -> str:
+    """What placed the rows in one cell, as the cell reports it (KTD3, R13).
 
-    A cell nothing landed in reports ``none`` -- no row attributed it. A cell
-    mixing recorded and recovered rows reports ``backfilled``, the weaker of
-    the two claims: part of that count was reconstructed from a proposal, and
-    a reader comparing it against a purely recorded cell must know that.
+    The ladder, in order: the merged category is its own thing and never a
+    declared surface, so it short-circuits first; then the round's declared
+    set decides whether the cell exists at all -- ``unknown`` when the round's
+    harness could not be read, ``undeclared`` when it was read and does not
+    carry this surface -- and only a declared cell goes on to the row-level
+    resolution. A declared cell nothing landed in reports ``none`` -- no row
+    attributed it. A cell mixing recorded and recovered rows reports
+    ``backfilled``, the weaker of the two claims: part of that count was
+    reconstructed from a proposal, and a reader comparing it against a purely
+    recorded cell must know that.
     """
     if category == MERGED_CATEGORY:
         return SURFACE_SOURCE_MERGED
+    if declared is None:
+        return SURFACE_SOURCE_UNKNOWN
+    if category not in declared:
+        return SURFACE_SOURCE_UNDECLARED
     if not cell_sources:
         return SURFACE_SOURCE_NONE
     if SURFACE_SOURCE_BACKFILLED in cell_sources:
@@ -232,9 +269,11 @@ def surface_activity_over_rounds(
     Returns:
         ``(rows, unattributed)``: ``rows`` has one entry per
         ``(round_index, category)`` pair, dense over every round found and
-        every row category -- the nine canonical surfaces plus ``merged`` --
-        zero-filled where nothing happened; ``unattributed`` has one entry per
-        round with a ledger on disk, even when its unattributed count is zero.
+        every row category -- the canonical surfaces plus ``merged`` --
+        zero-filled where nothing happened (a surface the round's harness did
+        not declare is still a row, marked ``undeclared``); ``unattributed``
+        has one entry per round with a ledger on disk, even when its
+        unattributed count is zero.
     """
     # One discovery pass for the completeness every row carries and for the
     # proposals the backfill joins against; the ledger iteration below is built
@@ -260,7 +299,7 @@ def surface_activity_over_rounds(
         for record in records:
             attribution = resolve_surface(record, round_record)
             if attribution.category is None or attribution.category not in ROW_CATEGORIES:
-                # A category outside the fixed S1-S9/merged vocabulary this
+                # A category outside the fixed surface/merged vocabulary this
                 # table emits (a malformed or future-vocabulary ledger value)
                 # is tallied here rather than silently dropped: the row loop
                 # below only ever reads ROW_CATEGORIES keys out of ``counts``,
@@ -288,9 +327,9 @@ def surface_activity_over_rounds(
         # All of this round's surfaces join the running sets before any row is
         # emitted, so every row for this round reports the *same* cumulative
         # count -- "up through this round," independent of iteration order. The
-        # merged category is deliberately not a member: it is not one of the
-        # nine, and counting it would push the "distinct surfaces of 9" line
-        # above what the experiment actually touched.
+        # merged category is deliberately not a member: it is not a surface,
+        # and counting it would push the distinct-surfaces line above what the
+        # experiment actually touched.
         for surface in CANONICAL_SURFACES:
             entry = round_entries[surface]
             if entry["attempted_count"] > 0:
@@ -300,13 +339,19 @@ def surface_activity_over_rounds(
         cumulative_attempted = len(ever_attempted)
         cumulative_promoted = len(ever_promoted)
         record = discovered.get(round_index)
+        # What THIS round's persisted harness declared (R13, KTD6): ``None``
+        # when its document cannot be read, so every surface cell below reads
+        # ``unknown`` rather than borrowing the current code's surface set.
+        declared = None if record is None else declared_surfaces(record)
         for category in ROW_CATEGORIES:
             entry = round_entries[category]
             rows.append(
                 SurfaceActivityRow(
                     round_index=round_index,
                     surface=category,
-                    surface_source=_cell_source(category, sources.get((round_index, category))),
+                    surface_source=_cell_source(
+                        category, sources.get((round_index, category)), declared
+                    ),
                     attempted_count=entry["attempted_count"],
                     promoted_count=entry["promoted_count"],
                     cumulative_surfaces_attempted=cumulative_attempted,
