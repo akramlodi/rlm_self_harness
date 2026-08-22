@@ -50,10 +50,10 @@ One candidate = one directory = one `proposal.json`:
   },
   "surface": "S4",
   "harness": {
-    "format": "shrlm-harness/v1",
+    "format": "shrlm-harness/v2",
     "name": "r00-c01-s4-verify",
     "hash": "<sha256 of the serialization below>",
-    "harness": { "name": "...", "orchestrator": false, "surfaces": { "...": "all nine" } }
+    "harness": { "name": "...", "orchestrator": false, "surfaces": { "...": "all ten" } }
   },
   "predicted_effect": "The root re-checks accumulated results against the frontier before flipping ready.",
   "regression_risks": ["One extra turn per run; may over-trigger on short tasks."],
@@ -70,18 +70,21 @@ One candidate = one directory = one `proposal.json`:
 | `candidate_id` | string | Stable identity; equals the directory name; filesystem-safe. |
 | `base_harness_hash` | string | `harness_hash(...)` of the harness this edit starts from. Must be the current incumbent or the candidate is rejected. |
 | `target_signature` | object | The four φ strings of the mined failure pattern this edit targets, verbatim from the bundle's `patterns[i].signature`. Each value must be in the closed vocabulary of `shrlm/optimization/taxonomy.py` (`VerifierCause`, `FailingLevel`, `CausalStatus`, `AgentMechanism`). |
-| `surface` | string | The one declared surface the edit modifies: `"S1"`–`"S9"`. Must equal the surface the serialization actually differs on. |
-| `harness` | object | A full `shrlm-harness/v1` envelope (below) — the *entire* candidate harness, not a delta. |
+| `surface` | string | The one declared surface the edit modifies: `"S1"`–`"S10"`. Must equal the surface the serialization actually differs on. |
+| `harness` | object | A full `shrlm-harness/v2` envelope (below) — the *entire* candidate harness, not a delta. |
 | `predicted_effect` | string | Non-empty. What behavior the edit is predicted to change (the paper's audit record). |
 | `regression_risks` | list of strings | What the edit might break. May be empty, but must be present. |
 | `provenance` | object | `model` (the fixed proposer model) and `prompt_sha256` (sha256 of the exact proposer prompt), both non-empty strings. |
 
 ## The harness payload: a full envelope, not a delta
 
-The `harness` field is a `shrlm-harness/v1` envelope, exactly what
+The `harness` field is a `shrlm-harness/v2` envelope, exactly what
 `shrlm.harness_identity.write_harness_json` produces: `format`, informational
-`name`, content `hash`, and the full `harness` serialization of all nine
-surfaces plus the `orchestrator` scalar. Build it in code — construct the edited
+`name`, content `hash`, and the full `harness` serialization of all ten
+surfaces (eleven keys, since S8 serializes as two and S10 as `S10_skills`)
+plus the `orchestrator` scalar. The tag moved from `v1` to `v2` when S10 was
+declared, so a nine-surface document is rejected at the schema gate as the
+wrong envelope rather than accepted and mis-hashed. Build it in code — construct the edited
 `Harness` with `dataclasses.replace(incumbent, <field>=...)` and serialize it
 through `serialize_harness` / `hash_of_serialization`; never assemble the JSON
 by hand.
@@ -93,7 +96,15 @@ Rules the loader enforces against the incumbent:
   ("modifies no surface"); two or more surfaces changed → rejected naming all
   of them; the changed surface must be the declared `surface`. S8 counts as
   one surface even though it serializes as two keys (`S8_repl_helpers` and
-  `S8_sub_repl_helpers`) — editing both dicts is still one edit.
+  `S8_sub_repl_helpers`) — editing both dicts is still one edit. S10
+  serializes as one key, `S10_skills`: a list of `{name, description, body}`
+  string records with unique names. The schema gate checks that shape (so
+  `SkillEntry(**record)` cannot raise at materialization); the proposal
+  layer's `skills` edit kind and `check_harness` enforce the caps (8 entries;
+  name 40, description 200, body 4000 characters; 16000 total), REPL-safe
+  identifier names, brace-free one-line descriptions, and bodies of at least
+  two step-marked lines. Entries are data, not callables: they travel inline
+  and are never written to `surfaces.py`.
 - **`orchestrator` is not editable.** A candidate that flips it is rejected.
 - **`name` is free.** It is informational and excluded from the hash; give the
   candidate harness a name matching the `candidate_id`.
@@ -159,7 +170,7 @@ candidate, including the ones that never ran.
 | 4 | `surface_diff` | Exactly one surface differs, and it is the declared one; `orchestrator` untouched | No |
 | 5 | `caps` | An *enabled* S6 policy may not exceed any experiment-owned cap (e.g. `max_depth`), and every capped value must be a positive finite number (NaN/inf rejected); comparison only — the tighten-only merge lives in the cost governor | No |
 | 6 | `materialization` | Source parses, writes to `surfaces.py`, imports — in a subprocess under a wall-clock timeout | Subprocess only |
-| 7 | `harness_check` | `shrlm.runner.check_harness`: invariant probes (I1 boundedness, S9 signature/return type, S6 field vocabulary, plumbing, stated limits) — same subprocess | Subprocess only |
+| 7 | `harness_check` | `shrlm.runner.check_harness`: invariant probes (I1 boundedness, S9 signature/return type, S6 field vocabulary, S10 caps and shape, plumbing including the `load_skill` name reservation against S8, prompt format safety, stated limits in the prompt and in each skill body) — same subprocess | Subprocess only |
 | 8 | `round_trip` | The materialized harness re-serializes byte-identically to the envelope | Subprocess only |
 
 The gate subprocess runs with a stripped environment: the child inherits only a

@@ -62,7 +62,7 @@ visualizer/                             web visualizer (Node.js + shadcn/ui) for
 tests/                                  unit tests and test utilities
 ```
 
-How it fits together: The `rlm/` package implements the runtime client, REPL environments, logging, and utilities used when running RLMs. The `shrlm/` package provides the self-harness specification (S1–S9), structural checks (I1–I3), and helpers to build and serialize harnesses for reproducible experiments. The `training/` directory holds training harnesses and example environments (including `oolong`) that depend on the core packages. The `visualizer/` is a separate frontend that reads JSONL logs written by `RLMLogger` in order to show call graphs, code, and sub-call traces.
+How it fits together: The `rlm/` package implements the runtime client, REPL environments, logging, and utilities used when running RLMs. The `shrlm/` package provides the self-harness specification (S1–S10), structural checks (I1–I3), and helpers to build and serialize harnesses for reproducible experiments. The `training/` directory holds training harnesses and example environments (including `oolong`) that depend on the core packages. The `visualizer/` is a separate frontend that reads JSONL logs written by `RLMLogger` in order to show call graphs, code, and sub-call traces.
 
 Where to look next:
 - rlm/Readme.md — runtime usage and REPL environments

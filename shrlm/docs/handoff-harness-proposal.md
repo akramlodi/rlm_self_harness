@@ -67,7 +67,7 @@ Practical consequences for your proposer:
 
 ## What is a "harness" here, concretely?
 
-A `Harness` is a frozen dataclass in `shrlm/rlm_harness.py` with **nine editable surfaces** — think of them as nine named slots:
+A `Harness` is a frozen dataclass in `shrlm/rlm_harness.py` with **ten editable surfaces** — think of them as ten named slots:
 
 | ID | Surface | What it is |
 |----|---------|------------|
@@ -78,8 +78,9 @@ A `Harness` is a frozen dataclass in `shrlm/rlm_harness.py` with **nine editable
 | S5 | `recovery_instruction` | Text: what to do when something fails |
 | S6 | `runtime_policy` | A dict of enforced limits (batch caps, retries...) |
 | S7 | `metadata` | A function that describes the stored prompt to the model |
-| S8 | `repl_helpers` / `sub_repl_helpers` | Python helper functions injected into the REPL |
+| S8 | `repl_helpers` / `sub_repl_helpers` | Proposer-written Python helper functions injected into the REPL (the harness-installed `load_skill` loader is S10 scaffold, not an S8 entry) |
 | S9 | `answer_middleware` | A function that inspects/redirects the final answer |
+| S10 | `skills` | A list of `SkillEntry(name, description, body)` records — reusable procedures: the name/description index goes into the system prompt, and `load_skill(name)` in the REPL returns a body on demand |
 
 A "harness edit" = a new `Harness` value that changes **exactly one** of these slots (use `dataclasses.replace(H0, execution_instruction="...")`). Everything else — the model, the evaluator, the task — is off-limits by design.
 
@@ -126,7 +127,7 @@ Load it and look at `patterns` — a ranked list of recurring failure patterns. 
 
 Two lookup tables in `shrlm/optimization/taxonomy.py` turn a pattern into an editable target:
 
-- `MECHANISM_SURFACE[mechanism]` → the ONE surface (S1–S9) that mechanism implicates
+- `MECHANISM_SURFACE[mechanism]` → the ONE surface (S1–S10) that mechanism implicates
 - `SURFACE_REACH[surface]` → `root_only` or `child_reachable`. **Important:** a `failing_level: child` pattern must not be "fixed" by editing a root-only surface (S6/S7/S9) — the edit can't reach where the failure happens.
 
 Also read `bundle.json`'s `integrity` section: it tells you how many records were unattributed (the labeler's response never validated), ungrounded, or terminated — i.e., how much of the evidence to trust.

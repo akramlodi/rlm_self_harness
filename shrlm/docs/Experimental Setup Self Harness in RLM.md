@@ -12,7 +12,7 @@ The RLM architecture is defined by three invariant properties that no harness ed
 2. The root model issues sub-calls to fresh copies of itself programmatically, over slices or transformations of that variable.  
 3. Sub-call outputs are accumulated into variables and composed programmatically into the final answer.
 
-Nine harness surfaces remain editable throughout optimization, each corresponding to a declared position in the RLM turn loop:
+Ten harness surfaces remain editable throughout optimization, each corresponding to a declared position in the RLM turn loop:
 
 | Surface | Governs |
 | ----- | ----- |
@@ -23,10 +23,11 @@ Nine harness surfaces remain editable throughout optimization, each correspondin
 | S5 — Recovery instruction | What the root does when a sub-call errors or returns something unusable. |
 | S6 — Runtime policy | Numeric limits and switches: chars per prompt, batch width, max calls per turn/total, recursion depth, retry-on-error, sub-output validation. |
 | S7 — Metadata function | What carries across turns — the harness's memory of prior calls. |
-| S8 — REPL helpers | Harness-local functions and data injected into the REPL namespace (chunkers, batch wrappers, etc.). |
+| S8 — REPL helpers | Proposer-written functions and data injected into the REPL namespace (chunkers, batch wrappers, etc.); the harness-installed skill loader is S10 scaffold, not an S8 entry. |
 | S9 — Answer middleware | Programmatic inspection of the detected final answer, with the ability to redirect (suppress and continue) rather than accept it. |
+| S10 — Skills | The skill library: named, reusable procedures available across turns. Only a name-plus-description index is rendered into the system prompt; a body is returned on demand by a fixed `load_skill(name)` loader the runner installs in the root and child REPLs. |
 
-At initialization (harness B1) all nine surfaces are set to minimal/unmodified defaults; a candidate edit targets exactly one surface per proposal.
+At initialization (harness B1) all ten surfaces are set to minimal/unmodified defaults; a candidate edit targets exactly one surface per proposal. Skills are declared separately from S8 because the reference harness declares `build_skills` as its own configuration point, and because a procedure the root reads on demand is a different object from a namespace of helpers the root calls; S10 was added to the declared set on 2026-08-22, and Section 3.11 records that amendment.
 
 ## **3.1 Environments and data splits**
 
@@ -57,7 +58,7 @@ Starting from the unmodified harness B1, optimization proceeds for up to `T = 15
 
 **(1) Weakness mining.** The current harness is run on all `n_in` held-in instances, `m = 2` times each, using an auxiliary sub-verifier to score both the final answer and intermediate sub-call outputs. Each failure is recorded as a structured record capturing the verifier's stated cause, the level (root vs. child) at which it occurred, its causal status relative to the final error, and the harness mechanism implicated. Failure records are clustered into a small number of dominant patterns, which form the evidence bundle passed to proposal.
 
-**(2) Harness proposal.** Conditioned on the evidence bundle, the model proposes `K = 4` candidate edits per round, each a minimal, targeted modification to exactly one of the nine editable surfaces (S1–S9, Section 3.0), addressing one mined failure pattern.
+**(2) Harness proposal.** Conditioned on the evidence bundle, the model proposes `K = 4` candidate edits per round, each a minimal, targeted modification to exactly one of the ten editable surfaces (S1–S10, Section 3.0), addressing one mined failure pattern.
 
 **(3) Proposal validation.** Each of the `K` candidates, together with the current (pre-round) harness as a baseline, is evaluated on held-in ∪ held-out (`n_in + n_ho` instances), `v = 4` times each. A candidate is **promoted** if it produces no accuracy regression exceeding a preregistered threshold `τ = [placeholder — set from pilot variance measurements, Section 3.9; a value of zero recovers the strict non-regression rule of Zhang et al.]` (calibrated against baseline run-to-run variance measured in the pilot, Section 3.9) and its per-instance cost falls within a preregistered band `[cost_min, cost_max] = [placeholder — set from pilot, Section 3.9]`. If multiple compatible candidates are promoted in the same round, the merged harness (all promoted edits applied jointly) is additionally re-evaluated before being accepted as the round's output; if the merge itself regresses, the round promotes nothing rather than falling back to individually accepted edits.
 
@@ -90,7 +91,7 @@ Once the stopping criterion in Section 3.2 is met, the harness is frozen and rec
 
 Three harness conditions share the frozen backbone and decoding configuration described in Section 3.0:
 
-* **B1** — the unmodified reference RLM harness (all nine editable surfaces at their initial/minimal state), unchanged throughout.  
+* **B1** — the unmodified reference RLM harness (all ten editable surfaces at their initial/minimal state), unchanged throughout.  
 * **H1 (λ-RLM)** — a hand-engineered harness from prior work, held fixed and used as an upper-bound reference for manually designed harness engineering.  
 * **SH-RLM** — the frozen output of the optimization procedure in Sections 3.2–3.3.
 
@@ -162,9 +163,21 @@ Prior to the main experiment, a small-scale pilot is run on both environments (s
 | 14 | Statistical \+ trace analysis | Compute CIs, paired significance tests, failure-pattern frequency before/after, whole-input collapse rate, root/child failure attribution |
 | 15  | Alignment drift probe (optional) | Score refusal/harmful-answer rates across the promoted-harness lineage to check for unintended compliance drift  |
 
+## **3.11 Preregistration amendments**
+
+Changes to the preregistered scaffold made after the first experiment trees were persisted are recorded here, dated, so that this document and the repository's own evidence can be read together. None alters the promotion rule, the invariants, or the evaluation.
+
+**2026-08-22 — tenth surface, S10 (skills).** The declared surface set was nine (S1–S9) before this date and is ten after it. Every `harness.json` committed under `experiment_smoke/` and `examples/` — in particular `experiment_smoke/opt/round_01` and `examples/mining_rounds/round_00` — was persisted under the nine-surface `shrlm-harness/v1` envelope and is preserved byte-unchanged as the pre-S10 evidence; the envelope is now `shrlm-harness/v2` (eleven serialization keys, including `S10_skills`), the taxonomy version moved from 2.0.0 to 3.0.0 (the mechanism-frequency comparison does not diff bundles across that boundary unless explicitly told to), and the B1 harness hash moved from `95a4ed2e…` to `bbfdbcfd…`. Per-surface analyses mark the S10 cell of a pre-S10 round as *undeclared* rather than untouched, and read each round's reference total from its own persisted harness, so Graph 1 over those rounds shows nine declared levers, not ten.
+
+Two aspects of S10 are this project's instantiation choices, not reference-inherited. The entry shape is a `list[SkillEntry]` (`name`, one-line `description`, `body` inline), where the reference declares `list[str]` of skill paths. Bodies are served on demand by `load_skill(name)`, a fixed, non-proposable loader the runner installs in both the root and child REPL namespaces only when S10 is non-empty; it is scaffold, never serialized and never an S8 entry, and its rendered tool line and the one-sentence index wrapper are unhashed prompt bytes — byte-pinned in tests, with any change recorded as a dated amendment here and in the round manifest rather than made silently between rounds.
+
+**2026-08-22 — `caps.max_depth` in `configs/experiment.toml` raised from 1 to 2.** At depth 1 every sub-call is a bare completion with no system prompt and no REPL, so no child could see the skill index or call the loader. At depth 2, `rlm_query` children are real RLMs that inherit the prompt and the child namespace; `llm_query` sub-calls and depth-2 leaves remain bare completions, reachable only by the root interpolating a loaded body into the sub-call prompt. The committed smoke and mining-round trees ran at depth 1. Per-run exposure is still bounded by `max_budget` and the cost band is unchanged; the pilot (Section 3.9) must re-measure mean and worst-case run cost at depth 2 before the headroom stated in the configuration is trusted.
+
+**Accepted false positive.** A promoted skill the root never loads is behaviorally the incumbent, and its promotion is a false positive the preregistered band cannot distinguish from a real effect. The per-run loader-invocation count is recorded in run metrics and in each validation round summary for audit only; the promotion rule and its bands are unchanged, so such a promotion remains possible and is accepted as a preregistered-band false positive rather than screened out by a surface-specific admission criterion no other surface faces.
+
 # Graphs: **Graph 1 — Harness complexity / levers touched**
 
-## **Simple version:** Your harness has 9 editable "levers" (surfaces S1–S9). Most start empty or generic. As the optimization loop runs round after round, it tries changing different levers, and some of those changes stick. This graph shows, over time, how many levers have been touched and how often.
+## **Simple version:** Your harness has 10 editable "levers" (surfaces S1–S10). Most start empty or generic. As the optimization loop runs round after round, it tries changing different levers, and some of those changes stick. This graph shows, over time, how many levers have been touched and how often.
 
 ## **In detail, two panels:**
 
@@ -180,15 +193,15 @@ Prior to the main experiment, a small-scale pilot is run on both environments (s
 
 * ## Since every promoted edit was necessarily attempted first, the promoted line is always at or below the attempted line — same color, different line style, to show that relationship rather than looking like two unrelated things.
 
-* ## A horizontal line at y=9 marks the ceiling — all levers touched.
+* ## A stepped reference line marks the ceiling — all the levers that round's harness declared (10 under the current contract, 9 for rounds persisted before S10 was declared), read from the round's own saved harness rather than from a fixed number.
 
 ## *Panel B — the heatmaps (where, not just how many)*
 
-* ## Two grids: surfaces S1–S9 down one axis, rounds across the other.
+* ## Two grids: surfaces S1–S10 down one axis, rounds across the other.
 
 * ## One grid colored by attempt count, one by promotion count, sharing a single color scale so you can compare them directly.
 
-* ## Cells with zero activity are left blank (not a faint color), so you can immediately see which levers were never touched at all — this matters because your harness starts with 7 of 9 levers empty/generic by design, so "still blank at round 10" is meaningful information.
+* ## Cells with zero activity are left blank (not a faint color), so you can immediately see which levers were never touched at all — this matters because your harness starts with 8 of 10 levers empty/generic by design, so "still blank at round 10" is meaningful information. A lever a round's harness never declared (S10 in a pre-S10 round) is drawn as a crosshatched grey cell, distinct from blank.
 
 ## **What it tells you, together:** whether the loop explores broadly (many surfaces get attempted) or narrowly (it keeps hammering the same one or two), and separately, whether that exploration converts into real change (attempted stays much higher than promoted \= lots of wasted effort) or converges efficiently (the two lines stay close together).
 
