@@ -4,7 +4,7 @@ Stage 2 (the proposer, another developer's work) hands stage 3 a directory of
 candidates, one ``proposal.json`` per candidate directory. Each proposal is the
 paper's audit record — candidate identity, base-harness hash, targeted failure
 signature, predicted behavioral effect, regression risks, proposer provenance —
-wrapped around a full ``shrlm-harness/v1`` envelope (KTD1: a whole serialized
+wrapped around a full ``shrlm-harness/v2`` envelope (KTD1: a whole serialized
 harness, never a surface delta; the one-surface rule is enforced by diffing the
 candidate serialization against the incumbent's, which is stricter than
 trusting a declared delta). The schema stage 2 targets is documented in
@@ -81,7 +81,7 @@ from shrlm.rlm_harness import Harness
 from shrlm.runner import check_harness
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
-HARNESS_FORMAT = "shrlm-harness/v1"
+HARNESS_FORMAT = "shrlm-harness/v2"
 PROPOSAL_FILENAME = "proposal.json"
 MODULE_FILENAME = "surfaces.py"
 
@@ -333,8 +333,12 @@ def _schema_violation(payload: Any) -> str | None:
         if not isinstance(provenance.get(field), str) or not provenance[field]:
             return f"provenance.{field} must be a non-empty string"
     envelope = payload.get("harness")
-    if not isinstance(envelope, dict) or envelope.get("format") != HARNESS_FORMAT:
+    if not isinstance(envelope, dict):
         return f"harness must be a {HARNESS_FORMAT!r} envelope"
+    if envelope.get("format") != HARNESS_FORMAT:
+        return (
+            f"harness must be a {HARNESS_FORMAT!r} envelope, got format {envelope.get('format')!r}"
+        )
     if not isinstance(envelope.get("hash"), str):
         return "harness.hash must be a string"
     serialization = envelope.get("harness")

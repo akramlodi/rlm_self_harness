@@ -79,7 +79,7 @@ from shrlm.rlm_harness import Harness, build_runtime_policy
 from shrlm.runner import declared_metadata_bound
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
-HARNESS_FORMAT = "shrlm-harness/v1"
+HARNESS_FORMAT = "shrlm-harness/v2"
 PROPOSAL_FILENAME = "proposal.json"
 
 PROMPT_VERSION = "1.0.0"

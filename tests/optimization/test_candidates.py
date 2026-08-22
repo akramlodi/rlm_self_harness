@@ -1,7 +1,7 @@
 """Tests for the stage-2 candidate contract loader (``shrlm-proposal/v1``).
 
 The loader is the stage boundary: everything stage 2 hands over arrives as one
-``proposal.json`` whose harness payload is a full ``shrlm-harness/v1`` envelope,
+``proposal.json`` whose harness payload is a full ``shrlm-harness/v2`` envelope,
 and every gate failure must come back as a structured ``CandidateRejection``,
 never an exception. The gates run in KTD2's order: text-level first (schema,
 envelope hash recompute, base-hash match, one-surface diff, cap comparison),
@@ -137,7 +137,7 @@ TARGET_SIGNATURE = {
 def envelope_for(harness) -> dict[str, Any]:
     serialization = serialize_harness(harness)
     return {
-        "format": "shrlm-harness/v1",
+        "format": "shrlm-harness/v2",
         "name": serialization["name"],
         "hash": hash_of_serialization(serialization),
         "harness": serialization,
@@ -367,6 +367,18 @@ def test_schema_gate_names_the_violation(tmp_path, override, expected_fragment):
     assert isinstance(result, CandidateRejection)
     assert result.gate == "schema"
     assert expected_fragment in result.reason
+
+
+def test_pre_s10_v1_harness_envelope_is_a_version_rejection_naming_both_tags(tmp_path):
+    """A nine-surface ``shrlm-harness/v1`` envelope must die at the format check
+    with a version error, not later as a shape error (KTD3)."""
+    payload = proposal_payload(s2_candidate(), "S2")
+    payload["harness"]["format"] = "shrlm-harness/v1"
+    result = load_candidate(write_payload(tmp_path, payload), H0)
+    assert isinstance(result, CandidateRejection)
+    assert result.gate == "schema"
+    assert "shrlm-harness/v2" in result.reason
+    assert "shrlm-harness/v1" in result.reason
 
 
 def test_unparseable_proposal_is_a_schema_rejection(tmp_path):

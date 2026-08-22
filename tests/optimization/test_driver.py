@@ -429,7 +429,7 @@ class TestRoundIdentity:
             (round_dir(config.out_dir, config.round_index) / "harness.json").read_text()
         )
         assert envelope["hash"] == harness_hash(H0)
-        assert envelope["format"] == "shrlm-harness/v1"
+        assert envelope["format"] == "shrlm-harness/v2"
 
     def test_instances_jsonl_round_trips(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)
