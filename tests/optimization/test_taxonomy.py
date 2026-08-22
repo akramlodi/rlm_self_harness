@@ -29,7 +29,8 @@ from shrlm.optimization.taxonomy import (
     render_surface_block,
     render_taxonomy_block,
 )
-from shrlm.rlm_harness import SURFACES
+from shrlm.optimization.types import FailureSignature
+from shrlm.rlm_harness import SKILL_LOADER_NAME, SURFACES
 
 # Mechanisms whose documented meaning is a child's own behavior rather than the
 # root's: INSUFFICIENT_RECURSION ("a sub-call received a piece ... and answered
@@ -82,8 +83,8 @@ class TestSurfaceAgreementWithHarness:
 
 
 class TestCoverageInvariants:
-    def test_fifteen_concrete_mechanisms_plus_other(self):
-        assert len(AgentMechanism) == 16
+    def test_sixteen_concrete_mechanisms_plus_other(self):
+        assert len(AgentMechanism) == 17
         assert AgentMechanism.OTHER in AgentMechanism
 
     def test_every_mechanism_is_documented(self):
@@ -98,7 +99,7 @@ class TestCoverageInvariants:
     def test_other_has_no_surface_by_design(self):
         assert AgentMechanism.OTHER not in MECHANISM_SURFACE
 
-    def test_reachable_surfaces_are_exactly_the_nine_declared_surfaces(self):
+    def test_reachable_surfaces_are_exactly_the_ten_declared_surfaces(self):
         # Compared against the harness declaration, not the enum, so a shrunken
         # or drifted mapping fails even if the enum drifts with it.
         assert {surface.value for surface in MECHANISM_SURFACE.values()} == set(SURFACES)
@@ -138,8 +139,80 @@ class TestCoverageInvariants:
     def test_taxonomy_version_is_a_semver_string(self):
         assert re.fullmatch(r"\d+\.\d+\.\d+", TAXONOMY_VERSION)
 
-    def test_taxonomy_version_is_the_nine_surface_contract(self):
-        assert TAXONOMY_VERSION == "2.0.0"
+    def test_taxonomy_version_is_the_ten_surface_contract(self):
+        # 3.0.0: S10 joined the surface contract (one new mechanism, one new
+        # reach entry), so bundles written under 2.0.0 are not comparable.
+        assert TAXONOMY_VERSION == "3.0.0"
+
+
+class TestSkillsSurface:
+    """S10 is declared, reachable, and addressable -- never declared-but-dead.
+
+    The plan's stop condition: a surface no mined mechanism can reach is a
+    worse artifact than no surface, because it inflates the denominator of
+    every "fraction of surfaces modified" figure while never being proposable.
+    """
+
+    def test_s10_is_the_skills_surface(self):
+        assert EditableSurface.SKILLS.value == "S10"
+        assert SURFACE_NAME[EditableSurface.SKILLS] == "skills"
+
+    def test_s10_is_child_reachable_on_two_legs(self):
+        # KTD7: the index rides the system prompt children inherit, and the
+        # loader is installed in the child REPL too; neither leg is root-only.
+        assert SURFACE_REACH[EditableSurface.SKILLS] is SurfaceReach.CHILD_REACHABLE
+
+    def test_s10_is_the_target_of_the_unconsulted_procedure_mechanism(self):
+        assert MECHANISM_SURFACE[AgentMechanism.UNCONSULTED_PROCEDURE] is EditableSurface.SKILLS
+        assert EditableSurface.SKILLS in set(MECHANISM_SURFACE.values())
+
+    def test_a_record_carrying_the_mechanism_resolves_to_s10(self):
+        signature = FailureSignature(
+            verifier_cause=VerifierCause.WRONG_VALUE,
+            failing_level=FailingLevel.NO_RECURSION,
+            causal_status=CausalStatus.CAUSAL,
+            agent_mechanism=AgentMechanism.UNCONSULTED_PROCEDURE,
+        )
+        assert signature.surface() is EditableSurface.SKILLS
+
+    def test_mechanism_doc_is_defined_against_the_digest_observables(self):
+        # The two trace-observable signals, in the words the digest uses, and
+        # the no-skills fallback; "loaded and not followed" is excluded by
+        # design because adherence is not a trace fact.
+        doc = MECHANISM_DOCS[AgentMechanism.UNCONSULTED_PROCEDURE]
+        assert "available_skills" in doc
+        assert "loaded_skills" in doc
+        assert "never loaded" in doc
+        assert "already carried out" in doc
+        assert "not followed" not in doc
+
+    def test_mechanism_doc_states_the_conservative_precedence_rule(self):
+        # S10 claims the terminal signal only when neither S6 budget exhaustion
+        # nor S3 depth degradation independently explains it. No code-level
+        # precedence exists, so the rule lives in the prompt text and must
+        # name both competing mechanisms by their prompt labels.
+        doc = MECHANISM_DOCS[AgentMechanism.UNCONSULTED_PROCEDURE]
+        assert AgentMechanism.ITERATION_BUDGET_EXHAUSTION.value in doc
+        assert AgentMechanism.DEPTH_DEGRADATION.value in doc
+        assert "neither" in doc
+
+    def test_surface_block_carries_s10s_governs_contract(self):
+        # R14's contract is in the governs text so attributor and proposer
+        # both see what separates a legal S10 edit from an S3 rewrite.
+        block = render_surface_block()
+        s10_line = next(line for line in block.splitlines() if line.startswith("  - S10 "))
+        assert "[child_reachable]" in s10_line
+        assert "`name`" in s10_line and "`description`" in s10_line and "`body`" in s10_line
+        assert "neither description nor body may restate" in s10_line
+
+    def test_surface_block_carries_s8s_loader_exclusion_line(self):
+        # S8's governs text names the loader as scaffold that belongs to S10,
+        # so a loader NameError is never filed under S8's proposer helpers.
+        block = render_surface_block()
+        s8_line = next(line for line in block.splitlines() if line.startswith("  - S8 "))
+        assert "skill loader" in s8_line and "S10" in s8_line
+        # The loader's reserved REPL name never appears as S8 surface content.
+        assert SKILL_LOADER_NAME not in s8_line
 
 
 class TestRenderedPromptText:
@@ -148,8 +221,9 @@ class TestRenderedPromptText:
         expected = {m.value for m in CausalStatus} | {m.value for m in AgentMechanism}
         assert labels_in_block(render_taxonomy_block()) == expected
 
-    def test_taxonomy_block_shows_all_nine_surfaces_with_reach(self):
+    def test_taxonomy_block_shows_all_ten_surfaces_with_reach(self):
         block = render_taxonomy_block()
+        assert len(EditableSurface) == 10
         for surface in EditableSurface:
             line = f"- {surface.value} {SURFACE_NAME[surface]} [{SURFACE_REACH[surface].value}]:"
             assert line in block

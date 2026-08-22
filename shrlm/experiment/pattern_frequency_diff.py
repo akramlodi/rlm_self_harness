@@ -43,6 +43,22 @@ Which bundles are compared, and why the excluded ones are still written down
     collapses into false: it is compared, and its row says the completeness was
     never established. Refusing to compare on unknown would be treating an
     unmeasured round as a failed one, which is precisely what KTD9 forbids.
+
+The taxonomy-version boundary
+    The join key is the mechanism vocabulary, and that vocabulary is what
+    ``TAXONOMY_VERSION`` stamps: two bundles written under different taxonomy
+    versions would be joined on labels whose meaning (and whose surface set)
+    differ, so a bundle whose ``config.taxonomy_version`` differs from the
+    running code's ``TAXONOMY_VERSION`` is excluded, with the exclusion reason
+    naming both versions and every version seen reported with its bundle
+    count. The gate is against the running code, not a majority: a pairwise
+    diff has no majority, and a tree where post-bump rounds are the minority
+    would otherwise exclude the new bundles. Diffing bundles written under an
+    older version is an explicit opt-in (``taxonomy_version=`` /
+    ``--taxonomy-version``), never an accident. An unversioned bundle (a
+    fixture, a hand-built file -- mining always stamps the version) is
+    unknown, not different, and is compared, exactly as unknown completeness
+    is.
 """
 
 import argparse
@@ -50,7 +66,7 @@ import json
 import re
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +81,7 @@ from shrlm.experiment.analysis_io import (
 )
 from shrlm.experiment.rounds import ExperimentInventory, RoundRecord, discover_rounds
 from shrlm.optimization.bundle import BUNDLE_FILENAME
+from shrlm.optimization.taxonomy import TAXONOMY_VERSION
 
 # A signature is present with rate exactly equal (floating-point noise only,
 # not "close enough") counted as persisted_unchanged rather than a spurious
@@ -88,6 +105,12 @@ SIGNATURE_FIELDS = ("verifier_cause", "failing_level", "causal_status", "agent_m
 
 # The name this analysis is recorded under in a snapshot's provenance.
 TOOL_NAME = "pattern_frequency_diff"
+
+# How a bundle with no ``config.taxonomy_version`` is reported -- in the
+# completeness table and in the versions-seen count. Mining always stamps
+# the version, so this names fixtures and hand-built bundles; it is unknown,
+# not different, and never a reason to exclude.
+UNVERSIONED_TAXONOMY = "unversioned"
 
 # Declared field order (KTD8): a pair with no signature on either side still
 # writes a header-only CSV, which says "no shared failure patterns" where an
@@ -114,6 +137,7 @@ BUNDLE_FIELDNAMES = (
     "round_index",
     "round_complete",
     "evidence_complete",
+    "taxonomy_version",
     "included",
     "exclusion_reason",
 )
@@ -121,12 +145,17 @@ BUNDLE_FIELDNAMES = (
 
 @dataclass(frozen=True)
 class _BundleSummary:
-    """One loaded bundle, reduced to what the diff needs."""
+    """One loaded bundle, reduced to what the diff needs.
+
+    ``taxonomy_version`` is the bundle's own ``config.taxonomy_version`` stamp,
+    None when the bundle carries none.
+    """
 
     path: Path
     label: str
     n_runs: int
     patterns_by_key: dict[tuple[str, str, str, str], dict[str, Any]]
+    taxonomy_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,7 +164,9 @@ class BundleCompletenessRow:
 
     ``round_index`` and both flags are empty when discovery could not match the
     bundle to a round of this experiment -- completeness unknown, which is a
-    reason to say so, never a reason to drop the bundle.
+    reason to say so, never a reason to drop the bundle. ``taxonomy_version``
+    is the bundle's own stamp (None when unversioned); a stamp that differs
+    from the version the diff is running under is the other exclusion ground.
     """
 
     label: str
@@ -145,6 +176,7 @@ class BundleCompletenessRow:
     evidence_complete: bool | None
     included: bool
     exclusion_reason: str | None
+    taxonomy_version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -153,6 +185,9 @@ class BundleCompletenessRow:
             "round_index": self.round_index,
             "round_complete": tristate(self.round_complete),
             "evidence_complete": tristate(self.evidence_complete),
+            "taxonomy_version": (
+                UNVERSIONED_TAXONOMY if self.taxonomy_version is None else self.taxonomy_version
+            ),
             "included": tristate(self.included),
             "exclusion_reason": self.exclusion_reason,
         }
@@ -253,11 +288,13 @@ def load_bundle_summary(path: Path | str, explicit_label: str | None = None) -> 
             )
         patterns_by_key[key] = pattern
 
+    stamped_version = config.get("taxonomy_version")
     return _BundleSummary(
         path=path,
         label=_safe_label(label),
         n_runs=int(bundle.get("totals", {}).get("n_runs", 0)),
         patterns_by_key=patterns_by_key,
+        taxonomy_version=None if stamped_version is None else str(stamped_version),
     )
 
 
@@ -349,15 +386,22 @@ def _dedupe_labels(bundles: list[_BundleSummary]) -> list[_BundleSummary]:
         count = seen.get(bundle.label, 0)
         seen[bundle.label] = count + 1
         label = bundle.label if count == 0 else f"{bundle.label}_{index}"
-        deduped.append(
-            _BundleSummary(
-                path=bundle.path,
-                label=label,
-                n_runs=bundle.n_runs,
-                patterns_by_key=bundle.patterns_by_key,
-            )
-        )
+        deduped.append(replace(bundle, label=label))
     return deduped
+
+
+def taxonomy_versions_seen(bundles: Sequence[_BundleSummary]) -> dict[str, int]:
+    """Every taxonomy version among the input bundles, with its bundle count.
+
+    Unversioned bundles are counted under ``UNVERSIONED_TAXONOMY``. Reported
+    whether or not any bundle was excluded, so a reader can see at a glance
+    which side of a version boundary each part of the tree sits on.
+    """
+    counts: dict[str, int] = {}
+    for bundle in bundles:
+        key = UNVERSIONED_TAXONOMY if bundle.taxonomy_version is None else bundle.taxonomy_version
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _rounds_by_bundle_path(inventory: ExperimentInventory) -> dict[Path, RoundRecord]:
@@ -371,30 +415,45 @@ def _rounds_by_bundle_path(inventory: ExperimentInventory) -> dict[Path, RoundRe
     experiment's completeness to it.
     """
     return {
-        (record.mining_round_path / BUNDLE_FILENAME).resolve(): record for record in inventory.rounds
+        (record.mining_round_path / BUNDLE_FILENAME).resolve(): record
+        for record in inventory.rounds
     }
 
 
 def bundle_completeness(
-    bundles: Sequence[_BundleSummary], inventory: ExperimentInventory
+    bundles: Sequence[_BundleSummary],
+    inventory: ExperimentInventory,
+    *,
+    taxonomy_version: str = TAXONOMY_VERSION,
 ) -> list[BundleCompletenessRow]:
     """One completeness row per bundle, marking which ones the diff may use.
 
-    Only a bundle whose round is KNOWN incomplete is excluded; unknown
-    completeness is reported and included (see this module's docstring).
+    Two grounds exclude a bundle, each named in the reason (both, joined,
+    when both apply): its round is KNOWN incomplete, or it is stamped with a
+    taxonomy version other than ``taxonomy_version`` -- the running code's
+    ``TAXONOMY_VERSION`` unless the caller opts into another. Unknown
+    completeness and a missing version stamp are reported and included (see
+    this module's docstring).
     """
     rounds_by_path = _rounds_by_bundle_path(inventory)
     rows: list[BundleCompletenessRow] = []
     for bundle in bundles:
         record = rounds_by_path.get(bundle.path.resolve())
-        excluded = record is not None and not record.evidence_complete
-        reason = (
-            f"round {record.round_index} is not evidence-complete: its mining evidence "
-            "marker is absent or disagrees with the persisted records, so a frequency "
-            "comparison against it would read the missing evidence as change"
-            if excluded and record is not None
-            else None
-        )
+        reasons: list[str] = []
+        if record is not None and not record.evidence_complete:
+            reasons.append(
+                f"round {record.round_index} is not evidence-complete: its mining evidence "
+                "marker is absent or disagrees with the persisted records, so a frequency "
+                "comparison against it would read the missing evidence as change"
+            )
+        if bundle.taxonomy_version is not None and bundle.taxonomy_version != taxonomy_version:
+            reasons.append(
+                f"bundle taxonomy_version {bundle.taxonomy_version} differs from the taxonomy "
+                f"version this diff runs under ({taxonomy_version}): mechanism vocabularies "
+                "from different taxonomy versions are not comparable, so the diff does not "
+                "cross the boundary (pass --taxonomy-version to diff bundles written under "
+                "another version deliberately)"
+            )
         rows.append(
             BundleCompletenessRow(
                 label=bundle.label,
@@ -402,8 +461,9 @@ def bundle_completeness(
                 round_index=None if record is None else record.round_index,
                 round_complete=None if record is None else record.round_complete,
                 evidence_complete=None if record is None else record.evidence_complete,
-                included=not excluded,
-                exclusion_reason=reason,
+                included=not reasons,
+                exclusion_reason="; ".join(reasons) if reasons else None,
+                taxonomy_version=bundle.taxonomy_version,
             )
         )
     return rows
@@ -415,6 +475,7 @@ def run_pattern_frequency_diff(
     labels: Sequence[str] | None = None,
     *,
     inventory: ExperimentInventory | None = None,
+    taxonomy_version: str = TAXONOMY_VERSION,
 ) -> list[Path]:
     """Load every bundle, flag its completeness, diff every includable pair.
 
@@ -440,6 +501,12 @@ def run_pattern_frequency_diff(
             Discovery does real per-round IO and nothing rewrites the tree
             mid-batch, so a caller that already holds one passes it. Omitted,
             it is discovered here.
+        taxonomy_version: The taxonomy version bundles must be stamped with to
+            be compared; the running code's ``TAXONOMY_VERSION`` by default.
+            Naming an older version is the explicit opt-in for diffing bundles
+            written before a bump (and then current-version bundles are the
+            ones excluded). Every version seen is reported with its bundle
+            count in each pair's JSON summary and on stdout regardless.
 
     Returns every written CSV path: the completeness table, then one per
     diffed pair.
@@ -468,11 +535,20 @@ def run_pattern_frequency_diff(
     # manifest too, or a marker edit would move a published column without
     # moving a recorded hash.
     record_inventory_sources(snapshot, snapshot.out_dir, inventory=inventory)
-    completeness = bundle_completeness(bundles, inventory)
+    completeness = bundle_completeness(bundles, inventory, taxonomy_version=taxonomy_version)
     snapshot.record_rounds(row.round_index for row in completeness if row.round_index is not None)
     bundles_path = snapshot.path / BUNDLES_FILENAME
     write_csv(bundles_path, completeness, fieldnames=BUNDLE_FIELDNAMES)
     written: list[Path] = [bundles_path]
+
+    # Every version seen, with its count, whether or not anything was
+    # excluded: the reader sees which side of a version boundary each part of
+    # the tree sits on, and the version this diff ran under.
+    versions_seen = taxonomy_versions_seen(bundles)
+    sys.stdout.write(
+        f"taxonomy version {taxonomy_version}; versions seen across "
+        f"{len(bundles)} bundles: {versions_seen}\n"
+    )
 
     for row in completeness:
         if row.included:
@@ -510,6 +586,8 @@ def run_pattern_frequency_diff(
                         "label": after.label,
                         "n_runs": after.n_runs,
                     },
+                    "taxonomy_version_expected": taxonomy_version,
+                    "taxonomy_versions_seen": versions_seen,
                     **summary,
                 }
             ),
@@ -552,6 +630,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "missing (falls back to the bundle's parent directory name if omitted)"
         ),
     )
+    parser.add_argument(
+        "--taxonomy-version",
+        default=TAXONOMY_VERSION,
+        help=(
+            "the taxonomy version bundles must be stamped with to be compared (default: the "
+            f"running code's TAXONOMY_VERSION, {TAXONOMY_VERSION}); name an older version to "
+            "diff bundles written before a bump deliberately -- bundles stamped with any other "
+            "version are excluded and the exclusion names both versions"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if len(args.bundle_paths) < MIN_DIFFABLE_BUNDLES:
@@ -570,7 +658,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     # being selectable as "the latest results".
     snapshot.run_tool(
         TOOL_NAME,
-        lambda: run_pattern_frequency_diff(args.bundle_paths, snapshot, labels=args.labels),
+        lambda: run_pattern_frequency_diff(
+            args.bundle_paths,
+            snapshot,
+            labels=args.labels,
+            taxonomy_version=args.taxonomy_version,
+        ),
     )
     if not snapshot.publish():
         sys.stderr.write(snapshot.failure_message(TOOL_NAME))
@@ -594,6 +687,7 @@ __all__ = [
     "STATUS_PERSISTED_WORSENED",
     "STATUS_RESOLVED",
     "TOOL_NAME",
+    "UNVERSIONED_TAXONOMY",
     "BundleCompletenessRow",
     "PatternFrequencyDiffRow",
     "bundle_completeness",
@@ -602,4 +696,5 @@ __all__ = [
     "main",
     "run_pattern_frequency_diff",
     "summarize",
+    "taxonomy_versions_seen",
 ]

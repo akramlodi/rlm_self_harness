@@ -8,6 +8,7 @@ sha256 is what makes the attribution cache meaningful.
 
 import hashlib
 import json
+from typing import Any
 
 from shrlm.optimization.attribution import LLMAttributor
 from shrlm.optimization.digest import (
@@ -18,15 +19,29 @@ from shrlm.optimization.digest import (
     head_tail,
     render_child_table,
 )
-from shrlm.optimization.types import CallNode, NodeKind
+from shrlm.optimization.grounding import GroundingResult
+from shrlm.optimization.mining import WeaknessMiner
+from shrlm.optimization.taxonomy import AgentMechanism, EditableSurface, VerifierCause
+from shrlm.optimization.types import CallNode, NodeKind, Verdict
 from shrlm.optimization.walker import compute_tree_stats, walk
 from tests.mock_lm import MockLM
 from tests.optimization.fixtures import (
     NESTED_CHILD_PROMPT,
+    PROCEDURE_CODE,
+    ROOT_MODEL,
     SECRET_LOCAL,
+    SKILL_INDEX,
     as_completion,
+    code_block,
+    completion_dict,
+    fallback_run,
+    iteration_entry,
     make_verdict,
     nested_run,
+    run_metadata,
+    shallow_run,
+    skilled_run,
+    usage,
 )
 
 
@@ -256,9 +271,261 @@ class TestAggregateVerdictHonesty:
         assert "n/a" not in digest.text
 
 
+# Digest sha256 of each pre-S10 fixture as ``digest_of_fixture`` renders it,
+# computed at DIGEST_VERSION 1.1.0 (commit 3803be8) before the skills lines
+# existed. A trace whose run_metadata carries no skill index -- every pre-S10
+# trace, and every trace under an empty S10 -- must still render to exactly
+# these bytes, so pre-S10 bundles and attribution caches (keyed on digest
+# bytes, not on DIGEST_VERSION) are untouched by the format change.
+PRE_S10_DIGEST_SHA256 = {
+    "nested": "37edddf95a35e910d47724eb1361e2c040cdce8ed11322e3876328736c1abd50",
+    "shallow": "58c16eca024a23a886cb0d56d196a8f4bd04436c8a6ebd775279db330b65cc64",
+    "fallback": "e2d1b9f7a3b10652858cbe6e33bbedcf03edd3c1bc168727917a0459f2ca41cf",
+}
+
+
+def digest_of_fixture(name: str, run: dict[str, Any]) -> TraceDigest:
+    root, stats = walk(as_completion(run))
+    return build_digest(
+        instance_id=f"run-{name}",
+        question="q",
+        root=root,
+        stats=stats,
+        verdict=make_verdict(),
+    )
+
+
+def skilled_child_run() -> dict[str, Any]:
+    """A root that delegated to an ``rlm_query`` child which loaded a skill itself.
+
+    The child's own environment recorded the load at its depth (1), and the
+    child's run_metadata carries the same index the root's does, because the
+    loader is installed in both REPL namespaces (KTD7).
+    """
+    child_block = code_block(
+        code="proc = load_skill('check_slice_coverage')\nprint('covered')",
+        stdout="covered\n",
+        skill_loads=[{"skill": "check_slice_coverage", "depth": 1}],
+    )
+    child = {
+        "root_model": ROOT_MODEL,
+        "prompt": "check the slices are all covered",
+        "response": "covered",
+        "usage_summary": usage(),
+        "execution_time": 0.3,
+        "metadata": {
+            "run_metadata": run_metadata(max_depth=2, skill_index=SKILL_INDEX),
+            "iterations": [
+                iteration_entry(
+                    index=1,
+                    response="Loading the procedure.\n```repl\n...\n```",
+                    code_blocks=[child_block],
+                    final_answer="covered",
+                )
+            ],
+        },
+    }
+    root_block = code_block(
+        code="verdict = rlm_query('check the slices are all covered')\nprint(verdict)",
+        stdout="covered\n",
+        rlm_calls=[child],
+    )
+    return completion_dict(
+        prompt="what is the total across all slices?",
+        response="41",
+        iterations=[
+            iteration_entry(
+                index=1,
+                response="Delegating the check.\n```repl\n...\n```",
+                code_blocks=[root_block],
+                final_answer="41",
+            )
+        ],
+        max_depth=2,
+        skill_index=SKILL_INDEX,
+    )
+
+
+class TestSkillLines:
+    """The available_skills / loaded_skills pair: the S10 mechanism's observable.
+
+    Rendered only when the trace's run-start record carries a skill index --
+    i.e. a loader was installed, i.e. S10 was non-empty -- so the attributor
+    can tell "no skill covered this" from "a skill covered it and was never
+    consulted", while an empty-S10 trace renders exactly as before.
+    """
+
+    def test_empty_s10_trace_renders_byte_identically_to_the_pre_s10_digest(self):
+        for name, run in [
+            ("nested", nested_run()),
+            ("shallow", shallow_run()),
+            ("fallback", fallback_run()),
+        ]:
+            digest = digest_of_fixture(name, run)
+            assert "available_skills:" not in digest.text
+            assert "loaded_skills:" not in digest.text
+            assert digest.sha256 == PRE_S10_DIGEST_SHA256[name], name
+
+    def test_one_load_renders_the_loaded_skills_line_naming_it(self):
+        run = skilled_run([{"skill": "merge_slice_totals", "depth": 0}], skill_index=SKILL_INDEX)
+        text = digest_of_fixture("skilled", run).text
+        assert "available_skills: merge_slice_totals, check_slice_coverage" in text
+        assert "loaded_skills: merge_slice_totals (depth 0)" in text
+
+    def test_no_load_under_a_non_empty_index_says_none_rather_than_nothing(self):
+        text = digest_of_fixture("skilled", skilled_run([], skill_index=SKILL_INDEX)).text
+        assert "available_skills: merge_slice_totals, check_slice_coverage" in text
+        assert "loaded_skills: (none)" in text
+
+    def test_the_pair_sits_in_the_run_header_before_the_tree_statistics(self):
+        text = digest_of_fixture("skilled", skilled_run([], skill_index=SKILL_INDEX)).text
+        header = text.split("## Tree statistics")[0]
+        assert "available_skills:" in header and "loaded_skills:" in header
+
+    def test_a_child_load_is_listed_at_its_own_depth(self):
+        text = digest_of_fixture("child", skilled_child_run()).text
+        assert "loaded_skills: check_slice_coverage (depth 1)" in text
+
+    def test_repeated_loads_of_one_skill_at_one_depth_are_listed_once(self):
+        loads = [{"skill": "merge_slice_totals", "depth": 0}] * 3
+        text = digest_of_fixture("skilled", skilled_run(loads, skill_index=SKILL_INDEX)).text
+        assert "loaded_skills: merge_slice_totals (depth 0)\n" in text
+
+    def test_loaded_and_unloaded_digests_differ_in_bytes_and_sha(self):
+        # Different bytes mean different attribution cache keys: the loader
+        # event is exactly what separates the two records for the attributor.
+        unloaded = digest_of_fixture("skilled", skilled_run([], skill_index=SKILL_INDEX))
+        loaded = digest_of_fixture(
+            "skilled",
+            skilled_run([{"skill": "merge_slice_totals", "depth": 0}], skill_index=SKILL_INDEX),
+        )
+        assert unloaded.text != loaded.text
+        assert unloaded.sha256 != loaded.sha256
+
+
+UNGROUNDED = GroundingResult(failing_level=None, grounded=False, verdicts={})
+
+
+def _skill_names(digest_text: str, prefix: str) -> list[str] | None:
+    """The names on the ``available_skills:`` / ``loaded_skills:`` line, or None if absent."""
+    for line in digest_text.splitlines():
+        if line.startswith(prefix):
+            rest = line[len(prefix) :].strip()
+            if rest == "(none)":
+                return []
+            return [item.split(" (")[0] for item in rest.split(", ")]
+    return None
+
+
+def scripted_mechanism(digest_text: str) -> AgentMechanism:
+    """The ``unconsulted_procedure`` rule of MECHANISM_DOCS, scripted over digest text.
+
+    No code-level precedence exists (the rule is prompt text), so this stands
+    in for an attributor that follows it literally: the S6 terminal signal is
+    claimed first; then, under a non-empty index, an available skill that was
+    never loaded; then, with no index, the root re-running a procedure it had
+    already carried out; otherwise nothing S10 can address.
+    """
+    if "terminated_by_fallback: True" in digest_text:
+        return AgentMechanism.ITERATION_BUDGET_EXHAUSTION
+    available = _skill_names(digest_text, "available_skills: ")
+    loaded = _skill_names(digest_text, "loaded_skills: ") or []
+    if available is not None:
+        if any(name not in loaded for name in available):
+            return AgentMechanism.UNCONSULTED_PROCEDURE
+        return AgentMechanism.OTHER
+    if digest_text.count(PROCEDURE_CODE) >= 2:
+        return AgentMechanism.UNCONSULTED_PROCEDURE
+    return AgentMechanism.OTHER
+
+
+def scripted_response(messages: Any) -> str:
+    digest_text = messages[-1]["content"]
+    payload = {
+        "causal_status": "causal",
+        "agent_mechanism": scripted_mechanism(digest_text).value,
+        "failing_level": "no_recursion",
+        "evidence_node_ids": ["r"],
+        "symptom_summary": "scripted attributor following the documented rule",
+    }
+    return "```json\n" + json.dumps(payload) + "\n```"
+
+
+def attributed_surface(run: dict[str, Any]) -> EditableSurface | None:
+    """Digest ``run``, attribute it with the scripted attributor, resolve the surface."""
+    root, stats = walk(as_completion(run))
+    digest = build_digest(
+        instance_id="run-skilled",
+        question="what is the total across all slices?",
+        root=root,
+        stats=stats,
+        verdict=make_verdict(),
+    )
+    attributor = LLMAttributor(MockLM(response_fn=scripted_response))
+    result = attributor.attribute(digest, root, make_verdict(), UNGROUNDED)
+    return result.signature.surface()
+
+
+class TestSkillsMechanismResolution:
+    """The S10 mechanism, end to end through the real attributor and validator.
+
+    A scripted attributor applies the documented rule to the rendered digest;
+    the test is that the digest carries enough for the rule to be applied, and
+    that the resulting signature resolves to S10 exactly when it should.
+    """
+
+    def test_available_and_never_loaded_resolves_to_s10(self):
+        run = skilled_run([], skill_index=SKILL_INDEX[:1])
+        assert attributed_surface(run) is EditableSurface.SKILLS
+
+    def test_the_same_run_with_the_skill_loaded_does_not(self):
+        run = skilled_run(
+            [{"skill": "merge_slice_totals", "depth": 0}], skill_index=SKILL_INDEX[:1]
+        )
+        assert attributed_surface(run) is not EditableSurface.SKILLS
+
+    def test_budget_exhaustion_independently_explains_the_failure_so_s6_wins(self):
+        # Same unloaded skill, but the run ended by fallback: the conservative
+        # precedence rule hands the terminal signal to S6, not S10.
+        run = skilled_run([], skill_index=SKILL_INDEX[:1], fallback=True)
+        assert attributed_surface(run) is EditableSurface.RUNTIME_POLICY
+
+    def test_removing_the_budget_signal_lets_s10_claim_the_same_record(self):
+        exhausted = skilled_run([], skill_index=SKILL_INDEX[:1], fallback=True)
+        committed = skilled_run([], skill_index=SKILL_INDEX[:1], fallback=False)
+        assert attributed_surface(exhausted) is EditableSurface.RUNTIME_POLICY
+        assert attributed_surface(committed) is EditableSurface.SKILLS
+
+    def test_no_index_and_a_repeated_procedure_resolves_to_s10_via_the_fallback(self):
+        run = skilled_run(repeat_procedure=True)
+        assert attributed_surface(run) is EditableSurface.SKILLS
+
+    def test_no_index_and_no_repetition_is_not_s10(self):
+        assert attributed_surface(skilled_run()) is not EditableSurface.SKILLS
+
+
+class _FailingVerifier:
+    def __call__(self, instance: dict[str, Any], produced: str) -> Verdict:
+        return Verdict(passed=False, cause=VerifierCause.WRONG_VALUE, gold="42", produced=produced)
+
+
 class TestDigestVersion:
-    def test_version_bumped_for_the_na_rendering(self):
-        assert DIGEST_VERSION == "1.1.0"
+    def test_version_bumped_for_the_skill_lines(self):
+        # 1.1.0 was the n/a aggregate rendering; 1.2.0 adds the
+        # available_skills / loaded_skills pair under a non-empty index.
+        assert DIGEST_VERSION == "1.2.0"
+
+    def test_digest_version_is_recorded_per_bundle(self):
+        lm = MockLM(response_fn=scripted_response)
+        miner = WeaknessMiner(verifier=_FailingVerifier(), attributor=LLMAttributor(lm))
+        result = miner.mine(
+            [({"id": "inst-1", "question": "q"}, as_completion(shallow_run()))],
+            round_index=1,
+            harness_version="H0",
+            split_id="held_in_v1",
+        )
+        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.2.0"
+        assert result.bundle.to_dict()["config"]["digest_version"] == "1.2.0"
 
     def test_attribution_cache_key_does_not_include_digest_version(self):
         # DIGEST_VERSION reaches bundle ids via MiningConfig.digest_version

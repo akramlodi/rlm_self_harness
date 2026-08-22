@@ -62,15 +62,18 @@ from shrlm.experiment.pattern_frequency_diff import (
     STATUS_PERSISTED_WORSENED,
     STATUS_RESOLVED,
     TOOL_NAME,
+    UNVERSIONED_TAXONOMY,
     bundle_completeness,
     diff_bundle_pair,
     load_bundle_summary,
     main,
     run_pattern_frequency_diff,
     summarize,
+    taxonomy_versions_seen,
 )
 from shrlm.experiment.rounds import discover_rounds
 from shrlm.optimization.bundle import BUNDLE_FILENAME
+from shrlm.optimization.taxonomy import TAXONOMY_VERSION
 from tests.experiment.test_rounds import (
     complete_round,
     read_csv,
@@ -137,6 +140,7 @@ def write_patterns(
     *,
     n_runs: int = 10,
     round_index: int | None = None,
+    taxonomy_version: str | None = None,
 ) -> Path:
     """``write_bundle``'s generalization: any pattern list, optional round index.
 
@@ -145,10 +149,15 @@ def write_patterns(
     empty-bundle, and rate-epsilon cases here need several patterns, non-default
     signatures, arbitrary denominators, and a bundle with no ``round_index`` at
     all, so those are built from the same shape with those parts left open.
+    ``taxonomy_version`` stamps ``config.taxonomy_version`` the way mining does;
+    left None, the bundle is unversioned, as every fixture bundle was before the
+    version gate existed.
     """
     config: dict[str, Any] = {}
     if round_index is not None:
         config["round_index"] = round_index
+    if taxonomy_version is not None:
+        config["taxonomy_version"] = taxonomy_version
     write_json(path, {"config": config, "totals": {"n_runs": n_runs}, "patterns": patterns})
     return path
 
@@ -729,6 +738,207 @@ class TestBundleToRoundMatching:
         assert serialized["evidence_complete"] != TRISTATE_FALSE
         assert serialized["included"] == TRISTATE_TRUE
         assert serialized["round_index"] is None
+
+
+OLD_TAXONOMY = "2.0.0"
+
+
+class TestTaxonomyVersionGate:
+    """A bundle written under another taxonomy version is not diffed across the boundary.
+
+    The mechanism vocabulary is the join key, so two bundles under different
+    taxonomy versions would be joined on labels that mean different things.
+    The gate is against the running code's ``TAXONOMY_VERSION`` (not a
+    majority: a pairwise diff has none, and a tree where post-bump rounds are
+    the minority would exclude the new bundles); an unversioned bundle is
+    unknown, not different, and stays in -- as every fixture bundle here does.
+    """
+
+    def test_an_old_version_bundle_is_excluded_naming_both_versions(
+        self, experiment: Path, tmp_path: Path
+    ) -> None:
+        assert OLD_TAXONOMY != TAXONOMY_VERSION
+        old = write_patterns(
+            tmp_path / "old.json", [pattern(support=3)], taxonomy_version=OLD_TAXONOMY
+        )
+
+        (row,) = bundle_completeness([load_bundle_summary(old)], discover_rounds(experiment))
+
+        assert row.included is False
+        assert row.taxonomy_version == OLD_TAXONOMY
+        assert OLD_TAXONOMY in (row.exclusion_reason or "")
+        assert TAXONOMY_VERSION in (row.exclusion_reason or "")
+        assert row.to_dict()["taxonomy_version"] == OLD_TAXONOMY
+
+    def test_a_current_version_bundle_is_included(self, experiment: Path, tmp_path: Path) -> None:
+        new = write_patterns(
+            tmp_path / "new.json", [pattern(support=3)], taxonomy_version=TAXONOMY_VERSION
+        )
+        (row,) = bundle_completeness([load_bundle_summary(new)], discover_rounds(experiment))
+        assert row.included is True
+        assert row.exclusion_reason is None
+        assert row.taxonomy_version == TAXONOMY_VERSION
+
+    def test_an_unversioned_bundle_is_unknown_and_still_included(
+        self, experiment: Path, tmp_path: Path
+    ) -> None:
+        """Unknown never collapses into different, exactly as for completeness."""
+        bare = write_patterns(tmp_path / "bare.json", [pattern(support=3)])
+        (row,) = bundle_completeness([load_bundle_summary(bare)], discover_rounds(experiment))
+        assert row.included is True
+        assert row.taxonomy_version is None
+        assert row.to_dict()["taxonomy_version"] == UNVERSIONED_TAXONOMY
+
+    def test_a_pairwise_diff_of_one_old_and_one_new_bundle_excludes_only_the_old(
+        self, experiment: Path, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        old = write_patterns(
+            tmp_path / "b1.json", [pattern(support=5)], round_index=1, taxonomy_version=OLD_TAXONOMY
+        )
+        new = write_patterns(
+            tmp_path / "b2.json",
+            [pattern(support=2)],
+            round_index=2,
+            taxonomy_version=TAXONOMY_VERSION,
+        )
+
+        written = run_pattern_frequency_diff([old, new], snapshot)
+
+        rows = {row["label"]: row for row in read_csv(snapshot.path / BUNDLES_FILENAME)}
+        assert rows["round_1"]["included"] == TRISTATE_FALSE
+        assert rows["round_2"]["included"] == TRISTATE_TRUE
+        assert rows["round_1"]["taxonomy_version"] == OLD_TAXONOMY
+        assert rows["round_2"]["taxonomy_version"] == TAXONOMY_VERSION
+        assert OLD_TAXONOMY in rows["round_1"]["exclusion_reason"]
+        assert TAXONOMY_VERSION in rows["round_1"]["exclusion_reason"]
+        # One comparable bundle is below the pair minimum: nothing was diffed,
+        # and the new bundle was not dragged out with the old one.
+        assert written == [snapshot.path / BUNDLES_FILENAME]
+        assert diff_names(snapshot) == []
+
+    def test_every_version_seen_is_reported_with_its_bundle_count(
+        self, experiment: Path, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        paths = [
+            write_patterns(
+                tmp_path / "b1.json",
+                [pattern(support=5)],
+                round_index=1,
+                taxonomy_version=OLD_TAXONOMY,
+            ),
+            write_patterns(
+                tmp_path / "b2.json",
+                [pattern(support=4)],
+                round_index=2,
+                taxonomy_version=OLD_TAXONOMY,
+            ),
+            write_patterns(
+                tmp_path / "b3.json",
+                [pattern(support=3)],
+                round_index=3,
+                taxonomy_version=TAXONOMY_VERSION,
+            ),
+            write_patterns(
+                tmp_path / "b4.json",
+                [pattern(support=2)],
+                round_index=4,
+                taxonomy_version=TAXONOMY_VERSION,
+            ),
+            write_patterns(tmp_path / "b5.json", [pattern(support=1)], round_index=5),
+        ]
+        summaries = [load_bundle_summary(path) for path in paths]
+        assert taxonomy_versions_seen(summaries) == {
+            OLD_TAXONOMY: 2,
+            TAXONOMY_VERSION: 2,
+            UNVERSIONED_TAXONOMY: 1,
+        }
+
+        run_pattern_frequency_diff(paths, snapshot)
+
+        # Three comparable bundles (two current, one unversioned) -> the
+        # consecutive pairs plus first-vs-last; the old pair never appears.
+        assert diff_names(snapshot) == [
+            "pattern_frequency_diff_round_3_vs_round_4.csv",
+            "pattern_frequency_diff_round_3_vs_round_5.csv",
+            "pattern_frequency_diff_round_4_vs_round_5.csv",
+        ]
+        payload = json.loads(
+            (snapshot.path / "pattern_frequency_diff_round_3_vs_round_4.json").read_text()
+        )
+        assert payload["taxonomy_version_expected"] == TAXONOMY_VERSION
+        assert payload["taxonomy_versions_seen"] == {
+            OLD_TAXONOMY: 2,
+            TAXONOMY_VERSION: 2,
+            UNVERSIONED_TAXONOMY: 1,
+        }
+
+    def test_a_mismatch_and_an_incomplete_round_are_both_named_in_the_reason(
+        self, experiment: Path
+    ) -> None:
+        complete_round(experiment, 2)
+        write_evidence(experiment, 2, n_records=3, recorded_records=5)
+        bundle_path = record_for(experiment, 2).mining_round_path / BUNDLE_FILENAME
+        write_patterns(
+            bundle_path, [pattern(support=5)], round_index=2, taxonomy_version=OLD_TAXONOMY
+        )
+
+        (row,) = bundle_completeness(
+            [load_bundle_summary(bundle_path)], discover_rounds(experiment)
+        )
+
+        assert row.included is False
+        assert "round 2 is not evidence-complete" in (row.exclusion_reason or "")
+        assert OLD_TAXONOMY in (row.exclusion_reason or "")
+
+    def test_diffing_old_version_bundles_is_an_explicit_opt_in(
+        self, experiment: Path, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        """Two old bundles diff only when the caller names that version."""
+        first = write_patterns(
+            tmp_path / "b1.json", [pattern(support=5)], round_index=1, taxonomy_version=OLD_TAXONOMY
+        )
+        second = write_patterns(
+            tmp_path / "b2.json", [pattern(support=2)], round_index=2, taxonomy_version=OLD_TAXONOMY
+        )
+
+        # By default: both excluded, nothing diffed, never by accident.
+        run_pattern_frequency_diff([first, second], snapshot)
+        rows = read_csv(snapshot.path / BUNDLES_FILENAME)
+        assert {row["included"] for row in rows} == {TRISTATE_FALSE}
+        assert diff_names(snapshot) == []
+
+        # Opted in: the version named, the pair diffs, and the current version
+        # is now the odd one out.
+        opted = allocate_snapshot(experiment, now=FROZEN.replace(minute=49))
+        run_pattern_frequency_diff([first, second], opted, taxonomy_version=OLD_TAXONOMY)
+        rows = read_csv(opted.path / BUNDLES_FILENAME)
+        assert {row["included"] for row in rows} == {TRISTATE_TRUE}
+        assert diff_names(opted) == ["pattern_frequency_diff_round_1_vs_round_2.csv"]
+        payload = json.loads(
+            (opted.path / "pattern_frequency_diff_round_1_vs_round_2.json").read_text()
+        )
+        assert payload["taxonomy_version_expected"] == OLD_TAXONOMY
+
+    def test_the_cli_exposes_the_opt_in_as_a_named_flag(
+        self, experiment: Path, tmp_path: Path
+    ) -> None:
+        first = write_patterns(
+            tmp_path / "b1.json", [pattern(support=5)], round_index=1, taxonomy_version=OLD_TAXONOMY
+        )
+        second = write_patterns(
+            tmp_path / "b2.json", [pattern(support=2)], round_index=2, taxonomy_version=OLD_TAXONOMY
+        )
+
+        assert (
+            main([str(experiment), str(first), str(second), "--taxonomy-version", OLD_TAXONOMY])
+            == 0
+        )
+
+        (snapshot_path,) = sorted(
+            path for path in (experiment / ANALYSIS_DIR).iterdir() if path.is_dir()
+        )
+        assert (snapshot_path / PUBLISHED_FILENAME).exists()
+        assert (snapshot_path / "pattern_frequency_diff_round_1_vs_round_2.csv").exists()
 
 
 class TestCompletenessDrivenComparison:

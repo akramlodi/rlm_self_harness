@@ -15,17 +15,26 @@ from shrlm.optimization.walker import (
     build_call_tree_from_dict,
     classify_error_kind,
     count_lost_subcalls,
+    iter_skill_loads,
     walk,
 )
 from tests.optimization.fixtures import (
     NESTED_CHILD_PROMPT,
     NESTED_ROOT_CONTEXT,
+    ROOT_MODEL,
+    SKILL_INDEX,
     as_completion,
+    code_block,
+    completion_dict,
     fallback_run,
+    iteration_entry,
     nested_run,
     no_metadata_completion,
+    run_metadata,
     shallow_run,
+    skilled_run,
     swallowed_error_run,
+    usage,
 )
 
 
@@ -131,6 +140,87 @@ class TestShallowTree:
     def test_max_depth_one_means_recursion_was_never_available(self):
         _root, stats = walk(as_completion(shallow_run()))
         assert stats.recursion_available is False
+
+
+class TestSkillFacts:
+    """The walker lifts the persisted loader events and run-start index onto the tree.
+
+    These are the trace facts U12 records -- ``run_metadata.skill_index`` and
+    ``code_blocks[].result.skill_loads`` -- and the only source the digest's
+    available_skills / loaded_skills pair reads from.
+    """
+
+    def test_root_carries_the_run_start_skill_index_when_present(self):
+        root = build_call_tree_from_dict(skilled_run([], skill_index=SKILL_INDEX))
+        assert root.skill_index == SKILL_INDEX
+        assert root.skill_index is not SKILL_INDEX  # copied, not aliased
+
+    def test_an_index_free_trace_carries_none_not_an_empty_list(self):
+        # None is "no loader was installed" (empty S10, or pre-S10); an empty
+        # list would claim a loader with nothing in it.
+        assert build_call_tree_from_dict(shallow_run()).skill_index is None
+        assert build_call_tree_from_dict(nested_run()).skill_index is None
+
+    def test_code_blocks_carry_their_loader_events(self):
+        loads = [{"skill": "merge_slice_totals", "depth": 0}]
+        root = build_call_tree_from_dict(skilled_run(loads, skill_index=SKILL_INDEX))
+        (first, _commit) = root.iterations
+        assert first.code_blocks[0].skill_loads == loads
+        assert first.skill_loads == loads
+        assert root.iterations[1].code_blocks[0].skill_loads == []
+
+    def test_blocks_without_the_key_read_as_no_loads(self):
+        # Pre-U12 traces never wrote ``skill_loads``; absence means none.
+        data = shallow_run()
+        del data["metadata"]["iterations"][0]["code_blocks"][0]["result"]["skill_loads"]
+        root = build_call_tree_from_dict(data)
+        assert root.iterations[0].code_blocks[0].skill_loads == []
+
+    def test_iter_skill_loads_walks_the_whole_tree_in_trajectory_order(self):
+        child_block = code_block(
+            code="proc = load_skill('check_slice_coverage')",
+            skill_loads=[{"skill": "check_slice_coverage", "depth": 1}],
+        )
+        child = {
+            "root_model": ROOT_MODEL,
+            "prompt": "check coverage",
+            "response": "covered",
+            "usage_summary": usage(),
+            "execution_time": 0.3,
+            "metadata": {
+                "run_metadata": run_metadata(max_depth=2, skill_index=SKILL_INDEX),
+                "iterations": [
+                    iteration_entry(1, "...", [child_block], final_answer="covered"),
+                ],
+            },
+        }
+        root_block = code_block(
+            code="proc = load_skill('merge_slice_totals')\nrlm_query('check coverage')",
+            rlm_calls=[child],
+            skill_loads=[{"skill": "merge_slice_totals", "depth": 0}],
+        )
+        root = build_call_tree_from_dict(
+            completion_dict(
+                prompt="total?",
+                response="41",
+                iterations=[iteration_entry(1, "...", [root_block], final_answer="41")],
+                max_depth=2,
+                skill_index=SKILL_INDEX,
+            )
+        )
+        assert list(iter_skill_loads(root)) == [
+            ("merge_slice_totals", 0),
+            ("check_slice_coverage", 1),
+        ]
+        # The child's own run-start record is lifted too.
+        assert root.children[0].skill_index == SKILL_INDEX
+
+    def test_skill_facts_survive_to_dict(self):
+        loads = [{"skill": "merge_slice_totals", "depth": 0}]
+        root = build_call_tree_from_dict(skilled_run(loads, skill_index=SKILL_INDEX))
+        payload = root.to_dict()
+        assert payload["skill_index"] == SKILL_INDEX
+        assert payload["iterations"][0]["code_blocks"][0]["skill_loads"] == loads
 
 
 class TestMissingTrajectory:

@@ -227,7 +227,7 @@ def compute_marginals(records: list[FailureRecord]) -> dict[str, dict[str, int]]
 
     The full four-tuple space is large relative to a round's failure count, so
     most clusters will be small. These marginals are the principled backoff:
-    the by-surface view in particular has nine buckets and is directly
+    the by-surface view in particular has ten buckets and is directly
     consumable by a proposal stage that must target one surface anyway.
     """
     usable = attributed(records)
