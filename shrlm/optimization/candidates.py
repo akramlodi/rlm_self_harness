@@ -119,7 +119,6 @@ SURFACE_SERIALIZATION_KEYS: dict[str, tuple[str, ...]] = {
     "S10": ("S10_skills",),
 }
 
-# The fields every serialized S10 skill record carries, each a string.
 
 # The Harness field each string surface fills (builder convention: build_<x>
 # fills <x>).

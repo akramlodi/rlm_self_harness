@@ -362,6 +362,19 @@ def test_materializing_a_pre_s10_serialization_is_a_named_error(tmp_path):
     assert HARNESS_FORMAT in str(excinfo.value)
 
 
+def test_materializing_a_serialization_with_an_extra_surface_key_is_a_named_error(tmp_path):
+    # The mirror case: a document carrying a key outside ``HARNESS_FORMAT``'s
+    # surface key set (e.g. written under a future envelope version) must also
+    # fail by name, naming the extra key as "unexpected" rather than silently
+    # ignoring it or raising a bare KeyError.
+    serialization = serialize_harness(H0)
+    serialization["surfaces"]["S11_extra"] = "unexpected surface payload"
+    with pytest.raises(CandidateMaterializationError) as excinfo:
+        materialize_harness(serialization, tmp_path / MODULE_FILENAME)
+    assert "S11_extra" in str(excinfo.value)
+    assert HARNESS_FORMAT in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # Text-level gates
 # ---------------------------------------------------------------------------

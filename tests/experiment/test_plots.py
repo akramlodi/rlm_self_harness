@@ -575,6 +575,29 @@ def test_panel_a_draws_no_reference_segment_over_an_unknown_round(tmp_path: Path
         plot_sa.plt.close(fig)
 
 
+def test_panel_a_ylabel_states_declared_total_unknown_when_every_round_is_unknown(
+    tmp_path: Path,
+) -> None:
+    """No plotted round has a known declared set, so the axis says so, not a total."""
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [
+            _activity_row(1, "S1", source=SURFACE_SOURCE_UNKNOWN),
+            _activity_row(1, "S10", source=SURFACE_SOURCE_UNKNOWN, attempted=0, promoted=0),
+            _activity_row(2, "S1", source=SURFACE_SOURCE_UNKNOWN),
+            _activity_row(2, "S10", source=SURFACE_SOURCE_UNKNOWN, attempted=0, promoted=0),
+        ],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        ax = _panel_a(fig)
+        assert ax.get_ylabel() == "distinct surfaces (declared total unknown)"
+        assert _reference_segments(ax) == {}
+    finally:
+        plot_sa.plt.close(fig)
+
+
 def test_panel_b_has_one_row_per_canonical_surface_including_s10(tmp_path: Path) -> None:
     snapshot_dir = _surface_snapshot(tmp_path / "exp", _all_surfaces_rows(1))
 
