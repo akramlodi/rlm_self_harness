@@ -1,13 +1,14 @@
 {
-  "base_harness_hash": "95a4ed2e9f7cb574ae1eda24b22b02a816bbf139878f4a3f84fc7f2585cf2c35",
+  "base_harness_hash": "bbfdbcfdecc406b532bb59e26b75ec6cbc3379e01a0b813e47c92199be62cd07",
   "candidate_id": "r01-c01-s4",
   "format": "shrlm-proposal/v1",
   "harness": {
-    "format": "shrlm-harness/v1",
+    "format": "shrlm-harness/v2",
     "harness": {
       "name": "r01-c01-s4",
       "orchestrator": false,
       "surfaces": {
+        "S10_skills": [],
         "S1_repl_contract": "You are a Recursive Language Model (RLM): a language model whose prompt-related information lives in a Python REPL that you drive turn by turn. You will be queried turn-by-turn until you have an answer to the query.\n\nAvailable in the REPL:\n- `context`: the information related to the prompt (typically `str` or `list[str]`).\n- `llm_query(prompt: str, model: str | None = None) -> str`: a single sub-LLM completion.\n- `llm_query_batched(prompts: list[str], model=None) -> list[str]`: several sub-LLM completions in parallel; same order out as in.\n- `rlm_query(prompt, model=None)` / `rlm_query_batched(prompts, model=None)`: recursive RLM sub-calls. Fall back to `llm_query` / `llm_query_batched` when recursion is disabled.\n- `SHOW_VARS() -> str`: list every variable currently in the REPL.\n- `answer`: dict initialized to `{{\"content\": \"\", \"ready\": False}}`. To submit, set `answer[\"content\"]` to the final answer and `answer[\"ready\"] = True` inside a ```repl``` block.\n{custom_tools_section}\n\nWrite code in ```repl``` blocks, one block per turn; the REPL persists across turns. The REPL is NOT a Jupyter cell - only `print(...)` output (stdout) is shown back to you between turns; a bare expression on the last line is silently discarded. REPL outputs over ~20K characters are truncated.",
         "S2_decomposition_instruction": "Start by probing `context` to understand what you have, then decide how the task breaks into steps.",
         "S3_execution_instruction": "On each turn, run one block of code, print what you need to see, and build the result up in REPL variables.",
@@ -33,7 +34,7 @@
         }
       }
     },
-    "hash": "d8fdcb04e97300106828fbe26237be365f16ccf3e851c93675e5533a9a7e6269",
+    "hash": "98653dc1c3db3b4cca4fd9ebd294bdaf9f95d3b8cb0f8677a953544ed9b9ce9c",
     "name": "r01-c01-s4"
   },
   "predicted_effect": "Prevents premature termination by enforcing a completeness check that ensures all sub-calls are accounted for and the result is fully formed before marking the answer as ready.",
