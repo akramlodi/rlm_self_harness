@@ -34,6 +34,12 @@ Non-text surfaces are authored declaratively, never freehand JSON:
       directly rather than re-implemented).
     - S8 (repl helpers): the model writes one named helper function, added or
       replacing one entry in ``repl_helpers`` or ``sub_repl_helpers``.
+    - S10 (skills): the model writes the whole skill list as name /
+      description / body records (KD2: edited whole, never appended). Data,
+      not code: index fields are brace-free so the assembled prompt still
+      survives ``str.format``, bodies are stored raw for the runner's fixed
+      loader to return verbatim, and every field is scanned for a runtime
+      limit ``check_stated_limits`` governs (R5, R6, R7, R14).
 
 A materialized candidate's one-surface-diff is checked with
 ``candidates.changed_surfaces`` -- the real gate's own diffing function -- so
@@ -44,6 +50,7 @@ never a reimplementation that could drift from it.
 import ast
 import hashlib
 import json
+import keyword
 import os
 import re
 import tempfile
@@ -75,18 +82,26 @@ from shrlm.optimization.taxonomy import (
     EditableSurface,
     render_surface_block,
 )
-from shrlm.rlm_harness import Harness, build_runtime_policy
-from shrlm.runner import declared_metadata_bound
+from shrlm.rlm_harness import SKILL_LOADER_NAME, Harness, SkillEntry, build_runtime_policy
+from shrlm.runner import (
+    PER_BATCH_PATTERN,
+    PER_PROMPT_PATTERN,
+    TRUNCATION_PATTERN,
+    declared_metadata_bound,
+)
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
 HARNESS_FORMAT = "shrlm-harness/v2"
 PROPOSAL_FILENAME = "proposal.json"
 
-PROMPT_VERSION = "1.0.0"
+# 1.1.0: the prompt names ten surfaces and carries the S10 edit format.
+PROMPT_VERSION = "1.1.0"
 # Version of the validation logic in this module (validate_candidate_spec,
-# _validate_edit_shape, _validate_single_def). Folded into the cache key so a
-# validator change cannot replay stale responses judged under different rules.
-VALIDATOR_VERSION = "1.0.0"
+# _validate_edit_shape, _validate_single_def, _validate_skills_edit). Folded
+# into the cache key so a validator change cannot replay stale responses judged
+# under different rules. 1.1.0: the S10 skills branch and the S8 loader-name
+# refusal.
+VALIDATOR_VERSION = "1.1.0"
 
 DEFAULT_K = 4
 DEFAULT_MAX_ATTEMPTS = 3
@@ -117,6 +132,54 @@ EDIT_KIND_TEXT = "text"
 EDIT_KIND_POLICY = "policy"
 EDIT_KIND_CODE = "code"
 EDIT_KIND_REPL_HELPER = "repl_helper"
+EDIT_KIND_SKILLS = "skills"
+
+# S10 edit bounds (R7). Chosen against the S1-S5 text facts already in force --
+# no S1-S5 edit carries a numeric cap today, so the anchors are the reference
+# texts themselves: H0*'s S1 is 2116 characters, H0's one-line S2-S5 surfaces are
+# 68-107 characters each, and ``_render_pattern_block`` shows a surface's current
+# value truncated at 4000 characters. The caps split by representation: name and
+# description are index fields paid in every prompt, so they sit in the S2-S5
+# one-line family; the body is paid only when loaded, so it is looser.
+#   - SKILL_NAME_MAX_CHARS = 40: a REPL identifier; one index line's label.
+#   - SKILL_DESCRIPTION_MAX_CHARS = 200: ~2x H0's longest one-line surface, so an
+#     index line stays one line.
+#   - SKILL_MAX_ENTRIES = 8: 8 index lines x (<= 40 + 200 + 6 decoration chars)
+#     ~= 2000 characters -- the index at its cap costs at most about one reference
+#     S1 of prompt bytes per turn.
+#   - SKILL_BODY_MAX_CHARS = 4000: the proposer's own display truncation for a
+#     surface value; a body this long is still shown whole when it is the only
+#     entry.
+#   - SKILL_TOTAL_MAX_CHARS = 16000: the sum of every field over every entry;
+#     four full-size bodies, or eight ~1750-character ones -- a bound on the
+#     serialized candidate (hashed, written to proposal.json, diffed, rendered
+#     into later proposer prompts), independent of the per-field caps.
+# U7 enforces the same numbers at harness construction.
+SKILL_NAME_MAX_CHARS = 40
+SKILL_DESCRIPTION_MAX_CHARS = 200
+SKILL_BODY_MAX_CHARS = 4000
+SKILL_MAX_ENTRIES = 8
+SKILL_TOTAL_MAX_CHARS = 16000
+
+# The fields every S10 record carries (same set ``candidates._skills_violation``
+# demands of the serialized form), each a string.
+SKILL_RECORD_FIELDS: tuple[str, str, str] = ("name", "description", "body")
+
+# R14's "ordered steps", structurally: a body line that begins with a numbered
+# (``1.`` / ``1)``) or bulleted (``-`` / ``*``) marker, whitespace, and text. A
+# body must carry at least SKILL_BODY_MIN_STEPS such lines; prose around the
+# steps is allowed. U7 enforces the same predicate at construction.
+SKILL_STEP_LINE_PATTERN = re.compile(r"^\s*(?:\d+[.)]|[-*])\s+\S")
+SKILL_BODY_MIN_STEPS = 2
+
+# R6: the runtime-limit patterns ``check_stated_limits`` governs, applied to
+# each S10 description and body individually (a body never enters the
+# assembled prompt, so the prompt-level scan cannot see it).
+STATED_LIMIT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    TRUNCATION_PATTERN,
+    PER_PROMPT_PATTERN,
+    PER_BATCH_PATTERN,
+)
 
 # The one edit shape each surface accepts -- fixed by the harness's own field
 # types, not a proposer choice.
@@ -126,6 +189,7 @@ SURFACE_EDIT_KIND: dict[str, str] = {
     "S7": EDIT_KIND_CODE,
     "S9": EDIT_KIND_CODE,
     "S8": EDIT_KIND_REPL_HELPER,
+    "S10": EDIT_KIND_SKILLS,
 }
 
 
@@ -379,7 +443,7 @@ each already clustered by a verifier-grounded signature and already assigned to 
 ONE harness surface its mechanism implicates -- you may not choose a different \
 surface for a pattern.
 
-The nine editable surfaces:
+The ten editable surfaces:
 """
 
 PROPOSER_TASK = """\
@@ -404,7 +468,24 @@ you set; an edit that leaves "enabled" false or absent changes nothing.
 definition, matching the surface's current signature.
 - S8 repl helper (one named helper function): {"kind": "repl_helper", "dict": \
 "repl_helpers" or "sub_repl_helpers", "name": "<function name>", "source": \
-"def <name>(...):\\n    ...\\n"} -- the function name in source must equal "name".
+"def <name>(...):\\n    ...\\n"} -- the function name in source must equal "name". \
+The name "%(skill_loader)s" is reserved for the S10 skill loader the runner installs.
+- S10 skills (the skill library): {"kind": "skills", "skills": [{"name": \
+"<identifier>", "description": "<one line>", "body": "<ordered steps>"}, ...]} -- \
+the WHOLE list is the new S10 value (write every skill you want kept, not just the \
+new one). Each entry is one named, reusable procedure: "name" is a unique REPL-safe \
+identifier (at most %(name_cap)d characters); "description" is a single line stating \
+when to consult it (at most %(description_cap)d characters); "body" is its ordered \
+steps -- at least %(min_steps)d lines beginning with "1." / "2." or "-" (at most \
+%(body_cap)d characters). At most %(entry_cap)d entries and %(total_cap)d characters \
+in total. Neither description nor body may restate per-turn execution or decomposition \
+guidance, and no field may state a REPL truncation bound, a per-prompt capacity, or a \
+per-batch width. Brace rule: "name" and "description" are rendered into the system \
+prompt and must contain no "{" or "}" at all; "body" is stored raw and returned \
+verbatim by %(skill_loader)s(name), so it may contain literal braces (dicts, JSON, \
+f-strings) without doubling. Skill bodies are never in the prompt: the root reads one \
+by calling the loader and forwards it to a sub-call only as text in that sub-call's \
+prompt.
 """
 
 RESPONSE_FORMAT = """\
@@ -452,7 +533,17 @@ def render_prompt(
         "Prior edit history (previously attempted candidates and their outcomes; do "
         "not repeat an approach already rejected for the same reason):\n"
         + _render_history_block(prior_history),
-        EDIT_FORMATS % {"s6_keys": list(S6_KEYS)},
+        EDIT_FORMATS
+        % {
+            "s6_keys": list(S6_KEYS),
+            "skill_loader": SKILL_LOADER_NAME,
+            "name_cap": SKILL_NAME_MAX_CHARS,
+            "description_cap": SKILL_DESCRIPTION_MAX_CHARS,
+            "body_cap": SKILL_BODY_MAX_CHARS,
+            "entry_cap": SKILL_MAX_ENTRIES,
+            "total_cap": SKILL_TOTAL_MAX_CHARS,
+            "min_steps": SKILL_BODY_MIN_STEPS,
+        },
         RESPONSE_FORMAT % {"k": k},
     ]
     return "\n\n".join(sections), addressable
@@ -516,6 +607,134 @@ def _validate_single_def(source: Any, label: str) -> str:
     return tree.body[0].name
 
 
+def is_repl_safe_identifier(name: Any) -> bool:
+    """R1's "REPL-safe identifier": an ASCII Python identifier that is not a keyword.
+
+    The predicate U7 enforces at construction, so a name the proposer is allowed
+    to write is a name the harness is allowed to hold.
+    """
+    return (
+        isinstance(name, str)
+        and name.isascii()
+        and name.isidentifier()
+        and not keyword.iskeyword(name)
+    )
+
+
+def has_ordered_steps(body: str) -> bool:
+    """R14's body shape: at least ``SKILL_BODY_MIN_STEPS`` step-marked lines."""
+    steps = sum(1 for line in body.splitlines() if SKILL_STEP_LINE_PATTERN.match(line))
+    return steps >= SKILL_BODY_MIN_STEPS
+
+
+def _stated_limit(text: str) -> str | None:
+    """The first runtime-limit statement in ``text`` that ``check_stated_limits``
+    governs, or None."""
+    for pattern in STATED_LIMIT_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _validate_skill_record(label: str, record: Any) -> dict[str, str]:
+    """One S10 entry's shape, bounds, prompt safety, and R14 contract."""
+    if not isinstance(record, dict) or set(record) != set(SKILL_RECORD_FIELDS):
+        raise ProposalRejection(
+            f"{label} must be a record with exactly the fields {list(SKILL_RECORD_FIELDS)}"
+        )
+    for field_name in SKILL_RECORD_FIELDS:
+        if not isinstance(record[field_name], str):
+            raise ProposalRejection(f"{label}.{field_name} must be a string")
+    name, description, body = (record[field_name] for field_name in SKILL_RECORD_FIELDS)
+
+    # name: a REPL-safe identifier within the index cap.
+    if not is_repl_safe_identifier(name):
+        raise ProposalRejection(
+            f"{label}.name {name!r} must be a REPL-safe identifier (ASCII, a Python "
+            "identifier, not a keyword)"
+        )
+    if len(name) > SKILL_NAME_MAX_CHARS:
+        raise ProposalRejection(
+            f"{label}.name is {len(name)} characters, over the {SKILL_NAME_MAX_CHARS} cap"
+        )
+
+    # description: one non-empty, brace-free line within the index cap (R5, R14).
+    if not description.strip():
+        raise ProposalRejection(f"{label}.description must be a non-empty string")
+    if "\n" in description or "\r" in description:
+        raise ProposalRejection(f"{label}.description must be a single line")
+    if "{" in description or "}" in description:
+        raise ProposalRejection(
+            f"{label}.description contains a brace; index fields land in the formatted "
+            "prompt and must be brace-free (the body may carry braces -- the loader "
+            "returns it verbatim)"
+        )
+    if len(description) > SKILL_DESCRIPTION_MAX_CHARS:
+        raise ProposalRejection(
+            f"{label}.description is {len(description)} characters, over the "
+            f"{SKILL_DESCRIPTION_MAX_CHARS} index cap"
+        )
+
+    # body: non-empty ordered steps within the body cap (R14, R7); raw, never
+    # format-checked (R5).
+    if not body.strip():
+        raise ProposalRejection(f"{label}.body must be a non-empty string")
+    if not has_ordered_steps(body):
+        raise ProposalRejection(
+            f"{label}.body must be ordered steps: at least {SKILL_BODY_MIN_STEPS} lines "
+            "beginning with a numbered ('1.', '2)') or bulleted ('-', '*') marker"
+        )
+    if len(body) > SKILL_BODY_MAX_CHARS:
+        raise ProposalRejection(
+            f"{label}.body is {len(body)} characters, over the {SKILL_BODY_MAX_CHARS} cap"
+        )
+
+    # R6: no field may state a limit the runtime honors elsewhere.
+    for field_name, text in (("description", description), ("body", body)):
+        stated = _stated_limit(text)
+        if stated is not None:
+            raise ProposalRejection(
+                f"{label}.{field_name} states a runtime limit ({stated!r}) that "
+                "check_stated_limits governs; S10 text may not restate truncation, "
+                "per-prompt capacity, or batch width"
+            )
+    return {"name": name, "description": description, "body": body}
+
+
+def _validate_skills_edit(label: str, value: Any) -> list[dict[str, str]]:
+    """The S10 edit value: the whole skill list (KD2), every entry well-formed,
+    names unique, within the entry-count and total-length caps (R7)."""
+    if not isinstance(value, list):
+        raise ProposalRejection(
+            f"{label}: edit.skills must be a list of skill records (the whole S10 value), "
+            f"got {type(value).__name__}"
+        )
+    if len(value) > SKILL_MAX_ENTRIES:
+        raise ProposalRejection(
+            f"{label}: edit.skills carries {len(value)} entries, over the "
+            f"{SKILL_MAX_ENTRIES} entry cap"
+        )
+    records: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for position, record in enumerate(value):
+        validated = _validate_skill_record(f"{label}: edit.skills[{position}]", record)
+        if validated["name"] in seen:
+            raise ProposalRejection(
+                f"{label}: edit.skills[{position}] repeats the name {validated['name']!r}; "
+                "skill names must be unique"
+            )
+        seen.add(validated["name"])
+        records.append(validated)
+    total = sum(len(text) for record in records for text in record.values())
+    if total > SKILL_TOTAL_MAX_CHARS:
+        raise ProposalRejection(
+            f"{label}: edit.skills totals {total} characters across all fields, over the "
+            f"{SKILL_TOTAL_MAX_CHARS} total cap"
+        )
+    return records
+
+
 def _validate_edit_shape(index: int, surface: str, edit: dict[str, Any]) -> dict[str, Any]:
     kind = edit.get("kind")
     label = f"pattern_index {index} ({surface})"
@@ -570,7 +789,16 @@ def _validate_edit_shape(index: int, surface: str, edit: dict[str, Any]) -> dict
             )
         if name in RESERVED_TOOL_NAMES:
             raise ProposalRejection(f"{label}: edit.name {name!r} collides with a reserved REPL name")
+        if name == SKILL_LOADER_NAME:
+            raise ProposalRejection(
+                f"{label}: edit.name {name!r} is the harness-reserved S10 skill loader, "
+                "installed by the runner; it cannot be bound as an S8 helper"
+            )
         return {"kind": kind, "dict": dict_name, "name": name, "source": edit["source"]}
+
+    if kind == EDIT_KIND_SKILLS:
+        records = _validate_skills_edit(label, edit.get("skills"))
+        return {"kind": kind, "skills": records}
 
     raise ProposalRejection(f"{label}: unknown edit.kind {kind!r}")  # pragma: no cover - unreachable
 
@@ -675,6 +903,10 @@ def materialize_candidate_harness(incumbent: Harness, spec: CandidateSpec, workd
         updated = dict(getattr(incumbent, edit["dict"]))
         updated[edit["name"]] = fn
         return replace(incumbent, **{edit["dict"]: updated})
+
+    if kind == EDIT_KIND_SKILLS:
+        # The whole list, not an append (KD2); bodies verbatim (R5).
+        return replace(incumbent, skills=[SkillEntry(**record) for record in edit["skills"]])
 
     raise AssertionError(f"unreachable edit kind {kind!r}")  # validated upstream
 
