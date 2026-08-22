@@ -18,7 +18,13 @@ from rlm.core.types import (
     RLMMetadata,
     UsageSummary,
 )
-from rlm.environments import BaseEnv, SupportsPersistence, get_environment
+from rlm.environments import (
+    BaseEnv,
+    SkillLoader,
+    SupportsPersistence,
+    extract_tool_value,
+    get_environment,
+)
 from rlm.logger import RLMLogger, VerbosePrinter
 from rlm.utils.exceptions import (
     BudgetExceededError,
@@ -42,6 +48,15 @@ from rlm.utils.prompts import (
 )
 from rlm.utils.rlm_utils import filter_sensitive_keys
 from rlm.utils.token_utils import count_tokens, get_context_limit
+
+
+def _skill_index_of(custom_tools: dict[str, Any] | None) -> list[dict[str, str]] | None:
+    """The skill index carried by an installed ``SkillLoader`` tool, or None if there is none."""
+    for entry in (custom_tools or {}).values():
+        value = extract_tool_value(entry)
+        if isinstance(value, SkillLoader):
+            return [dict(item) for item in value.index]
+    return None
 
 
 class RLM:
@@ -251,6 +266,9 @@ class RLM:
                 if environment_kwargs
                 else {},
                 other_backends=other_backends,
+                # The run-start record of what skills were available: read off
+                # the installed loader, so it is present exactly when one is.
+                skill_index=_skill_index_of(self.custom_tools),
             )
             if self.logger:
                 self.logger.log_metadata(metadata)
@@ -613,6 +631,9 @@ class RLM:
 
         return {
             "sub_call_count": sum(len(block.result.rlm_calls) for block in iteration.code_blocks),
+            "skill_load_count": sum(
+                len(block.result.skill_loads) for block in iteration.code_blocks
+            ),
             "syntax_error": any(
                 has_syntax_error(block.result.stderr) for block in iteration.code_blocks
             ),

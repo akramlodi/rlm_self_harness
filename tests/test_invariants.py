@@ -17,6 +17,7 @@ present and carry the right values; they must not assert a refusal.
 """
 
 import dataclasses
+import json
 import re
 from typing import Any
 from unittest.mock import patch
@@ -24,22 +25,46 @@ from unittest.mock import patch
 import pytest
 
 import rlm.core.rlm as rlm_module
-from rlm.core.types import AnswerDecision, ModelUsageSummary, UsageSummary
+from rlm.core.types import (
+    AnswerDecision,
+    ModelUsageSummary,
+    QueryMetadata,
+    RLMChatCompletion,
+    UsageSummary,
+)
 from rlm.utils.parsing import DEFAULT_MAX_CHARACTER_LENGTH
-from rlm.utils.prompts import DEFAULT_CAPACITY_SENTENCE, ORCHESTRATOR_ADDENDUM, RLM_SYSTEM_PROMPT
-from shrlm.rlm_harness import H0, H0_STAR, Harness, build_runtime_policy
+from rlm.utils.prompts import (
+    DEFAULT_CAPACITY_SENTENCE,
+    ORCHESTRATOR_ADDENDUM,
+    RLM_SYSTEM_PROMPT,
+    build_rlm_system_prompt,
+)
+from shrlm.harness_identity import canonical_json, harness_hash, serialize_harness
+from shrlm.rlm_harness import (
+    H0,
+    H0_STAR,
+    SKILL_INDEX_PREAMBLE,
+    SKILL_LOADER_DESCRIPTION,
+    SKILL_LOADER_NAME,
+    Harness,
+    SkillEntry,
+    build_runtime_policy,
+)
 from shrlm.runner import (
     PROBE_GROWTH_FACTOR,
     PROBE_PROMPT_CHARS,
     REQUIRED_REPL_PLUMBING,
+    UnknownSkillError,
     acceptance_inputs,
     build_harnessed_rlm,
+    build_skill_loader,
     check_metadata_boundedness,
     declared_metadata_bound,
     derive_capacity_sentence,
     derive_truncation_sentence,
     effective_system_prompt,
     format_char_bound,
+    run_metrics,
 )
 from tests.mock_lm import MockLM
 
@@ -587,6 +612,261 @@ class TestBehavioralMonitoring:
         stripped = dataclasses.replace(run, metrics=dict(run.metrics) | {"cost": None})
         with pytest.raises(ValueError, match="cost"):
             acceptance_inputs(stripped, run)
+
+
+# ---------------------------------------------------------------------------
+# S10: the skill loader -- install, hand-off, trace
+# ---------------------------------------------------------------------------
+
+# Bodies carry a marker that appears in no prompt, plus literal braces: the body
+# never enters the format slot, so it needs no brace convention (R5).
+TWO_SKILLS = [
+    SkillEntry(
+        name="chunk_context",
+        description="when `context` is larger than one sub-call can take",
+        body='BODY-ONE {"not": "a format field"} 1. Measure len(context).\n2. Split it.',
+    ),
+    SkillEntry(
+        name="recheck_quotes",
+        description="when the candidate answer quotes `context` verbatim",
+        body="BODY-TWO 1. Re-find each quote in context.\n2. Drop any quote not found.",
+    ),
+]
+SKILLED = dataclasses.replace(H0, skills=TWO_SKILLS)
+SKILLED_DEPTH_TWO = dataclasses.replace(
+    SKILLED, runtime_policy=build_runtime_policy() | {"enabled": True, "max_depth": 2}
+)
+
+# What a ```repl``` block prints when it finds, or does not find, the loader.
+LOADER_PROBE = (
+    "```repl\n"
+    "try:\n"
+    f"    {SKILL_LOADER_NAME}\n"
+    "    print('LOADER_PRESENT')\n"
+    "except NameError:\n"
+    "    print('NO_LOADER')\n"
+    "```"
+)
+
+
+def rendered(prompt: Any) -> str:
+    """Flatten one recorded client prompt (a message list or a bare string) to text."""
+    if isinstance(prompt, str):
+        return prompt
+    return "\n".join(str(m.get("content", "")) for m in prompt)
+
+
+def skill_index(skills: list[SkillEntry]) -> list[dict[str, str]]:
+    return [{"name": e.name, "description": e.description} for e in skills]
+
+
+class TestSkillLoaderContract:
+    def test_loader_returns_the_body_verbatim_braces_and_all(self):
+        loader = build_skill_loader(TWO_SKILLS)
+        assert loader("chunk_context") == TWO_SKILLS[0].body
+        assert loader("recheck_quotes") == TWO_SKILLS[1].body
+
+    def test_unknown_name_raises_an_error_naming_the_available_skills(self):
+        loader = build_skill_loader(TWO_SKILLS)
+        with pytest.raises(UnknownSkillError, match="chunk_context") as caught:
+            loader("no_such_skill")
+        assert "recheck_quotes" in str(caught.value)
+        assert "no_such_skill" in str(caught.value)
+
+    def test_loader_docstring_states_the_hand_off_contract(self):
+        doc = build_skill_loader(TWO_SKILLS).load.__doc__ or ""
+        assert "sub-call" in doc and "prompt" in doc
+        assert SKILL_LOADER_NAME in doc
+
+    def test_loader_is_absent_from_the_serialization_and_moves_no_hash(self):
+        before = harness_hash(SKILLED)
+        build_harnessed_rlm(SKILLED, backend="openai", backend_kwargs={"model_name": "t"})
+        assert harness_hash(SKILLED) == before
+        assert SKILL_LOADER_NAME not in canonical_json(serialize_harness(SKILLED))
+        # The harness's own S8 dicts are untouched by the install.
+        assert SKILLED.repl_helpers == {} and SKILLED.sub_repl_helpers == {}
+
+    def test_wrapper_and_loader_tool_line_are_byte_pinned(self):
+        # KTD9: unhashed scaffold bytes every non-empty-S10 harness carries; a
+        # change here is a dated amendment, never a silent edit between rounds.
+        assert SKILL_INDEX_PREAMBLE == (
+            "Skills available in the REPL: `load_skill(name: str) -> str` returns the "
+            "full procedure of a skill listed below. A procedure reaches a sub-call only "
+            "as text you put in that sub-call's prompt; `rlm_query` children can also "
+            "call `load_skill` themselves."
+        )
+        assert SKILL_LOADER_DESCRIPTION == (
+            "returns the full procedure of the named skill from the skill index, "
+            "verbatim; an unknown name raises UnknownSkillError listing the available names"
+        )
+        harnessed = build_harnessed_rlm(
+            SKILLED, backend="openai", backend_kwargs={"model_name": "t"}
+        )
+        system = harnessed.rlm._setup_prompt("hello")[0]["content"]
+        tool_line = f"- `{SKILL_LOADER_NAME}`: {SKILL_LOADER_DESCRIPTION}"
+        assert system.count(tool_line) == 1
+        assert "\n6. Custom tools and data available in the REPL:\n" + tool_line + "\n" in system
+        assert system.endswith(
+            SKILL_INDEX_PREAMBLE
+            + "\n- `chunk_context`: when `context` is larger than one sub-call can take"
+            + "\n- `recheck_quotes`: when the candidate answer quotes `context` verbatim"
+        )
+
+
+class TestSkillLoaderInstall:
+    def test_h0_and_h0_star_install_no_loader(self):
+        for harness in (H0, H0_STAR):
+            run, client = run_offline(harness, [LOADER_PROBE, final("done")])
+            # The probe code echoes both markers; only the REPL output line counts.
+            assert "\nNO_LOADER\n" in rendered(client.prompts[-1])
+            assert "\nLOADER_PRESENT\n" not in rendered(client.prompts[-1])
+            assert SKILL_LOADER_NAME not in client.prompts[0][0]["content"]
+            assert "skill_index" not in run.completion.metadata["run_metadata"]
+            assert run.metrics["skill_load_count"] == 0
+
+    def test_h0_star_formatted_prompt_is_byte_identical_with_its_installed_tools(self):
+        # The post-format check: a loader rendered into the custom-tools slot is
+        # invisible to the pre-format byte-identity test, so read the prompt the
+        # runtime actually produces for H0*, tools and all.
+        harnessed = build_harnessed_rlm(
+            H0_STAR, backend="openai", backend_kwargs={"model_name": "t"}
+        )
+        shipped = build_rlm_system_prompt(
+            system_prompt=RLM_SYSTEM_PROMPT,
+            query_metadata=QueryMetadata("hello"),
+            orchestrator=True,
+        )
+        assert harnessed.rlm._setup_prompt("hello") == shipped
+
+    def test_non_empty_s10_exposes_the_loader_in_the_root_repl(self):
+        run, client = run_offline(SKILLED, [LOADER_PROBE, final("done")])
+        assert "\nLOADER_PRESENT\n" in rendered(client.prompts[-1])
+        assert "\nNO_LOADER\n" not in rendered(client.prompts[-1])
+        assert run.completion.response == "done"
+
+    def test_rlm_query_child_sees_the_index_and_can_call_the_loader_at_depth_two(self):
+        # Both reach legs (KTD7): the depth-1 ``rlm_query`` child inherits the
+        # index in its system prompt and the loader in its REPL, and proves it
+        # by loading a body itself -- a child environment built from the
+        # harness through the runtime's own sub-call path, not a dict lookup.
+        responses = [
+            "```repl\nout = rlm_query('load recheck_quotes')\nprint(out)\n```",
+            "```repl\nprint(load_skill('recheck_quotes'))\n```",
+            final("child done"),
+            final("root done"),
+        ]
+        run, client = run_offline(SKILLED_DEPTH_TWO, responses)
+        assert run.completion.response == "root done"
+        child_system = client.prompts[1][0]["content"]
+        assert SKILL_INDEX_PREAMBLE in child_system
+        assert f"- `{SKILL_LOADER_NAME}`: {SKILL_LOADER_DESCRIPTION}" in child_system
+        # The child's own REPL output carried the body back to the child model.
+        assert "BODY-TWO" in rendered(client.prompts[2])
+        # The child's load is a trace fact at depth 2 inside the root's trace.
+        root_turn = run.completion.metadata["iterations"][0]
+        child_trace = root_turn["code_blocks"][0]["result"]["rlm_calls"][0]["metadata"]
+        child_turn = child_trace["iterations"][0]
+        assert child_turn["code_blocks"][0]["result"]["skill_loads"] == [
+            {"skill": "recheck_quotes", "depth": 2}
+        ]
+        assert child_turn["trace_metrics"]["skill_load_count"] == 1
+        assert child_trace["run_metadata"]["skill_index"] == skill_index(TWO_SKILLS)
+        # The root loaded nothing itself; its own count says so.
+        assert run.metrics["skill_load_count"] == 0
+        assert run.metrics["sub_call_count"] == 1
+
+    def test_llm_query_sub_call_sees_neither_index_nor_loader(self):
+        # A bare completion: no system prompt, no REPL. The only hand-off is
+        # what the root interpolates into the prompt.
+        responses = [
+            "```repl\nout = llm_query('plain question')\nprint(out)\n```",
+            "plain answer",
+            final("done"),
+        ]
+        _, client = run_offline(SKILLED_DEPTH_TWO, responses)
+        sub_prompt = client.prompts[1]
+        assert sub_prompt == "plain question"
+        assert SKILL_INDEX_PREAMBLE not in rendered(sub_prompt)
+        assert SKILL_LOADER_NAME not in rendered(sub_prompt)
+
+
+class TestSkillLoaderHandOffAndTrace:
+    def test_root_loads_a_body_and_hands_it_to_a_sub_call(self):
+        # The plumbing proof: a scripted root loads one body and interpolates
+        # it into a sub-call prompt; the sub-call receives the body text.
+        responses = [
+            "```repl\n"
+            "body = load_skill('chunk_context')\n"
+            "out = llm_query('Follow this procedure:\\n' + body)\n"
+            "print(out)\n"
+            "```",
+            "followed",
+            final("done"),
+        ]
+        run, client = run_offline(SKILLED, responses)
+        assert run.completion.response == "done"
+        assert client.prompts[1] == "Follow this procedure:\n" + TWO_SKILLS[0].body
+        assert "followed" in rendered(client.prompts[2])
+        assert run.metrics["skill_load_count"] == 1
+
+    def test_each_load_is_a_trace_fact_with_depth_and_turn_and_the_count_matches(self):
+        responses = [
+            "```repl\nfirst = load_skill('chunk_context')\nprint(len(first))\n```",
+            "```repl\nprint('no load this turn')\n```",
+            "```repl\na = load_skill('recheck_quotes')\nb = load_skill('chunk_context')\n```",
+            final("done"),
+        ]
+        run, _ = run_offline(SKILLED, responses)
+        turns = run.completion.metadata["iterations"]
+        loads_per_turn = [
+            [event for block in turn["code_blocks"] for event in block["result"]["skill_loads"]]
+            for turn in turns
+        ]
+        assert loads_per_turn == [
+            [{"skill": "chunk_context", "depth": 1}],
+            [],
+            [{"skill": "recheck_quotes", "depth": 1}, {"skill": "chunk_context", "depth": 1}],
+            [],
+        ]
+        assert [turn["trace_metrics"]["skill_load_count"] for turn in turns] == [1, 0, 2, 0]
+        assert run.metrics["skill_load_count"] == 3
+        # The run-start event carries the index, once, beside the run metadata.
+        assert run.completion.metadata["run_metadata"]["skill_index"] == skill_index(TWO_SKILLS)
+
+    def test_unknown_name_in_the_repl_names_the_available_skills_and_records_nothing(self):
+        responses = [
+            "```repl\nload_skill('not_a_skill')\n```",
+            final("done"),
+        ]
+        run, client = run_offline(SKILLED, responses)
+        stderr = rendered(client.prompts[1])
+        assert "UnknownSkillError" in stderr
+        assert "chunk_context" in stderr and "recheck_quotes" in stderr
+        assert run.metrics["skill_load_count"] == 0
+
+    def test_persisted_trace_round_trips_loader_events_and_the_index(self):
+        responses = [
+            "```repl\nbody = load_skill('chunk_context')\n```",
+            final("done"),
+        ]
+        run, _ = run_offline(SKILLED, responses)
+        restored = RLMChatCompletion.from_dict(json.loads(json.dumps(run.completion.to_dict())))
+        turn = restored.metadata["iterations"][0]
+        assert turn["code_blocks"][0]["result"]["skill_loads"] == [
+            {"skill": "chunk_context", "depth": 1}
+        ]
+        assert turn["trace_metrics"]["skill_load_count"] == 1
+        assert restored.metadata["run_metadata"]["skill_index"] == skill_index(TWO_SKILLS)
+        assert run_metrics(restored)["skill_load_count"] == 1
+
+    def test_run_metrics_reads_a_pre_s10_trace_as_zero_loads(self):
+        # A trace persisted before the loader existed carries no count; no
+        # loader means no loads, so the honest back-fill is zero, not an error.
+        run, _ = run_offline(H0, [final("done")])
+        payload = run.completion.to_dict()
+        for turn in payload["metadata"]["iterations"]:
+            turn["trace_metrics"].pop("skill_load_count")
+        assert run_metrics(RLMChatCompletion.from_dict(payload))["skill_load_count"] == 0
 
 
 # ---------------------------------------------------------------------------

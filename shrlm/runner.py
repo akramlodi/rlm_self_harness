@@ -1,10 +1,13 @@
 """Assemble a harnessed RLM from a ``Harness``, enforce what is enforceable, monitor the rest.
 
-One entry point, ``build_harnessed_rlm``, wires the nine surfaces into the
+One entry point, ``build_harnessed_rlm``, wires the ten surfaces into the
 runtime: S1-S5 concatenate into the root system prompt in phase order, S6 becomes
 the runtime policy plus the ``max_depth`` scalar, S7 becomes the metadata seam,
-S8 becomes ``custom_tools`` / ``custom_sub_tools``, and S9 becomes the
-answer-detection seam. The ``orchestrator`` scalar comes from the harness.
+S8 becomes ``custom_tools`` / ``custom_sub_tools``, S9 becomes the
+answer-detection seam, and S10's index joins the system prompt while its bodies
+sit behind the fixed ``load_skill`` loader the runner installs into both tool
+dicts whenever the list is non-empty (KTD9). The ``orchestrator`` scalar comes
+from the harness.
 
 Two derivations run before anything is constructed, so the prompt cannot state a
 limit the runtime does not honor:
@@ -51,15 +54,24 @@ on a low sub-call count; that judgment belongs to the optimization loop.
 
 import inspect
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from rlm.core.rlm import RLM
 from rlm.core.types import ANSWER_SUBMITTED, AnswerDecision, RLMChatCompletion
-from rlm.environments.base_env import validate_custom_tools
+from rlm.environments.base_env import SkillLoader, validate_custom_tools
 from rlm.logger import RLMLogger
 from rlm.utils.prompts import DEFAULT_CAPACITY_SENTENCE, ORCHESTRATOR_ADDENDUM
-from shrlm.rlm_harness import AnswerMiddlewareFn, Harness, MetadataFn, assemble_system_prompt
+from shrlm.rlm_harness import (
+    SKILL_LOADER_DESCRIPTION,
+    SKILL_LOADER_NAME,
+    AnswerMiddlewareFn,
+    Harness,
+    MetadataFn,
+    SkillEntry,
+    assemble_system_prompt,
+)
 
 # ---------------------------------------------------------------------------
 # Constants: the probe, the derived sentences, and the ownership boundaries
@@ -412,6 +424,83 @@ def check_harness(harness: Harness) -> None:
 
 
 # ---------------------------------------------------------------------------
+# S10 scaffold: the skill loader
+# ---------------------------------------------------------------------------
+
+
+class UnknownSkillError(LookupError):
+    """``load_skill`` was asked for a name the harness's skill index does not carry."""
+
+
+def build_skill_loader(skills: list[SkillEntry]) -> SkillLoader:
+    """Build the fixed ``load_skill(name) -> str`` loader over a harness's S10 entries (KTD9).
+
+    The loader is runtime scaffold, not surface content: the runner installs it
+    under ``SKILL_LOADER_NAME`` in both the root ``custom_tools`` and the child
+    ``custom_sub_tools`` whenever ``Harness.skills`` is non-empty, and never
+    otherwise. It is never serialized into the S8 helper dicts (``serialize_harness``
+    does not see it, so installing it moves no hash), never proposable, and its
+    name is harness-reserved against S8.
+
+    Hand-off contract: a skill body reaches a sub-call only when the root
+    interpolates it into the sub-call prompt -- ``llm_query`` / ``rlm_query``
+    accept any string, and no further pass-through exists. An ``rlm_query`` child
+    below ``max_depth`` is a full RLM with the same system prompt (so it sees the
+    index) and the same loader (installed from ``custom_sub_tools``), so it may
+    call ``load_skill`` itself; an ``llm_query`` sub-call and a max-depth leaf are
+    bare completions with neither. Docker/Daytona-style isolated environments skip
+    host callables, so the loader is not installed there; the local REPL is the
+    environment the experiment runs.
+
+    Every successful load is recorded by the local REPL environment as a trace
+    fact (skill name, environment depth) beside its sub-call events -- see
+    ``rlm.environments.base_env.SkillLoader``.
+
+    Args:
+        skills: The harness's S10 entries, in index order.
+
+    Returns:
+        A ``SkillLoader`` whose call returns the named body verbatim -- braces
+        and all; bodies never enter the format slot -- and raises
+        ``UnknownSkillError`` naming the available skills for an unknown name.
+    """
+    bodies = {entry.name: entry.body for entry in skills}
+    index = [{"name": entry.name, "description": entry.description} for entry in skills]
+
+    def load_skill(name: str) -> str:
+        """Return the full procedure of the named skill, verbatim.
+
+        A loaded procedure reaches a sub-call only as text you put in that
+        sub-call's prompt (``llm_query`` / ``rlm_query`` accept any string);
+        ``rlm_query`` children can also call ``load_skill`` themselves.
+
+        Raises:
+            UnknownSkillError: For a name not in the skill index; the message
+                lists the available names.
+        """
+        try:
+            return bodies[name]
+        except KeyError:
+            available = ", ".join(repr(known) for known in bodies) or "(none)"
+            raise UnknownSkillError(
+                f"unknown skill {name!r}; available skills: {available}"
+            ) from None
+
+    return SkillLoader(load=load_skill, index=index)
+
+
+def _install_skill_loader(helpers: dict[str, Any], loader: Callable[[str], str]) -> dict[str, Any]:
+    """A copy of one S8 helper dict with the loader merged in last, under its reserved name.
+
+    The harness's own dict is never mutated: the loader is not surface content
+    and must not leak into anything that serializes the harness.
+    """
+    merged = dict(helpers)
+    merged[SKILL_LOADER_NAME] = {"tool": loader, "description": SKILL_LOADER_DESCRIPTION}
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
 
@@ -459,7 +548,7 @@ def build_harnessed_rlm(
     """Assemble a harnessed RLM, enforcing every structural invariant first.
 
     Args:
-        harness: The nine-surface assignment to run.
+        harness: The ten-surface assignment to run.
         backend: The client backend, experiment-owned.
         backend_kwargs: The client kwargs, experiment-owned.
         log_dir: Optional directory for the JSONL trajectory. The in-memory
@@ -505,6 +594,17 @@ def build_harnessed_rlm(
     capacity_sentence = derive_capacity_sentence(policy)
     logger = RLMLogger(log_dir=log_dir)
 
+    # S8 as the harness declares it, plus -- only when S10 is non-empty -- the
+    # fixed skill loader merged in last, for the root and for every child (KTD9,
+    # KTD7). An empty S10 installs nothing, so H0/H0* render no tool line and
+    # the formatted prompt stays byte-identical to the shipped reference.
+    custom_tools: dict[str, Any] = harness.repl_helpers
+    custom_sub_tools: dict[str, Any] = harness.sub_repl_helpers
+    if harness.skills:
+        loader = build_skill_loader(harness.skills)
+        custom_tools = _install_skill_loader(harness.repl_helpers, loader)
+        custom_sub_tools = _install_skill_loader(harness.sub_repl_helpers, loader)
+
     rlm = RLM(
         backend=backend,
         backend_kwargs=backend_kwargs,
@@ -513,8 +613,8 @@ def build_harnessed_rlm(
         runtime_policy=policy,
         metadata_builder=harness.metadata,
         answer_middleware=harness.answer_middleware,
-        custom_tools=harness.repl_helpers,
-        custom_sub_tools=harness.sub_repl_helpers,
+        custom_tools=custom_tools,
+        custom_sub_tools=custom_sub_tools,
         capacity_sentence=capacity_sentence,
         logger=logger,
         **rlm_kwargs,
@@ -565,6 +665,9 @@ def run_metrics(completion: RLMChatCompletion) -> dict[str, Any]:
     return {
         "turns": len(turns),
         "sub_call_count": sum(turn["sub_call_count"] for turn in per_turn),
+        # A trace persisted before the skill loader existed carries no count;
+        # no loader means no loads, so the honest back-fill is zero (R16).
+        "skill_load_count": sum(int(turn.get("skill_load_count", 0)) for turn in per_turn),
         "syntax_error_turns": sum(1 for turn in per_turn if turn["syntax_error"]),
         "truncation_events": sum(1 for turn in per_turn if turn["truncation_event"]),
         "answer_events": [turn["answer_event"] for turn in per_turn if turn["answer_event"]],
@@ -610,8 +713,10 @@ def acceptance_inputs(baseline: HarnessRun, candidate: HarnessRun) -> dict[str, 
 __all__ = [
     "HarnessRun",
     "HarnessedRLM",
+    "UnknownSkillError",
     "acceptance_inputs",
     "build_harnessed_rlm",
+    "build_skill_loader",
     "check_harness",
     "run_metrics",
 ]

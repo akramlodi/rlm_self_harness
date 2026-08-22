@@ -73,7 +73,7 @@ from shrlm.optimization.validation import (
     subject_dir,
     write_promotion_ledger,
 )
-from shrlm.rlm_harness import H0, build_runtime_policy
+from shrlm.rlm_harness import H0, SkillEntry, build_runtime_policy
 from tests.mock_lm import MockLM
 
 COST_PER_CALL = 0.001
@@ -550,6 +550,65 @@ class TestSubCallAggregation:
         # Recomputable from the persisted traces alone.
         split_path = split_dir(config.out_dir, config.round_index, BASELINE_ID, SPLIT_HELDIN)
         assert split_aggregate(split_path)["total_sub_calls"] == 1
+
+    def test_skill_loads_are_counted_beside_sub_calls(self, tmp_path, monkeypatch):
+        # R16: a candidate with a non-empty S10 whose runs never call the
+        # loader reports zero loads beside its sub-call counts -- visible
+        # before it is scored. A run that does load reports the count.
+        skilled = replace(
+            H0,
+            skills=[
+                SkillEntry(
+                    name="chunk_context",
+                    description="when `context` is too large for one sub-call",
+                    body="1. Measure len(context).\n2. Split it.",
+                )
+            ],
+        )
+        # Held-in run: loads once, then answers. Held-out run: never loads.
+        script = [
+            "```repl\nbody = load_skill('chunk_context')\nprint(len(body))\n```",
+            final("RIGHT"),
+            final("RIGHT"),
+        ]
+        factory = ClientFactory(script)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+
+        evaluation = evaluate_subject("cand-skilled", skilled, config)
+
+        assert isinstance(evaluation, SubjectEvaluation)
+        heldin = evaluation.summary["splits"][SPLIT_HELDIN]
+        heldout = evaluation.summary["splits"][SPLIT_HELDOUT]
+        assert heldin["total_skill_loads"] == 1
+        assert heldin["mean_skill_loads"] == pytest.approx(1.0)
+        assert heldin["total_sub_calls"] == 0
+        assert heldout["total_skill_loads"] == 0
+        assert heldout["mean_skill_loads"] == pytest.approx(0.0)
+        # The two counts sit side by side in the same per-split aggregate.
+        for split_summary in (heldin, heldout):
+            assert {
+                "total_sub_calls",
+                "mean_sub_calls",
+                "total_skill_loads",
+                "mean_skill_loads",
+            } <= set(split_summary)
+        # Recomputable from the persisted traces alone.
+        split_path = split_dir(config.out_dir, config.round_index, "cand-skilled", SPLIT_HELDIN)
+        assert split_aggregate(split_path)["total_skill_loads"] == 1
+
+    def test_an_empty_s10_reports_zero_skill_loads(self, tmp_path, monkeypatch):
+        factory = ClientFactory([final("RIGHT"), final("RIGHT")])
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+
+        evaluation = evaluate_subject(BASELINE_ID, H0, config)
+
+        assert isinstance(evaluation, SubjectEvaluation)
+        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            split_summary = evaluation.summary["splits"][split_id]
+            assert split_summary["total_skill_loads"] == 0
+            assert split_summary["mean_skill_loads"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

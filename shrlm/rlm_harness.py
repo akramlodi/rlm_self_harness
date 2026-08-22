@@ -88,12 +88,27 @@ CUSTOM_TOOLS_SLOT = "{custom_tools_section}"
 SKILL_LOADER_NAME = "load_skill"
 
 # The fixed wrapper that precedes the S10 index in the assembled prompt. Purely
-# declarative by design: it names the loader and states what it returns, nothing
-# about when to call it -- "when to consult" belongs to each entry's
-# ``description`` (R14), which is proposable surface content; this sentence is not.
+# declarative by design: it names the loader, states what it returns, and states
+# the hand-off contract (a body reaches a sub-call only as text the root puts in
+# the sub-call prompt; ``rlm_query`` children can also call the loader) --
+# nothing about when to call it. "When to consult" belongs to each entry's
+# ``description`` (R14), which is proposable surface content; this sentence is
+# not. It is unhashed scaffold (KTD9) and byte-pinned in the runner tests; a
+# change here is a dated amendment, never a silent edit between rounds.
 SKILL_INDEX_PREAMBLE = (
     f"Skills available in the REPL: `{SKILL_LOADER_NAME}(name: str) -> str` returns "
-    "the full procedure of a skill listed below."
+    "the full procedure of a skill listed below. A procedure reaches a sub-call only "
+    "as text you put in that sub-call's prompt; `rlm_query` children can also call "
+    f"`{SKILL_LOADER_NAME}` themselves."
+)
+
+# The loader's rendered tool line. ``rlm.utils.prompts.build_rlm_system_prompt``
+# renders every custom tool into the ``{custom_tools_section}`` slot as
+# "- `name`: description", so this is the description the runner installs the
+# loader with. Declarative like the preamble, and byte-pinned for the same reason.
+SKILL_LOADER_DESCRIPTION = (
+    "returns the full procedure of the named skill from the skill index, verbatim; "
+    "an unknown name raises UnknownSkillError listing the available names"
 )
 
 

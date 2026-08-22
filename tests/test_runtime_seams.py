@@ -21,11 +21,13 @@ from rlm.core.types import (
     UsageSummary,
 )
 from rlm.core.types import CodeBlock as CodeBlockType
+from rlm.environments.base_env import SkillLoader
 from rlm.environments.local_repl import (
     SUBCALL_INVALID_PREFIX,
     SUBCALL_REFUSAL_PREFIX,
     LocalREPL,
 )
+from rlm.logger import RLMLogger
 from rlm.utils.parsing import (
     DEFAULT_MAX_CHARACTER_LENGTH,
     build_repl_inventory,
@@ -669,6 +671,132 @@ class TestTraceMetrics:
         assert len(result.rlm_calls) == 1
         assert result.rlm_calls[0].trace_metrics["cost"] == 0.125
         env.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Skill-load events: recorded by the environment beside its sub-call events
+# ---------------------------------------------------------------------------
+
+SKILL_BODIES = {
+    "chunk_context": "BODY-ONE {not a format field} 1. Measure len(context).",
+    "recheck_quotes": "BODY-TWO 1. Re-find each quote.",
+}
+SKILL_INDEX = [
+    {"name": "chunk_context", "description": "when `context` is too large"},
+    {"name": "recheck_quotes", "description": "when the answer quotes `context`"},
+]
+
+
+def make_skill_loader() -> SkillLoader:
+    def load(name: str) -> str:
+        if name not in SKILL_BODIES:
+            raise LookupError(f"unknown skill {name!r}")
+        return SKILL_BODIES[name]
+
+    return SkillLoader(load=load, index=SKILL_INDEX)
+
+
+class TestSkillLoadRecording:
+    """Mirror of the sub-call recording tests: a loader call is a per-turn trace fact."""
+
+    def test_loader_call_is_recorded_with_the_environment_depth(self):
+        env = LocalREPL(custom_tools={"load_skill": make_skill_loader()}, depth=2)
+        result = env.execute_code("body = load_skill('chunk_context')\nprint(body)")
+        assert result.stderr == ""
+        assert SKILL_BODIES["chunk_context"] in result.stdout
+        assert result.skill_loads == [{"skill": "chunk_context", "depth": 2}]
+        env.cleanup()
+
+    def test_loader_returns_the_body_verbatim_through_the_repl(self):
+        env = LocalREPL(custom_tools={"load_skill": make_skill_loader()})
+        env.execute_code("body = load_skill('chunk_context')")
+        assert env.locals["body"] == SKILL_BODIES["chunk_context"]
+        env.cleanup()
+
+    def test_pending_skill_loads_reset_every_turn_like_sub_calls(self):
+        env = LocalREPL(custom_tools={"load_skill": make_skill_loader()})
+        first = env.execute_code(
+            "a = load_skill('chunk_context')\nb = load_skill('recheck_quotes')"
+        )
+        second = env.execute_code("print(len(a) + len(b))")
+        assert [event["skill"] for event in first.skill_loads] == [
+            "chunk_context",
+            "recheck_quotes",
+        ]
+        assert second.skill_loads == []
+        assert second.rlm_calls == []
+        env.cleanup()
+
+    def test_a_failed_load_is_not_recorded_and_surfaces_in_stderr(self):
+        env = LocalREPL(custom_tools={"load_skill": make_skill_loader()})
+        result = env.execute_code("load_skill('nope')")
+        assert result.skill_loads == []
+        assert "LookupError" in result.stderr and "nope" in result.stderr
+        env.cleanup()
+
+    def test_plain_callable_tools_are_not_recorded_as_skill_loads(self):
+        env = LocalREPL(custom_tools={"helper": lambda name: f"h:{name}"})
+        result = env.execute_code("print(helper('x'))")
+        assert "h:x" in result.stdout
+        assert result.skill_loads == []
+        env.cleanup()
+
+    def test_tool_dict_form_of_the_loader_is_still_recorded(self):
+        env = LocalREPL(
+            custom_tools={"load_skill": {"tool": make_skill_loader(), "description": "d"}}
+        )
+        result = env.execute_code("load_skill('recheck_quotes')")
+        assert result.skill_loads == [{"skill": "recheck_quotes", "depth": 1}]
+        env.cleanup()
+
+    def test_repl_result_to_dict_carries_skill_loads_beside_rlm_calls(self):
+        result = REPLResult(
+            stdout="",
+            stderr="",
+            locals={},
+            execution_time=0.0,
+            skill_loads=[{"skill": "chunk_context", "depth": 1}],
+        )
+        data = result.to_dict()
+        assert data["rlm_calls"] == []
+        assert data["skill_loads"] == [{"skill": "chunk_context", "depth": 1}]
+        # A result built without the field persists an empty list, like rlm_calls.
+        assert REPLResult(stdout="", stderr="", locals={}).to_dict()["skill_loads"] == []
+
+    def test_turn_metrics_and_run_metadata_carry_loads_and_index(self):
+        responses = [
+            "```repl\nbody = load_skill('chunk_context')\nprint(body[:8])\n```",
+            final("done"),
+        ]
+        with patch.object(rlm_module, "get_client") as get_client:
+            get_client.return_value = create_mock_lm(responses)
+            logger = RLMLogger()
+            model = RLM(
+                backend="openai",
+                backend_kwargs={"model_name": "test"},
+                custom_tools={"load_skill": make_skill_loader()},
+                logger=logger,
+            )
+            result = model.completion("ctx")
+
+        turns = result.metadata["iterations"]
+        assert turns[0]["trace_metrics"]["skill_load_count"] == 1
+        assert turns[0]["trace_metrics"]["sub_call_count"] == 0
+        assert turns[1]["trace_metrics"]["skill_load_count"] == 0
+        assert turns[0]["code_blocks"][0]["result"]["skill_loads"] == [
+            {"skill": "chunk_context", "depth": 1}
+        ]
+        # The run-start record names what was available, once, beside the run metadata.
+        assert result.metadata["run_metadata"]["skill_index"] == SKILL_INDEX
+
+    def test_run_metadata_omits_the_index_without_a_loader(self):
+        with patch.object(rlm_module, "get_client") as get_client:
+            get_client.return_value = create_mock_lm([final("done")])
+            logger = RLMLogger()
+            model = RLM(backend="openai", backend_kwargs={"model_name": "test"}, logger=logger)
+            result = model.completion("ctx")
+        assert "skill_index" not in result.metadata["run_metadata"]
+        assert result.metadata["iterations"][0]["trace_metrics"]["skill_load_count"] == 0
 
 
 class _RecordingLogger:

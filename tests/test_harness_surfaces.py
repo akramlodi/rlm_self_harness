@@ -29,6 +29,7 @@ from shrlm.rlm_harness import (
     H0_STAR,
     INVARIANTS,
     SKILL_INDEX_PREAMBLE,
+    SKILL_LOADER_DESCRIPTION,
     SKILL_LOADER_NAME,
     SURFACES,
     Harness,
@@ -320,6 +321,23 @@ class TestSkillsSurface:
         # Purely declarative: no per-turn "when to call it" guidance (R14/KTD1).
         for cue in ("before", "whenever", "always", "should", "must", "each turn"):
             assert cue not in SKILL_INDEX_PREAMBLE.lower(), cue
+
+    def test_wrapper_states_the_hand_off_contract(self):
+        # A body reaches a sub-call only as text the root puts in the sub-call
+        # prompt; ``rlm_query`` children may also call the loader themselves.
+        assert "sub-call" in SKILL_INDEX_PREAMBLE
+        assert "prompt" in SKILL_INDEX_PREAMBLE
+        assert "`rlm_query` children" in SKILL_INDEX_PREAMBLE
+        assert SKILL_INDEX_PREAMBLE.count(f"`{SKILL_LOADER_NAME}`") == 1
+
+    def test_loader_description_is_declarative_and_names_the_error(self):
+        # The rendered tool line is scaffold too: what the loader returns and
+        # what an unknown name raises, nothing about when to call it.
+        assert "procedure" in SKILL_LOADER_DESCRIPTION
+        assert "UnknownSkillError" in SKILL_LOADER_DESCRIPTION
+        for cue in ("before", "whenever", "always", "should", "must", "each turn"):
+            assert cue not in SKILL_LOADER_DESCRIPTION.lower(), cue
+        assert "{" not in SKILL_LOADER_DESCRIPTION and "}" not in SKILL_LOADER_DESCRIPTION
 
     def test_loader_name_is_an_identifier_outside_the_runtime_reserved_set(self):
         assert SKILL_LOADER_NAME == "load_skill"

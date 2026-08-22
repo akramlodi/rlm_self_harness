@@ -261,17 +261,24 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
     trajectory existed counts zero sub-calls; a non-terminated run without a
     trajectory is an error, surfaced by ``run_metrics``.
 
-    Ratio fields (``pass_rate``, ``mean_cost``, ``mean_sub_calls``) are None
-    when the split holds no runs at all -- the shape a fully budget-skipped
-    split persists.
+    Skill-load counts (R16) come from the same rehydrated traces and sit beside
+    the sub-call counts: a candidate whose runs never invoked the skill loader
+    reports ``total_skill_loads`` of zero here, visible before it is scored.
+
+    Ratio fields (``pass_rate``, ``mean_cost``, ``mean_sub_calls``,
+    ``mean_skill_loads``) are None when the split holds no runs at all -- the
+    shape a fully budget-skipped split persists.
     """
     runs, _verdicts, envelope, entries = load_round(split_path, EVAL_ROUND_INDEX)
     total_sub_calls = 0
+    total_skill_loads = 0
     for entry, (_instance, completion) in zip(entries, runs, strict=True):
         terminated = entry.get("cause") == VerifierCause.RESOURCE_TERMINATED.value
         if completion.metadata is None and terminated:
             continue  # terminated before any trajectory existed: no sub-call evidence
-        total_sub_calls += int(run_metrics(completion)["sub_call_count"])
+        metrics = run_metrics(completion)
+        total_sub_calls += int(metrics["sub_call_count"])
+        total_skill_loads += int(metrics["skill_load_count"])
 
     n_runs = len(entries)
     pass_count = sum(1 for entry in entries if entry["passed"])
@@ -288,6 +295,8 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
         "mean_cost": total_cost / n_runs if n_runs else None,
         "total_sub_calls": total_sub_calls,
         "mean_sub_calls": total_sub_calls / n_runs if n_runs else None,
+        "total_skill_loads": total_skill_loads,
+        "mean_skill_loads": total_skill_loads / n_runs if n_runs else None,
     }
 
 

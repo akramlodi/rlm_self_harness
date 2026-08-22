@@ -220,6 +220,7 @@ class REPLResult:
         execution_time: float = None,
         rlm_calls: list["RLMChatCompletion"] = None,
         final_answer: str | None = None,
+        skill_loads: list[dict[str, Any]] | None = None,
     ):
         self.stdout = stdout
         self.stderr = stderr
@@ -227,6 +228,9 @@ class REPLResult:
         self.execution_time = execution_time
         self.rlm_calls = rlm_calls or []
         self.final_answer = final_answer
+        # Skill-load events the environment recorded while this block ran
+        # (``{"skill": name, "depth": env_depth}`` each), beside ``rlm_calls``.
+        self.skill_loads = skill_loads or []
 
     def __str__(self):
         return f"REPLResult(stdout={self.stdout}, stderr={self.stderr}, locals={self.locals}, execution_time={self.execution_time}, rlm_calls={len(self.rlm_calls)})"
@@ -239,6 +243,7 @@ class REPLResult:
             "execution_time": self.execution_time,
             "rlm_calls": [call.to_dict() for call in self.rlm_calls],
             "final_answer": self.final_answer,
+            "skill_loads": [dict(event) for event in self.skill_loads],
         }
 
 
@@ -292,9 +297,13 @@ class RLMMetadata:
     environment_type: str
     environment_kwargs: dict[str, Any]
     other_backends: list[str] | None = None
+    # The skill index a ``SkillLoader`` custom tool carried, recorded once at
+    # run start so a trace names what was available; None when no loader was
+    # installed, and then absent from the serialized record.
+    skill_index: list[dict[str, str]] | None = None
 
     def to_dict(self):
-        return {
+        out = {
             "root_model": self.root_model,
             "max_depth": self.max_depth,
             "max_iterations": self.max_iterations,
@@ -306,6 +315,9 @@ class RLMMetadata:
             },
             "other_backends": self.other_backends,
         }
+        if self.skill_index is not None:
+            out["skill_index"] = [dict(entry) for entry in self.skill_index]
+        return out
 
 
 ########################################################

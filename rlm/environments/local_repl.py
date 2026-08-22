@@ -1,4 +1,5 @@
 import copy
+import functools
 import io
 import json
 import os
@@ -18,6 +19,7 @@ from rlm.core.types import REPLResult, RLMChatCompletion
 from rlm.environments.base_env import (
     RESERVED_TOOL_NAMES,
     NonIsolatedEnv,
+    SkillLoader,
     extract_tool_value,
     validate_custom_tools,
 )
@@ -231,6 +233,8 @@ class LocalREPL(NonIsolatedEnv):
 
         # Track LLM calls made during code execution
         self._pending_llm_calls: list[RLMChatCompletion] = []
+        # Track skill loads made during code execution (beside the sub-calls).
+        self._pending_skill_loads: list[dict[str, Any]] = []
         # Captured the first time the model sets ``answer["ready"] = True``.
         self._last_final_answer: str | None = None
 
@@ -250,11 +254,37 @@ class LocalREPL(NonIsolatedEnv):
         # Tools can be either plain values or (value, description) tuples
         for name, entry in self.custom_tools.items():
             value = extract_tool_value(entry)
-            if callable(value):
+            if isinstance(value, SkillLoader):
+                # A skill loader is installed as its recording wrapper, so each
+                # successful load is queued for the turn record (see below).
+                self.globals[name] = self._recorded_skill_loader(value)
+            elif callable(value):
                 self.globals[name] = value
             else:
                 # For non-callable values (constants, data), add to locals
                 self.locals[name] = value
+
+    def _recorded_skill_loader(self, loader: SkillLoader) -> Callable[[str], str]:
+        """Wrap ``loader`` so each call that returns a body is recorded as a trace fact.
+
+        The mirror of ``_record_call`` for sub-calls: a load that raises (an
+        unknown name) records nothing, exactly as a sub-call that fails before a
+        completion exists records nothing -- its error reaches the model through
+        the block's stderr. The wrapper keeps the loader's name and docstring so
+        the REPL-visible callable reads as the harness defined it.
+        """
+
+        @functools.wraps(loader.load)
+        def recorded(name: str) -> str:
+            body = loader(name)
+            self._record_skill_load(name)
+            return body
+
+        return recorded
+
+    def _record_skill_load(self, name: str) -> None:
+        """Queue one successful skill load (name, this environment's depth) for the turn."""
+        self._pending_skill_loads.append({"skill": name, "depth": self.depth})
 
     def _capture_answer(self, content: Any) -> None:
         self._last_final_answer = str(content)
@@ -752,8 +782,9 @@ class LocalREPL(NonIsolatedEnv):
         """Execute code in the persistent namespace and return result."""
         start_time = time.perf_counter()
 
-        # Clear pending LLM calls from previous execution
+        # Clear pending LLM calls and skill loads from previous execution
         self._pending_llm_calls = []
+        self._pending_skill_loads = []
 
         with self._capture_output() as (stdout_buf, stderr_buf), self._temp_cwd():
             try:
@@ -784,6 +815,7 @@ class LocalREPL(NonIsolatedEnv):
             execution_time=time.perf_counter() - start_time,
             rlm_calls=self._pending_llm_calls.copy(),
             final_answer=final_answer,
+            skill_loads=self._pending_skill_loads.copy(),
         )
 
     def __enter__(self):
