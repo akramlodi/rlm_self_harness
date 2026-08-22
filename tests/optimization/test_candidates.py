@@ -23,16 +23,21 @@ from rlm.core.types import AnswerDecision
 from rlm.utils.parsing import DEFAULT_MAX_CHARACTER_LENGTH, default_metadata_builder
 from shrlm.harness_identity import harness_hash, hash_of_serialization, serialize_harness
 from shrlm.optimization.candidates import (
+    HARNESS_FORMAT,
     MODULE_FILENAME,
     SURFACE_SERIALIZATION_KEYS,
+    CandidateMaterializationError,
     CandidateRejection,
     LoadedCandidate,
+    changed_surfaces,
     load_candidate,
     load_candidates,
+    materialize_harness,
+    surface_field_values,
 )
 from shrlm.optimization.driver import RoundConfig, _prepare_round_dir
 from shrlm.optimization.types import Verdict
-from shrlm.rlm_harness import H0, SURFACES, build_runtime_policy
+from shrlm.rlm_harness import H0, SURFACES, SkillEntry, build_runtime_policy
 
 # ---------------------------------------------------------------------------
 # Candidate surface values. Top-level so ``inspect.getsource`` can serialize
@@ -120,6 +125,17 @@ def s8_candidate():
 
 def s9_candidate(middleware=reject_empty_answer):
     return replace(H0, name="cand-s9", answer_middleware=middleware)
+
+
+SKILL = SkillEntry(
+    name="verify_aggregate",
+    description="Consult before committing an aggregated answer.",
+    body="1. Re-read each partial result.\n2. Recompute the aggregate.\n3. Compare.",
+)
+
+
+def s10_candidate(skills=(SKILL,)):
+    return replace(H0, name="cand-s10", skills=list(skills))
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +260,109 @@ def test_helper_surface_round_trip_yields_working_helpers(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# S10: the skill library surface (R3, R8)
+# ---------------------------------------------------------------------------
+
+
+def test_skill_surface_round_trip(tmp_path):
+    payload = proposal_payload(s10_candidate(), "S10")
+    loaded = load_candidate(write_payload(tmp_path, payload), H0)
+    assert isinstance(loaded, LoadedCandidate), loaded
+    assert loaded.surface == "S10"
+    assert canonical(serialize_harness(loaded.harness)) == canonical(payload["harness"]["harness"])
+    assert loaded.harness_hash == payload["harness"]["hash"]
+    assert loaded.harness.skills == [SKILL]
+    assert all(isinstance(entry, SkillEntry) for entry in loaded.harness.skills)
+    # KTD2: unchanged surfaces reuse the incumbent's live objects.
+    assert loaded.harness.metadata is H0.metadata
+    assert loaded.harness.answer_middleware is H0.answer_middleware
+
+
+def test_changed_surfaces_reports_exactly_s10_for_a_skill_edit():
+    assert changed_surfaces(serialize_harness(H0), serialize_harness(s10_candidate())) == ["S10"]
+
+
+def test_s10_and_s3_together_rejected_naming_both(tmp_path):
+    two = replace(s10_candidate(), name="cand-two", execution_instruction="Run it.")
+    result = load_candidate(write_payload(tmp_path, proposal_payload(two, "S10")), H0)
+    assert isinstance(result, CandidateRejection)
+    assert result.gate == "surface_diff"
+    assert "S3" in result.reason and "S10" in result.reason
+
+
+def test_serialization_omitting_s10_is_a_schema_rejection(tmp_path):
+    payload = proposal_payload(s2_candidate(), "S2")
+    del payload["harness"]["harness"]["surfaces"]["S10_skills"]
+    result = load_candidate(write_payload(tmp_path, payload), H0)
+    assert isinstance(result, CandidateRejection)
+    assert result.gate == "schema"
+    assert "S10_skills" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("skills", "fragment"),
+    [
+        ({"name": "x", "description": "d", "body": "b"}, "list"),
+        (["not a record"], "S10_skills"),
+        ([{"name": "x", "description": "d"}], "body"),
+        ([{"name": "x", "description": "d", "body": 3}], "body"),
+        ([{"name": 1, "description": "d", "body": "b"}], "name"),
+        (
+            [
+                {"name": "x", "description": "d", "body": "b"},
+                {"name": "x", "description": "e", "body": "c"},
+            ],
+            "unique",
+        ),
+    ],
+    ids=[
+        "not-a-list",
+        "not-a-record",
+        "missing-field",
+        "non-string-body",
+        "non-string-name",
+        "dup",
+    ],
+)
+def test_malformed_skill_records_are_schema_rejections(tmp_path, skills, fragment):
+    payload = proposal_payload(s10_candidate(), "S10")
+    payload["harness"]["harness"]["surfaces"]["S10_skills"] = skills
+    result = load_candidate(write_payload(tmp_path, payload), H0)
+    assert isinstance(result, CandidateRejection), result
+    assert result.gate == "schema"
+    assert fragment in result.reason
+
+
+def test_s10_is_not_a_callable_surface(tmp_path, monkeypatch):
+    # S10 carries no module: the host never imports a candidate module for it,
+    # and its field values rebuild from the serialization alone.
+    serialization = serialize_harness(s10_candidate())
+    assert surface_field_values(serialization, "S10", None) == {"skills": [SKILL]}
+    slot_labels = [slot.label for slot in candidates_module._callable_slots(serialization)]
+    assert not any("S10" in label for label in slot_labels)
+
+    def forbid_import(*args, **kwargs):
+        raise AssertionError("the host must not import a candidate module for an S10 edit")
+
+    monkeypatch.setattr(candidates_module, "import_surface_module", forbid_import)
+    payload = proposal_payload(s10_candidate(), "S10")
+    loaded = load_candidate(write_payload(tmp_path, payload), H0)
+    assert isinstance(loaded, LoadedCandidate), loaded
+
+
+def test_materializing_a_pre_s10_serialization_is_a_named_error(tmp_path):
+    # The resume / frozen-evaluation path (``rematerialize_harness_envelope``)
+    # hands ``materialize_harness`` a persisted document; a nine-surface one
+    # must fail with a named error, not a bare KeyError.
+    serialization = serialize_harness(H0)
+    del serialization["surfaces"]["S10_skills"]
+    with pytest.raises(CandidateMaterializationError) as excinfo:
+        materialize_harness(serialization, tmp_path / MODULE_FILENAME)
+    assert "S10_skills" in str(excinfo.value)
+    assert HARNESS_FORMAT in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # Text-level gates
 # ---------------------------------------------------------------------------
 
@@ -349,7 +468,7 @@ def test_text_gates_execute_no_candidate_code(tmp_path, monkeypatch):
     ("override", "expected_fragment"),
     [
         ({"format": "shrlm-proposal/v2"}, "format"),
-        ({"surface": "S10"}, "surface"),
+        ({"surface": "S11"}, "surface"),
         ({"surface": ["S2"]}, "surface"),
         ({"predicted_effect": ""}, "predicted_effect"),
         (
