@@ -619,17 +619,18 @@ class TestBehavioralMonitoring:
 # ---------------------------------------------------------------------------
 
 # Bodies carry a marker that appears in no prompt, plus literal braces: the body
-# never enters the format slot, so it needs no brace convention (R5).
+# never enters the format slot, so it needs no brace convention (R5). Each is
+# ordered steps (R14), the shape ``check_harness`` holds S10 to at construction.
 TWO_SKILLS = [
     SkillEntry(
         name="chunk_context",
         description="when `context` is larger than one sub-call can take",
-        body='BODY-ONE {"not": "a format field"} 1. Measure len(context).\n2. Split it.',
+        body='1. BODY-ONE {"not": "a format field"} Measure len(context).\n2. Split it.',
     ),
     SkillEntry(
         name="recheck_quotes",
         description="when the candidate answer quotes `context` verbatim",
-        body="BODY-TWO 1. Re-find each quote in context.\n2. Drop any quote not found.",
+        body="1. BODY-TWO Re-find each quote in context.\n2. Drop any quote not found.",
     ),
 ]
 SKILLED = dataclasses.replace(H0, skills=TWO_SKILLS)

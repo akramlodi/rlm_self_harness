@@ -50,7 +50,6 @@ never a reimplementation that could drift from it.
 import ast
 import hashlib
 import json
-import keyword
 import os
 import re
 import tempfile
@@ -82,7 +81,21 @@ from shrlm.optimization.taxonomy import (
     EditableSurface,
     render_surface_block,
 )
-from shrlm.rlm_harness import SKILL_LOADER_NAME, Harness, SkillEntry, build_runtime_policy
+from shrlm.rlm_harness import (
+    SKILL_BODY_MAX_CHARS,
+    SKILL_BODY_MIN_STEPS,
+    SKILL_DESCRIPTION_MAX_CHARS,
+    SKILL_LOADER_NAME,
+    SKILL_MAX_ENTRIES,
+    SKILL_NAME_MAX_CHARS,
+    SKILL_RECORD_FIELDS,
+    SKILL_TOTAL_MAX_CHARS,
+    Harness,
+    SkillEntry,
+    build_runtime_policy,
+    has_ordered_steps,
+    is_repl_safe_identifier,
+)
 from shrlm.runner import (
     PER_BATCH_PATTERN,
     PER_PROMPT_PATTERN,
@@ -134,43 +147,10 @@ EDIT_KIND_CODE = "code"
 EDIT_KIND_REPL_HELPER = "repl_helper"
 EDIT_KIND_SKILLS = "skills"
 
-# S10 edit bounds (R7). Chosen against the S1-S5 text facts already in force --
-# no S1-S5 edit carries a numeric cap today, so the anchors are the reference
-# texts themselves: H0*'s S1 is 2116 characters, H0's one-line S2-S5 surfaces are
-# 68-107 characters each, and ``_render_pattern_block`` shows a surface's current
-# value truncated at 4000 characters. The caps split by representation: name and
-# description are index fields paid in every prompt, so they sit in the S2-S5
-# one-line family; the body is paid only when loaded, so it is looser.
-#   - SKILL_NAME_MAX_CHARS = 40: a REPL identifier; one index line's label.
-#   - SKILL_DESCRIPTION_MAX_CHARS = 200: ~2x H0's longest one-line surface, so an
-#     index line stays one line.
-#   - SKILL_MAX_ENTRIES = 8: 8 index lines x (<= 40 + 200 + 6 decoration chars)
-#     ~= 2000 characters -- the index at its cap costs at most about one reference
-#     S1 of prompt bytes per turn.
-#   - SKILL_BODY_MAX_CHARS = 4000: the proposer's own display truncation for a
-#     surface value; a body this long is still shown whole when it is the only
-#     entry.
-#   - SKILL_TOTAL_MAX_CHARS = 16000: the sum of every field over every entry;
-#     four full-size bodies, or eight ~1750-character ones -- a bound on the
-#     serialized candidate (hashed, written to proposal.json, diffed, rendered
-#     into later proposer prompts), independent of the per-field caps.
-# U7 enforces the same numbers at harness construction.
-SKILL_NAME_MAX_CHARS = 40
-SKILL_DESCRIPTION_MAX_CHARS = 200
-SKILL_BODY_MAX_CHARS = 4000
-SKILL_MAX_ENTRIES = 8
-SKILL_TOTAL_MAX_CHARS = 16000
-
-# The fields every S10 record carries (same set ``candidates._skills_violation``
-# demands of the serialized form), each a string.
-SKILL_RECORD_FIELDS: tuple[str, str, str] = ("name", "description", "body")
-
-# R14's "ordered steps", structurally: a body line that begins with a numbered
-# (``1.`` / ``1)``) or bulleted (``-`` / ``*``) marker, whitespace, and text. A
-# body must carry at least SKILL_BODY_MIN_STEPS such lines; prose around the
-# steps is allowed. U7 enforces the same predicate at construction.
-SKILL_STEP_LINE_PATTERN = re.compile(r"^\s*(?:\d+[.)]|[-*])\s+\S")
-SKILL_BODY_MIN_STEPS = 2
+# S10 edit bounds (R7), the record field set, and the R14 shape predicates live in
+# ``shrlm.rlm_harness`` so the runner enforces the same numbers and predicates at
+# harness construction (U7) without importing this module; they are re-exported
+# here under their original names.
 
 # R6: the runtime-limit patterns ``check_stated_limits`` governs, applied to
 # each S10 description and body individually (a body never enters the
@@ -605,26 +585,6 @@ def _validate_single_def(source: Any, label: str) -> str:
             f"{label}: source must be exactly one undecorated top-level function definition"
         )
     return tree.body[0].name
-
-
-def is_repl_safe_identifier(name: Any) -> bool:
-    """R1's "REPL-safe identifier": an ASCII Python identifier that is not a keyword.
-
-    The predicate U7 enforces at construction, so a name the proposer is allowed
-    to write is a name the harness is allowed to hold.
-    """
-    return (
-        isinstance(name, str)
-        and name.isascii()
-        and name.isidentifier()
-        and not keyword.iskeyword(name)
-    )
-
-
-def has_ordered_steps(body: str) -> bool:
-    """R14's body shape: at least ``SKILL_BODY_MIN_STEPS`` step-marked lines."""
-    steps = sum(1 for line in body.splitlines() if SKILL_STEP_LINE_PATTERN.match(line))
-    return steps >= SKILL_BODY_MIN_STEPS
 
 
 def _stated_limit(text: str) -> str | None:
