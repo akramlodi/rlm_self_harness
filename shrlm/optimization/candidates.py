@@ -65,6 +65,7 @@ from types import ModuleType
 from typing import Any
 
 from shrlm.harness_identity import (
+    HARNESS_FORMAT,
     HarnessSerializationError,
     canonical_json,
     hash_of_serialization,
@@ -77,11 +78,12 @@ from shrlm.optimization.taxonomy import (
     FailingLevel,
     VerifierCause,
 )
-from shrlm.rlm_harness import Harness, SkillEntry
+from shrlm.rlm_harness import SKILL_RECORD_FIELDS, Harness, SkillEntry
 from shrlm.runner import check_harness
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
-HARNESS_FORMAT = "shrlm-harness/v2"
+# ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
+# declaration site) and re-exported here for the loader and its callers.
 PROPOSAL_FILENAME = "proposal.json"
 MODULE_FILENAME = "surfaces.py"
 
@@ -118,7 +120,6 @@ SURFACE_SERIALIZATION_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 # The fields every serialized S10 skill record carries, each a string.
-_SKILL_RECORD_FIELDS: tuple[str, ...] = ("name", "description", "body")
 
 # The Harness field each string surface fills (builder convention: build_<x>
 # fills <x>).
@@ -288,9 +289,9 @@ def _skills_violation(skills: Any) -> str | None:
     seen: set[str] = set()
     for index, record in enumerate(skills):
         label = f"surfaces['S10_skills'][{index}]"
-        if not isinstance(record, dict) or set(record) != set(_SKILL_RECORD_FIELDS):
-            return f"{label} must be a record with exactly the fields {list(_SKILL_RECORD_FIELDS)}"
-        for field in _SKILL_RECORD_FIELDS:
+        if not isinstance(record, dict) or set(record) != set(SKILL_RECORD_FIELDS):
+            return f"{label} must be a record with exactly the fields {list(SKILL_RECORD_FIELDS)}"
+        for field in SKILL_RECORD_FIELDS:
             if not isinstance(record[field], str):
                 return f"{label}[{field!r}] must be a string"
         if record["name"] in seen:

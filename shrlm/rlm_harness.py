@@ -378,6 +378,29 @@ def has_ordered_steps(body: str) -> bool:
     return steps >= SKILL_BODY_MIN_STEPS
 
 
+def skill_description_violation(description: str) -> str | None:
+    """Why ``description`` is not a legal S10 index field, or ``None`` when it is.
+
+    R5/R14's description contract, shared by proposal-time validation and the
+    construction-time check so the two belts cannot drift: one non-empty line
+    with no brace, because the index lands in the formatted prompt. The length
+    cap is checked by the callers, which own the cap's error wording.
+
+    Returns:
+        A phrase completing "``<label>``.description ...", or ``None``.
+    """
+    if not description.strip():
+        return "must be a non-empty string"
+    if "\n" in description or "\r" in description:
+        return "must be a single line"
+    if "{" in description or "}" in description:
+        return (
+            "contains a brace; S10 index fields land in the formatted prompt and must be "
+            "brace-free (the body may carry braces -- the loader returns it verbatim)"
+        )
+    return None
+
+
 def build_skills() -> list[SkillEntry]:
     """S10 - reusable procedure, available across turns: the skill library.
 

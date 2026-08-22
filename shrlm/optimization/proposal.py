@@ -62,6 +62,7 @@ from typing import Any
 from rlm.clients.base_lm import BaseLM
 from rlm.environments.base_env import RESERVED_TOOL_NAMES
 from shrlm.harness_identity import (
+    HARNESS_FORMAT,
     HarnessSerializationError,
     canonical_json,
     hash_of_serialization,
@@ -95,6 +96,7 @@ from shrlm.rlm_harness import (
     build_runtime_policy,
     has_ordered_steps,
     is_repl_safe_identifier,
+    skill_description_violation,
 )
 from shrlm.runner import (
     PER_BATCH_PATTERN,
@@ -104,7 +106,8 @@ from shrlm.runner import (
 )
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
-HARNESS_FORMAT = "shrlm-harness/v2"
+# ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
+# declaration site) and re-exported here for the proposal writer.
 PROPOSAL_FILENAME = "proposal.json"
 
 # 1.1.0: the prompt names ten surfaces and carries the S10 edit format.
@@ -620,16 +623,9 @@ def _validate_skill_record(label: str, record: Any) -> dict[str, str]:
         )
 
     # description: one non-empty, brace-free line within the index cap (R5, R14).
-    if not description.strip():
-        raise ProposalRejection(f"{label}.description must be a non-empty string")
-    if "\n" in description or "\r" in description:
-        raise ProposalRejection(f"{label}.description must be a single line")
-    if "{" in description or "}" in description:
-        raise ProposalRejection(
-            f"{label}.description contains a brace; index fields land in the formatted "
-            "prompt and must be brace-free (the body may carry braces -- the loader "
-            "returns it verbatim)"
-        )
+    violation = skill_description_violation(description)
+    if violation is not None:
+        raise ProposalRejection(f"{label}.description {violation}")
     if len(description) > SKILL_DESCRIPTION_MAX_CHARS:
         raise ProposalRejection(
             f"{label}.description is {len(description)} characters, over the "

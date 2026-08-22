@@ -88,6 +88,7 @@ from shrlm.rlm_harness import (
     has_ordered_steps,
     is_repl_safe_identifier,
     render_skill_index,
+    skill_description_violation,
 )
 
 # ---------------------------------------------------------------------------
@@ -413,16 +414,9 @@ def check_skills(harness: Harness) -> None:
             )
         seen.add(name)
 
-        if not description.strip():
-            raise ValueError(f"{label}.description must be a non-empty string.")
-        if "\n" in description or "\r" in description:
-            raise ValueError(f"{label}.description must be a single line.")
-        if "{" in description or "}" in description:
-            raise ValueError(
-                f"{label}.description contains a brace; S10 index fields land in the "
-                "formatted prompt and must be brace-free (the body may carry braces -- the "
-                "loader returns it verbatim)."
-            )
+        violation = skill_description_violation(description)
+        if violation is not None:
+            raise ValueError(f"{label}.description {violation}.")
         if len(description) > SKILL_DESCRIPTION_MAX_CHARS:
             raise ValueError(
                 f"{label}.description is {len(description)} characters, over the "

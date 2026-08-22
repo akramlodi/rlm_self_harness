@@ -128,10 +128,7 @@ def render_skill_lines(
     if skill_index is None:
         return []
     available = [str(entry.get("name", "")) for entry in skill_index]
-    loaded: list[tuple[str, int]] = []
-    for event in skill_loads:
-        if event not in loaded:
-            loaded.append(event)
+    loaded = list(dict.fromkeys(skill_loads))
     return [
         f"available_skills: {', '.join(available) if available else '(none)'}",
         "loaded_skills: "

@@ -42,9 +42,9 @@ from shrlm.runner import declared_metadata_bound
 # The harness identity envelope's format tag. Bumped from v1 when S10 joined the
 # surface set (KTD3): the serialized key set *is* the contract, so a nine-surface
 # document must be rejected as the wrong version, not as a malformed shape. The
-# same tag is declared as ``HARNESS_FORMAT`` in ``shrlm.optimization.candidates``
+# tag is re-exported as ``HARNESS_FORMAT`` by ``shrlm.optimization.candidates``
 # (where the loader checks it) and ``shrlm.optimization.proposal`` (where the
-# proposal writer stamps it); all three must agree.
+# proposal writer stamps it); this is the one declaration site.
 HARNESS_FORMAT = "shrlm-harness/v2"
 
 
