@@ -80,7 +80,7 @@ _BAND_METRICS: tuple[tuple[str, str, str], ...] = (
 
 # The ``Harness`` fields each surface id owns (builder convention: build_<x>
 # fills <x>). The merge builder composes edits through this map; a test asserts
-# it covers ``SURFACE_SERIALIZATION_KEYS`` exactly.
+# it covers the declared ``SURFACES`` (S1-S10) exactly.
 SURFACE_HARNESS_FIELDS: dict[str, tuple[str, ...]] = {
     "S1": ("repl_contract",),
     "S2": ("decomposition_instruction",),
@@ -91,6 +91,7 @@ SURFACE_HARNESS_FIELDS: dict[str, tuple[str, ...]] = {
     "S7": ("metadata",),
     "S8": ("repl_helpers", "sub_repl_helpers"),
     "S9": ("answer_middleware",),
+    "S10": ("skills",),
 }
 
 
@@ -166,7 +167,7 @@ class CandidateDecision:
     over budget, in which case ``upstream`` or ``reasons`` say why). The thresholds are recorded on every
     record, scored or not -- they are round-level preregistration, and a
     ledger row must be interpretable without the config that produced it.
-    ``surface`` is the one S1-S9 surface the candidate's proposal edited
+    ``surface`` is the one S1-S10 surface the candidate's proposal edited
     (from its ``LoadedCandidate``); it is None for a loader rejection whose
     surface was never resolved, and for the merged harness's own re-evaluation
     record, which spans more than one surface by construction.
@@ -296,7 +297,7 @@ def score_candidate(
         baseline_summary: The incumbent's summary payload.
         candidate_summary: The candidate's (or merged harness's) summary.
         config: The preregistered thresholds and bands.
-        surface: The candidate's edited surface (S1-S9), recorded on the
+        surface: The candidate's edited surface (S1-S10), recorded on the
             decision verbatim; None for the merged harness's re-evaluation.
 
     Returns:
@@ -387,7 +388,7 @@ def decide_subject(
     entry point U6's merge leg uses on the merged harness's evaluation.
 
     Args:
-        surface: The candidate's edited surface (S1-S9), when known -- a
+        surface: The candidate's edited surface (S1-S10), when known -- a
             loader rejection whose surface never resolved, or the merged
             harness's own re-evaluation, passes None.
     """
