@@ -1,6 +1,6 @@
 """Tests for ``shrlm.harness_identity``: serialization and hashing of a harness.
 
-The contract under test: every one of the nine surfaces plus the ``orchestrator``
+The contract under test: every one of the ten surfaces plus the ``orchestrator``
 scalar is hashed, the ``name`` field is recorded but never hashed, serialization
 is deterministic across construction order and across processes, and a callable
 whose source cannot be recovered fails loudly naming its surface.
@@ -22,13 +22,18 @@ from shrlm.harness_identity import (
     serialize_harness,
     write_harness_json,
 )
+from shrlm.optimization import candidates as candidates_module
+from shrlm.optimization import proposal as proposal_module
 from shrlm.rlm_harness import (
     H0,
     H0_STAR,
     Harness,
+    SkillEntry,
     build_metadata,
     build_runtime_policy,
 )
+
+HARNESS_FORMAT = "shrlm-harness/v2"
 
 # ---------------------------------------------------------------------------
 # Alternate surface values used to probe hash sensitivity. All are module-level
@@ -94,6 +99,15 @@ VARIANTS: dict[str, dict[str, Any]] = {
     "S8_repl_helpers": {"repl_helpers": {"word_count": helper_word_count}},
     "S8_sub_repl_helpers": {"sub_repl_helpers": {"word_count": helper_word_count}},
     "S9_answer_middleware": {"answer_middleware": alt_middleware},
+    "S10_skills": {
+        "skills": [
+            SkillEntry(
+                name="count_words",
+                description="Count the words in a document.",
+                body="1. Split on whitespace.\n2. Return the length.",
+            )
+        ]
+    },
 }
 
 
@@ -104,7 +118,7 @@ def rebuild_h0(shuffle: bool) -> Harness:
         shuffle: When true, ``runtime_policy`` is rebuilt with reversed key order.
 
     Returns:
-        A fresh ``Harness`` whose nine surfaces match ``H0``'s exactly.
+        A fresh ``Harness`` whose ten surfaces match ``H0``'s exactly.
     """
     policy = build_runtime_policy()
     if shuffle:
@@ -176,6 +190,7 @@ def test_h0_serialization_names_every_surface_and_round_trips() -> None:
     assert serialized["orchestrator"] is False
     surfaces = serialized["surfaces"]
     assert sorted(surfaces) == [
+        "S10_skills",
         "S1_repl_contract",
         "S2_decomposition_instruction",
         "S3_execution_instruction",
@@ -188,7 +203,39 @@ def test_h0_serialization_names_every_surface_and_round_trips() -> None:
         "S9_answer_middleware",
     ]
     assert surfaces["S7_metadata"]["declared_bound"] == build_metadata.declared_bound
+    assert surfaces["S10_skills"] == []
     assert json.loads(json.dumps(serialized)) == serialized
+
+
+# ---------------------------------------------------------------------------
+# S10 entry shapes
+# ---------------------------------------------------------------------------
+
+
+def test_s10_entries_serialize_as_name_description_body_mappings() -> None:
+    harness = dataclasses.replace(H0, **VARIANTS["S10_skills"])
+    entries = serialize_harness(harness)["surfaces"]["S10_skills"]
+    assert entries == [
+        {
+            "name": "count_words",
+            "description": "Count the words in a document.",
+            "body": "1. Split on whitespace.\n2. Return the length.",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "skills",
+    [
+        ["count_words: not a SkillEntry"],
+        [SkillEntry(name="count_words", description="Count words.", body=object())],
+    ],
+    ids=["not_an_entry", "non_json_field"],
+)
+def test_malformed_s10_entry_fails_naming_the_surface(skills) -> None:
+    broken = dataclasses.replace(H0, skills=skills)
+    with pytest.raises(HarnessSerializationError, match="S10"):
+        serialize_harness(broken)
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +342,13 @@ def test_write_harness_json_envelope(tmp_path) -> None:
     assert on_disk["name"] == "H0"
     assert on_disk["hash"] == harness_hash(H0)
     assert on_disk["harness"] == serialize_harness(H0)
+    assert on_disk["format"] == HARNESS_FORMAT
+
+
+def test_every_envelope_tag_site_agrees_on_v2(tmp_path) -> None:
+    """The harness writer, the proposal writer, and the candidate loader must
+    stamp and check the same tag, or a proposal's envelope would never load."""
+    written = write_harness_json(H0, tmp_path / "harness.json")
+    assert written["format"] == HARNESS_FORMAT
+    assert candidates_module.HARNESS_FORMAT == HARNESS_FORMAT
+    assert proposal_module.HARNESS_FORMAT == HARNESS_FORMAT

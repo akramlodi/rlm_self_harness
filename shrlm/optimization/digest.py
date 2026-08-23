@@ -16,9 +16,11 @@ every attribution and belongs in the results.
 """
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from shrlm.optimization.types import CallNode, NodeKind, TreeStats, Verdict, iter_nodes
+from shrlm.optimization.walker import iter_skill_loads
 
 # Version of the digest rendering scheme. This constant reaches bundle ids
 # via ``MiningConfig.digest_version`` only -- it is deliberately NOT part of
@@ -26,7 +28,12 @@ from shrlm.optimization.types import CallNode, NodeKind, TreeStats, Verdict, ite
 # that digest's sha256 changes and with it the affected records' cache keys:
 # invalidation rides on the bytes themselves, so records whose rendering is
 # untouched keep their cached attributions across a bump.
-DIGEST_VERSION = "1.1.0"
+#
+# 1.2.0: the Run header carries an available_skills / loaded_skills pair when
+# the trace's run-start record names a skill index (a loader was installed,
+# i.e. S10 was non-empty). A trace without one -- every pre-S10 trace, and
+# every trace under an empty S10 -- renders byte-identically to 1.1.0.
+DIGEST_VERSION = "1.2.0"
 
 DEFAULT_CHAR_BUDGET = 12000
 DEFAULT_FOCUS_K = 4
@@ -104,7 +111,38 @@ def flatten_prompt(prompt: object) -> str:
     return str(prompt)
 
 
-def render_header(instance_id: str, question: str, verdict: Verdict, stats: TreeStats) -> str:
+def render_skill_lines(
+    skill_index: Sequence[dict[str, str]] | None, skill_loads: Sequence[tuple[str, int]]
+) -> list[str]:
+    """The available_skills / loaded_skills pair, or nothing at all.
+
+    Rendered only when the run-start record names a skill index -- a loader
+    was installed, so S10 was non-empty. Under an empty S10 there is nothing
+    to report and the digest must not change by a byte, which is what keeps
+    pre-S10 bundles and attribution caches (keyed on digest bytes) intact.
+
+    ``loaded_skills`` lists each distinct (name, depth) pair once, in
+    first-load order, so the attributor can tell "the root consulted it" from
+    "a child did" and an unloaded available skill is a visible absence.
+    """
+    if skill_index is None:
+        return []
+    available = [str(entry.get("name", "")) for entry in skill_index]
+    loaded = list(dict.fromkeys(skill_loads))
+    return [
+        f"available_skills: {', '.join(available) if available else '(none)'}",
+        "loaded_skills: "
+        + (", ".join(f"{name} (depth {depth})" for name, depth in loaded) if loaded else "(none)"),
+    ]
+
+
+def render_header(
+    instance_id: str,
+    question: str,
+    verdict: Verdict,
+    stats: TreeStats,
+    skill_lines: Sequence[str] = (),
+) -> str:
     lines = [
         "## Run",
         f"instance_id: {instance_id}",
@@ -112,6 +150,7 @@ def render_header(instance_id: str, question: str, verdict: Verdict, stats: Tree
         f"gold_answer: {head_tail(verdict.gold, ANSWER_CHARS)}",
         f"produced_answer: {head_tail(verdict.produced, ANSWER_CHARS)}",
         f"verifier_cause: {verdict.cause.value if verdict.cause else 'none'}",
+        *skill_lines,
         "",
         "## Tree statistics",
         f"iterations: {stats.n_iterations}",
@@ -292,7 +331,16 @@ def build_digest(
     """
     cfg = cfg or DigestConfig()
 
-    header = render_header(instance_id, question, verdict, stats)
+    # The skill facts come from the trace itself (U12's run-start index and
+    # per-block loader events), never from a live harness or the round
+    # envelope: the digest stays a function of the persisted tree alone.
+    header = render_header(
+        instance_id,
+        question,
+        verdict,
+        stats,
+        skill_lines=render_skill_lines(root.skill_index, list(iter_skill_loads(root))),
+    )
     skeleton, skeleton_available = render_root_skeleton(
         root, int(cfg.char_budget * ROOT_SKELETON_SHARE)
     )

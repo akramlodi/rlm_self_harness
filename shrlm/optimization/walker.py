@@ -201,6 +201,13 @@ def build_node(
     if metadata is None:
         return node
 
+    # The run-start record of what skills this node's REPL could load. Absent
+    # (None) when no loader was installed; an rlm_query child carries its own,
+    # because the loader is installed in the child namespace too.
+    skill_index = (metadata.get("run_metadata") or {}).get("skill_index")
+    if skill_index is not None:
+        node.skill_index = [dict(entry) for entry in skill_index]
+
     for iteration_index, entry in enumerate(metadata.get("iterations") or []):
         node.iterations.append(build_iteration(entry, iteration_index, node, ctx))
 
@@ -222,6 +229,9 @@ def build_iteration(
             stdout=str(result.get("stdout") or ""),
             stderr=str(result.get("stderr") or ""),
             final_answer=result.get("final_answer"),
+            # Loader invocations recorded beside rlm_calls; a pre-S10 trace
+            # has no key at all, which reads the same as no loads.
+            skill_loads=[dict(event) for event in (result.get("skill_loads") or [])],
         )
 
         for call_index, call in enumerate(result.get("rlm_calls") or []):
@@ -259,6 +269,20 @@ def iter_code_blocks(root: CallNode):
     for node in iter_nodes(root):
         for iteration in node.iterations:
             yield from iteration.code_blocks
+
+
+def iter_skill_loads(root: CallNode):
+    """Every recorded skill load in the tree as ``(skill, depth)``, in trajectory order.
+
+    Walks the root's blocks first and then each child's, in the same order
+    ``iter_nodes`` visits them, so the digest's loaded-skills line is a
+    deterministic function of the tree. Depth is the recording environment's
+    own depth (a child's load is listed at the child's depth), which is what
+    separates "the root consulted it" from "a child did".
+    """
+    for block in iter_code_blocks(root):
+        for event in block.skill_loads:
+            yield str(event.get("skill", "")), int(event.get("depth", 0))
 
 
 def count_lost_subcalls(root: CallNode) -> int:

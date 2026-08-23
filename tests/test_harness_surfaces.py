@@ -1,4 +1,4 @@
-"""Tests for the U2 harness module: three invariants, nine surfaces, two harnesses.
+"""Tests for the U2 harness module: three invariants, ten surfaces, two harnesses.
 
 The module is meant to read like a figure — a flat list of builders — so these
 tests pin the shape of that figure: the registry matches the module's public
@@ -28,9 +28,14 @@ from shrlm.rlm_harness import (
     H0,
     H0_STAR,
     INVARIANTS,
+    SKILL_INDEX_PREAMBLE,
+    SKILL_LOADER_DESCRIPTION,
+    SKILL_LOADER_NAME,
     SURFACES,
     Harness,
+    SkillEntry,
     assemble_system_prompt,
+    build_skills,
     escape_braces,
 )
 
@@ -70,9 +75,9 @@ def make_iteration(stdout: str):
 
 
 class TestSurfaceRegistry:
-    def test_nine_surfaces_no_more_no_fewer(self):
-        assert len(SURFACES) == 9
-        assert list(SURFACES) == [f"S{i}" for i in range(1, 10)]
+    def test_ten_surfaces_no_more_no_fewer(self):
+        assert len(SURFACES) == 10
+        assert list(SURFACES) == [f"S{i}" for i in range(1, 11)]
 
     def test_registry_matches_module_public_builders_exactly(self):
         module_builders = {
@@ -148,12 +153,13 @@ class TestHarnesses:
             "verification_instruction",
             "recovery_instruction",
         }
-        # S6-S9 are equal for both harnesses.
+        # S6-S10 are equal for both harnesses.
         assert H0.runtime_policy == H0_STAR.runtime_policy
         assert H0.metadata is H0_STAR.metadata
         assert H0.repl_helpers == H0_STAR.repl_helpers
         assert H0.sub_repl_helpers == H0_STAR.sub_repl_helpers
         assert H0.answer_middleware is H0_STAR.answer_middleware
+        assert H0.skills == H0_STAR.skills == []
         # Nothing else varies apart from the prompt surfaces, the orchestrator
         # scalar, and the harness's own name.
         differing = {
@@ -163,7 +169,7 @@ class TestHarnesses:
         }
         assert differing <= prompt_fields | {"orchestrator", "name"}
 
-    def test_seven_of_nine_h0_defaults_are_empty_disabled_or_one_line(self):
+    def test_eight_of_ten_h0_defaults_are_empty_disabled_or_one_line(self):
         """The floor's sparseness is the experimental design, not an oversight."""
         sparse: list[str] = []
         one_liners = {
@@ -183,8 +189,10 @@ class TestHarnesses:
         sparse.append("S8")
         assert H0.answer_middleware("done", {}).answer == "done"
         sparse.append("S9")
+        assert H0.skills == []
+        sparse.append("S10")
 
-        assert len(sparse) == 7
+        assert len(sparse) == 8
         # The two non-sparse surfaces are the factual contract and the memory default.
         assert len(H0.repl_contract.splitlines()) > 1
         assert H0.metadata("x" * 50, {}) == "x" * 50
@@ -222,6 +230,147 @@ class TestBraceConstraint:
         harness = dataclasses.replace(H0, decomposition_instruction='Return {"id": 1}.')
         with pytest.raises((KeyError, IndexError, ValueError)):
             system_prompt_for(harness)
+
+
+# ---------------------------------------------------------------------------
+# S10 — skills
+# ---------------------------------------------------------------------------
+
+# Two brace-free entries. Bodies carry a marker that appears nowhere else in any
+# prompt, so "the body never reaches the prompt" is a real assertion.
+TWO_SKILLS = [
+    SkillEntry(
+        name="chunk_context",
+        description="when `context` is larger than one sub-call can take",
+        body="BODY-ONE 1. Measure len(context).\n2. Split into slices.\n3. One sub-call per slice.",
+    ),
+    SkillEntry(
+        name="recheck_quotes",
+        description="when the candidate answer quotes `context` verbatim",
+        body="BODY-TWO 1. Re-find each quote in context.\n2. Drop any quote not found.",
+    ),
+]
+
+
+def five_part_join(harness: Harness) -> str:
+    """The pre-S10 assembly formula: S1-S5, empty surfaces dropped, joined by a blank line."""
+    parts = [
+        harness.repl_contract,
+        harness.decomposition_instruction,
+        harness.execution_instruction,
+        harness.verification_instruction,
+        harness.recovery_instruction,
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
+class TestSkillsSurface:
+    def test_build_skills_is_empty_and_fresh_per_call(self):
+        first = build_skills()
+        assert first == []
+        first.append(TWO_SKILLS[0])
+        assert build_skills() == []
+
+    def test_both_starting_harnesses_carry_an_empty_s10(self):
+        assert H0.skills == []
+        assert H0_STAR.skills == []
+
+    def test_skill_entry_is_a_frozen_record_of_name_description_body(self):
+        entry = TWO_SKILLS[0]
+        assert (entry.name, entry.description, entry.body) == (
+            "chunk_context",
+            "when `context` is larger than one sub-call can take",
+            TWO_SKILLS[0].body,
+        )
+        assert {f.name for f in dataclasses.fields(SkillEntry)} == {"name", "description", "body"}
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            entry.name = "other"  # type: ignore[misc]
+
+    def test_h0_prompt_is_byte_identical_to_the_pre_s10_assembly(self):
+        assert assemble_system_prompt(H0) == five_part_join(H0)
+        assert assemble_system_prompt(H0_STAR) == five_part_join(H0_STAR) == RLM_SYSTEM_PROMPT
+
+    def test_empty_s10_renders_neither_wrapper_nor_index(self):
+        harness = dataclasses.replace(H0, skills=[])
+        prompt = assemble_system_prompt(harness)
+        assert prompt == assemble_system_prompt(H0)
+        for text in (prompt, assemble_system_prompt(H0_STAR)):
+            assert SKILL_INDEX_PREAMBLE not in text
+            assert SKILL_LOADER_NAME not in text
+
+    def test_two_entries_render_wrapper_then_index_lines_after_s5_and_no_bodies(self):
+        harness = dataclasses.replace(H0, skills=TWO_SKILLS)
+        prompt = assemble_system_prompt(harness)
+        # S1-S5 are untouched: the index is appended after them, never interleaved.
+        assert prompt.startswith(assemble_system_prompt(H0))
+        s5 = prompt.index(H0.recovery_instruction)
+        wrapper = prompt.index(SKILL_INDEX_PREAMBLE)
+        first = prompt.index(TWO_SKILLS[0].name)
+        second = prompt.index(TWO_SKILLS[1].name)
+        assert s5 < wrapper < first < second
+        assert prompt.count(SKILL_INDEX_PREAMBLE) == 1
+        for entry in TWO_SKILLS:
+            line = next(ln for ln in prompt.splitlines() if entry.name in ln)
+            assert entry.description in line
+            assert entry.body not in prompt
+            assert "BODY-" not in prompt
+
+    def test_wrapper_names_the_loader_and_says_what_it_returns_only(self):
+        assert SKILL_LOADER_NAME in SKILL_INDEX_PREAMBLE
+        assert "procedure" in SKILL_INDEX_PREAMBLE
+        # Purely declarative: no per-turn "when to call it" guidance (R14/KTD1).
+        for cue in ("before", "whenever", "always", "should", "must", "each turn"):
+            assert cue not in SKILL_INDEX_PREAMBLE.lower(), cue
+
+    def test_wrapper_states_the_hand_off_contract(self):
+        # A body reaches a sub-call only as text the root puts in the sub-call
+        # prompt; ``rlm_query`` children may also call the loader themselves.
+        assert "sub-call" in SKILL_INDEX_PREAMBLE
+        assert "prompt" in SKILL_INDEX_PREAMBLE
+        assert "`rlm_query` children" in SKILL_INDEX_PREAMBLE
+        assert SKILL_INDEX_PREAMBLE.count(f"`{SKILL_LOADER_NAME}`") == 1
+
+    def test_loader_description_is_declarative_and_names_the_error(self):
+        # The rendered tool line is scaffold too: what the loader returns and
+        # what an unknown name raises, nothing about when to call it.
+        assert "procedure" in SKILL_LOADER_DESCRIPTION
+        assert "UnknownSkillError" in SKILL_LOADER_DESCRIPTION
+        for cue in ("before", "whenever", "always", "should", "must", "each turn"):
+            assert cue not in SKILL_LOADER_DESCRIPTION.lower(), cue
+        assert "{" not in SKILL_LOADER_DESCRIPTION and "}" not in SKILL_LOADER_DESCRIPTION
+
+    def test_loader_name_is_an_identifier_outside_the_runtime_reserved_set(self):
+        assert SKILL_LOADER_NAME == "load_skill"
+        assert SKILL_LOADER_NAME.isidentifier()
+        assert SKILL_LOADER_NAME not in RESERVED_TOOL_NAMES
+
+    def test_index_rendering_survives_the_format_slot(self):
+        harness = dataclasses.replace(H0, skills=TWO_SKILLS)
+        prompt = system_prompt_for(harness)
+        assert "{custom_tools_section}" not in prompt
+        assert TWO_SKILLS[1].description in prompt
+
+    def test_s10_governs_carries_the_content_contract(self):
+        surface = SURFACES["S10"]
+        assert surface.builders == (build_skills,)
+        assert "across turns" in surface.phase
+        governs = surface.governs
+        for phrase in (
+            "one named",
+            "procedure",
+            "`name`",
+            "`description`",
+            "`body`",
+            "ordered steps",
+        ):
+            assert phrase in governs, phrase
+        assert "per-turn execution" in governs and "decomposition" in governs
+
+    def test_s8_governs_names_the_loader_exclusion(self):
+        governs = SURFACES["S8"].governs
+        assert "proposer-written" in governs
+        assert "skill loader" in governs
+        assert "S10" in governs
 
 
 # ---------------------------------------------------------------------------

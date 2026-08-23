@@ -1,10 +1,13 @@
 """Assemble a harnessed RLM from a ``Harness``, enforce what is enforceable, monitor the rest.
 
-One entry point, ``build_harnessed_rlm``, wires the nine surfaces into the
+One entry point, ``build_harnessed_rlm``, wires the ten surfaces into the
 runtime: S1-S5 concatenate into the root system prompt in phase order, S6 becomes
 the runtime policy plus the ``max_depth`` scalar, S7 becomes the metadata seam,
-S8 becomes ``custom_tools`` / ``custom_sub_tools``, and S9 becomes the
-answer-detection seam. The ``orchestrator`` scalar comes from the harness.
+S8 becomes ``custom_tools`` / ``custom_sub_tools``, S9 becomes the
+answer-detection seam, and S10's index joins the system prompt while its bodies
+sit behind the fixed ``load_skill`` loader the runner installs into both tool
+dicts whenever the list is non-empty (KTD9). The ``orchestrator`` scalar comes
+from the harness.
 
 Two derivations run before anything is constructed, so the prompt cannot state a
 limit the runtime does not honor:
@@ -39,6 +42,12 @@ Invariant protection is two-tier, and the tiers are not interchangeable.
 - *Incidental hazards.* ``other_backends`` silently swaps the child model, and
   tracing callbacks and hard token/budget/timeout caps are experiment-owned; a
   harness that supplies any of them is rejected.
+- *Format-ready prompt, well-formed S10.* The assembled prompt (S1-S5 plus the
+  S10 index) is formatted once with a placeholder ``custom_tools_section`` so a
+  stray brace is refused naming its surface rather than dying at completion
+  time; S10's entries are held to the proposer's shape and caps (R7, R14), each
+  body and description is scanned for a stated limit the runtime would not honor
+  (R6), and the loader's reserved name may not be bound by an S8 helper.
 
 **Behavioral** (trace-monitored, reported and never prevented): an S2 or S9 edit
 can discourage recursion in prose ("just answer directly") or push the root to
@@ -51,15 +60,36 @@ on a low sub-call count; that judgment belongs to the optimization loop.
 
 import inspect
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from rlm.core.rlm import RLM
 from rlm.core.types import ANSWER_SUBMITTED, AnswerDecision, RLMChatCompletion
-from rlm.environments.base_env import validate_custom_tools
+from rlm.environments.base_env import SkillLoader, validate_custom_tools
 from rlm.logger import RLMLogger
 from rlm.utils.prompts import DEFAULT_CAPACITY_SENTENCE, ORCHESTRATOR_ADDENDUM
-from shrlm.rlm_harness import AnswerMiddlewareFn, Harness, MetadataFn, assemble_system_prompt
+from shrlm.rlm_harness import (
+    CUSTOM_TOOLS_SLOT,
+    SKILL_BODY_MAX_CHARS,
+    SKILL_BODY_MIN_STEPS,
+    SKILL_DESCRIPTION_MAX_CHARS,
+    SKILL_LOADER_DESCRIPTION,
+    SKILL_LOADER_NAME,
+    SKILL_MAX_ENTRIES,
+    SKILL_NAME_MAX_CHARS,
+    SKILL_RECORD_FIELDS,
+    SKILL_TOTAL_MAX_CHARS,
+    AnswerMiddlewareFn,
+    Harness,
+    MetadataFn,
+    SkillEntry,
+    assemble_system_prompt,
+    has_ordered_steps,
+    is_repl_safe_identifier,
+    render_skill_index,
+    skill_description_violation,
+)
 
 # ---------------------------------------------------------------------------
 # Constants: the probe, the derived sentences, and the ownership boundaries
@@ -149,6 +179,22 @@ HARNESS_OWNED_KWARGS: frozenset[str] = frozenset(
         "logger",
     }
 )
+
+# The prompt surfaces in assembly order, each paired with the ``Harness`` field
+# it fills, so a format-safety refusal can name the offending surface. S10's
+# index (rendered, never the bodies) is checked under its own id.
+PROMPT_SURFACE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("S1", "repl_contract"),
+    ("S2", "decomposition_instruction"),
+    ("S3", "execution_instruction"),
+    ("S4", "verification_instruction"),
+    ("S5", "recovery_instruction"),
+)
+
+# What the format-safety probe substitutes for the one live replacement field.
+# Any other field, or an unbalanced brace, raises ``KeyError`` / ``IndexError`` /
+# ``ValueError`` here instead of at completion time.
+FORMAT_PROBE_TOOLS_SECTION = "<custom tools section>"
 
 TRUNCATION_SENTENCE = "REPL outputs over {bound} characters are truncated"
 TRUNCATION_PATTERN = re.compile(r"REPL outputs over (\S+) characters are truncated")
@@ -313,6 +359,179 @@ def check_stated_limits(harness: Harness) -> None:
             )
 
 
+def check_skills(harness: Harness) -> None:
+    """S10 is a list of well-formed ``SkillEntry`` records inside R7's caps.
+
+    The same shape and the same numbers the proposer is held to (R1, R14, R7;
+    ``shrlm.optimization.proposal`` validates the serialized form) hold at
+    construction, so a skill list the proposer could not have written cannot be
+    run either. Index fields are brace-free because they land in the formatted
+    prompt (R5); bodies are raw text and are not format-checked.
+
+    Raises:
+        ValueError: If ``harness.skills`` is not a list, exceeds the entry cap,
+            or any entry is not a ``SkillEntry`` of three strings with a unique
+            REPL-safe identifier name, a one-line brace-free description, an
+            ordered-step body, or exceeds a per-field or the total cap.
+    """
+    skills = harness.skills
+    if not isinstance(skills, list):
+        raise ValueError(
+            f"S10 skills must be a list of SkillEntry records (the whole library), got "
+            f"{type(skills).__name__}."
+        )
+    if len(skills) > SKILL_MAX_ENTRIES:
+        raise ValueError(
+            f"S10 skills carries {len(skills)} entries, over the {SKILL_MAX_ENTRIES} entry cap."
+        )
+    seen: set[str] = set()
+    total = 0
+    for position, entry in enumerate(skills):
+        label = f"S10 skills[{position}]"
+        if not isinstance(entry, SkillEntry):
+            raise ValueError(f"{label} must be a SkillEntry, got {type(entry).__name__}.")
+        for field_name in SKILL_RECORD_FIELDS:
+            value = getattr(entry, field_name)
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"{label}.{field_name} must be a string, got {type(value).__name__}."
+                )
+            total += len(value)
+        name, description, body = entry.name, entry.description, entry.body
+
+        if not is_repl_safe_identifier(name):
+            raise ValueError(
+                f"{label}.name {name!r} must be a REPL-safe identifier (ASCII, a Python "
+                "identifier, not a keyword)."
+            )
+        if len(name) > SKILL_NAME_MAX_CHARS:
+            raise ValueError(
+                f"{label}.name is {len(name)} characters, over the {SKILL_NAME_MAX_CHARS} cap."
+            )
+        if name in seen:
+            raise ValueError(
+                f"{label} repeats the name {name!r}; skill names must be unique within S10."
+            )
+        seen.add(name)
+
+        violation = skill_description_violation(description)
+        if violation is not None:
+            raise ValueError(f"{label}.description {violation}.")
+        if len(description) > SKILL_DESCRIPTION_MAX_CHARS:
+            raise ValueError(
+                f"{label}.description is {len(description)} characters, over the "
+                f"{SKILL_DESCRIPTION_MAX_CHARS} index cap."
+            )
+
+        if not body.strip():
+            raise ValueError(f"{label}.body must be a non-empty string.")
+        if not has_ordered_steps(body):
+            raise ValueError(
+                f"{label}.body must be ordered steps: at least {SKILL_BODY_MIN_STEPS} lines "
+                "beginning with a numbered ('1.', '2)') or bulleted ('-', '*') marker."
+            )
+        if len(body) > SKILL_BODY_MAX_CHARS:
+            raise ValueError(
+                f"{label}.body is {len(body)} characters, over the {SKILL_BODY_MAX_CHARS} cap."
+            )
+    if total > SKILL_TOTAL_MAX_CHARS:
+        raise ValueError(
+            f"S10 skills totals {total} characters across all fields, over the "
+            f"{SKILL_TOTAL_MAX_CHARS} total cap."
+        )
+
+
+def _format_probe(text: str) -> None:
+    """Format ``text`` the way ``rlm.utils.prompts`` will, with a placeholder in the slot."""
+    text.format(custom_tools_section=FORMAT_PROBE_TOOLS_SECTION)
+
+
+def check_prompt_format_safety(harness: Harness) -> None:
+    """The assembled prompt survives ``str.format`` with ``{custom_tools_section}`` as its one live field (R5, KTD8).
+
+    ``escape_braces`` is the convention; this is the check. The single production
+    ``.format()`` happens at completion time, so without it a stray brace in any
+    prompt surface -- or in an S10 index field -- surfaces as an infrastructure
+    error mid-run rather than as a refused harness. The whole assembled prompt
+    (S1-S5 plus the S10 index) is formatted once; on failure each surface is
+    formatted alone so the refusal names the one at fault. Skill bodies are not
+    part of this check: they never enter the formatted prompt.
+
+    Raises:
+        ValueError: Naming the offending surface, if formatting raises.
+    """
+    try:
+        _format_probe(assemble_system_prompt(harness))
+    except (KeyError, IndexError, ValueError) as exc:
+        parts = [(surface, getattr(harness, field)) for surface, field in PROMPT_SURFACE_FIELDS]
+        parts.append(("S10", render_skill_index(harness.skills)))
+        offending = "the assembled prompt"
+        for surface, text in parts:
+            try:
+                _format_probe(text)
+            except (KeyError, IndexError, ValueError):
+                offending = surface
+                break
+        raise ValueError(
+            f"{offending} is not format-ready: formatting it with a placeholder "
+            f"`custom_tools_section` raised {type(exc).__name__}: {exc}. Every brace other "
+            f"than the `{CUSTOM_TOOLS_SLOT}` slot must be doubled (see `escape_braces`); "
+            "otherwise the run dies at prompt assembly instead of scoring badly."
+        ) from exc
+
+
+def check_skill_stated_limits(harness: Harness) -> None:
+    """No S10 field may state a runtime limit the runtime will not honor (R6).
+
+    ``check_stated_limits`` scans the assembled prompt, which carries the index
+    but never a body, so each description and body is scanned here individually
+    with the same patterns and against the same expected values: the truncation
+    figure the active S7 builder honors, and -- only when the S6 policy is enabled
+    and declares them -- its per-prompt capacity and per-batch fan-out. A field
+    that states nothing is fine; a field that states a different figure is the
+    model being told a false fact about its environment.
+
+    Raises:
+        ValueError: Naming S10 and the field, if any stated figure differs from the
+            one the runtime honors.
+    """
+    if not harness.skills:
+        return
+    expected_figure = format_char_bound(declared_metadata_bound(harness.metadata))
+    policy = harness.runtime_policy
+    enabled = bool(policy.get("enabled"))
+    max_prompt_chars = policy.get("max_prompt_chars") if enabled else None
+    max_batch_width = policy.get("max_batch_width") if enabled else None
+
+    for position, entry in enumerate(harness.skills):
+        for field_name in ("description", "body"):
+            text = getattr(entry, field_name)
+            label = f"S10 skills[{position}] ({entry.name!r}).{field_name}"
+            stated = set(TRUNCATION_PATTERN.findall(text))
+            if stated - {expected_figure}:
+                raise ValueError(
+                    f"{label} states a truncation bound of {sorted(stated)}, but the active "
+                    f"S7 builder honors {expected_figure}; S10 text may not contradict the "
+                    "bound the runtime honors."
+                )
+            if max_prompt_chars is not None:
+                expected_capacity = format_char_bound(int(max_prompt_chars))
+                stated_capacity = set(PER_PROMPT_PATTERN.findall(text))
+                if stated_capacity - {expected_capacity}:
+                    raise ValueError(
+                        f"{label} states a sub-call capacity of {sorted(stated_capacity)} per "
+                        f"prompt, but S6 enforces max_prompt_chars={max_prompt_chars} "
+                        f"({expected_capacity})."
+                    )
+            if max_batch_width is not None:
+                stated_width = set(PER_BATCH_PATTERN.findall(text))
+                if stated_width - {str(max_batch_width)}:
+                    raise ValueError(
+                        f"{label} states a batch fan-out of {sorted(stated_width)} prompts per "
+                        f"batch, but S6 enforces max_batch_width={max_batch_width}."
+                    )
+
+
 def check_runtime_policy(runtime_policy: dict[str, Any]) -> None:
     """S6 holds the harness's numbers and switches, and nothing else.
 
@@ -343,15 +562,26 @@ def check_runtime_policy(runtime_policy: dict[str, Any]) -> None:
 def check_plumbing(harness: Harness) -> None:
     """The sub-call path and the answer-from-variable path may not be shadowed by S8.
 
+    Nor may S8 bind the S10 skill loader's harness-reserved name: the runner
+    installs the loader from ``Harness.skills`` (KTD9), so a helper under that
+    name is either shadowed by the install or stands in for a loader the harness
+    never declared -- a collision, refused here rather than resolved silently.
+
     Raises:
-        ValueError: If either helper dict binds a reserved REPL name. The
-            environment's own collision check is a backstop; the harness is
-            rejected before a client is ever constructed.
+        ValueError: If either helper dict binds a reserved REPL name or the S10
+            loader's name. The environment's own collision check is a backstop;
+            the harness is rejected before a client is ever constructed.
     """
     for label, helpers in (
         ("repl_helpers", harness.repl_helpers),
         ("sub_repl_helpers", harness.sub_repl_helpers),
     ):
+        if SKILL_LOADER_NAME in helpers:
+            raise ValueError(
+                f"S8 {label} may not bind {SKILL_LOADER_NAME!r}: it is the harness-reserved "
+                "name of the S10 skill loader, which the runner installs from "
+                "`Harness.skills`; skill procedures belong in S10, not in an S8 helper."
+            )
         shadowed = sorted(set(helpers) & set(REQUIRED_REPL_PLUMBING))
         if shadowed:
             raise ValueError(
@@ -403,12 +633,108 @@ def check_answer_middleware(middleware: AnswerMiddlewareFn) -> None:
 
 
 def check_harness(harness: Harness) -> None:
-    """Run every structural check against ``harness``. Raises on the first failure."""
+    """Run every structural check against ``harness``. Raises on the first failure.
+
+    Order matters only for which refusal a doubly-bad harness gets: shape before
+    content, and the S10 per-field scan before the prompt-level scan, so a
+    description stating a wrong bound is named as S10 rather than as S1.
+    """
     check_runtime_policy(harness.runtime_policy)
+    check_skills(harness)
     check_metadata_boundedness(harness.metadata)
+    check_prompt_format_safety(harness)
+    check_skill_stated_limits(harness)
     check_stated_limits(harness)
     check_plumbing(harness)
     check_answer_middleware(harness.answer_middleware)
+
+
+# ---------------------------------------------------------------------------
+# S10 scaffold: the skill loader
+# ---------------------------------------------------------------------------
+
+
+class UnknownSkillError(LookupError):
+    """``load_skill`` was asked for a name the harness's skill index does not carry."""
+
+
+def build_skill_loader(skills: list[SkillEntry]) -> SkillLoader:
+    """Build the fixed ``load_skill(name) -> str`` loader over a harness's S10 entries (KTD9).
+
+    The loader is runtime scaffold, not surface content: the runner installs it
+    under ``SKILL_LOADER_NAME`` in both the root ``custom_tools`` and the child
+    ``custom_sub_tools`` whenever ``Harness.skills`` is non-empty, and never
+    otherwise. It is never serialized into the S8 helper dicts (``serialize_harness``
+    does not see it, so installing it moves no hash), never proposable, and its
+    name is harness-reserved against S8.
+
+    Hand-off contract: a skill body reaches a sub-call only when the root
+    interpolates it into the sub-call prompt -- ``llm_query`` / ``rlm_query``
+    accept any string, and no further pass-through exists. An ``rlm_query`` child
+    below ``max_depth`` is a full RLM with the same system prompt (so it sees the
+    index) and the same loader (installed from ``custom_sub_tools``), so it may
+    call ``load_skill`` itself; an ``llm_query`` sub-call and a max-depth leaf are
+    bare completions with neither. Docker/Daytona-style isolated environments skip
+    host callables, so the loader is not installed there; the local REPL is the
+    environment the experiment runs.
+
+    Every successful load is recorded by the local REPL environment as a trace
+    fact (skill name, environment depth) beside its sub-call events -- see
+    ``rlm.environments.base_env.SkillLoader``.
+
+    Args:
+        skills: The harness's S10 entries, in index order.
+
+    Returns:
+        A ``SkillLoader`` whose call returns the named body verbatim -- braces
+        and all; bodies never enter the format slot -- and raises
+        ``UnknownSkillError`` naming the available skills for an unknown name.
+    """
+    bodies = {entry.name: entry.body for entry in skills}
+    index = [{"name": entry.name, "description": entry.description} for entry in skills]
+
+    def load_skill(name: str) -> str:
+        """Return the full procedure of the named skill, verbatim.
+
+        A loaded procedure reaches a sub-call only as text you put in that
+        sub-call's prompt (``llm_query`` / ``rlm_query`` accept any string);
+        ``rlm_query`` children can also call ``load_skill`` themselves.
+
+        Raises:
+            UnknownSkillError: For a name not in the skill index; the message
+                lists the available names.
+        """
+        try:
+            return bodies[name]
+        except KeyError:
+            available = ", ".join(repr(known) for known in bodies) or "(none)"
+            raise UnknownSkillError(
+                f"unknown skill {name!r}; available skills: {available}"
+            ) from None
+
+    return SkillLoader(load=load_skill, index=index)
+
+
+def _install_skill_loader(helpers: dict[str, Any], loader: Callable[[str], str]) -> dict[str, Any]:
+    """A copy of one S8 helper dict with the loader merged in last, under its reserved name.
+
+    The harness's own dict is never mutated: the loader is not surface content
+    and must not leak into anything that serializes the harness. Merging last
+    would let a helper already bound under the reserved name be overwritten
+    silently, so that collision is refused here; ``check_plumbing`` refuses it
+    earlier, and this is the backstop for any caller that skipped the checks.
+
+    Raises:
+        ValueError: If ``helpers`` already binds ``SKILL_LOADER_NAME``.
+    """
+    if SKILL_LOADER_NAME in helpers:
+        raise ValueError(
+            f"S8 helpers already bind {SKILL_LOADER_NAME!r}, the harness-reserved name of "
+            "the S10 skill loader; refusing to install the loader over it."
+        )
+    merged = dict(helpers)
+    merged[SKILL_LOADER_NAME] = {"tool": loader, "description": SKILL_LOADER_DESCRIPTION}
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +785,7 @@ def build_harnessed_rlm(
     """Assemble a harnessed RLM, enforcing every structural invariant first.
 
     Args:
-        harness: The nine-surface assignment to run.
+        harness: The ten-surface assignment to run.
         backend: The client backend, experiment-owned.
         backend_kwargs: The client kwargs, experiment-owned.
         log_dir: Optional directory for the JSONL trajectory. The in-memory
@@ -505,6 +831,17 @@ def build_harnessed_rlm(
     capacity_sentence = derive_capacity_sentence(policy)
     logger = RLMLogger(log_dir=log_dir)
 
+    # S8 as the harness declares it, plus -- only when S10 is non-empty -- the
+    # fixed skill loader merged in last, for the root and for every child (KTD9,
+    # KTD7). An empty S10 installs nothing, so H0/H0* render no tool line and
+    # the formatted prompt stays byte-identical to the shipped reference.
+    custom_tools: dict[str, Any] = harness.repl_helpers
+    custom_sub_tools: dict[str, Any] = harness.sub_repl_helpers
+    if harness.skills:
+        loader = build_skill_loader(harness.skills)
+        custom_tools = _install_skill_loader(harness.repl_helpers, loader)
+        custom_sub_tools = _install_skill_loader(harness.sub_repl_helpers, loader)
+
     rlm = RLM(
         backend=backend,
         backend_kwargs=backend_kwargs,
@@ -513,8 +850,8 @@ def build_harnessed_rlm(
         runtime_policy=policy,
         metadata_builder=harness.metadata,
         answer_middleware=harness.answer_middleware,
-        custom_tools=harness.repl_helpers,
-        custom_sub_tools=harness.sub_repl_helpers,
+        custom_tools=custom_tools,
+        custom_sub_tools=custom_sub_tools,
         capacity_sentence=capacity_sentence,
         logger=logger,
         **rlm_kwargs,
@@ -565,6 +902,9 @@ def run_metrics(completion: RLMChatCompletion) -> dict[str, Any]:
     return {
         "turns": len(turns),
         "sub_call_count": sum(turn["sub_call_count"] for turn in per_turn),
+        # A trace persisted before the skill loader existed carries no count;
+        # no loader means no loads, so the honest back-fill is zero (R16).
+        "skill_load_count": sum(int(turn.get("skill_load_count", 0)) for turn in per_turn),
         "syntax_error_turns": sum(1 for turn in per_turn if turn["syntax_error"]),
         "truncation_events": sum(1 for turn in per_turn if turn["truncation_event"]),
         "answer_events": [turn["answer_event"] for turn in per_turn if turn["answer_event"]],
@@ -610,8 +950,13 @@ def acceptance_inputs(baseline: HarnessRun, candidate: HarnessRun) -> dict[str, 
 __all__ = [
     "HarnessRun",
     "HarnessedRLM",
+    "UnknownSkillError",
     "acceptance_inputs",
     "build_harnessed_rlm",
+    "build_skill_loader",
     "check_harness",
+    "check_prompt_format_safety",
+    "check_skill_stated_limits",
+    "check_skills",
     "run_metrics",
 ]

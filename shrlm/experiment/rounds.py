@@ -62,6 +62,16 @@ its own category, because a null surface is correct for a record that spans
 several (KTD7). Every answer carries the source it came from, so a recovered
 surface is never presented as a recorded one.
 
+*Which surfaces the round's harness declared.* ``declared_surfaces``, read off
+the incumbent ``harness.json`` the driver froze into the round's mining stage,
+through the inverse of the loader's own serialization-key map. The surface
+set is not a constant of the code: a round persisted before the tenth surface
+existed declared nine, and a back-filled analysis has to say so rather than
+draw the current count over it. Three-valued like the completeness flags -- a
+round with no readable document declares *unknown* (``None``), never an empty
+set -- and it feeds the two per-cell states (``undeclared``, ``unknown``) the
+per-surface tables emit beside ``ledger`` / ``backfilled`` / ``none``.
+
 Expected run counts, and why nothing is inferred from the runs (KTD6)
     ``n_expected = len(instances.jsonl) x repetitions``, with ``repetitions``
     read from the experiment config PER STAGE -- ``loop.m`` for mining,
@@ -118,8 +128,9 @@ from shrlm.optimization.bundle import (
     RECORDS_FILENAME,
     round_dir,
 )
+from shrlm.optimization.candidates import SURFACE_SERIALIZATION_KEYS
 from shrlm.optimization.costs import OUTCOME_COMPLETED
-from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, load_manifest
+from shrlm.optimization.driver import HARNESS_FILE, INSTANCES_FILE, MANIFEST_FILE, load_manifest
 from shrlm.optimization.promotion import MERGED_SUBJECT_ID
 from shrlm.optimization.proposal import PROPOSAL_FILENAME, PROPOSAL_FORMAT
 from shrlm.optimization.validation import (
@@ -148,10 +159,25 @@ SURFACE_SOURCE_LEDGER = "ledger"
 SURFACE_SOURCE_BACKFILLED = "backfilled"
 SURFACE_SOURCE_MERGED = "merged"
 SURFACE_SOURCE_NONE = "none"
+# The two per-cell states a per-surface table adds from the round's own
+# persisted harness (``declared_surfaces``): the surface was not in that
+# round's declared set at all, or the round's ``harness.json`` could not be
+# read so nothing can be said about what it declared. Neither is a missing
+# attribution -- ``none`` remains "declared, and nothing touched it".
+SURFACE_SOURCE_UNDECLARED = "undeclared"
+SURFACE_SOURCE_UNKNOWN = "unknown"
 
 # The tally the merged harness's own re-evaluation record belongs in: a
-# category beside the nine surfaces, never one of them (KTD7).
+# category beside the declared surfaces, never one of them (KTD7).
 MERGED_CATEGORY = MERGED_SUBJECT_ID
+
+# ``SURFACE_SERIALIZATION_KEYS`` inverted: which declared surface each key of a
+# persisted harness serialization belongs to. The loop's loader gates on the
+# forward map, so reading a round's declared set back through the same map is
+# what keeps "declared" meaning exactly what the loop meant by it.
+_SURFACE_BY_SERIALIZATION_KEY: dict[str, str] = {
+    key: surface_id for surface_id, keys in SURFACE_SERIALIZATION_KEYS.items() for key in keys
+}
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +753,65 @@ def discover_rounds(
 
 
 # ---------------------------------------------------------------------------
+# Declared surfaces: what the round's own persisted harness says it had (KTD6)
+# ---------------------------------------------------------------------------
+
+
+def read_declared_surfaces(harness_path: Path | str) -> frozenset[str] | None:
+    """The surface ids one persisted ``harness.json`` envelope declares.
+
+    Read off the envelope's ``harness.surfaces`` key set through the inverse of
+    the serialization-key map the loop's loader gates on
+    (``candidates.SURFACE_SERIALIZATION_KEYS``): a surface is declared when the
+    document carries a key of its own, and a key no current surface owns
+    declares nothing. The envelope's format tag is deliberately NOT checked --
+    the whole point is reading documents written under an earlier envelope
+    (a nine-surface ``v1`` round) back as exactly the set they carried, which
+    is what lets a back-filled analysis say "S10 was not declared here" rather
+    than refusing the round.
+
+    Three-valued, like the completeness flags: a document that is absent,
+    unreadable, or not shaped as an envelope with a ``surfaces`` mapping
+    yields ``None`` -- unknown -- never an empty set. An empty set would read
+    as "this round declared no surfaces", a positive claim the evidence does
+    not support.
+    """
+    path = Path(harness_path)
+    if not path.exists():
+        return None
+    try:
+        envelope = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    serialization = envelope.get("harness")
+    if not isinstance(serialization, dict):
+        return None
+    surfaces = serialization.get("surfaces")
+    if not isinstance(surfaces, dict):
+        return None
+    return frozenset(
+        _SURFACE_BY_SERIALIZATION_KEY[key]
+        for key in surfaces
+        if key in _SURFACE_BY_SERIALIZATION_KEY
+    )
+
+
+def declared_surfaces(round_record: RoundRecord) -> frozenset[str] | None:
+    """The surface ids one round's harness declared, or ``None`` when unknown.
+
+    The round's harness is the incumbent the driver froze into the mining
+    stage's ``harness.json`` (``driver.HARNESS_FILE``, written by
+    ``_prepare_round_dir`` before the first run), which is the document that
+    names what that round could have proposed against. Read through
+    ``read_declared_surfaces``, so the same three-valued answer applies: a
+    round whose document is missing or unreadable reports unknown, not empty.
+    """
+    return read_declared_surfaces(round_record.mining_round_path / HARNESS_FILE)
+
+
+# ---------------------------------------------------------------------------
 # Surface attribution: the ledger first, the round's proposals second (KTD3)
 # ---------------------------------------------------------------------------
 
@@ -735,7 +820,7 @@ def discover_rounds(
 class SurfaceAttribution:
     """Which tally one ledger row belongs in, and where that came from.
 
-    ``category`` is one of the nine surface ids, the ``merged`` category, or
+    ``category`` is a surface id, the ``merged`` category, or
     ``None`` when nothing on disk can place the row; ``source`` is the
     ``SURFACE_SOURCE_*`` value naming the evidence. The two travel together on
     purpose: a count of S3 touches means something different when the S3 came
@@ -858,14 +943,18 @@ __all__ = [
     "SURFACE_SOURCE_LEDGER",
     "SURFACE_SOURCE_MERGED",
     "SURFACE_SOURCE_NONE",
+    "SURFACE_SOURCE_UNDECLARED",
+    "SURFACE_SOURCE_UNKNOWN",
     "EvalSetRecord",
     "ExperimentInventory",
     "RoundRecord",
     "RunCounts",
     "StageRepetitions",
     "SurfaceAttribution",
+    "declared_surfaces",
     "discover_rounds",
     "iter_promotion_rounds",
+    "read_declared_surfaces",
     "resolve_config",
     "resolve_surface",
     "stage_repetitions",

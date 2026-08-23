@@ -39,7 +39,13 @@ from shrlm.experiment.incumbent_quality import (  # noqa: E402
     INCUMBENT_QUALITY_FIELDNAMES,
     INCUMBENT_QUALITY_FILENAME,
 )
+from shrlm.experiment.rounds import (  # noqa: E402
+    SURFACE_SOURCE_NONE,
+    SURFACE_SOURCE_UNDECLARED,
+    SURFACE_SOURCE_UNKNOWN,
+)
 from shrlm.experiment.surface_activity import (  # noqa: E402
+    CANONICAL_SURFACES,
     SURFACE_ACTIVITY_FIELDNAMES,
     SURFACE_ACTIVITY_FILENAME,
     UNATTRIBUTED_FIELDNAMES,
@@ -69,6 +75,7 @@ def _activity_row(
     round_index: int,
     surface: str = "S1",
     *,
+    source: str = "ledger",
     attempted: int = 1,
     promoted: int = 1,
     cumulative_attempted: int = 1,
@@ -79,7 +86,7 @@ def _activity_row(
     return {
         "round_index": round_index,
         "surface": surface,
-        "surface_source": "ledger",
+        "surface_source": source,
         "attempted_count": attempted,
         "promoted_count": promoted,
         "cumulative_surfaces_attempted": cumulative_attempted,
@@ -267,7 +274,7 @@ def test_surface_partial_round_marked_and_counted_in_caption(tmp_path: Path) -> 
 
 
 def test_surface_merged_row_stays_inert_in_the_heatmaps(tmp_path: Path) -> None:
-    """U4's extra ``merged`` category row must not enter the S1-S9 heatmaps."""
+    """U4's extra ``merged`` category row must not enter the canonical-surface heatmaps."""
     snapshot_dir = _surface_snapshot(
         tmp_path / "exp",
         [
@@ -283,6 +290,340 @@ def test_surface_merged_row_stays_inert_in_the_heatmaps(tmp_path: Path) -> None:
         assert all(image.get_clim()[1] == 2 for image in images), (
             "the merged row's counts leaked into the heatmap color scale"
         )
+        for ax in _heatmap_axes(fig):
+            assert ax.images[0].get_array().shape[0] == len(CANONICAL_SURFACES)
+            assert "merged" not in [label.get_text() for label in ax.get_yticklabels()]
+    finally:
+        plot_sa.plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Undeclared, unknown, and zero-activity-declared cells render differently (R13)
+# ---------------------------------------------------------------------------
+
+
+def _heatmap_axes(fig) -> list:
+    """Panel B's two heatmap axes: the ones carrying an image."""
+    axes = [ax for ax in fig.axes if ax.images]
+    assert len(axes) == 2, "expected exactly two heatmap axes"
+    return axes
+
+
+def _state_patches(ax, prefix: str) -> list:
+    return [patch for patch in ax.patches if (patch.get_gid() or "").startswith(prefix)]
+
+
+def test_surface_heatmap_renders_the_three_cell_states_distinctly(tmp_path: Path) -> None:
+    """Undeclared, unknown, and declared-but-untouched are three different marks.
+
+    Round 1 never declared S10 (a pre-S10 harness), round 2's harness could
+    not be read, and round 3 declared S10 and left it alone. All three S10
+    cells hold a zero count, so the count alone cannot tell them apart -- the
+    mark has to.
+    """
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [
+            _activity_row(1, "S1"),
+            _activity_row(1, "S10", source=SURFACE_SOURCE_UNDECLARED, attempted=0, promoted=0),
+            _activity_row(2, "S1", source=SURFACE_SOURCE_UNKNOWN),
+            _activity_row(2, "S10", source=SURFACE_SOURCE_UNKNOWN, attempted=0, promoted=0),
+            _activity_row(3, "S1"),
+            _activity_row(3, "S10", source=SURFACE_SOURCE_NONE, attempted=0, promoted=0),
+        ],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        for ax in _heatmap_axes(fig):
+            undeclared = _state_patches(ax, plot_sa.UNDECLARED_GID_PREFIX)
+            unknown = _state_patches(ax, plot_sa.UNKNOWN_GID_PREFIX)
+            assert {patch.get_gid() for patch in undeclared} == {
+                f"{plot_sa.UNDECLARED_GID_PREFIX}1-S10"
+            }
+            # Every cell of an unknown round is unknown, S1 included.
+            assert {patch.get_gid() for patch in unknown} == {
+                f"{plot_sa.UNKNOWN_GID_PREFIX}2-S1",
+                f"{plot_sa.UNKNOWN_GID_PREFIX}2-S10",
+            }
+            # The declared-and-untouched cell carries no mark at all: it is the
+            # blank cell the heatmap already draws for a zero count.
+            assert not [patch for patch in ax.patches if (patch.get_gid() or "").endswith("3-S10")]
+            # And the two marks are not the same mark.
+            assert all(patch.get_hatch() == plot_sa.UNDECLARED_HATCH for patch in undeclared)
+            assert all(patch.get_hatch() != plot_sa.UNDECLARED_HATCH for patch in unknown)
+            assert all(patch.get_linestyle() != undeclared[0].get_linestyle() for patch in unknown)
+        caption = _figure_text(fig)
+        assert "not declared" in caption
+        assert "could not be read" in caption
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_surface_mixed_vintage_tree_marks_only_the_pre_s10_cells(tmp_path: Path) -> None:
+    """A pre-S10 round beside a post-S10 round: one undeclared mark, at (1, S10)."""
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [
+            _activity_row(1, "S2"),
+            _activity_row(1, "S10", source=SURFACE_SOURCE_UNDECLARED, attempted=0, promoted=0),
+            _activity_row(2, "S2"),
+            _activity_row(2, "S10", attempted=1, promoted=0, cumulative_attempted=2),
+        ],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        for ax in _heatmap_axes(fig):
+            assert {
+                patch.get_gid() for patch in _state_patches(ax, plot_sa.UNDECLARED_GID_PREFIX)
+            } == {f"{plot_sa.UNDECLARED_GID_PREFIX}1-S10"}
+            assert not _state_patches(ax, plot_sa.UNKNOWN_GID_PREFIX)
+        caption = _figure_text(fig)
+        assert "not declared" in caption
+        assert "could not be read" not in caption
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_a_fully_declared_tree_draws_no_declaration_marks_or_caption(tmp_path: Path) -> None:
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [_activity_row(1, "S1"), _activity_row(1, "S10", source=SURFACE_SOURCE_NONE, attempted=0)],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        for ax in _heatmap_axes(fig):
+            assert not _state_patches(ax, plot_sa.UNDECLARED_GID_PREFIX)
+            assert not _state_patches(ax, plot_sa.UNKNOWN_GID_PREFIX)
+        caption = _figure_text(fig)
+        assert "not declared" not in caption
+        assert "could not be read" not in caption
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_declared_surfaces_by_round_is_read_off_the_table() -> None:
+    """The per-round declared set a figure may derive totals from (for U8)."""
+    rows = [
+        _activity_row(1, "S1"),
+        _activity_row(1, "S10", source=SURFACE_SOURCE_UNDECLARED, attempted=0),
+        _activity_row(2, "S1", source=SURFACE_SOURCE_UNKNOWN),
+        _activity_row(3, "S1"),
+        _activity_row(3, "S10", source=SURFACE_SOURCE_NONE, attempted=0),
+        _activity_row(3, "merged", source="merged", attempted=0),
+    ]
+
+    declared = plot_sa.declared_surfaces_by_round(rows)
+    assert declared[1] == frozenset(CANONICAL_SURFACES) - {"S10"}
+    assert declared[2] is None
+    assert declared[3] == frozenset(CANONICAL_SURFACES)
+    assert "merged" not in declared[3]
+
+
+# ---------------------------------------------------------------------------
+# Panel A derives its totals from each round's declared set (R12, KTD5)
+# ---------------------------------------------------------------------------
+
+
+def _panel_a(fig):
+    """Panel A: the one axes carrying step lines and no image."""
+    axes = [ax for ax in fig.axes if ax.lines and not ax.images]
+    assert len(axes) == 1, "expected exactly one cumulative-count axes"
+    return axes[0]
+
+
+def _reference_segments(ax) -> dict[int, list[float]]:
+    """``round_index -> y values`` of each per-round declared-total reference segment."""
+    out: dict[int, list[float]] = {}
+    for line in ax.lines:
+        gid = line.get_gid() or ""
+        if gid.startswith(plot_sa.REFERENCE_GID_PREFIX):
+            out[int(gid[len(plot_sa.REFERENCE_GID_PREFIX) :])] = [
+                float(y) for y in line.get_ydata()
+            ]
+    return out
+
+
+def _all_surfaces_rows(round_index: int, **overrides) -> list[dict[str, object]]:
+    """One declared-and-touched row per canonical surface for one round."""
+    total = len(CANONICAL_SURFACES)
+    return [
+        _activity_row(
+            round_index,
+            surface,
+            cumulative_attempted=total,
+            cumulative_promoted=total,
+            **overrides,
+        )
+        for surface in CANONICAL_SURFACES
+    ]
+
+
+def _assert_nothing_clipped(ax) -> None:
+    """Every clip-on data artist on ``ax`` sits inside the axes' data limits."""
+    x_low, x_high = ax.get_xlim()
+    y_low, y_high = ax.get_ylim()
+    for line in ax.lines:
+        if line.get_clip_on():
+            assert all(y_low <= y <= y_high for y in line.get_ydata()), line.get_gid()
+    for collection in ax.collections:
+        offsets = collection.get_offsets()
+        if collection.get_clip_on() and len(offsets):
+            assert all(y_low <= y <= y_high for _, y in offsets), collection.get_gid()
+            assert all(x_low <= x <= x_high for x, _ in offsets), collection.get_gid()
+    for image in ax.images:
+        left, right, bottom, top = image.get_extent()
+        assert min(x_low, x_high) <= min(left, right) and max(left, right) <= max(x_low, x_high)
+        assert min(y_low, y_high) <= min(bottom, top) and max(bottom, top) <= max(y_low, y_high)
+    for patch in ax.patches:
+        if patch.get_clip_on():
+            box = patch.get_extents().transformed(ax.transData.inverted())
+            assert min(x_low, x_high) - 1e-6 <= box.x0 and box.x1 <= max(x_low, x_high) + 1e-6
+            assert min(y_low, y_high) - 1e-6 <= box.y0 and box.y1 <= max(y_low, y_high) + 1e-6
+
+
+def test_panel_a_ylim_exceeds_the_largest_declared_count(tmp_path: Path) -> None:
+    """A round that touched every declared surface plots inside the axes, not on its edge."""
+    snapshot_dir = _surface_snapshot(tmp_path / "exp", _all_surfaces_rows(1))
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        ax = _panel_a(fig)
+        total = len(CANONICAL_SURFACES)
+        assert ax.get_ylim()[1] > total
+        assert total in list(ax.get_yticks())
+        _assert_nothing_clipped(ax)
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_panel_a_reference_line_steps_from_nine_to_ten_across_a_mixed_vintage_tree(
+    tmp_path: Path,
+) -> None:
+    """The "all surfaces" line is per round: nine over a pre-S10 round, ten after."""
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [
+            _activity_row(1, "S2"),
+            _activity_row(1, "S10", source=SURFACE_SOURCE_UNDECLARED, attempted=0, promoted=0),
+            _activity_row(2, "S2"),
+            _activity_row(2, "S10", attempted=1, promoted=0, cumulative_attempted=2),
+        ],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        ax = _panel_a(fig)
+        segments = _reference_segments(ax)
+        assert set(segments) == {1, 2}
+        assert set(segments[1]) == {9}
+        assert segments[2][-1] == 10
+        assert 9 in segments[2], "the segment into round 2 rises from 9 to 10 -- a step, not a jump"
+        assert ax.get_ylim()[1] > 10
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_panel_a_ylabel_states_the_largest_declared_count_not_the_codes_count(
+    tmp_path: Path,
+) -> None:
+    """Every plotted round is pre-S10, so the axis says nine even though the code has ten."""
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [
+            _activity_row(1, "S1"),
+            _activity_row(1, "S10", source=SURFACE_SOURCE_UNDECLARED, attempted=0, promoted=0),
+            _activity_row(2, "S2"),
+            _activity_row(2, "S10", source=SURFACE_SOURCE_UNDECLARED, attempted=0, promoted=0),
+        ],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        ax = _panel_a(fig)
+        assert len(CANONICAL_SURFACES) == 10, "this test's premise is a ten-surface code base"
+        assert "(of 9)" in ax.get_ylabel()
+        assert "10" not in ax.get_ylabel()
+        assert set(_reference_segments(ax)) == {1, 2}
+        assert all(set(ys) == {9} for ys in _reference_segments(ax).values())
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_panel_a_draws_no_reference_segment_over_an_unknown_round(tmp_path: Path) -> None:
+    """A round whose harness could not be read has no true total, so no segment is drawn for it."""
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [
+            _activity_row(1, "S1"),
+            _activity_row(1, "S10", source=SURFACE_SOURCE_NONE, attempted=0, promoted=0),
+            _activity_row(2, "S1", source=SURFACE_SOURCE_UNKNOWN),
+            _activity_row(2, "S10", source=SURFACE_SOURCE_UNKNOWN, attempted=0, promoted=0),
+        ],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        ax = _panel_a(fig)
+        segments = _reference_segments(ax)
+        assert set(segments) == {1}
+        assert set(segments[1]) == {10}
+        assert "(of 10)" in ax.get_ylabel()
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_panel_a_ylabel_states_declared_total_unknown_when_every_round_is_unknown(
+    tmp_path: Path,
+) -> None:
+    """No plotted round has a known declared set, so the axis says so, not a total."""
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [
+            _activity_row(1, "S1", source=SURFACE_SOURCE_UNKNOWN),
+            _activity_row(1, "S10", source=SURFACE_SOURCE_UNKNOWN, attempted=0, promoted=0),
+            _activity_row(2, "S1", source=SURFACE_SOURCE_UNKNOWN),
+            _activity_row(2, "S10", source=SURFACE_SOURCE_UNKNOWN, attempted=0, promoted=0),
+        ],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        ax = _panel_a(fig)
+        assert ax.get_ylabel() == "distinct surfaces (declared total unknown)"
+        assert _reference_segments(ax) == {}
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_panel_b_has_one_row_per_canonical_surface_including_s10(tmp_path: Path) -> None:
+    snapshot_dir = _surface_snapshot(tmp_path / "exp", _all_surfaces_rows(1))
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        for ax in _heatmap_axes(fig):
+            assert ax.images[0].get_array().shape[0] == len(CANONICAL_SURFACES)
+        labels = [label.get_text() for label in _heatmap_axes(fig)[0].get_yticklabels()]
+        assert labels == list(CANONICAL_SURFACES)
+        assert "S10" in labels
+    finally:
+        plot_sa.plt.close(fig)
+
+
+def test_a_tree_touching_all_ten_surfaces_renders_with_no_clipped_artist(tmp_path: Path) -> None:
+    snapshot_dir = _surface_snapshot(
+        tmp_path / "exp",
+        [*_all_surfaces_rows(1), *_all_surfaces_rows(2, attempted=2, promoted=2)],
+    )
+
+    fig = plot_sa.build_figure(snapshot_dir)
+    try:
+        for ax in fig.axes:
+            _assert_nothing_clipped(ax)
+        ax = _panel_a(fig)
+        assert ax.get_ylim()[1] > len(CANONICAL_SURFACES)
     finally:
         plot_sa.plt.close(fig)
 

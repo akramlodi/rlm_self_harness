@@ -53,7 +53,7 @@ The following are **not** captured, or not captured at the grain the analysis ne
 
 **Harness-evolution metrics (new)**
 
-- Fraction of the nine declared surfaces the promoted lineage actually modifies.
+- Fraction of the declared surfaces the promoted lineage actually modifies — ten under the current contract, read per round from the persisted harness rather than from a literal (a round persisted before S10 declared nine).
 - Harness complexity growth: lines, characters, and tokens introduced by the promoted edits, tracked across the lineage rather than only at the endpoints.
 - Harness performance at each optimization step on held-out short.
 

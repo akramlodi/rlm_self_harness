@@ -26,6 +26,15 @@ answer middleware to S4 (pre-submission verification): its documented meaning
 available -- is a failure of the verification pass that S4 governs ("what to
 check before flipping ``answer['ready']``"), whereas S9 middleware can only
 inspect an answer the root has already committed to.
+
+Version 3.0.0 adds the tenth surface, S10 (the skill library), with one
+mechanism keyed to it: ``UNCONSULTED_PROCEDURE``, defined against what the
+trace digest can show -- the available-skills / loaded-skills pair a run under
+a non-empty S10 carries -- with the root re-deriving a procedure it already
+carried out as the only signal a pre-S10 trace can show. The surface contract
+changed, so bundles written under 2.0.0 are not comparable with 3.0.0 ones;
+``shrlm.experiment.pattern_frequency_diff`` excludes them rather than diffing
+across the boundary.
 """
 
 from enum import Enum
@@ -34,13 +43,14 @@ from shrlm.rlm_harness import SURFACES
 
 # Bumped whenever any enum member, MECHANISM_DOCS entry, or MECHANISM_SURFACE
 # mapping changes. Bundles carrying different versions are not comparable, so
-# the frequency-before-vs-after analysis must assert on this.
-TAXONOMY_VERSION = "2.0.0"
+# the frequency-before-vs-after analysis excludes bundles written under any
+# other version (``pattern_frequency_diff.bundle_completeness``).
+TAXONOMY_VERSION = "3.0.0"
 
 
 class EditableSurface(str, Enum):
     """
-    The nine harness surfaces Self-Harness is permitted to edit.
+    The ten harness surfaces Self-Harness is permitted to edit.
 
     Values are the surface ids declared in ``shrlm.rlm_harness.SURFACES``, so an
     attribution names a surface stage 2 can actually target; member names follow
@@ -63,6 +73,7 @@ class EditableSurface(str, Enum):
     METADATA = "S7"
     REPL_HELPERS = "S8"
     ANSWER_MIDDLEWARE = "S9"
+    SKILLS = "S10"
 
 
 # Human-readable surface names, derived from the harness's declared builders
@@ -99,6 +110,11 @@ class SurfaceReach(str, Enum):
 # - S8 is child-reachable through its second builder: ``sub_repl_helpers``
 #   becomes ``custom_sub_tools``, which the child spawn propagates as the
 #   child's own ``custom_tools``.
+# - S10 is child-reachable on two legs (plan KTD7): its name/description index
+#   rides the system prompt children inherit, and the runner installs the
+#   skill loader in both ``custom_tools`` and ``custom_sub_tools``, so an
+#   ``rlm_query`` child below max_depth can load any body itself; the root may
+#   additionally forward a loaded body into a sub-call prompt.
 SURFACE_REACH: dict[EditableSurface, SurfaceReach] = {
     EditableSurface.REPL_CONTRACT: SurfaceReach.CHILD_REACHABLE,
     EditableSurface.DECOMPOSITION_INSTRUCTION: SurfaceReach.CHILD_REACHABLE,
@@ -109,6 +125,7 @@ SURFACE_REACH: dict[EditableSurface, SurfaceReach] = {
     EditableSurface.METADATA: SurfaceReach.ROOT_ONLY,
     EditableSurface.REPL_HELPERS: SurfaceReach.CHILD_REACHABLE,
     EditableSurface.ANSWER_MIDDLEWARE: SurfaceReach.ROOT_ONLY,
+    EditableSurface.SKILLS: SurfaceReach.CHILD_REACHABLE,
 }
 
 
@@ -181,7 +198,7 @@ class AgentMechanism(str, Enum):
     Cardinality is fixed by one rule: each mechanism maps to exactly one
     EditableSurface. The proposal stage requires every edit to modify a single
     declared surface, so a mechanism spanning two surfaces would be unusable
-    downstream. Nine surfaces at one to four mechanisms each gives fifteen
+    downstream. Ten surfaces at one to four mechanisms each gives sixteen
     plus OTHER, and every surface is reachable from at least one mechanism.
 
     Three pairs are opposite in direction and must never be merged, since a
@@ -223,6 +240,9 @@ class AgentMechanism(str, Enum):
 
     # S9 -- answer middleware
     LOSSY_AGGREGATION = "lossy_aggregation"
+
+    # S10 -- skill library (reusable procedures, available across turns)
+    UNCONSULTED_PROCEDURE = "unconsulted_procedure"
 
     OTHER = "other"
 
@@ -290,6 +310,23 @@ MECHANISM_DOCS: dict[AgentMechanism, str] = {
         "The failure originated in the root's own code -- a traceback, an off-by-one slice, a bad "
         "index -- rather than in any model judgment."
     ),
+    # Defined against the digest's observables only. The digest's Run header
+    # carries an available_skills / loaded_skills pair whenever a skill loader
+    # was installed (a non-empty S10); an unloaded skill leaves no other trace,
+    # and adherence to a loaded body is not a trace fact at all, so "loaded and
+    # not followed" is deliberately absent. The precedence clause is the only
+    # tie-break there is: no code-level rule exists, so the attributor and the
+    # analysis share this text.
+    AgentMechanism.UNCONSULTED_PROCEDURE: (
+        "A reusable procedure the run needed was never consulted. With a non-empty skill index "
+        "(the digest's available_skills line): a skill whose description names the failing step "
+        "was available and the root never loaded it (absent from loaded_skills) before failing. "
+        "With no available_skills line (no skill was available): the fallback signal is the root "
+        "re-deriving, in a later turn or for a later sub-call, a procedure it had already carried "
+        "out in this run. Precedence: choose this mechanism only when neither "
+        "iteration_budget_exhaustion (S6) nor depth_degradation (S3) independently explains the "
+        "terminal failure; when either does, choose that one."
+    ),
     AgentMechanism.OTHER: (
         "A recurring mechanism not covered above. Requires a free-text detail describing it."
     ),
@@ -315,6 +352,7 @@ MECHANISM_SURFACE: dict[AgentMechanism, EditableSurface] = {
     AgentMechanism.UNPARSED_CHILD_OUTPUT: EditableSurface.METADATA,
     AgentMechanism.REPL_EXECUTION_FAULT: EditableSurface.REPL_HELPERS,
     AgentMechanism.LOSSY_AGGREGATION: EditableSurface.ANSWER_MIDDLEWARE,
+    AgentMechanism.UNCONSULTED_PROCEDURE: EditableSurface.SKILLS,
 }
 
 
@@ -367,7 +405,7 @@ def render_enum_block(title: str, docs: dict[Enum, str]) -> str:
 
 def render_surface_block() -> str:
     """
-    Render the nine editable surfaces with their reach annotations.
+    Render the ten editable surfaces with their reach annotations.
 
     Reach matters to attribution: a mechanism describing a child's own behavior
     must not be pinned on a root-only surface, whose edits children never see.

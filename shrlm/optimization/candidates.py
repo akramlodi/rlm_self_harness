@@ -4,7 +4,7 @@ Stage 2 (the proposer, another developer's work) hands stage 3 a directory of
 candidates, one ``proposal.json`` per candidate directory. Each proposal is the
 paper's audit record — candidate identity, base-harness hash, targeted failure
 signature, predicted behavioral effect, regression risks, proposer provenance —
-wrapped around a full ``shrlm-harness/v1`` envelope (KTD1: a whole serialized
+wrapped around a full ``shrlm-harness/v2`` envelope (KTD1: a whole serialized
 harness, never a surface delta; the one-surface rule is enforced by diffing the
 candidate serialization against the incumbent's, which is stricter than
 trusting a declared delta). The schema stage 2 targets is documented in
@@ -65,23 +65,26 @@ from types import ModuleType
 from typing import Any
 
 from shrlm.harness_identity import (
+    HARNESS_FORMAT,
     HarnessSerializationError,
     canonical_json,
     hash_of_serialization,
     serialize_harness,
 )
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN
+from shrlm.optimization.skill_edit import _skills_violation
 from shrlm.optimization.taxonomy import (
     AgentMechanism,
     CausalStatus,
     FailingLevel,
     VerifierCause,
 )
-from shrlm.rlm_harness import Harness
+from shrlm.rlm_harness import Harness, SkillEntry
 from shrlm.runner import check_harness
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
-HARNESS_FORMAT = "shrlm-harness/v1"
+# ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
+# declaration site) and re-exported here for the loader and its callers.
 PROPOSAL_FILENAME = "proposal.json"
 MODULE_FILENAME = "surfaces.py"
 
@@ -100,8 +103,10 @@ GATE_ROUND_TRIP = "round_trip"
 
 # Which serialization keys belong to which declared surface. S8 is one surface
 # with two builders (see ``shrlm.rlm_harness.SURFACES``), so a candidate that
-# edits both helper dicts still edits exactly one surface. A test asserts this
-# grouping covers ``serialize_harness``'s surface keys exactly.
+# edits both helper dicts still edits exactly one surface. S10 is the skill
+# library: a list of name/description/body records, data not code, so it
+# carries no module slot. A test asserts this grouping covers
+# ``serialize_harness``'s surface keys exactly.
 SURFACE_SERIALIZATION_KEYS: dict[str, tuple[str, ...]] = {
     "S1": ("S1_repl_contract",),
     "S2": ("S2_decomposition_instruction",),
@@ -112,7 +117,9 @@ SURFACE_SERIALIZATION_KEYS: dict[str, tuple[str, ...]] = {
     "S7": ("S7_metadata",),
     "S8": ("S8_repl_helpers", "S8_sub_repl_helpers"),
     "S9": ("S9_answer_middleware",),
+    "S10": ("S10_skills",),
 }
+
 
 # The Harness field each string surface fills (builder convention: build_<x>
 # fills <x>).
@@ -238,7 +245,7 @@ def _enum_violation(payload: dict[str, Any], field: str, enum_cls: type) -> str 
 
 
 def _surfaces_violation(surfaces: Any) -> str | None:
-    """Shape-check the nine serialized surfaces so later gates cannot raise."""
+    """Shape-check the ten serialized surfaces so later gates cannot raise."""
     expected = {key for keys in SURFACE_SERIALIZATION_KEYS.values() for key in keys}
     if not isinstance(surfaces, dict) or set(surfaces) != expected:
         return f"harness.harness.surfaces must carry exactly the keys {sorted(expected)}"
@@ -265,7 +272,7 @@ def _surfaces_violation(surfaces: Any) -> str | None:
     middleware = surfaces["S9_answer_middleware"]
     if not isinstance(middleware, dict) or not isinstance(middleware.get("source"), str):
         return "surfaces['S9_answer_middleware'] must carry a string 'source'"
-    return None
+    return _skills_violation(surfaces["S10_skills"])
 
 
 def _unwrap_tool(entry: dict[str, Any]) -> Any:
@@ -333,8 +340,12 @@ def _schema_violation(payload: Any) -> str | None:
         if not isinstance(provenance.get(field), str) or not provenance[field]:
             return f"provenance.{field} must be a non-empty string"
     envelope = payload.get("harness")
-    if not isinstance(envelope, dict) or envelope.get("format") != HARNESS_FORMAT:
+    if not isinstance(envelope, dict):
         return f"harness must be a {HARNESS_FORMAT!r} envelope"
+    if envelope.get("format") != HARNESS_FORMAT:
+        return (
+            f"harness must be a {HARNESS_FORMAT!r} envelope, got format {envelope.get('format')!r}"
+        )
     if not isinstance(envelope.get("hash"), str):
         return "harness.hash must be a string"
     serialization = envelope.get("harness")
@@ -355,7 +366,7 @@ def _schema_violation(payload: Any) -> str | None:
 def changed_surfaces(
     base_serialization: dict[str, Any], candidate_serialization: dict[str, Any]
 ) -> list[str]:
-    """The surface ids whose serialized content differs, in S1..S9 order."""
+    """The surface ids whose serialized content differs, in S1..S10 order."""
     base = base_serialization["surfaces"]
     candidate = candidate_serialization["surfaces"]
     return [
@@ -550,6 +561,10 @@ def surface_field_values(
         return {field: surfaces[key]}
     if surface_id == "S6":
         return {"runtime_policy": dict(surfaces["S6_runtime_policy"])}
+    if surface_id == "S10":
+        # Data, not code: the records rebuild without a module, so this branch
+        # sits before the module guard (``load_candidate`` passes None here).
+        return {"skills": [SkillEntry(**record) for record in surfaces["S10_skills"]]}
     aliases = {slot.key: slot.alias for slot in _callable_slots(serialization)}
     if module is None:  # pragma: no cover - callers import the module first
         raise CandidateMaterializationError(f"surface {surface_id} needs the surface module")
@@ -571,7 +586,25 @@ def materialize_harness(serialization: dict[str, Any], module_path: Path) -> Har
     Writes and imports the surface module, then assembles every surface from
     the serialized values — no incumbent objects involved, which is what lets
     the gate subprocess run self-contained on the proposal file.
+
+    Raises:
+        CandidateMaterializationError: If the serialization's surface key set
+            is not ``HARNESS_FORMAT``'s — a persisted pre-S10 document reaching
+            the resume or frozen-evaluation path
+            (``rematerialize_harness_envelope``) fails here by name, never as a
+            bare ``KeyError`` — or if a surface cannot be rebuilt.
     """
+    expected = {key for keys in SURFACE_SERIALIZATION_KEYS.values() for key in keys}
+    present = serialization.get("surfaces")
+    actual = set(present) if isinstance(present, dict) else set()
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        raise CandidateMaterializationError(
+            f"serialization does not carry the {HARNESS_FORMAT} surface key set: "
+            f"missing {missing}, unexpected {unexpected}; a document written under another "
+            "envelope version must be regenerated, not materialized"
+        )
     module_path.write_text(render_surface_module(serialization))
     module = import_surface_module(module_path)
     fields: dict[str, Any] = {}

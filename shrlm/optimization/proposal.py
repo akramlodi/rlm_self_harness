@@ -34,6 +34,12 @@ Non-text surfaces are authored declaratively, never freehand JSON:
       directly rather than re-implemented).
     - S8 (repl helpers): the model writes one named helper function, added or
       replacing one entry in ``repl_helpers`` or ``sub_repl_helpers``.
+    - S10 (skills): the model writes the whole skill list as name /
+      description / body records (KD2: edited whole, never appended). Data,
+      not code: index fields are brace-free so the assembled prompt still
+      survives ``str.format``, bodies are stored raw for the runner's fixed
+      loader to return verbatim, and every field is scanned for a runtime
+      limit ``check_stated_limits`` governs (R5, R6, R7, R14).
 
 A materialized candidate's one-surface-diff is checked with
 ``candidates.changed_surfaces`` -- the real gate's own diffing function -- so
@@ -56,6 +62,7 @@ from typing import Any
 from rlm.clients.base_lm import BaseLM
 from rlm.environments.base_env import RESERVED_TOOL_NAMES
 from shrlm.harness_identity import (
+    HARNESS_FORMAT,
     HarnessSerializationError,
     canonical_json,
     hash_of_serialization,
@@ -67,6 +74,11 @@ from shrlm.optimization.candidates import (
     changed_surfaces,
     import_surface_module,
 )
+from shrlm.optimization.skill_edit import (
+    SKILLS_EDIT_FORMAT,
+    SkillEditRejection,
+    _validate_skills_edit,
+)
 from shrlm.optimization.taxonomy import (
     MECHANISM_DOCS,
     MECHANISM_SURFACE,
@@ -75,18 +87,33 @@ from shrlm.optimization.taxonomy import (
     EditableSurface,
     render_surface_block,
 )
-from shrlm.rlm_harness import Harness, build_runtime_policy
+from shrlm.rlm_harness import (
+    SKILL_BODY_MAX_CHARS,
+    SKILL_BODY_MIN_STEPS,
+    SKILL_DESCRIPTION_MAX_CHARS,
+    SKILL_LOADER_NAME,
+    SKILL_MAX_ENTRIES,
+    SKILL_NAME_MAX_CHARS,
+    SKILL_TOTAL_MAX_CHARS,
+    Harness,
+    SkillEntry,
+    build_runtime_policy,
+)
 from shrlm.runner import declared_metadata_bound
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
-HARNESS_FORMAT = "shrlm-harness/v1"
+# ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
+# declaration site) and re-exported here for the proposal writer.
 PROPOSAL_FILENAME = "proposal.json"
 
-PROMPT_VERSION = "1.0.0"
+# 1.1.0: the prompt names ten surfaces and carries the S10 edit format.
+PROMPT_VERSION = "1.1.0"
 # Version of the validation logic in this module (validate_candidate_spec,
-# _validate_edit_shape, _validate_single_def). Folded into the cache key so a
-# validator change cannot replay stale responses judged under different rules.
-VALIDATOR_VERSION = "1.0.0"
+# _validate_edit_shape, _validate_single_def, skill_edit._validate_skills_edit).
+# Folded into the cache key so a validator change cannot replay stale responses
+# judged under different rules. 1.1.0: the S10 skills branch and the S8 loader-name
+# refusal.
+VALIDATOR_VERSION = "1.1.0"
 
 DEFAULT_K = 4
 DEFAULT_MAX_ATTEMPTS = 3
@@ -117,6 +144,12 @@ EDIT_KIND_TEXT = "text"
 EDIT_KIND_POLICY = "policy"
 EDIT_KIND_CODE = "code"
 EDIT_KIND_REPL_HELPER = "repl_helper"
+EDIT_KIND_SKILLS = "skills"
+
+# S10 edit bounds (R7) live in ``shrlm.rlm_harness`` so the runner enforces the
+# same numbers at harness construction (U7) without importing this module; the
+# caps the prompt cites are re-exported here under their original names. The S10
+# record validators (shape, bounds, R5/R6/R14) live in ``skill_edit``.
 
 # The one edit shape each surface accepts -- fixed by the harness's own field
 # types, not a proposer choice.
@@ -126,6 +159,7 @@ SURFACE_EDIT_KIND: dict[str, str] = {
     "S7": EDIT_KIND_CODE,
     "S9": EDIT_KIND_CODE,
     "S8": EDIT_KIND_REPL_HELPER,
+    "S10": EDIT_KIND_SKILLS,
 }
 
 
@@ -361,8 +395,10 @@ def _render_history_block(
             subject = record.get("subject_id")
             upstream = record.get("upstream")
             if upstream:
-                lines.append(f"  - {subject}: rejected at loader gate {upstream.get('gate')}: "
-                              f"{upstream.get('reason')}")
+                lines.append(
+                    f"  - {subject}: rejected at loader gate {upstream.get('gate')}: "
+                    f"{upstream.get('reason')}"
+                )
                 continue
             outcome = record.get("decision")
             reasons = "; ".join(record.get("reasons") or [])
@@ -379,7 +415,7 @@ each already clustered by a verifier-grounded signature and already assigned to 
 ONE harness surface its mechanism implicates -- you may not choose a different \
 surface for a pattern.
 
-The nine editable surfaces:
+The ten editable surfaces:
 """
 
 PROPOSER_TASK = """\
@@ -391,7 +427,8 @@ model-capability limit rather than a harness gap). Do not invent a mechanism or 
 surface; only cite patterns from the list below by their bracketed index.
 """
 
-EDIT_FORMATS = """\
+EDIT_FORMATS = (
+    """\
 Edit formats, exactly one of the following depending on the surface named for a \
 pattern:
 - S1-S5 (prompt text): {"kind": "text", "new_text": "<the full replacement surface \
@@ -404,8 +441,11 @@ you set; an edit that leaves "enabled" false or absent changes nothing.
 definition, matching the surface's current signature.
 - S8 repl helper (one named helper function): {"kind": "repl_helper", "dict": \
 "repl_helpers" or "sub_repl_helpers", "name": "<function name>", "source": \
-"def <name>(...):\\n    ...\\n"} -- the function name in source must equal "name".
+"def <name>(...):\\n    ...\\n"} -- the function name in source must equal "name". \
+The name "%(skill_loader)s" is reserved for the S10 skill loader the runner installs.
 """
+    + SKILLS_EDIT_FORMAT
+)
 
 RESPONSE_FORMAT = """\
 Respond with a single fenced JSON array and nothing else, at most %(k)s objects, one \
@@ -439,8 +479,10 @@ def render_prompt(
     """
     addressable = _addressable_patterns(patterns)
     pattern_text = (
-        "\n\n".join(_render_pattern_block(index, pattern, incumbent_serialization)
-                     for index, pattern in addressable)
+        "\n\n".join(
+            _render_pattern_block(index, pattern, incumbent_serialization)
+            for index, pattern in addressable
+        )
         if addressable
         else "No addressable failure patterns in this bundle."
     )
@@ -452,7 +494,17 @@ def render_prompt(
         "Prior edit history (previously attempted candidates and their outcomes; do "
         "not repeat an approach already rejected for the same reason):\n"
         + _render_history_block(prior_history),
-        EDIT_FORMATS % {"s6_keys": list(S6_KEYS)},
+        EDIT_FORMATS
+        % {
+            "s6_keys": list(S6_KEYS),
+            "skill_loader": SKILL_LOADER_NAME,
+            "name_cap": SKILL_NAME_MAX_CHARS,
+            "description_cap": SKILL_DESCRIPTION_MAX_CHARS,
+            "body_cap": SKILL_BODY_MAX_CHARS,
+            "entry_cap": SKILL_MAX_ENTRIES,
+            "total_cap": SKILL_TOTAL_MAX_CHARS,
+            "min_steps": SKILL_BODY_MIN_STEPS,
+        },
         RESPONSE_FORMAT % {"k": k},
     ]
     return "\n\n".join(sections), addressable
@@ -569,10 +621,26 @@ def _validate_edit_shape(index: int, surface: str, edit: dict[str, Any]) -> dict
                 f"source ({def_name!r})"
             )
         if name in RESERVED_TOOL_NAMES:
-            raise ProposalRejection(f"{label}: edit.name {name!r} collides with a reserved REPL name")
+            raise ProposalRejection(
+                f"{label}: edit.name {name!r} collides with a reserved REPL name"
+            )
+        if name == SKILL_LOADER_NAME:
+            raise ProposalRejection(
+                f"{label}: edit.name {name!r} is the harness-reserved S10 skill loader, "
+                "installed by the runner; it cannot be bound as an S8 helper"
+            )
         return {"kind": kind, "dict": dict_name, "name": name, "source": edit["source"]}
 
-    raise ProposalRejection(f"{label}: unknown edit.kind {kind!r}")  # pragma: no cover - unreachable
+    if kind == EDIT_KIND_SKILLS:
+        try:
+            records = _validate_skills_edit(label, edit.get("skills"))
+        except SkillEditRejection as exc:
+            raise ProposalRejection(str(exc)) from None
+        return {"kind": kind, "skills": records}
+
+    raise ProposalRejection(
+        f"{label}: unknown edit.kind {kind!r}"
+    )  # pragma: no cover - unreachable
 
 
 def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> CandidateSpec:
@@ -602,11 +670,15 @@ def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> Candid
 
     effect = item.get("predicted_effect")
     if not isinstance(effect, str) or not effect.strip():
-        raise ProposalRejection(f"pattern_index {index}: predicted_effect must be a non-empty string")
+        raise ProposalRejection(
+            f"pattern_index {index}: predicted_effect must be a non-empty string"
+        )
 
     risks = item.get("regression_risks", [])
     if not isinstance(risks, list) or not all(isinstance(risk, str) for risk in risks):
-        raise ProposalRejection(f"pattern_index {index}: regression_risks must be a list of strings")
+        raise ProposalRejection(
+            f"pattern_index {index}: regression_risks must be a list of strings"
+        )
 
     return CandidateSpec(
         pattern_index=index,
@@ -643,7 +715,9 @@ def _import_candidate_function(source: str, def_name: str, workdir: Path, surfac
     return getattr(module, def_name)
 
 
-def materialize_candidate_harness(incumbent: Harness, spec: CandidateSpec, workdir: Path) -> Harness:
+def materialize_candidate_harness(
+    incumbent: Harness, spec: CandidateSpec, workdir: Path
+) -> Harness:
     """Build the live edited Harness for one validated spec.
 
     ``dataclasses.replace`` on the incumbent, per the interface doc's rule:
@@ -675,6 +749,10 @@ def materialize_candidate_harness(incumbent: Harness, spec: CandidateSpec, workd
         updated = dict(getattr(incumbent, edit["dict"]))
         updated[edit["name"]] = fn
         return replace(incumbent, **{edit["dict"]: updated})
+
+    if kind == EDIT_KIND_SKILLS:
+        # The whole list, not an append (KD2); bodies verbatim (R5).
+        return replace(incumbent, skills=[SkillEntry(**record) for record in edit["skills"]])
 
     raise AssertionError(f"unreachable edit kind {kind!r}")  # validated upstream
 
@@ -755,7 +833,9 @@ def write_proposal(
     if path.exists():
         existing = json.loads(path.read_text())
         if canonical_json(existing) != canonical_json(payload):
-            raise ValueError(f"{path} already exists with different content; refusing to clobber it")
+            raise ValueError(
+                f"{path} already exists with different content; refusing to clobber it"
+            )
         return path
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return path
@@ -875,7 +955,9 @@ def propose_round(
     cache = cache or ProposalCache()
     proposals_dir = Path(proposals_dir)
     proposals_dir.mkdir(parents=True, exist_ok=True)
-    workdir = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="shrlm-proposal-"))
+    workdir = (
+        Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="shrlm-proposal-"))
+    )
 
     patterns = bundle.get("patterns", [])
     incumbent_serialization = serialize_harness(incumbent)
@@ -947,7 +1029,9 @@ def propose_round(
     materialization_failures: list[MaterializationFailureRecord] = []
     for position, spec in enumerate(specs, start=1):
         try:
-            _harness, serialization = build_candidate(incumbent, incumbent_serialization, spec, workdir)
+            _harness, serialization = build_candidate(
+                incumbent, incumbent_serialization, spec, workdir
+            )
         except MaterializationFailure as failure:
             materialization_failures.append(
                 MaterializationFailureRecord(spec.pattern_index, spec.surface, failure.reason)

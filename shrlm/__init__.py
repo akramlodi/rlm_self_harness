@@ -1,4 +1,4 @@
-"""Self-harnessing RLM: the nine editable surfaces and the starting harnesses."""
+"""Self-harnessing RLM: the ten editable surfaces and the starting harnesses."""
 
 from shrlm.rlm_harness import (
     H0,
@@ -7,6 +7,7 @@ from shrlm.rlm_harness import (
     INVARIANTS,
     SURFACES,
     Harness,
+    SkillEntry,
     Surface,
     assemble_system_prompt,
     escape_braces,
@@ -29,6 +30,7 @@ __all__ = [
     "Harness",
     "HarnessRun",
     "HarnessedRLM",
+    "SkillEntry",
     "Surface",
     "acceptance_inputs",
     "assemble_system_prompt",

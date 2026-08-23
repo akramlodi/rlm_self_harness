@@ -72,9 +72,18 @@ def empty_usage() -> dict[str, Any]:
     return {"model_usage_summaries": {}}
 
 
-def run_metadata(max_depth: int, environment_type: str = "local") -> dict[str, Any]:
-    """An ``RLMMetadata.to_dict`` payload, the ``run_metadata`` of a trajectory."""
-    return {
+def run_metadata(
+    max_depth: int,
+    environment_type: str = "local",
+    skill_index: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """An ``RLMMetadata.to_dict`` payload, the ``run_metadata`` of a trajectory.
+
+    ``skill_index`` mirrors the run-start record of the installed skill loader:
+    present (as name/description entries) exactly when a loader was installed,
+    i.e. when the harness's S10 was non-empty, and absent otherwise.
+    """
+    payload: dict[str, Any] = {
         "root_model": ROOT_MODEL,
         "max_depth": max_depth,
         "max_iterations": 5,
@@ -84,6 +93,9 @@ def run_metadata(max_depth: int, environment_type: str = "local") -> dict[str, A
         "environment_kwargs": {},
         "other_backends": None,
     }
+    if skill_index is not None:
+        payload["skill_index"] = [dict(entry) for entry in skill_index]
+    return payload
 
 
 def code_block(
@@ -93,8 +105,14 @@ def code_block(
     locals_: dict[str, Any] | None = None,
     rlm_calls: list[dict[str, Any]] | None = None,
     final_answer: str | None = None,
+    skill_loads: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """One executed ```repl block: ``CodeBlock.to_dict`` with its ``REPLResult``."""
+    """One executed ```repl block: ``CodeBlock.to_dict`` with its ``REPLResult``.
+
+    ``skill_loads`` are the loader invocations the environment recorded while
+    the block ran (``{"skill": name, "depth": env_depth}`` each), beside
+    ``rlm_calls``; the runtime always serializes the key, empty when none.
+    """
     return {
         "code": code,
         "result": {
@@ -104,6 +122,7 @@ def code_block(
             "execution_time": 0.1,
             "rlm_calls": rlm_calls or [],
             "final_answer": final_answer,
+            "skill_loads": [dict(event) for event in (skill_loads or [])],
         },
     }
 
@@ -133,6 +152,7 @@ def completion_dict(
     iterations: list[dict[str, Any]],
     max_depth: int,
     environment_type: str = "local",
+    skill_index: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """A serialized root ``RLMChatCompletion`` carrying a full trajectory."""
     return {
@@ -142,7 +162,7 @@ def completion_dict(
         "usage_summary": usage(),
         "execution_time": 1.0,
         "metadata": {
-            "run_metadata": run_metadata(max_depth, environment_type),
+            "run_metadata": run_metadata(max_depth, environment_type, skill_index=skill_index),
             "iterations": iterations,
         },
     }
@@ -344,6 +364,86 @@ def fallback_run() -> dict[str, Any]:
             ),
         ],
         max_depth=2,
+    )
+
+
+# The skill index a non-empty S10 harness installs, as the run-start record
+# names it: one entry per skill, name and one-line description.
+SKILL_INDEX: list[dict[str, str]] = [
+    {"name": "merge_slice_totals", "description": "when per-slice totals must be combined"},
+    {"name": "check_slice_coverage", "description": "before committing over a sliced input"},
+]
+
+# A procedure the root may carry out more than once in a run. Identical text
+# across iterations is the no-skills fallback signal for the S10 mechanism.
+PROCEDURE_CODE = (
+    "slices = [context[i:i + 100] for i in range(0, len(context), 100)]\n"
+    "totals = [sum(int(tok) for tok in s.split() if tok.isdigit()) for s in slices]\n"
+    "print(sum(totals))"
+)
+
+
+def skilled_run(
+    loads: list[dict[str, Any]] | None = None,
+    *,
+    skill_index: list[dict[str, str]] | None = None,
+    fallback: bool = False,
+    repeat_procedure: bool = False,
+) -> dict[str, Any]:
+    """A root-only run over a sliced input, parameterized by its skill facts.
+
+    ``skill_index`` is the run-start record (``None`` means no loader was
+    installed: an empty S10, the pre-S10 shape); ``loads`` are the loader
+    invocations recorded against the first code block. ``fallback`` ends the
+    run the way the iteration budget does (a trailing codeless iteration with
+    a synthesized answer); ``repeat_procedure`` makes the second iteration
+    re-run ``PROCEDURE_CODE`` verbatim before the run ends.
+    """
+    first = code_block(code=PROCEDURE_CODE, stdout="41\n", skill_loads=loads)
+    iterations = [
+        iteration_entry(
+            index=1,
+            response="Slicing and totalling.\n```repl\n...\n```",
+            code_blocks=[first],
+        )
+    ]
+    if repeat_procedure:
+        iterations.append(
+            iteration_entry(
+                index=2,
+                response="Let me redo the totals to be sure.\n```repl\n...\n```",
+                code_blocks=[code_block(code=PROCEDURE_CODE, stdout="41\n")],
+            )
+        )
+    if fallback:
+        iterations.append(
+            iteration_entry(
+                index=len(iterations) + 1,
+                response="(fallback) 41",
+                code_blocks=[],
+                final_answer="(fallback) 41",
+            )
+        )
+    else:
+        iterations.append(
+            iteration_entry(
+                index=len(iterations) + 1,
+                response="Committing.\n```repl\nanswer['ready'] = True\n```",
+                code_blocks=[
+                    code_block(
+                        code="answer['content'] = '41'\nanswer['ready'] = True",
+                        final_answer="41",
+                    )
+                ],
+                final_answer="41",
+            )
+        )
+    return completion_dict(
+        prompt="what is the total across all slices?",
+        response="(fallback) 41" if fallback else "41",
+        iterations=iterations,
+        max_depth=2,
+        skill_index=skill_index,
     )
 
 

@@ -16,15 +16,15 @@
 
 ## Overview
 
-**shrlm** (Self-harnessing Recursive Language Models) is a small, auditable specification and runtime harness for RLMs (Recursive Language Models). It provides nine editable design surfaces (S1–S9) that define the root model's environment, three mechanical invariants (I1–I3) that are enforced structurally, and tooling to deterministically serialize and identity harnesses so runs can be reproduced and attributed reliably.
+**shrlm** (Self-harnessing Recursive Language Models) is a small, auditable specification and runtime harness for RLMs (Recursive Language Models). It provides ten editable design surfaces (S1–S10) that define the root model's environment, three mechanical invariants (I1–I3) that are enforced structurally, and tooling to deterministically serialize and identity harnesses so runs can be reproduced and attributed reliably.
 
 Unlike generic RLM implementations, shrlm separates **editable design surfaces** from **runtime mechanics**, allowing researchers and engineers to modify RLM behavior in controlled, measurable ways. It is designed to be small and auditable — every surface is explicitly listed, every invariant is mechanically enforced, and every harness is fully reconstructible.
 
 ## Key Concepts
 
-### Surfaces (S1–S9)
+### Surfaces (S1–S10)
 
-These are the nine editable surfaces that define an RLM harness:
+These are the ten editable surfaces that define an RLM harness:
 
 | Surface | Purpose | Example |
 |---------|---------|---------|
@@ -35,8 +35,9 @@ These are the nine editable surfaces that define an RLM harness:
 | **S5: recovery_instruction** | Handling failed sub-calls | "If a sub-call fails, try an alternative approach." |
 | **S6: runtime_policy** | Numeric limits and switches (read-only after harness definition) | `{"max_turns": 10, "allow_backtracking": True}` |
 | **S7: metadata** | Turn-to-turn memory (bounded) | `{"turn_count": 0, "declared_bound": 100}` |
-| **S8: repl_helpers / sub_repl_helpers** | Functions and values installed into REPL environments | Custom tools, imports, utility functions |
+| **S8: repl_helpers / sub_repl_helpers** | Proposer-written functions and values installed into the root and child REPL environments (the harness-installed skill loader is S10 scaffold, never an S8 entry) | Custom tools, imports, utility functions |
 | **S9: answer_middleware** | Programmatic acceptance/redirect logic | Custom validation and answer processing |
+| **S10: skills** | Reusable procedures, available across turns: only the name/description index is rendered into the system prompt (after S5), and each body is returned on demand by the runner-installed `load_skill(name)` loader in both the root and child REPLs | `[SkillEntry(name="check_deps", description="Consult before importing a module the REPL may lack.", body="1. ...\n2. ...")]` |
 
 ### Invariants (I1–I3)
 
@@ -134,7 +135,7 @@ print(harness_hash(custom))
 
 | Module | Purpose |
 |--------|---------|
-| **rlm_harness.py** | Surface builders (S1–S9), the `Harness` dataclass, starting harnesses (H0, H0*), and helpers to assemble system prompts |
+| **rlm_harness.py** | Surface builders (S1–S10), the `Harness` dataclass, starting harnesses (H0, H0*), and helpers to assemble system prompts |
 | **runner.py** | Constructs `HarnessedRLM` from a `Harness`, runs structural checks (I1–I3), derives prompt/capacity sentences, monitors behavioral metrics |
 | **harness_identity.py** | Deterministic serialization and hashing for reproducible runs; `write_harness_json` to persist harness envelopes |
 | **docs/** | Additional documentation and guides |
@@ -153,7 +154,11 @@ from shrlm.runner import check_harness
 # - S6 contains unknown or experiment-owned keys
 # - S7 fails boundedness or omits declared_bound
 # - S1 does not state S7's truncation sentence
-# - S8 shadows required REPL plumbing names
+# - S8 shadows required REPL plumbing names, or binds `load_skill`,
+#   the harness-reserved name of the S10 loader
+# - S10 breaks its caps or shape (entry count, field lengths, a name that is
+#   not a REPL-safe identifier, a brace in an index field, a body without
+#   ordered steps), or the assembled prompt no longer survives formatting
 # - S9 has wrong signature or returns non-AnswerDecision
 
 check_harness(custom)
@@ -170,7 +175,7 @@ The `build_harnessed_rlm()` function automatically runs `check_harness()` before
 
 ## Why shrlm?
 
-- **Separation**: Isolates editable design surfaces (S1–S9) from runtime mechanics and experiment-owned controls.
+- **Separation**: Isolates editable design surfaces (S1–S10) from runtime mechanics and experiment-owned controls.
 - **Enforcement**: Enforces three frozen invariants (I1, I2, I3) structurally, with monitoring for the rest.
 - **Reconstructibility**: Makes harnesses fully serializable so measured effects between runs are attributable to content changes, not to object identity or ephemeral state.
 - **Auditability**: Small, readable surfaces and explicit checks make the harness easy to understand and modify.

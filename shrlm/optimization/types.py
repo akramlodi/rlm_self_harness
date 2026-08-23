@@ -57,13 +57,20 @@ class AttributionErrorKind(str, Enum):
 
 @dataclass
 class CodeBlockNode:
-    """One ```repl block executed within an iteration."""
+    """One ```repl block executed within an iteration.
+
+    ``skill_loads`` are the skill-loader invocations the REPL environment
+    recorded while the block ran (``{"skill": name, "depth": env_depth}``
+    each), persisted beside ``rlm_calls`` in the block's result. Empty for a
+    block that loaded nothing and for every pre-S10 trace.
+    """
 
     code: str
     stdout: str
     stderr: str
     final_answer: str | None
     calls: list["CallNode"] = field(default_factory=list)
+    skill_loads: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +79,7 @@ class CodeBlockNode:
             "stderr": self.stderr,
             "final_answer": self.final_answer,
             "calls": [call.to_dict() for call in self.calls],
+            "skill_loads": [dict(event) for event in self.skill_loads],
         }
 
 
@@ -84,6 +92,11 @@ class IterationNode:
     code_blocks: list[CodeBlockNode]
     final_answer: str | None
     terminated_by_fallback: bool
+
+    @property
+    def skill_loads(self) -> list[dict[str, Any]]:
+        """Every skill-load event across this turn's code blocks, in block order."""
+        return [event for block in self.code_blocks for event in block.skill_loads]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +121,13 @@ class CallNode:
     The REPL ``locals`` dict is deliberately never carried here: it is lossy
     once serialized (rlm/core/types.py::_serialize_value reprs anything
     non-primitive) and it is large.
+
+    ``skill_index`` is the run-start record of the skills available to this
+    node's REPL (``run_metadata.skill_index``: name/description entries, the
+    order the harness declared them). It is None when no skill loader was
+    installed -- an empty S10, and every pre-S10 trace -- which is distinct
+    from an installed loader with nothing in it; the digest renders the
+    available_skills / loaded_skills pair only when it is not None.
     """
 
     node_id: str
@@ -125,6 +145,7 @@ class CallNode:
     iterations: list[IterationNode] = field(default_factory=list)
     children: list["CallNode"] = field(default_factory=list)
     sub_verdict: bool | None = None
+    skill_index: list[dict[str, str]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -141,6 +162,9 @@ class CallNode:
             "iterations": [iteration.to_dict() for iteration in self.iterations],
             "children": [child.to_dict() for child in self.children],
             "sub_verdict": self.sub_verdict,
+            "skill_index": (
+                None if self.skill_index is None else [dict(entry) for entry in self.skill_index]
+            ),
         }
 
 

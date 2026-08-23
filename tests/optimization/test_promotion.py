@@ -51,7 +51,7 @@ from shrlm.optimization.validation import (
     RoundEvaluation,
     SubjectEvaluation,
 )
-from shrlm.rlm_harness import H0, Harness
+from shrlm.rlm_harness import H0, SURFACES, Harness, SkillEntry
 
 # ---------------------------------------------------------------------------
 # Fixtures: fabricated summaries, evaluations, and candidates
@@ -129,6 +129,19 @@ SURFACE_EDITS = {
 
 
 def edited_harness(surface: str, tag: str) -> Harness:
+    if surface == "S10":
+        # S10 is a list of entries, not text: an edit is a non-empty library
+        # whose body names the candidate so two S10 edits stay distinguishable.
+        return replace(
+            H0,
+            skills=[
+                SkillEntry(
+                    name=f"skill_{tag.replace('-', '_')}",
+                    description=f"when {tag}",
+                    body=f"1. do {tag}",
+                )
+            ],
+        )
     field_name = SURFACE_EDITS[surface]
     return replace(H0, **{field_name: getattr(H0, field_name) + f"\n[{tag}]"})
 
@@ -521,11 +534,56 @@ class TestAssessRound:
 
 
 class TestMergeConstruction:
-    def test_surface_field_map_covers_exactly_the_nine_surfaces(self):
-        assert set(SURFACE_HARNESS_FIELDS) == set(SURFACE_SERIALIZATION_KEYS)
+    def test_surface_field_map_covers_every_declared_surface(self):
+        # The map is keyed by the declaration (S1-S10), so an accepted edit on
+        # any declared surface -- S10 included -- has a field to merge through.
+        assert set(SURFACE_HARNESS_FIELDS) == set(SURFACES)
+        assert "S10" in SURFACE_HARNESS_FIELDS
         for fields in SURFACE_HARNESS_FIELDS.values():
             for field_name in fields:
                 assert hasattr(H0, field_name)
+
+    def test_surface_field_map_covers_every_serialization_surface(self):
+        # Every surface the envelope knows has a merge field; the converse
+        # (the envelope carrying S10) lands with the shrlm-harness/v2 bump.
+        assert set(SURFACE_SERIALIZATION_KEYS) <= set(SURFACE_HARNESS_FIELDS)
+
+    def test_s10_edit_merges_with_a_disjoint_surface_edit(self):
+        cand_a = fake_candidate("cand-a", "S10")
+        cand_b = fake_candidate("cand-b", "S3")
+
+        merged = merge_harnesses(H0, [cand_a, cand_b])
+
+        assert merged.skills == cand_a.harness.skills
+        assert merged.skills != H0.skills
+        assert merged.execution_instruction == cand_b.harness.execution_instruction
+        assert merged.repl_contract == H0.repl_contract
+        assert merged.name == "H0+cand-a+cand-b"
+
+    def test_two_s10_edits_collide_like_any_same_surface_pair(self):
+        with pytest.raises(ValueError, match="S10"):
+            merge_harnesses(H0, [fake_candidate("cand-a", "S10"), fake_candidate("cand-b", "S10")])
+
+    def test_plan_promotion_selects_one_winner_per_surface_with_s10_in_the_set(self):
+        candidates = [
+            fake_candidate("cand-a", "S10"),
+            fake_candidate("cand-b", "S10"),
+            fake_candidate("cand-c", "S3"),
+        ]
+        decisions = [
+            accepted_decision("cand-a", 3, 4),
+            accepted_decision("cand-b", 3, 3),
+            accepted_decision("cand-c", 4, 4),
+        ]
+
+        plan = plan_promotion(H0, decisions, candidates)
+
+        assert plan.kind == PLAN_MERGE
+        assert plan.constituent_ids == ("cand-a", "cand-c")
+        assert "cand-b" in plan.excluded
+        assert "S10" in plan.excluded["cand-b"]
+        assert plan.harness.skills == candidates[0].harness.skills
+        assert plan.harness.execution_instruction == candidates[2].harness.execution_instruction
 
     def test_two_disjoint_accepted_candidates_yield_a_merged_plan(self):
         cand_a = fake_candidate("cand-a", "S2")

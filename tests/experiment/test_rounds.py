@@ -50,24 +50,29 @@ from shrlm.experiment.rounds import (
     STAGE_EVALUATION,
     STAGE_MINING,
     STAGE_VALIDATION,
+    declared_surfaces,
     discover_rounds,
     iter_promotion_rounds,
+    read_declared_surfaces,
     stage_repetitions,
 )
+from shrlm.harness_identity import write_harness_json
 from shrlm.optimization.bundle import (
     ATTRIBUTIONS_FILENAME,
     BUNDLE_FILENAME,
     RECORDS_FILENAME,
     round_dir,
 )
+from shrlm.optimization.candidates import SURFACE_SERIALIZATION_KEYS
 from shrlm.optimization.costs import OUTCOME_COMPLETED, OUTCOME_OVER_BUDGET
-from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, run_id_for
+from shrlm.optimization.driver import HARNESS_FILE, INSTANCES_FILE, MANIFEST_FILE, run_id_for
 from shrlm.optimization.validation import (
     DECISION_FORMAT,
     EVAL_ROUND_INDEX,
     LEDGER_RECORD_FORMAT,
     PROMOTIONS_FILENAME,
 )
+from shrlm.rlm_harness import H0
 from tests.experiment.test_smoke_mock import (
     SmokeRun,
     smoke,  # noqa: F401 -- the module-scoped fixture
@@ -77,6 +82,14 @@ from tests.experiment.test_smoke_mock import (
 # so a per-stage repetition count that silently used the wrong stage's number
 # is visible in the arithmetic; the smoke profile's counts are all 1.
 PROFILE = "full"
+
+# The committed pre-S10 mining round (a ``shrlm-harness/v1`` envelope declaring
+# S1-S9 and nothing else). Read-only: it is the repo's pinned evidence of what a
+# round written before the tenth surface actually persisted, and the one
+# document the current writer can no longer produce.
+PRE_S10_HARNESS_PATH = (
+    Path(__file__).resolve().parents[2] / "examples" / "mining_rounds" / "round_00" / HARNESS_FILE
+)
 
 
 # ---------------------------------------------------------------------------
@@ -106,14 +119,19 @@ def write_mining_round(
     n_runs: int | None = None,
     attempts: int = 2,
 ) -> Path:
-    """A mining stage the driver could have written: instances + manifest.
+    """A mining stage the driver could have written: harness, instances, manifest.
 
     ``n_runs`` defaults to the full plan (``n_instances * attempts``); a
     smaller number is the truncated round a tripped budget breaker leaves.
+    The round's ``harness.json`` goes through ``write_harness_json``, the
+    driver's own writer, so a fabricated round declares exactly the surface
+    set the running loop persists.
     """
     mining_round_path = round_dir(
         experiment_round_dir(out_dir, round_index) / MINING_DIR, round_index
     )
+    mining_round_path.mkdir(parents=True, exist_ok=True)
+    write_harness_json(H0, mining_round_path / HARNESS_FILE)
     ids = instance_ids(n_instances)
     write_jsonl(mining_round_path / INSTANCES_FILE, [{"id": id_} for id_ in ids])
     planned = [
@@ -763,6 +781,72 @@ class TestPromotionLedgerIteration:
         for round_index, records, decision in yielded:
             assert records[0]["subject_id"].startswith(f"r{round_index:02d}-")
             assert decision["round"] == round_index
+
+
+# ---------------------------------------------------------------------------
+# Which surfaces a round's persisted harness declared (U9, KTD6)
+# ---------------------------------------------------------------------------
+
+
+class TestDeclaredSurfaces:
+    """The declared set comes from the round's own ``harness.json``, three-valued.
+
+    A pre-S10 document declares nine surfaces, a current one ten, and a round
+    with no readable document declares *unknown* -- ``None``, never an empty
+    set, the same discipline as the completeness flags (KTD9).
+    """
+
+    def test_the_pinned_pre_s10_document_declares_exactly_s1_to_s9(self):
+        assert PRE_S10_HARNESS_PATH.exists(), PRE_S10_HARNESS_PATH
+        declared = read_declared_surfaces(PRE_S10_HARNESS_PATH)
+        assert declared == frozenset(f"S{index}" for index in range(1, 10))
+        assert "S10" not in declared
+
+    def test_a_round_the_current_writer_persisted_declares_every_surface(self, experiment: Path):
+        complete_round(experiment, 1)
+        declared = declared_surfaces(record_for(experiment, 1))
+        assert declared == frozenset(SURFACE_SERIALIZATION_KEYS)
+        assert "S10" in declared
+
+    def test_the_declared_set_is_read_through_the_serialization_key_map(self, tmp_path: Path):
+        """One present key per surface is what declares it; unknown keys do not."""
+        path = tmp_path / HARNESS_FILE
+        write_json(
+            path,
+            {
+                "format": "anything",
+                "harness": {"surfaces": {"S3_execution_instruction": "", "S8_repl_helpers": {}}},
+            },
+        )
+        assert read_declared_surfaces(path) == frozenset({"S3", "S8"})
+        write_json(path, {"harness": {"surfaces": {"S99_future": ""}}})
+        assert read_declared_surfaces(path) == frozenset()
+
+    def test_a_round_with_no_harness_document_is_unknown_not_empty(self, experiment: Path):
+        complete_round(experiment, 1)
+        record = record_for(experiment, 1)
+        (record.mining_round_path / HARNESS_FILE).unlink()
+
+        declared = declared_surfaces(record)
+        assert declared is None
+        assert declared != frozenset()
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "not json",
+            json.dumps({"format": "shrlm-harness/v2"}),
+            json.dumps({"harness": {"surfaces": ["S1_repl_contract"]}}),
+            json.dumps({"harness": "S1_repl_contract"}),
+            json.dumps(["S1_repl_contract"]),
+        ],
+    )
+    def test_an_unreadable_or_misshapen_document_is_unknown(self, experiment: Path, content: str):
+        complete_round(experiment, 1)
+        record = record_for(experiment, 1)
+        (record.mining_round_path / HARNESS_FILE).write_text(content)
+
+        assert declared_surfaces(record) is None
 
 
 # ---------------------------------------------------------------------------

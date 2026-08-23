@@ -1,4 +1,4 @@
-"""The RLM harness: three frozen invariants, nine editable surfaces, two starting harnesses.
+"""The RLM harness: three frozen invariants, ten editable surfaces, two starting harnesses.
 
 Read this module as a figure. Nothing here is clever and nothing is indirect:
 each surface is one builder function, each builder is a pure function of its
@@ -7,7 +7,7 @@ builders return.
 
 Layout:
     1. The three invariants — frozen architecture, no surface may edit them.
-    2. The nine builders, S1 through S9, in turn-loop order.
+    2. The ten builders, S1 through S10, in turn-loop order.
     3. ``Harness``, ``SURFACES``, and the two constants ``H0`` and ``H0_STAR``
        (written H0* in the plan; ``*`` is not a legal identifier).
 
@@ -26,9 +26,14 @@ value is concatenated into the string that ``rlm.utils.prompts`` passes through
 allowed in that string is ``{custom_tools_section}``; every other brace must be
 doubled or the run dies with ``KeyError``/``IndexError`` before the first turn.
 Prompt-surface text is therefore stored format-ready, and ``escape_braces``
-converts ordinary text (a JSON or dict example, say) into that form.
+converts ordinary text (a JSON or dict example, say) into that form. S10's index
+fields (``name`` and ``description``) join that string too and follow the same
+convention; skill bodies never enter it -- they are returned verbatim by the
+harness-installed loader -- so they carry no brace convention at all.
 """
 
+import keyword
+import re
 import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -78,6 +83,36 @@ AnswerMiddlewareFn = Callable[[str, dict[str, tuple[str, int]]], AnswerDecision]
 
 CUSTOM_TOOLS_SLOT = "{custom_tools_section}"
 
+# S10's loader. The runner installs ``load_skill(name) -> str`` into both the root
+# and child REPL namespaces whenever ``Harness.skills`` is non-empty (KTD9). It is
+# harness scaffold, not surface content: never serialized, never proposable, and
+# this name is reserved against S8 helpers.
+SKILL_LOADER_NAME = "load_skill"
+
+# The fixed wrapper that precedes the S10 index in the assembled prompt. Purely
+# declarative by design: it names the loader, states what it returns, and states
+# the hand-off contract (a body reaches a sub-call only as text the root puts in
+# the sub-call prompt; ``rlm_query`` children can also call the loader) --
+# nothing about when to call it. "When to consult" belongs to each entry's
+# ``description`` (R14), which is proposable surface content; this sentence is
+# not. It is unhashed scaffold (KTD9) and byte-pinned in the runner tests; a
+# change here is a dated amendment, never a silent edit between rounds.
+SKILL_INDEX_PREAMBLE = (
+    f"Skills available in the REPL: `{SKILL_LOADER_NAME}(name: str) -> str` returns "
+    "the full procedure of a skill listed below. A procedure reaches a sub-call only "
+    "as text you put in that sub-call's prompt; `rlm_query` children can also call "
+    f"`{SKILL_LOADER_NAME}` themselves."
+)
+
+# The loader's rendered tool line. ``rlm.utils.prompts.build_rlm_system_prompt``
+# renders every custom tool into the ``{custom_tools_section}`` slot as
+# "- `name`: description", so this is the description the runner installs the
+# loader with. Declarative like the preamble, and byte-pinned for the same reason.
+SKILL_LOADER_DESCRIPTION = (
+    "returns the full procedure of the named skill from the skill index, verbatim; "
+    "an unknown name raises UnknownSkillError listing the available names"
+)
+
 
 def escape_braces(text: str) -> str:
     """Make ``text`` safe for ``str.format``, keeping ``{custom_tools_section}`` live.
@@ -92,7 +127,7 @@ def escape_braces(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 2. The nine surfaces
+# 2. The ten surfaces
 # ---------------------------------------------------------------------------
 
 # S1's H0 value: the factual contract and nothing else. Names in the REPL, the
@@ -264,6 +299,121 @@ def build_answer_middleware() -> AnswerMiddlewareFn:
     return accept_answer
 
 
+@dataclass(frozen=True)
+class SkillEntry:
+    """One S10 entry: a named, reusable procedure.
+
+    ``name`` identifies it (unique within the list, a REPL-safe identifier);
+    ``description`` is one line stating when to consult it; ``body`` is the
+    procedure text, ordered steps. ``name`` and ``description`` are rendered into
+    the assembled prompt as the index and are therefore format-ready, brace-free
+    text; ``body`` is returned verbatim by the loader and never enters the prompt.
+    """
+
+    name: str
+    description: str
+    body: str
+
+
+# S10 edit bounds (R7). Chosen against the S1-S5 text facts already in force --
+# no S1-S5 edit carries a numeric cap today, so the anchors are the reference
+# texts themselves: H0*'s S1 is 2116 characters, H0's one-line S2-S5 surfaces are
+# 68-107 characters each, and the proposer's ``_render_pattern_block`` shows a
+# surface's current value truncated at 4000 characters. The caps split by
+# representation: name and description are index fields paid in every prompt, so
+# they sit in the S2-S5 one-line family; the body is paid only when loaded, so it
+# is looser.
+#   - SKILL_NAME_MAX_CHARS = 40: a REPL identifier; one index line's label.
+#   - SKILL_DESCRIPTION_MAX_CHARS = 200: ~2x H0's longest one-line surface, so an
+#     index line stays one line.
+#   - SKILL_MAX_ENTRIES = 8: 8 index lines x (<= 40 + 200 + 6 decoration chars)
+#     ~= 2000 characters -- the index at its cap costs at most about one reference
+#     S1 of prompt bytes per turn.
+#   - SKILL_BODY_MAX_CHARS = 4000: the proposer's own display truncation for a
+#     surface value; a body this long is still shown whole when it is the only
+#     entry.
+#   - SKILL_TOTAL_MAX_CHARS = 16000: the sum of every field over every entry;
+#     four full-size bodies, or eight ~1750-character ones -- a bound on the
+#     serialized candidate (hashed, written to proposal.json, diffed, rendered
+#     into later proposer prompts), independent of the per-field caps.
+# They live here, beside ``SkillEntry``, because two modules enforce the same
+# numbers: ``shrlm.optimization.proposal`` at proposal validation and
+# ``shrlm.runner`` at harness construction, and neither may import the other.
+SKILL_NAME_MAX_CHARS = 40
+SKILL_DESCRIPTION_MAX_CHARS = 200
+SKILL_BODY_MAX_CHARS = 4000
+SKILL_MAX_ENTRIES = 8
+SKILL_TOTAL_MAX_CHARS = 16000
+
+# The fields every S10 record carries (same set ``skill_edit._skills_violation``
+# demands of the serialized form), each a string.
+SKILL_RECORD_FIELDS: tuple[str, str, str] = ("name", "description", "body")
+
+# R14's "ordered steps", structurally: a body line that begins with a numbered
+# (``1.`` / ``1)``) or bulleted (``-`` / ``*``) marker, whitespace, and text. A
+# body must carry at least SKILL_BODY_MIN_STEPS such lines; prose around the
+# steps is allowed. Enforced at proposal validation and again at construction.
+SKILL_STEP_LINE_PATTERN = re.compile(r"^\s*(?:\d+[.)]|[-*])\s+\S")
+SKILL_BODY_MIN_STEPS = 2
+
+
+def is_repl_safe_identifier(name: Any) -> bool:
+    """R1's "REPL-safe identifier": an ASCII Python identifier that is not a keyword.
+
+    The same predicate gates a proposed name and a constructed harness's name, so
+    a name the proposer is allowed to write is a name the harness is allowed to
+    hold.
+    """
+    return (
+        isinstance(name, str)
+        and name.isascii()
+        and name.isidentifier()
+        and not keyword.iskeyword(name)
+    )
+
+
+def has_ordered_steps(body: str) -> bool:
+    """R14's body shape: at least ``SKILL_BODY_MIN_STEPS`` step-marked lines."""
+    steps = sum(1 for line in body.splitlines() if SKILL_STEP_LINE_PATTERN.match(line))
+    return steps >= SKILL_BODY_MIN_STEPS
+
+
+def skill_description_violation(description: str) -> str | None:
+    """Why ``description`` is not a legal S10 index field, or ``None`` when it is.
+
+    R5/R14's description contract, shared by proposal-time validation and the
+    construction-time check so the two belts cannot drift: one non-empty line
+    with no brace, because the index lands in the formatted prompt. The length
+    cap is checked by the callers, which own the cap's error wording.
+
+    Returns:
+        A phrase completing "``<label>``.description ...", or ``None``.
+    """
+    if not description.strip():
+        return "must be a non-empty string"
+    if "\n" in description or "\r" in description:
+        return "must be a single line"
+    if "{" in description or "}" in description:
+        return (
+            "contains a brace; S10 index fields land in the formatted prompt and must be "
+            "brace-free (the body may carry braces -- the loader returns it verbatim)"
+        )
+    return None
+
+
+def build_skills() -> list[SkillEntry]:
+    """S10 - reusable procedure, available across turns: the skill library.
+
+    The floor carries no skills, so the assembled prompt carries no index and the
+    runner installs no loader; every procedure the loop wants the root to have on
+    hand must be proposed and promoted into this list.
+
+    Returns:
+        A fresh list of ``SkillEntry`` records, empty at the floor.
+    """
+    return []
+
+
 # ---------------------------------------------------------------------------
 # 3. The registry and the two starting harnesses
 # ---------------------------------------------------------------------------
@@ -325,7 +475,8 @@ SURFACES: dict[str, Surface] = {
     "S8": Surface(
         "S8",
         "REPL namespace construction",
-        "functions and data injected into the REPL",
+        "proposer-written functions and data injected into the REPL; the "
+        "harness-installed skill loader is scaffold and belongs to S10",
         (build_repl_helpers, build_sub_repl_helpers),
     ),
     "S9": Surface(
@@ -334,12 +485,21 @@ SURFACES: dict[str, Surface] = {
         "programmatic inspection of the detected answer, with redirect",
         (build_answer_middleware,),
     ),
+    "S10": Surface(
+        "S10",
+        "reusable procedure, available across turns",
+        "the skill library: one named, reusable procedure per entry -- `name` "
+        "identifies it, a one-line `description` states when to consult it, and "
+        "`body` is its ordered steps; neither description nor body may restate "
+        "per-turn execution or decomposition guidance",
+        (build_skills,),
+    ),
 }
 
 
 @dataclass(frozen=True)
 class Harness:
-    """One complete assignment of the nine surfaces, plus the orchestrator scalar.
+    """One complete assignment of the ten surfaces, plus the orchestrator scalar.
 
     Field names follow the builder convention: ``build_<x>`` fills ``<x>``.
     """
@@ -358,15 +518,38 @@ class Harness:
     repl_helpers: dict[str, Any] = field(default_factory=build_repl_helpers)
     sub_repl_helpers: dict[str, Any] = field(default_factory=build_sub_repl_helpers)
     answer_middleware: AnswerMiddlewareFn = accept_answer
+    # S10: the skill library. Only its name/description index reaches the prompt.
+    skills: list[SkillEntry] = field(default_factory=build_skills)
+
+
+def render_skill_index(skills: list[SkillEntry]) -> str:
+    """Render S10's prompt contribution: the fixed preamble plus one index line per skill.
+
+    Name and description only -- never the body, which the loader returns at run
+    time. An empty list renders ``""`` so it contributes no bytes.
+
+    Args:
+        skills: The harness's S10 entries.
+
+    Returns:
+        Format-ready text, or ``""`` when there are no skills.
+    """
+    if not skills:
+        return ""
+    lines = [SKILL_INDEX_PREAMBLE]
+    lines.extend(f"- `{entry.name}`: {entry.description}" for entry in skills)
+    return "\n".join(lines)
 
 
 def assemble_system_prompt(harness: Harness) -> str:
-    """Concatenate the harness's prompt surfaces S1-S5 into one system prompt.
+    """Concatenate the harness's prompt surfaces S1-S5, then the S10 index, into one system prompt.
 
     Empty surfaces contribute nothing, so a harness whose only prompt surface is
     S1 yields S1 byte for byte -- that is what makes H0* identical to the shipped
-    reference. The result still carries the ``{custom_tools_section}`` slot and is
-    formatted by ``rlm.utils.prompts.build_rlm_system_prompt``.
+    reference. The S10 index (preamble plus name/description lines, never bodies)
+    is appended after S5 only when the list is non-empty. The result still carries
+    the ``{custom_tools_section}`` slot and is formatted by
+    ``rlm.utils.prompts.build_rlm_system_prompt``.
 
     Args:
         harness: The harness whose prompt surfaces to assemble.
@@ -380,12 +563,13 @@ def assemble_system_prompt(harness: Harness) -> str:
         harness.execution_instruction,
         harness.verification_instruction,
         harness.recovery_instruction,
+        render_skill_index(harness.skills),
     ]
     return "\n\n".join(part for part in parts if part)
 
 
-# H0 - the mechanism floor and the optimization loop's starting point. Seven of
-# the nine surfaces are empty, disabled, or one generic line; every clause H0
+# H0 - the mechanism floor and the optimization loop's starting point. Eight of
+# the ten surfaces are empty, disabled, or one generic line; every clause H0
 # lacks relative to H0_STAR is one the loop must rediscover from its own traces.
 H0 = Harness(
     name="H0",
@@ -400,11 +584,12 @@ H0 = Harness(
     repl_helpers=build_repl_helpers(),
     sub_repl_helpers=build_sub_repl_helpers(),
     answer_middleware=build_answer_middleware(),
+    skills=build_skills(),
 )
 
 # H0* - the shipped reference harness. S1 is ``RLM_SYSTEM_PROMPT`` verbatim and
 # the runtime appends ``ORCHESTRATOR_ADDENDUM`` itself (``orchestrator=True``),
-# so S2-S5 are empty: their content arrives through the addendum. S6-S9 are H0's.
+# so S2-S5 are empty: their content arrives through the addendum. S6-S10 are H0's.
 H0_STAR = Harness(
     name="H0*",
     orchestrator=True,
@@ -418,6 +603,7 @@ H0_STAR = Harness(
     repl_helpers=build_repl_helpers(),
     sub_repl_helpers=build_sub_repl_helpers(),
     answer_middleware=build_answer_middleware(),
+    skills=build_skills(),
 )
 
 HARNESSES: dict[str, Harness] = {"H0": H0, "H0*": H0_STAR}

@@ -1,7 +1,7 @@
 {
   "format": "shrlm-proposal/v1",
   "candidate_id": "smoke-s2-restate",
-  "base_harness_hash": "95a4ed2e9f7cb574ae1eda24b22b02a816bbf139878f4a3f84fc7f2585cf2c35",
+  "base_harness_hash": "bbfdbcfdecc406b532bb59e26b75ec6cbc3379e01a0b813e47c92199be62cd07",
   "target_signature": {
     "verifier_cause": "wrong_value",
     "failing_level": "root",
@@ -10,9 +10,9 @@
   },
   "surface": "S2",
   "harness": {
-    "format": "shrlm-harness/v1",
+    "format": "shrlm-harness/v2",
     "name": "smoke-s2-restate",
-    "hash": "5c9d66f0ad2328882c68e497ad3014b47f71154ecf788af79db3428fb05b8b4a",
+    "hash": "7b06f1b080c024e23c9b8e3e60c86b1b95766add45b218a153baf27a051a0cde",
     "harness": {
       "name": "smoke-s2-restate",
       "orchestrator": false,
@@ -39,7 +39,8 @@
         "S8_sub_repl_helpers": {},
         "S9_answer_middleware": {
           "source": "def accept_answer(answer: str, repl_inventory: dict[str, tuple[str, int]]) -> AnswerDecision:\n    \"\"\"The S9 floor: accept every detected answer unchanged (identity).\"\"\"\n    return AnswerDecision.accept(answer)\n"
-        }
+        },
+        "S10_skills": []
       }
     }
   },

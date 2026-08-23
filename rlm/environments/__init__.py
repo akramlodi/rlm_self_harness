@@ -3,6 +3,7 @@ from typing import Any, Literal
 from rlm.environments.base_env import (
     RESERVED_TOOL_NAMES,
     BaseEnv,
+    SkillLoader,
     SupportsCustomTools,
     SupportsPersistence,
     ToolInfo,
@@ -30,6 +31,7 @@ __all__ = [
     "IPythonREPL",
     "LocalREPL",
     "RESERVED_TOOL_NAMES",
+    "SkillLoader",
     "SupportsCustomTools",
     "SupportsPersistence",
     "ToolInfo",

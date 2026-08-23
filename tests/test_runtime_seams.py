@@ -2,8 +2,13 @@
 
 Every seam must default to current behavior, so each test comes in a pair:
 the configured behavior fires, and the unconfigured default is unchanged.
+
+The last section covers the S10 construction checks (U7): an unusable skill
+list, a brace in the formatted prompt, or an S8 helper binding the loader's
+reserved name is refused by ``check_harness`` before any instance is spent.
 """
 
+from dataclasses import replace
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -21,11 +26,13 @@ from rlm.core.types import (
     UsageSummary,
 )
 from rlm.core.types import CodeBlock as CodeBlockType
+from rlm.environments.base_env import SkillLoader
 from rlm.environments.local_repl import (
     SUBCALL_INVALID_PREFIX,
     SUBCALL_REFUSAL_PREFIX,
     LocalREPL,
 )
+from rlm.logger import RLMLogger
 from rlm.utils.parsing import (
     DEFAULT_MAX_CHARACTER_LENGTH,
     build_repl_inventory,
@@ -33,6 +40,28 @@ from rlm.utils.parsing import (
     format_iteration,
 )
 from rlm.utils.prompts import DEFAULT_CAPACITY_SENTENCE, build_rlm_system_prompt
+from shrlm.rlm_harness import (
+    H0,
+    H0_STAR,
+    SKILL_BODY_MAX_CHARS,
+    SKILL_DESCRIPTION_MAX_CHARS,
+    SKILL_LOADER_NAME,
+    SKILL_MAX_ENTRIES,
+    SKILL_NAME_MAX_CHARS,
+    SKILL_TOTAL_MAX_CHARS,
+    Harness,
+    SkillEntry,
+    build_runtime_policy,
+    escape_braces,
+)
+from shrlm.runner import (
+    _install_skill_loader,
+    build_harnessed_rlm,
+    build_skill_loader,
+    check_harness,
+    check_plumbing,
+    check_stated_limits,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -671,6 +700,132 @@ class TestTraceMetrics:
         env.cleanup()
 
 
+# ---------------------------------------------------------------------------
+# Skill-load events: recorded by the environment beside its sub-call events
+# ---------------------------------------------------------------------------
+
+SKILL_BODIES = {
+    "chunk_context": "BODY-ONE {not a format field} 1. Measure len(context).",
+    "recheck_quotes": "BODY-TWO 1. Re-find each quote.",
+}
+SKILL_INDEX = [
+    {"name": "chunk_context", "description": "when `context` is too large"},
+    {"name": "recheck_quotes", "description": "when the answer quotes `context`"},
+]
+
+
+def make_skill_loader() -> SkillLoader:
+    def load(name: str) -> str:
+        if name not in SKILL_BODIES:
+            raise LookupError(f"unknown skill {name!r}")
+        return SKILL_BODIES[name]
+
+    return SkillLoader(load=load, index=SKILL_INDEX)
+
+
+class TestSkillLoadRecording:
+    """Mirror of the sub-call recording tests: a loader call is a per-turn trace fact."""
+
+    def test_loader_call_is_recorded_with_the_environment_depth(self):
+        env = LocalREPL(custom_tools={"load_skill": make_skill_loader()}, depth=2)
+        result = env.execute_code("body = load_skill('chunk_context')\nprint(body)")
+        assert result.stderr == ""
+        assert SKILL_BODIES["chunk_context"] in result.stdout
+        assert result.skill_loads == [{"skill": "chunk_context", "depth": 2}]
+        env.cleanup()
+
+    def test_loader_returns_the_body_verbatim_through_the_repl(self):
+        env = LocalREPL(custom_tools={"load_skill": make_skill_loader()})
+        env.execute_code("body = load_skill('chunk_context')")
+        assert env.locals["body"] == SKILL_BODIES["chunk_context"]
+        env.cleanup()
+
+    def test_pending_skill_loads_reset_every_turn_like_sub_calls(self):
+        env = LocalREPL(custom_tools={"load_skill": make_skill_loader()})
+        first = env.execute_code(
+            "a = load_skill('chunk_context')\nb = load_skill('recheck_quotes')"
+        )
+        second = env.execute_code("print(len(a) + len(b))")
+        assert [event["skill"] for event in first.skill_loads] == [
+            "chunk_context",
+            "recheck_quotes",
+        ]
+        assert second.skill_loads == []
+        assert second.rlm_calls == []
+        env.cleanup()
+
+    def test_a_failed_load_is_not_recorded_and_surfaces_in_stderr(self):
+        env = LocalREPL(custom_tools={"load_skill": make_skill_loader()})
+        result = env.execute_code("load_skill('nope')")
+        assert result.skill_loads == []
+        assert "LookupError" in result.stderr and "nope" in result.stderr
+        env.cleanup()
+
+    def test_plain_callable_tools_are_not_recorded_as_skill_loads(self):
+        env = LocalREPL(custom_tools={"helper": lambda name: f"h:{name}"})
+        result = env.execute_code("print(helper('x'))")
+        assert "h:x" in result.stdout
+        assert result.skill_loads == []
+        env.cleanup()
+
+    def test_tool_dict_form_of_the_loader_is_still_recorded(self):
+        env = LocalREPL(
+            custom_tools={"load_skill": {"tool": make_skill_loader(), "description": "d"}}
+        )
+        result = env.execute_code("load_skill('recheck_quotes')")
+        assert result.skill_loads == [{"skill": "recheck_quotes", "depth": 1}]
+        env.cleanup()
+
+    def test_repl_result_to_dict_carries_skill_loads_beside_rlm_calls(self):
+        result = REPLResult(
+            stdout="",
+            stderr="",
+            locals={},
+            execution_time=0.0,
+            skill_loads=[{"skill": "chunk_context", "depth": 1}],
+        )
+        data = result.to_dict()
+        assert data["rlm_calls"] == []
+        assert data["skill_loads"] == [{"skill": "chunk_context", "depth": 1}]
+        # A result built without the field persists an empty list, like rlm_calls.
+        assert REPLResult(stdout="", stderr="", locals={}).to_dict()["skill_loads"] == []
+
+    def test_turn_metrics_and_run_metadata_carry_loads_and_index(self):
+        responses = [
+            "```repl\nbody = load_skill('chunk_context')\nprint(body[:8])\n```",
+            final("done"),
+        ]
+        with patch.object(rlm_module, "get_client") as get_client:
+            get_client.return_value = create_mock_lm(responses)
+            logger = RLMLogger()
+            model = RLM(
+                backend="openai",
+                backend_kwargs={"model_name": "test"},
+                custom_tools={"load_skill": make_skill_loader()},
+                logger=logger,
+            )
+            result = model.completion("ctx")
+
+        turns = result.metadata["iterations"]
+        assert turns[0]["trace_metrics"]["skill_load_count"] == 1
+        assert turns[0]["trace_metrics"]["sub_call_count"] == 0
+        assert turns[1]["trace_metrics"]["skill_load_count"] == 0
+        assert turns[0]["code_blocks"][0]["result"]["skill_loads"] == [
+            {"skill": "chunk_context", "depth": 1}
+        ]
+        # The run-start record names what was available, once, beside the run metadata.
+        assert result.metadata["run_metadata"]["skill_index"] == SKILL_INDEX
+
+    def test_run_metadata_omits_the_index_without_a_loader(self):
+        with patch.object(rlm_module, "get_client") as get_client:
+            get_client.return_value = create_mock_lm([final("done")])
+            logger = RLMLogger()
+            model = RLM(backend="openai", backend_kwargs={"model_name": "test"}, logger=logger)
+            result = model.completion("ctx")
+        assert "skill_index" not in result.metadata["run_metadata"]
+        assert result.metadata["iterations"][0]["trace_metrics"]["skill_load_count"] == 0
+
+
 class _RecordingLogger:
     """Minimal logger stand-in that keeps the RLMIteration objects themselves."""
 
@@ -738,3 +893,253 @@ class TestReviewRegressions:
         format_iteration(iteration, metrics=metrics)
 
         assert metrics["truncation_event"] is False
+
+
+# ---------------------------------------------------------------------------
+# S10 construction checks (U7): refused harnesses, and the ones that pass
+# ---------------------------------------------------------------------------
+
+
+def skill(
+    name: str = "chunk_context",
+    description: str = "when `context` is larger than one sub-call can take",
+    body: str = "1. Measure len(context).\n2. Split it into sub-call-sized slices.",
+) -> SkillEntry:
+    """A legal S10 entry with ``overrides`` applied."""
+    return SkillEntry(name=name, description=description, body=body)
+
+
+def skilled(*entries: SkillEntry, base: Harness = H0, **overrides: Any) -> Harness:
+    """``base`` carrying ``entries`` as its S10, plus any other field overrides."""
+    return replace(base, skills=list(entries), **overrides)
+
+
+def build(harness: Harness):
+    return build_harnessed_rlm(harness, backend="openai", backend_kwargs={"model_name": "t"})
+
+
+def enabled_policy(**overrides: Any) -> dict[str, Any]:
+    return build_runtime_policy() | {"enabled": True} | overrides
+
+
+class TestS10IndexFormatSafety:
+    """R5 / KTD8: the assembled prompt is formatted once, at construction."""
+
+    def test_brace_in_a_description_is_refused_naming_s10(self):
+        harness = skilled(skill(description="when `answer` looks like {partial}"))
+        with pytest.raises(ValueError, match="S10"):
+            check_harness(harness)
+        with pytest.raises(ValueError, match="S10"):
+            build(harness)
+
+    def test_literal_braces_in_a_body_are_accepted_and_returned_verbatim(self):
+        body = '1. Build {"ready": False}.\n2. Fill answer["content"] from {slices}.'
+        harness = skilled(skill(body=body))
+        check_harness(harness)
+        harnessed = build(harness)
+        assert SKILL_LOADER_NAME in harnessed.rlm.custom_tools
+        assert harnessed.rlm.custom_tools[SKILL_LOADER_NAME]["tool"]("chunk_context") == body
+
+    def test_a_stray_brace_in_s2_is_refused_naming_s2(self):
+        # The gap ``escape_braces`` was exported to close: before U7 this died
+        # with KeyError at completion time, as an infrastructure error.
+        harness = replace(H0, decomposition_instruction="Probe {context} first.")
+        with pytest.raises(ValueError, match="S2"):
+            check_harness(harness)
+
+    def test_an_unbalanced_brace_in_s4_is_refused_naming_s4(self):
+        harness = replace(H0, verification_instruction="Check answer[ready} before flipping.")
+        with pytest.raises(ValueError, match="S4"):
+            check_harness(harness)
+
+    def test_escaped_braces_in_a_prompt_surface_are_accepted(self):
+        text = escape_braces('Keep answer as {"ready": False, "content": ""}.')
+        harness = replace(H0, execution_instruction=text)
+        check_harness(harness)
+        harnessed = build(harness)
+        assert '{"ready": False, "content": ""}' in harnessed.rlm._setup_prompt("q")[0]["content"]
+
+    def test_the_placeholder_slot_stays_the_one_live_field(self):
+        # S1 carries the slot once; formatting consumed it and nothing else, so
+        # the prompt the runtime produces carries the rendered index verbatim
+        # and no unconsumed field.
+        harness = skilled(skill(), skill(name="recheck_quotes"))
+        system = build(harness).rlm._setup_prompt("q")[0]["content"]
+        assert "{custom_tools_section}" not in system
+        assert "- `chunk_context`: when `context` is larger than one sub-call can take" in system
+
+
+class TestS10StatedLimits:
+    """R6: each body and description is scanned with the prompt-level patterns."""
+
+    def test_body_stating_a_different_truncation_bound_is_refused_naming_s10(self):
+        body = "1. Note REPL outputs over ~5K characters are truncated.\n2. Print less."
+        with pytest.raises(ValueError, match=r"S10.*truncation") as caught:
+            check_harness(skilled(skill(body=body)))
+        assert "~5K" in str(caught.value) and "~20K" in str(caught.value)
+
+    def test_body_stating_the_active_truncation_bound_is_accepted(self):
+        body = "1. Note REPL outputs over ~20K characters are truncated.\n2. Print less."
+        check_harness(skilled(skill(body=body)))
+
+    def test_description_stating_a_different_truncation_bound_is_refused_naming_s10(self):
+        description = "when REPL outputs over ~5K characters are truncated"
+        with pytest.raises(ValueError, match=r"S10.*truncation"):
+            check_harness(skilled(skill(description=description)))
+
+    def test_body_stating_a_capacity_the_policy_contradicts_is_refused_naming_s10(self):
+        body = "1. Send ~100K characters per prompt.\n2. Collect the replies."
+        harness = skilled(skill(body=body), runtime_policy=enabled_policy(max_prompt_chars=50_000))
+        with pytest.raises(ValueError, match=r"S10.*capacity"):
+            check_harness(harness)
+        # The same body under a policy that agrees, or states no cap, is fine.
+        check_harness(
+            skilled(skill(body=body), runtime_policy=enabled_policy(max_prompt_chars=100_000))
+        )
+        check_harness(skilled(skill(body=body)))
+
+    def test_body_stating_a_fan_out_the_policy_contradicts_is_refused_naming_s10(self):
+        body = "1. Batch ~20 prompts per batch.\n2. Collect the replies."
+        harness = skilled(skill(body=body), runtime_policy=enabled_policy(max_batch_width=4))
+        with pytest.raises(ValueError, match=r"S10.*batch"):
+            check_harness(harness)
+        check_harness(skilled(skill(body=body), runtime_policy=enabled_policy(max_batch_width=20)))
+
+    def test_prompt_level_scan_is_unaffected_by_legal_index_text(self):
+        # The index joins the assembled prompt; with no field stating a limit,
+        # the expected-set equality the prompt-level scan asserts still holds.
+        harness = skilled(
+            skill(), skill(name="recheck_quotes", description="when quotes are reused")
+        )
+        check_stated_limits(harness)
+        check_harness(harness)
+
+
+class TestS10EntryShape:
+    """R1 / R14 at construction: each entry is a well-formed ``SkillEntry``."""
+
+    @pytest.mark.parametrize(
+        "skills, needle",
+        [
+            ([{"name": "a", "description": "b", "body": "1. x\n2. y"}], "SkillEntry"),
+            ([SkillEntry(name=1, description="b", body="1. x\n2. y")], "name"),
+            ([SkillEntry(name="ok", description=None, body="1. x\n2. y")], "description"),
+            ([SkillEntry(name="ok", description="b", body=["1. x", "2. y"])], "body"),
+            ([skill(name="")], "name"),
+            ([skill(name="not an identifier")], "identifier"),
+            ([skill(name="class")], "identifier"),
+            ([skill(name="café")], "identifier"),
+            ([skill(description="   ")], "description"),
+            ([skill(description="two\nlines")], "single line"),
+            ([skill(body="")], "body"),
+            ([skill(body="Just prose, no steps at all.")], "ordered steps"),
+            ([skill(body="1. only one step")], "ordered steps"),
+            ([skill(), skill(description="a second entry, same name")], "unique"),
+        ],
+    )
+    def test_malformed_entries_are_refused_naming_s10(self, skills, needle):
+        harness = replace(H0, skills=skills)
+        with pytest.raises(ValueError, match="S10") as caught:
+            check_harness(harness)
+        assert needle in str(caught.value)
+
+    def test_skills_that_is_not_a_list_is_refused_naming_s10(self):
+        with pytest.raises(ValueError, match="S10"):
+            check_harness(replace(H0, skills=(skill(),)))
+
+    def test_a_legal_multi_entry_s10_passes_and_is_constructed(self):
+        harness = skilled(
+            skill(),
+            skill(name="recheck_quotes", description="when the answer quotes `context`"),
+            skill(name="split_by_heading", description="when `context` has markdown headings"),
+        )
+        check_harness(harness)
+        harnessed = build(harness)
+        for name in ("chunk_context", "recheck_quotes", "split_by_heading"):
+            assert f"- `{name}`:" in harnessed.system_prompt
+
+    def test_h0_and_h0_star_pass_unchanged(self):
+        for harness in (H0, H0_STAR):
+            check_harness(harness)
+            assert harness.skills == []
+
+
+class TestS10Caps:
+    """R7: the proposal-time numbers hold at construction too."""
+
+    def test_name_over_the_cap_is_refused(self):
+        name = "n" * (SKILL_NAME_MAX_CHARS + 1)
+        with pytest.raises(ValueError, match=rf"S10.*name.*{SKILL_NAME_MAX_CHARS}"):
+            check_harness(skilled(skill(name=name)))
+        check_harness(skilled(skill(name="n" * SKILL_NAME_MAX_CHARS)))
+
+    def test_description_over_the_cap_is_refused(self):
+        description = "d" * (SKILL_DESCRIPTION_MAX_CHARS + 1)
+        with pytest.raises(ValueError, match=rf"S10.*description.*{SKILL_DESCRIPTION_MAX_CHARS}"):
+            check_harness(skilled(skill(description=description)))
+        check_harness(skilled(skill(description="d" * SKILL_DESCRIPTION_MAX_CHARS)))
+
+    def test_body_over_the_cap_is_refused(self):
+        body = "1. a\n2. " + "b" * SKILL_BODY_MAX_CHARS
+        with pytest.raises(ValueError, match=rf"S10.*body.*{SKILL_BODY_MAX_CHARS}"):
+            check_harness(skilled(skill(body=body)))
+        at_cap = "1. a\n2. " + "b" * (SKILL_BODY_MAX_CHARS - len("1. a\n2. "))
+        assert len(at_cap) == SKILL_BODY_MAX_CHARS
+        check_harness(skilled(skill(body=at_cap)))
+
+    def test_too_many_entries_is_refused(self):
+        names = [f"skill_{i}" for i in range(SKILL_MAX_ENTRIES + 1)]
+        with pytest.raises(ValueError, match=rf"S10.*{SKILL_MAX_ENTRIES}"):
+            check_harness(skilled(*(skill(name=n) for n in names)))
+        check_harness(skilled(*(skill(name=n) for n in names[:SKILL_MAX_ENTRIES])))
+
+    def test_total_over_the_cap_is_refused(self):
+        per_body = SKILL_BODY_MAX_CHARS - 100
+        count = SKILL_TOTAL_MAX_CHARS // per_body + 1
+        assert count <= SKILL_MAX_ENTRIES
+        body = "1. a\n2. " + "b" * (per_body - len("1. a\n2. "))
+        entries = [skill(name=f"skill_{i}", body=body) for i in range(count)]
+        with pytest.raises(ValueError, match=rf"S10.*total.*{SKILL_TOTAL_MAX_CHARS}"):
+            check_harness(skilled(*entries))
+
+
+class TestS10LoaderInstallAndReservedName:
+    """KTD9 / R15 at construction: install only when non-empty; the name is reserved."""
+
+    def test_h0_and_h0_star_install_no_loader(self):
+        for harness in (H0, H0_STAR):
+            harnessed = build(harness)
+            assert SKILL_LOADER_NAME not in (harnessed.rlm.custom_tools or {})
+            assert SKILL_LOADER_NAME not in (harnessed.rlm.custom_sub_tools or {})
+
+    def test_non_empty_s10_installs_the_loader_in_both_dicts(self):
+        harnessed = build(skilled(skill(), skill(name="recheck_quotes")))
+        for tools in (harnessed.rlm.custom_tools, harnessed.rlm.custom_sub_tools):
+            entry = tools[SKILL_LOADER_NAME]
+            assert entry["tool"]("recheck_quotes") == skill().body
+        # The harness's own S8 dicts were never mutated.
+        assert H0.repl_helpers == {} and H0.sub_repl_helpers == {}
+
+    @pytest.mark.parametrize("field", ["repl_helpers", "sub_repl_helpers"])
+    def test_an_s8_helper_binding_the_reserved_name_is_refused_naming_s10(self, field):
+        def load_skill(name: str) -> str:
+            return "not the harness loader"
+
+        harness = replace(H0, **{field: {SKILL_LOADER_NAME: load_skill}})
+        with pytest.raises(ValueError, match=rf"S8 {field}.*S10") as caught:
+            check_plumbing(harness)
+        assert SKILL_LOADER_NAME in str(caught.value)
+        with pytest.raises(ValueError, match="S10"):
+            build(harness)
+        # The same refusal with S10 populated, so the collision is never a
+        # silent overwrite at install time either.
+        with pytest.raises(ValueError, match="S10"):
+            build(skilled(skill(), **{field: {SKILL_LOADER_NAME: load_skill}}))
+
+    def test_installing_over_a_residual_binding_is_a_refusal_not_an_overwrite(self):
+        loader = build_skill_loader([skill()])
+        with pytest.raises(ValueError, match="S10"):
+            _install_skill_loader({SKILL_LOADER_NAME: lambda name: "shadow"}, loader)
+        merged = _install_skill_loader({"helper": lambda: 1}, loader)
+        assert list(merged) == ["helper", SKILL_LOADER_NAME]
+        assert merged[SKILL_LOADER_NAME]["tool"] is loader

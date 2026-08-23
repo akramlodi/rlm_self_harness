@@ -16,14 +16,19 @@ three stages (§3.3 of the proposal):
 | **2. Harness Proposal** | Give the model the mined patterns, behaviors to preserve, and prior edit history; get back several minimal candidate edits, each targeting one pattern on one declared surface. | not implemented |
 | **3. Proposal Validation** | Evaluate candidates on held-in plus a disjoint held-out split never shown to the proposer. Promote only on no meaningful accuracy regression with sub-call/cost in a preregistered band. Merged compatible edits are re-evaluated before promotion. | not implemented |
 
-The nine editable surfaces declared by the harness (`shrlm/rlm_harness.py`, `SURFACES`) are
-enumerated in code as `EditableSurface` ([taxonomy.py:41](optimization/taxonomy.py#L41)), keyed by
+The ten editable surfaces declared by the harness (`shrlm/rlm_harness.py`, `SURFACES`) are
+enumerated in code as `EditableSurface` ([taxonomy.py:51](optimization/taxonomy.py#L51)), keyed by
 surface id: S1 repl_contract, S2 decomposition_instruction, S3 execution_instruction,
 S4 verification_instruction, S5 recovery_instruction, S6 runtime_policy, S7 metadata,
-S8 repl_helpers+sub_repl_helpers, S9 answer_middleware. `SURFACE_REACH`
-([taxonomy.py:102](optimization/taxonomy.py#L102)) annotates each surface as root-only or
-child-reachable: S1–S5 travel with the system prompt, which child RLMs inherit, and S8 propagates
-via `sub_repl_helpers`, while the S6/S7/S9 seams apply at the root only (residual finding C7).
+S8 repl_helpers+sub_repl_helpers, S9 answer_middleware, S10 skills. S10 is the skill library —
+reusable procedures available across turns: only its name/description index is rendered into
+the system prompt, and the runner installs a fixed `load_skill(name)` loader (scaffold, not an
+S8 entry) that returns a body on demand. `SURFACE_REACH`
+([taxonomy.py:118](optimization/taxonomy.py#L118)) annotates each surface as root-only or
+child-reachable: S1–S5 travel with the system prompt, which child RLMs inherit, S8 propagates
+via `sub_repl_helpers`, and S10 is child-reachable on both legs (the index travels with the
+prompt and the loader is installed in the child REPL too), while the S6/S7/S9 seams apply at
+the root only (residual finding C7).
 The evaluator, external tools, and the three §3.1 invariants are off-limits.
 
 ## Why the package is laid out this way
@@ -46,17 +51,22 @@ Read in this order; each module depends only on the ones above it.
 
 ### `taxonomy.py` — the closed vocabulary
 Every label in the system, as enums: `VerifierCause`, `FailingLevel`, `CausalStatus`,
-`AgentMechanism` (15 concrete mechanisms + `OTHER`), `EditableSurface` (the nine harness surfaces
-S1–S9). Plus four tables: `MECHANISM_DOCS`, `MECHANISM_SURFACE` (mechanism → the one surface that
-could fix it, [:302](optimization/taxonomy.py#L302); every one of the nine surfaces is reachable),
-`SURFACE_REACH`, and `CAUSAL_WEIGHT`.
+`AgentMechanism` (16 concrete mechanisms + `OTHER`), `EditableSurface` (the ten harness surfaces
+S1–S10). Plus four tables: `MECHANISM_DOCS`, `MECHANISM_SURFACE` (mechanism → the one surface that
+could fix it, [:339](optimization/taxonomy.py#L339); every one of the ten surfaces is reachable —
+S10 through `unconsulted_procedure`, defined against the digest's `available_skills` /
+`loaded_skills` lines and claimed only when neither the S6 budget-exhaustion nor the S3
+depth-degradation mechanism independently explains the terminal failure), `SURFACE_REACH`, and
+`CAUSAL_WEIGHT`. `TAXONOMY_VERSION` is `3.0.0` since S10 was declared (2.0.0 before); it stamps
+every bundle, and the mechanism-frequency diff refuses to compare bundles written under a
+different version unless explicitly told to.
 
 *Why closed:* the vocabulary **is** the clustering key. An open vocabulary would make every failure
 its own cluster and mining would return nothing.
 
 *Why the prompt text is generated here:* `render_taxonomy_block()`
-([:385](optimization/taxonomy.py#L385)) builds the attributor's label menu — including the
-nine-surface table with reach annotations — from the enums themselves, so adding a mechanism cannot
+([:423](optimization/taxonomy.py#L423)) builds the attributor's label menu — including the
+ten-surface table with reach annotations — from the enums themselves, so adding a mechanism cannot
 leave the prompt describing a vocabulary the validator no longer accepts.
 [`test_taxonomy.py`](../tests/optimization/test_taxonomy.py) asserts every mechanism is
 documented and mapped to exactly one surface, and that the surface ids agree with

@@ -264,7 +264,7 @@ def test_validation_caps_factory() -> None:
     assert caps.max_budget == 0.1
     assert caps.max_timeout == 1800.0
     assert caps.candidate_budget == 60.0
-    assert caps.max_depth == 1
+    assert caps.max_depth == 2
     assert caps.max_iterations == 30
 
 

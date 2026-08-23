@@ -2,7 +2,7 @@
 
 A mining round is only evidence if the harness it measured can be reconstructed
 byte for byte. This module turns a ``shrlm.rlm_harness.Harness`` into a plain
-JSON-serializable dict covering all nine surfaces plus the ``orchestrator``
+JSON-serializable dict covering all ten surfaces plus the ``orchestrator``
 scalar, and hashes the canonical form of that dict so two harnesses compare by
 content, not by object identity.
 
@@ -10,8 +10,9 @@ What is hashed and what is not:
     - Hashed: the five prompt strings (S1-S5), the runtime policy (S6), the S7
       metadata builder's source and its ``declared_bound``, every S8 helper
       entry (callable source plus non-callable metadata), the S9 middleware's
-      source, and the ``orchestrator`` flag -- the flag changes the effective
-      system prompt, so it is part of identity.
+      source, every S10 skill entry (name, description, body), and the
+      ``orchestrator`` flag -- the flag changes the effective system prompt, so
+      it is part of identity.
     - Not hashed: ``name``. It is recorded in the serialization as informational
       metadata; renaming a harness must not change its hash.
 
@@ -26,6 +27,7 @@ is defined statically. A stage-2 edit loop that generates callables dynamically
 own provenance for them; this module deliberately refuses to guess.
 """
 
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -34,8 +36,16 @@ from pathlib import Path
 from typing import Any
 
 from rlm.environments.base_env import parse_tool_entry
-from shrlm.rlm_harness import Harness
+from shrlm.rlm_harness import Harness, SkillEntry
 from shrlm.runner import declared_metadata_bound
+
+# The harness identity envelope's format tag. Bumped from v1 when S10 joined the
+# surface set (KTD3): the serialized key set *is* the contract, so a nine-surface
+# document must be rejected as the wrong version, not as a malformed shape. The
+# tag is re-exported as ``HARNESS_FORMAT`` by ``shrlm.optimization.candidates``
+# (where the loader checks it) and ``shrlm.optimization.proposal`` (where the
+# proposal writer stamps it); this is the one declaration site.
+HARNESS_FORMAT = "shrlm-harness/v2"
 
 
 class HarnessSerializationError(RuntimeError):
@@ -120,22 +130,47 @@ def serialize_helper_entry(name: str, entry: Any, surface: str) -> Any:
     return serialized
 
 
+def serialize_skill_entry(index: int, entry: Any, surface: str) -> dict[str, Any]:
+    """Serialize one S10 skill entry to its ``name``/``description``/``body`` mapping.
+
+    Args:
+        index: The entry's position in ``Harness.skills`` (used in the label).
+        entry: The raw list element; must be a ``SkillEntry``.
+        surface: The surface label (``"S10 skills"``).
+
+    Returns:
+        A JSON-serializable dict with keys ``name``, ``description``, ``body``.
+
+    Raises:
+        HarnessSerializationError: If ``entry`` is not a ``SkillEntry`` or one
+            of its fields is not JSON-serializable, naming the surface and the
+            offending position.
+    """
+    label = f"{surface}[{index}]"
+    if not isinstance(entry, SkillEntry):
+        raise HarnessSerializationError(
+            f"cannot serialize {label}: expected a SkillEntry, got {entry!r}"
+        )
+    return json_safe_value(dataclasses.asdict(entry), label)
+
+
 def serialize_harness(harness: Harness) -> dict[str, Any]:
-    """Serialize all nine surfaces plus ``orchestrator`` and the unhashed ``name``.
+    """Serialize all ten surfaces plus ``orchestrator`` and the unhashed ``name``.
 
     Args:
         harness: The harness to serialize.
 
     Returns:
         A JSON-serializable dict with top-level keys ``name``, ``orchestrator``,
-        and ``surfaces`` (one entry per surface, ``S1_...`` through ``S9_...``).
+        and ``surfaces`` (one entry per surface, ``S1_...`` through ``S10_...``).
         ``name`` is informational only and excluded from ``harness_hash``.
 
     Raises:
         HarnessSerializationError: If any callable surface has unrecoverable
             source, if S7's builder lacks a valid ``declared_bound`` (a
-            positive int, per ``shrlm.runner.declared_metadata_bound``), or if
-            a data value is not JSON-serializable.
+            positive int, per ``shrlm.runner.declared_metadata_bound``), if a
+            data value is not JSON-serializable, or if an S10 entry is not a
+            ``SkillEntry``.
     """
     metadata = harness.metadata
     try:
@@ -170,6 +205,10 @@ def serialize_harness(harness: Harness) -> dict[str, Any]:
             "S9_answer_middleware": {
                 "source": callable_source(harness.answer_middleware, "S9 answer_middleware"),
             },
+            "S10_skills": [
+                serialize_skill_entry(index, entry, "S10 skills")
+                for index, entry in enumerate(harness.skills)
+            ],
         },
     }
 
@@ -227,7 +266,7 @@ def write_harness_json(harness: Harness, path: str | Path) -> dict[str, Any]:
     """
     serialization = serialize_harness(harness)
     envelope = {
-        "format": "shrlm-harness/v1",
+        "format": HARNESS_FORMAT,
         "name": harness.name,
         "hash": hash_of_serialization(serialization),
         "harness": serialization,

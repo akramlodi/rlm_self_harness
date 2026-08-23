@@ -6,17 +6,35 @@ one PNG with two panels into that same snapshot's ``plots/`` directory:
 
 - **Panel A**: the running distinct-surface counts as two step functions --
   ``cumulative_surfaces_attempted`` (dashed) and ``cumulative_surfaces_promoted``
-  (solid) -- against a y=9 "all surfaces" reference line.
-- **Panel B**: two S1-S9 x round heatmaps, one for ``attempted_count`` and one
-  for ``promoted_count``, sharing one color scale and colorbar so the two are
-  directly comparable (promoted is always <= attempted, and the shared scale
-  makes that visible rather than each heatmap re-normalizing to its own max).
+  (solid) -- against an "all declared surfaces" reference line that steps per
+  round to the size of that round's own declared surface set (R12, KTD5).
+  The y-limit, ticks, and axis label are sized by the largest declared count
+  across the plotted rounds; none of them is a literal, and none is the
+  current code's surface count, which is not the count a pre-S10 round had.
+- **Panel B**: two surface x round heatmaps, one for ``attempted_count`` and
+  one for ``promoted_count``, sharing one color scale and colorbar so the two
+  are directly comparable (promoted is always <= attempted, and the shared
+  scale makes that visible rather than each heatmap re-normalizing to its own
+  max).
 
-Only the nine canonical surfaces enter either panel. The table also carries a
+Only the canonical surfaces enter either panel. The table also carries a
 ``merged`` category row per round (KTD7) -- the merged harness spans several
-surfaces by construction, so it is neither a tenth heatmap row nor part of the
-distinct-surface counts; the lookups here are keyed by ``CANONICAL_SURFACES``,
-which is what keeps it inert.
+surfaces by construction, so it is neither an extra heatmap row nor part of
+the distinct-surface counts; the lookups here are keyed by
+``CANONICAL_SURFACES``, which is what keeps it inert.
+
+A zero-count heatmap cell is not one thing (R13). The table's
+``surface_source`` column says which, per cell, and Panel B draws the three
+states differently: a surface the round's harness declared and nothing touched
+is the blank cell; a surface that round's harness never declared (a pre-S10
+round's S10 cell) is a crosshatched grey cell; a cell whose round's harness
+could not be read at all is a dotted-outline cell with a ``?`` -- unknown,
+never folded into either of the other two. ``declared_surfaces_by_round``
+reads the same column back into a per-round declared set, which is what a
+per-round total has to be derived from rather than from the current code's
+surface count. A round whose set is unknown gets no reference segment at
+all -- no count is true of it, so none is drawn -- and if every plotted round
+is unknown the axis label says so instead of stating a total.
 
 Rounds the aggregation could not confirm complete (``round_complete`` or
 ``runs_complete`` not ``true``) are marked with a hatched band behind Panel A
@@ -47,6 +65,7 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import Rectangle
 
 from shrlm.experiment.analysis_io import PLOTS_DIR
 from shrlm.experiment.plot_style import (
@@ -71,6 +90,7 @@ from shrlm.experiment.plot_style import (
     resolve_snapshot,
     save_figure,
 )
+from shrlm.experiment.rounds import SURFACE_SOURCE_UNDECLARED, SURFACE_SOURCE_UNKNOWN
 from shrlm.experiment.surface_activity import (
     CANONICAL_SURFACES,
     SURFACE_ACTIVITY_FILENAME,
@@ -79,6 +99,19 @@ from shrlm.experiment.surface_activity import (
 )
 
 OUTPUT_FILENAME = "surface_activity.png"
+
+# How Panel B marks the two cell states a zero count cannot show (R13). The
+# gid prefixes are what a test reads back; the hatch is deliberately not
+# ``PARTIAL_HATCH`` (the partial-round band in Panel A), so a reader never sees
+# the same texture mean two things on one figure.
+UNDECLARED_GID_PREFIX = "undeclared-"
+UNKNOWN_GID_PREFIX = "unknown-"
+# Panel A's per-round "all declared surfaces" reference segments (R12), one
+# Line2D per round with a known declared set, gid ``REFERENCE_GID_PREFIX<round>``.
+REFERENCE_GID_PREFIX = "declared-total-"
+UNDECLARED_HATCH = "xxx"
+UNKNOWN_LINESTYLE = ":"
+UNKNOWN_GLYPH = "?"
 
 # The palette's blue sequential ramp, steps 100->700 (references/palette.md).
 # Single-consumer, so it stays here rather than in ``plot_style``.
@@ -146,10 +179,73 @@ def _mark_partial_rounds(ax: "plt.Axes", rounds: Sequence[int], partial: set[int
         )
 
 
+def _declared_counts(rounds: Sequence[int], activity_rows: list[dict]) -> dict[int, int | None]:
+    """``round_index -> |declared set|`` for the plotted rounds; ``None`` when unknown."""
+    declared = declared_surfaces_by_round(activity_rows)
+    return {
+        round_index: (None if declared.get(round_index) is None else len(declared[round_index]))
+        for round_index in rounds
+    }
+
+
+def _draw_declared_total_reference(
+    ax: "plt.Axes", rounds: Sequence[int], counts: dict[int, int | None]
+) -> None:
+    """The "all declared surfaces" reference, stepped per round (R12, KTD5).
+
+    One dotted horizontal segment per round, spanning the same ``+-0.5`` band
+    the partial-round hatch uses, at that round's declared count; where the
+    count changes between adjacent rounds the incoming segment carries the
+    riser, so a mixed-vintage tree reads as a step from nine to ten rather
+    than two unrelated lines. A round with an unknown declared set gets no
+    segment: no total is true of it, and drawing the neighbouring count
+    across it would claim one. The label sits at the last round with a known
+    count.
+    """
+    previous: int | None = None
+    last_known: tuple[int, int] | None = None
+    for round_index in rounds:
+        count = counts[round_index]
+        if count is None:
+            previous = None
+            continue
+        xs = [round_index - 0.5, round_index + 0.5]
+        ys = [count, count]
+        if previous is not None and previous != count:
+            xs.insert(0, round_index - 0.5)
+            ys.insert(0, previous)
+        ax.plot(
+            xs,
+            ys,
+            color=BASELINE,
+            linewidth=1,
+            linestyle=(0, (1, 2)),
+            zorder=1,
+            gid=f"{REFERENCE_GID_PREFIX}{round_index}",
+        )
+        previous = count
+        last_known = (round_index, count)
+    if last_known is not None:
+        ax.text(
+            last_known[0] + 0.5,
+            last_known[1],
+            " all declared surfaces",
+            color=MUTED_INK,
+            fontsize=9,
+            va="center",
+            ha="left",
+        )
+
+
 def _plot_cumulative_panel(
     ax: "plt.Axes", rounds: list[int], activity_rows: list[dict], partial: set[int]
 ) -> None:
-    """Panel A: dashed attempted vs solid promoted step lines, y capped at 9."""
+    """Panel A: dashed attempted vs solid promoted step lines.
+
+    The y-axis is sized by the largest declared surface count across the
+    plotted rounds (never a literal, never the current code's count), so a
+    round that touched every declared surface plots inside the axes.
+    """
     by_round: dict[int, dict] = {}
     for row in activity_rows:
         by_round.setdefault(
@@ -162,18 +258,16 @@ def _plot_cumulative_panel(
     attempted = [by_round[r]["attempted"] for r in rounds]
     promoted = [by_round[r]["promoted"] for r in rounds]
 
-    _mark_partial_rounds(ax, rounds, partial)
+    counts = _declared_counts(rounds, activity_rows)
+    known_counts = [count for count in counts.values() if count is not None]
+    largest_declared = max(known_counts) if known_counts else None
+    # The ceiling is the largest declared count; the plotted values are folded
+    # in only so a table that disagrees with its own declarations still draws
+    # unclipped rather than hiding the disagreement off-axis.
+    ceiling = max(largest_declared or 0, *attempted, *promoted, 1)
 
-    ax.axhline(9, color=BASELINE, linewidth=1, linestyle=(0, (1, 2)), zorder=1)
-    ax.text(
-        rounds[-1],
-        9,
-        " all surfaces",
-        color=MUTED_INK,
-        fontsize=9,
-        va="center",
-        ha="left",
-    )
+    _mark_partial_rounds(ax, rounds, partial)
+    _draw_declared_total_reference(ax, rounds, counts)
 
     ax.step(
         rounds, attempted, where="post", color=BLUE, linewidth=2, linestyle="--", label="attempted"
@@ -184,12 +278,15 @@ def _plot_cumulative_panel(
     ax.scatter(rounds, attempted, s=24, color=BLUE, marker="o", zorder=3, facecolors="none")
     ax.scatter(rounds, promoted, s=24, color=BLUE, marker="o", zorder=3)
 
-    ax.set_ylim(0, 9.6)
-    ax.set_yticks(range(0, 10))
+    ax.set_ylim(0, ceiling + 0.6)
+    ax.set_yticks(range(0, ceiling + 1))
     ax.set_xticks(rounds)
     ax.set_xticklabels(partial_tick_labels(rounds, partial))
     ax.set_xlabel("round")
-    ax.set_ylabel("distinct surfaces (of 9)")
+    if largest_declared is None:
+        ax.set_ylabel("distinct surfaces (declared total unknown)")
+    else:
+        ax.set_ylabel(f"distinct surfaces (of {largest_declared})")
     ax.set_title("Surfaces touched over time", color=PRIMARY_INK, fontsize=12, loc="left")
     ax.grid(True, axis="y", color=GRIDLINE, linewidth=0.75, linestyle="-")
     ax.set_axisbelow(True)
@@ -220,13 +317,130 @@ def _grid_for(activity_rows: list[dict], rounds: list[int], metric: str) -> list
     """Dense surface x round matrix (S1 at the top row) for one count column.
 
     Keyed by ``CANONICAL_SURFACES`` only, so the table's ``merged`` category
-    row (KTD7) never reaches the grid -- not as a tenth row, and not through
-    the shared color scale.
+    row (KTD7) never reaches the grid -- not as an extra surface row, and not
+    through the shared color scale.
     """
     by_key = {(row["round_index"], row["surface"]): row[metric] for row in activity_rows}
     # imshow's default origin is "upper" (row 0 draws at the top), so building
     # row 0 = S1 here is what actually puts S1 at the top of the rendered plot.
     return [[by_key.get((r, s), 0) for r in rounds] for s in CANONICAL_SURFACES]
+
+
+def _cell_sources(activity_rows: list[dict]) -> dict[tuple[int, str], str]:
+    """``(round_index, surface) -> surface_source`` for every canonical-surface row."""
+    return {
+        (row["round_index"], row["surface"]): row["surface_source"]
+        for row in activity_rows
+        if row["surface"] in CANONICAL_SURFACES
+    }
+
+
+def declared_surfaces_by_round(activity_rows: list[dict]) -> dict[int, frozenset[str] | None]:
+    """Each round's declared surface set, read back off the table's own cells (R13).
+
+    The aggregation already resolved every cell against the round's persisted
+    ``harness.json`` (``rounds.declared_surfaces``) and wrote the verdict into
+    ``surface_source``, so the figure re-derives the per-round set from that
+    column rather than walking the experiment tree again -- the snapshot's
+    frozen CSV is the figure's only input (KTD2). A round with any ``unknown``
+    cell is ``None``: its harness could not be read, so no count is true of
+    it. Every other round's set is the canonical surfaces minus the cells it
+    marked ``undeclared``. This is the per-round total a reference line or
+    axis label must derive from, never the current code's surface count.
+    """
+    sources = _cell_sources(activity_rows)
+    rounds = sorted({row["round_index"] for row in activity_rows})
+    declared: dict[int, frozenset[str] | None] = {}
+    for round_index in rounds:
+        per_surface = {
+            surface: sources.get((round_index, surface)) for surface in CANONICAL_SURFACES
+        }
+        if SURFACE_SOURCE_UNKNOWN in per_surface.values():
+            declared[round_index] = None
+            continue
+        declared[round_index] = frozenset(
+            surface
+            for surface, source in per_surface.items()
+            if source != SURFACE_SOURCE_UNDECLARED
+        )
+    return declared
+
+
+def _mark_cell_states(
+    ax: "plt.Axes",
+    rounds: list[int],
+    grid: list[list[int]],
+    sources: dict[tuple[int, str], str],
+) -> None:
+    """Overlay the undeclared / unknown marks on one heatmap (R13).
+
+    Drawn as patches over the image rather than as a third colour on the ramp,
+    so the colour scale keeps meaning "count" and nothing else. An undeclared
+    cell is filled grey and crosshatched; an unknown cell is a dotted outline
+    with a ``?``. The fill is only laid down over a zero count -- a non-zero
+    count under either mark (a ledger naming a surface the harness did not
+    declare) would be evidence, and evidence is never painted over.
+    """
+    for row_index, surface in enumerate(CANONICAL_SURFACES):
+        for col_index, round_index in enumerate(rounds):
+            source = sources.get((round_index, surface))
+            if source not in (SURFACE_SOURCE_UNDECLARED, SURFACE_SOURCE_UNKNOWN):
+                continue
+            value = grid[row_index][col_index]
+            if source == SURFACE_SOURCE_UNDECLARED:
+                ax.add_patch(
+                    Rectangle(
+                        (col_index - 0.5, row_index - 0.5),
+                        1,
+                        1,
+                        facecolor=GRIDLINE if value == 0 else "none",
+                        edgecolor=BASELINE,
+                        hatch=UNDECLARED_HATCH,
+                        linewidth=0,
+                        zorder=2,
+                        gid=f"{UNDECLARED_GID_PREFIX}{round_index}-{surface}",
+                    )
+                )
+                continue
+            ax.add_patch(
+                Rectangle(
+                    (col_index - 0.5, row_index - 0.5),
+                    1,
+                    1,
+                    facecolor="none",
+                    edgecolor=MUTED_INK,
+                    linestyle=UNKNOWN_LINESTYLE,
+                    linewidth=1,
+                    zorder=2,
+                    gid=f"{UNKNOWN_GID_PREFIX}{round_index}-{surface}",
+                )
+            )
+            if value == 0:
+                ax.text(
+                    col_index,
+                    row_index,
+                    UNKNOWN_GLYPH,
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color=MUTED_INK,
+                )
+
+
+def _declaration_caption(activity_rows: list[dict]) -> str | None:
+    """The legend line for whichever of the two marks the figure actually drew."""
+    present = set(_cell_sources(activity_rows).values())
+    notes = []
+    if SURFACE_SOURCE_UNDECLARED in present:
+        notes.append("Grey crosshatched cell: surface not declared in that round's harness.")
+    if SURFACE_SOURCE_UNKNOWN in present:
+        notes.append(
+            f"Dotted '{UNKNOWN_GLYPH}' cell: that round's harness could not be read, so its "
+            "declared surfaces are unknown."
+        )
+    if not notes:
+        return None
+    return " ".join(notes)
 
 
 def _plot_heatmaps(
@@ -240,6 +454,7 @@ def _plot_heatmaps(
     attempted_grid = _grid_for(activity_rows, rounds, "attempted_count")
     promoted_grid = _grid_for(activity_rows, rounds, "promoted_count")
     vmax = max(1, max(max(row) for row in attempted_grid))
+    sources = _cell_sources(activity_rows)
 
     images = []
     titles = ["attempted_count", "promoted_count"]
@@ -265,6 +480,7 @@ def _plot_heatmaps(
         ax.tick_params(length=0)
         for spine in ax.spines.values():
             spine.set_visible(False)
+        _mark_cell_states(ax, rounds, grid, sources)
         # Sparing direct labels: only nonzero cells, so the grid stays legible.
         for row_index, row in enumerate(grid):
             for col_index, value in enumerate(row):
@@ -352,6 +568,7 @@ def build_figure(snapshot_dir: Path | str, *, rendered_at: datetime | None = Non
             source=SURFACE_ACTIVITY_FILENAME,
         ),
         _unattributed_caption(unattributed_rows),
+        _declaration_caption(activity_rows),
     ]
     text = "\n".join(caption for caption in captions if caption)
     if text:
@@ -420,4 +637,15 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry point
     raise SystemExit(main())
 
 
-__all__ = ["OUTPUT_FILENAME", "PLOTS_DIR", "build_figure", "main", "plot_surface_activity"]
+__all__ = [
+    "OUTPUT_FILENAME",
+    "PLOTS_DIR",
+    "REFERENCE_GID_PREFIX",
+    "UNDECLARED_GID_PREFIX",
+    "UNDECLARED_HATCH",
+    "UNKNOWN_GID_PREFIX",
+    "build_figure",
+    "declared_surfaces_by_round",
+    "main",
+    "plot_surface_activity",
+]

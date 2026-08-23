@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -22,6 +23,32 @@ RESERVED_TOOL_NAMES: frozenset[str] = frozenset(
         "history",
     }
 )
+
+
+@dataclass(frozen=True)
+class SkillLoader:
+    """A custom tool whose every successful call is a skill-load trace fact.
+
+    The harness layer builds one over its skill library and installs it under
+    its reserved REPL name in ``custom_tools`` / ``custom_sub_tools`` like any
+    other callable tool; ``load`` is the ``name -> body`` function the model
+    calls, and ``index`` is the ``[{"name", "description"}, ...]`` list of what
+    was available. An environment that records trace events (the local REPL)
+    recognises the type, wraps ``load`` so each call that returns a body is
+    queued on the turn's result beside the sub-call events -- with the
+    environment's own ``depth`` -- and the RLM records ``index`` once in the
+    run's metadata. Environments that do not know the type (IPython, or the
+    isolated ones that skip host callables) simply see a callable.
+
+    Identifying the loader by type rather than by name keeps the runtime free
+    of the harness's naming: the name is harness-reserved, not runtime-reserved.
+    """
+
+    load: Callable[[str], str]
+    index: list[dict[str, str]]
+
+    def __call__(self, name: str) -> str:
+        return self.load(name)
 
 
 @dataclass
