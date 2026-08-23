@@ -9,15 +9,18 @@ from typing import Any, cast
 import pytest
 
 from shrlm.experiment.config import (
+    CLIENT_ROLES,
     CONFIG_PATH,
     OperationalConfig,
     backend_kwargs_for,
+    check_keys,
     evaluation_config_kwargs,
     identity_hash,
     load_config,
     promotion_config,
     proposer_config,
     round_config_kwargs,
+    sampling_args,
     validation_caps,
 )
 from shrlm.optimization.costs import ValidationCaps
@@ -37,6 +40,23 @@ def write_config(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "experiment.toml"
     path.write_text(text)
     return path
+
+
+def drop_table(text: str, header: str) -> str:
+    """Remove one ``[table]`` (header, comments, and keys) from the text."""
+    out: list[str] = []
+    in_table = False
+    dropped = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_table = stripped == f"[{header}]"
+            if in_table:
+                dropped = True
+        if not in_table:
+            out.append(line)
+    assert dropped, f"no [{header}] table found"
+    return "".join(out)
 
 
 def drop_caps_key(text: str, key: str) -> str:
@@ -70,9 +90,10 @@ def test_full_profile_ships_draft_defaults() -> None:
     assert config.splits.test_long == 150
     assert (config.loop.m, config.loop.v, config.loop.k, config.loop.t) == (2, 4, 4, 15)
     assert config.loop.patience == 3
-    assert config.decoding.temperature == 0.7
-    assert config.decoding.top_p == 0.8
-    assert config.decoding.top_k == 20
+    assert config.decoding.temperature == 0.6
+    assert config.decoding.top_p == 0.95
+    assert config.decoding.top_k is None
+    assert config.decoding.min_p is None
     assert config.decoding.max_output_tokens == 4096
     assert config.promotion.cost_band == (0.5, 1.25)
     assert config.environments.graphwalks.dataset_file_short == (
@@ -85,8 +106,19 @@ def test_operational_and_provider_defaults() -> None:
     config = load_config()
     assert config.operational.eval_repetitions == 3
     assert isinstance(config.operational.eval_repetitions, int)
+    assert config.backends.openrouter is not None
     assert config.backends.openrouter.provider_order == ()
-    assert config.backends.runner.model == "qwen/qwen3-30b-a3b-instruct-2507"
+    assert config.backends.azure_foundry is not None
+    assert config.backends.azure_foundry.thinking is False
+
+
+@pytest.mark.parametrize("profile", ["full", "smoke"])
+def test_shipped_backends_are_azure_foundry_kimi_for_all_roles(profile: str) -> None:
+    config = load_config(profile)
+    for role in CLIENT_ROLES:
+        endpoint = getattr(config.backends, role)
+        assert endpoint.backend == "azure_foundry"
+        assert endpoint.model == "Kimi-K2.5"
 
 
 def test_eval_repetitions_must_be_a_positive_integer() -> None:
@@ -155,10 +187,72 @@ def test_unknown_top_level_key_raises(tmp_path: Path) -> None:
 def test_unknown_key_inside_a_table_raises(tmp_path: Path) -> None:
     # tomllib itself rejects a duplicated [decoding] header, so append the key
     # by rewriting the original table line instead.
-    text = shipped_text().replace("temperature = 0.7", "temperature = 0.7\nbeam_width = 4")
+    text = shipped_text().replace("temperature = 0.6", "temperature = 0.6\nbeam_width = 4")
     path = write_config(tmp_path, text)
     with pytest.raises(ValueError, match="beam_width"):
         load_config(path=path)
+
+
+def test_unknown_key_inside_azure_foundry_table_raises(tmp_path: Path) -> None:
+    text = shipped_text().replace("\nthinking = false\n", "\nthinking = false\nreasoning = 1\n")
+    path = write_config(tmp_path, text)
+    with pytest.raises(ValueError, match="reasoning"):
+        load_config(path=path)
+
+
+# ---------------------------------------------------------------------------
+# Optional provider tables (KTD5)
+# ---------------------------------------------------------------------------
+
+
+def test_absent_openrouter_table_loads_when_roles_use_azure_foundry(tmp_path: Path) -> None:
+    path = write_config(tmp_path, drop_table(shipped_text(), "backends.openrouter"))
+    config = load_config(path=path)
+    assert config.backends.openrouter is None
+    assert config.backends.runner.backend == "azure_foundry"
+
+
+def openrouter_runner_text() -> str:
+    """Shipped text with the runner role switched to the openrouter backend."""
+    return shipped_text().replace(
+        '[backends.runner]\nbackend = "azure_foundry"\nmodel = "Kimi-K2.5"',
+        '[backends.runner]\nbackend = "openrouter"\nmodel = "qwen/qwen3-30b-a3b-instruct-2507"',
+    )
+
+
+def test_openrouter_role_without_openrouter_table_loads_and_omits_provider(
+    tmp_path: Path,
+) -> None:
+    text = drop_table(openrouter_runner_text(), "backends.openrouter")
+    config = load_config(path=write_config(tmp_path, text))
+    assert config.backends.runner.backend == "openrouter"
+    assert config.backends.openrouter is None
+    args = sampling_args(config, "runner")
+    assert "provider" not in args["extra_body"]
+
+
+def test_openrouter_role_with_provider_order_injects_provider(tmp_path: Path) -> None:
+    text = openrouter_runner_text().replace("provider_order = []", 'provider_order = ["deepinfra"]')
+    config = load_config(path=write_config(tmp_path, text))
+    args = sampling_args(config, "runner")
+    assert args["extra_body"]["provider"] == {
+        "order": ["deepinfra"],
+        "allow_fallbacks": True,
+    }
+    # azure_foundry roles do not pick up the openrouter routing.
+    assert "provider" not in sampling_args(config, "attributor")["extra_body"]
+
+
+def test_check_keys_optional_parameter() -> None:
+    check_keys({"a": 1}, ("a",), "ctx")
+    # A present optional key passes; a missing optional key passes.
+    check_keys({"a": 1, "b": 2}, ("a",), "ctx", optional=("b",))
+    check_keys({"a": 1}, ("a",), "ctx", optional=("b",))
+    # An unknown key still fails, and a missing expected key still fails.
+    with pytest.raises(ValueError, match="unknown key"):
+        check_keys({"a": 1, "c": 3}, ("a",), "ctx", optional=("b",))
+    with pytest.raises(ValueError, match="missing mandatory"):
+        check_keys({"b": 2}, ("a",), "ctx", optional=("b",))
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +263,27 @@ def test_unknown_key_inside_a_table_raises(tmp_path: Path) -> None:
 def test_identity_hash_changes_with_behavior_changing_values() -> None:
     config = load_config()
     base = identity_hash(config)
+    assert len(base) == 64
+    assert set(base) <= set("0123456789abcdef")
     variants = [
         dataclasses.replace(config, decoding=dataclasses.replace(config.decoding, temperature=0.9)),
+        dataclasses.replace(config, decoding=dataclasses.replace(config.decoding, top_k=20)),
+        dataclasses.replace(
+            config,
+            backends=dataclasses.replace(
+                config.backends,
+                runner=dataclasses.replace(config.backends.runner, model="Kimi-K2.5-alt"),
+            ),
+        ),
+        dataclasses.replace(
+            config,
+            backends=dataclasses.replace(
+                config.backends,
+                azure_foundry=dataclasses.replace(
+                    cast(Any, config.backends.azure_foundry), thinking=True
+                ),
+            ),
+        ),
         dataclasses.replace(config, caps=dataclasses.replace(config.caps, attempts=2)),
         dataclasses.replace(config, loop=dataclasses.replace(config.loop, v=5)),
         dataclasses.replace(config, loop=dataclasses.replace(config.loop, patience=4)),
@@ -261,10 +374,10 @@ def test_promotion_config_factory() -> None:
 def test_validation_caps_factory() -> None:
     caps = validation_caps(load_config())
     assert isinstance(caps, ValidationCaps)
-    assert caps.max_budget == 0.1
+    assert caps.max_budget == 0.5
     assert caps.max_timeout == 1800.0
     assert caps.candidate_budget == 60.0
-    assert caps.max_depth == 2
+    assert caps.max_depth == 3
     assert caps.max_iterations == 30
 
 
@@ -274,17 +387,42 @@ def test_proposer_config_factory() -> None:
     assert proposer.k == 4
 
 
-def test_sampling_args_route_top_k_via_extra_body() -> None:
-    args = backend_kwargs_for(load_config(), "runner")["sampling_args"]
-    assert args["temperature"] == 0.7
-    assert args["top_p"] == 0.8
-    assert args["extra_body"]["top_k"] == 20
-    assert args["extra_body"]["min_p"] == 0.0
-    # Empty provider order means no provider restriction is sent.
+def test_shipped_sampling_args_carry_instant_mode_and_omit_absent_knobs() -> None:
+    kwargs = backend_kwargs_for(load_config(), "runner")
+    args = kwargs["sampling_args"]
+    assert args["temperature"] == 0.6
+    assert args["top_p"] == 0.95
+    # Absent decoding knobs never enter extra_body (the Foundry v1 route's
+    # handling of unknown body params is unconfirmed).
+    assert "top_k" not in args["extra_body"]
+    assert "min_p" not in args["extra_body"]
     assert "provider" not in args["extra_body"]
+    # Instant-mode routing for the azure_foundry backend.
+    assert args["extra_body"]["chat_template_kwargs"] == {"thinking": False}
     # The OpenAI client owns the max_completion_tokens rename, not the config.
     assert args["max_tokens"] == 4096
     assert "max_completion_tokens" not in args
+
+
+def test_azure_foundry_backend_kwargs_carry_list_price_pricing() -> None:
+    config = load_config()
+    for role in CLIENT_ROLES:
+        kwargs = backend_kwargs_for(config, role)
+        assert kwargs["pricing"] == {"input_per_million": 0.60, "output_per_million": 3.00}
+        assert kwargs["model_name"] == "Kimi-K2.5"
+
+
+def test_surgered_top_k_and_min_p_still_route_via_extra_body(tmp_path: Path) -> None:
+    text = shipped_text().replace("temperature = 0.6", "temperature = 0.6\ntop_k = 20\nmin_p = 0.0")
+    config = load_config(path=write_config(tmp_path, text))
+    args = sampling_args(config, "runner")
+    assert args["extra_body"]["top_k"] == 20
+    assert args["extra_body"]["min_p"] == 0.0
+
+
+def test_sampling_args_unknown_role_raises() -> None:
+    with pytest.raises(ValueError, match="unknown client role"):
+        sampling_args(load_config(), "judge")
 
 
 def test_round_config_kwargs_accepted_by_round_config(tmp_path: Path) -> None:
@@ -297,7 +435,7 @@ def test_round_config_kwargs_accepted_by_round_config(tmp_path: Path) -> None:
         out_dir=tmp_path,
         **round_config_kwargs(config),
     )
-    assert round_config.backend == "openrouter"
+    assert round_config.backend == "azure_foundry"
     assert round_config.attempts == config.caps.attempts
     assert round_config.max_budget == 0.5
     assert round_config.max_timeout == 300.0
@@ -319,7 +457,7 @@ def test_evaluation_config_kwargs_accepted_by_evaluation_config(tmp_path: Path) 
     )
     assert evaluation.repetitions == config.loop.v == 1
     assert evaluation.caps.candidate_budget == 3.0
-    assert evaluation.backend == "openrouter"
+    assert evaluation.backend == "azure_foundry"
 
 
 def test_unknown_client_role_raises() -> None:

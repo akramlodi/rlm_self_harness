@@ -406,7 +406,9 @@ class TestApiScenarios:
         )
         assert promo.usd_point == pytest.approx(expected_promo)
         assert listed.usd_point == pytest.approx(expected_list)
-        assert promo.usd_point < listed.usd_point
+        # Azure publishes a single Kimi-K2.5 tier (KTD4): the promo slot is
+        # repurposed to equal the list price, so the two scenarios coincide.
+        assert promo.usd_point == listed.usd_point
 
     def test_round_extrapolation_identity(self, config, experiment):
         """(m*n_in + v(K+1)(n_in+n_ho) + p_merge*v(n_in+n_ho)) * mean short tokens * price."""
@@ -550,7 +552,9 @@ class TestRecommendationPolicy:
         assert report.recommendation.failing_gates == []
         eligible = [s for s in report.scenarios if s.eligible and not s.changes_numerics]
         assert report.recommendation.scenario == min(eligible, key=lambda s: s.usd_point).name
-        assert report.recommendation.scenario == "api_promo"
+        # At Azure Kimi-K2.5 rates ($0.60/$3.00 per 1M, single-tier) the rented
+        # H100 undercuts both API tiers on this fixture's token volumes.
+        assert report.recommendation.scenario == "h100_sxm_rented"
 
     def test_lower_bound_long_mean_yields_a_provisional_label(self, config, experiment):
         edit_sets(experiment, "graphwalks_long", usage_lower_bound=True)
