@@ -46,7 +46,7 @@ Qwen is not available via API where the project has credits. Azure and AWS are w
 **Cost governance**
 - R5. When the provider returns no cost, the client synthesizes it from response token counts × configured per-million pricing, exposed through the same `total_cost` surfaces (`get_last_usage`, `get_usage_summary`) — so the spend breaker, candidate budget, cost band, manifest `cost` field, and stage usage metering work unchanged.
 - R6. A cost-synthesizing backend with no pricing configured raises at client construction — never defaults to $0 (fail fast, fail loud).
-- R7. Synthesized costs are distinguishable from provider-reported ones via an additive manifest key; no existing persisted byte changes shape.
+- R7. Synthesized costs are distinguishable from provider-reported ones via an additive `cost_source` manifest key with exactly two values, `synthesized` and `provider`, carried from the client's usage summary into each `runs.jsonl` line; no existing persisted byte changes shape.
 
 **Decoding**
 - R8. Decoding defaults switch to the Kimi-K2.5 model-card instant-mode values, applied identically to root and sub-calls (section 3.0 invariant); sampling keys the model card does not specify are omitted from requests rather than sent blind.
@@ -78,7 +78,7 @@ Qwen is not available via API where the project has credits. Azure and AWS are w
 
 - **Blocking for live runs only, not for implementation:** the exact deployment name in the user's Foundry resource (config assumes the catalog default `Kimi-K2.5`; the `model` field must equal the deployment name) and the value of `AZURE_FOUNDRY_ENDPOINT` — both supplied by the user before the probe runs.
 - **Deferred to probe:** whether the v1 route honors `extra_body={"chat_template_kwargs": {"thinking": false}}` for instant mode (UNCONFIRMED in Azure docs). Contingency in KTD6.
-- **Deferred to deploy time:** exact Azure pricing verification ($0.60/$3.00 per 1M in/out per catalog + aggregators, 2026-08); refresh `[pricing]` before the main run.
+- **Prerequisite to any live spend:** verify the deployment's actual pricing against the Azure portal before the probe runs ($0.60/$3.00 per 1M in/out per catalog + aggregators, 2026-08, is the working assumption); the live tiers fail fast when the configured `[pricing]` rates differ from the verified figure, and `[pricing]` is refreshed again before the main run.
 
 ---
 
@@ -91,9 +91,9 @@ Qwen is not available via API where the project has credits. Azure and AWS are w
 - KTD3. **Cost synthesis lives in the client's `_track_cost`** (session-settled: user-approved — chosen over disabling budget enforcement: the spend breaker is the experiment's one hard cost guarantee). Pricing reaches the client via `backend_kwargs` nested under a single `pricing` key — nested because `_SENSITIVE_KWARG_FRAGMENTS` substring-matches top-level kwarg names and `"token"` would reject e.g. `input_per_million_tokens`; pricing is non-secret so persisting it in traces is fine. Provider-reported cost, when present, wins over synthesis. Client-side is the only insertion point that fixes all five downstream consumers at once (spend breaker, manifest, `breaker_run_cost`, `split_aggregate`/promotion, `snapshot_usage`).
 - KTD4. **Pricing schema unchanged; both tiers repurposed.** `[pricing.promo]` and `[pricing.list_price]` are both set to the Azure Kimi-K2.5 rate ($0.60/$3.00 per 1M), with comments recording provenance. Synthesis reads `list_price`. Rejected alternative: restructuring `PricingConfig` to single-tier — ripples through `scenarios.py` and the report for no informational gain.
 - KTD5. **Config schema generalizes provider tables.** `check_keys` for `[backends]` accepts the three role tables plus *optional* provider tables `openrouter` and `azure_foundry`; `BackendsConfig.openrouter` becomes optional (`None` when absent). `sampling_args()` injects OpenRouter provider routing only when a role actually uses the `openrouter` backend and the table is present; for `azure_foundry` it injects `chat_template_kwargs: {thinking: false}` from the new table's `thinking` flag. The `[backends.azure_foundry]` table stays in the identity hash like the rest of `[backends]`.
-- KTD6. **Decoding = Kimi-K2.5 instant-mode card defaults** (session-settled: user-approved — chosen over keeping Qwen values: the Qwen numbers are that model's card defaults, not experiment-design constants): temperature 0.6, top_p 0.95; `top_k`/`min_p` become optional in `DecodingConfig` (`None` = omitted from `extra_body`) since the Kimi card specifies neither and the v1 route's handling of unknown body params is unconfirmed. `max_output_tokens` stays 4096. Contingency if the probe shows thinking cannot be disabled: surface to the user before proceeding — reasoning tokens change cost and behavior materially; do not silently strip `<think>` content.
+- KTD6. **Decoding = Kimi-K2.5 instant-mode card defaults** (session-settled: user-approved — chosen over keeping Qwen values: the Qwen numbers are that model's card defaults, not experiment-design constants): temperature 0.6, top_p 0.95. The section 3.0 invariant — the experiment-design rule that root and sub-calls receive identical decoding parameters, never silently dropped or partially applied; defined in the experiment draft's section 3.0 and restated in `configs/experiment.toml` `[decoding]` — is preserved; `top_k`/`min_p` become optional in `DecodingConfig` (`None` = omitted from `extra_body`) since the Kimi card specifies neither and the v1 route's handling of unknown body params is unconfirmed. `max_output_tokens` stays 4096. Contingency if the probe shows thinking cannot be disabled: surface to the user before proceeding — reasoning tokens change cost and behavior materially; do not silently strip `<think>` content.
 - KTD7. **Identity-hash churn is accepted, not worked around.** `[backends]` and `[decoding]` are identity sections; old experiment dirs (e.g. `experiment_smoke/`) refusing resume is intended behavior — a provider switch is a new experiment. `IDENTITY_SECTIONS` is not weakened.
-- KTD8. **Live gating:** pytest live tests use the repo's `skipif`-on-env pattern (`tests/clients/test_gemini.py` precedent) requiring both `AZURE_API_KEY` and `AZURE_FOUNDRY_ENDPOINT`; `examples/experiment_smoke.py` keeps its double opt-in (env key + explicit `--probe`/`--live` flag); CI never runs live tiers.
+- KTD8. **Live gating:** pytest live tests use the repo's `skipif`-on-env pattern (`tests/clients/test_gemini.py` precedent) requiring `AZURE_API_KEY`, `AZURE_FOUNDRY_ENDPOINT`, and an explicit `SHRLM_RUN_LIVE=1` opt-in, and skipping whenever a `CI` environment variable is present — credential presence alone never spends; `examples/experiment_smoke.py` keeps its double opt-in (env key + explicit `--probe`/`--live` flag); CI never runs live tiers.
 - KTD9. **OpenRouter stays selectable** (session-settled: user-approved — chosen over removing it: cheap to keep, preserves fallback and comparison runs). Config keeps it working; only the mandatory-table assumption is removed.
 
 ### High-Level Technical Design
@@ -136,19 +136,22 @@ flowchart TB
 - **Goal:** A registered `azure_foundry` backend whose client hits the Foundry v1 route with full sampling-args fidelity and always reports a cost.
 - **Requirements:** R2, R3, R5, R6 (KTD1, KTD2, KTD3).
 - **Dependencies:** none.
-- **Files:** `rlm/clients/azure_foundry.py` (new), `rlm/clients/__init__.py`, `rlm/core/types.py` (`ClientBackend` literal), `tests/clients/test_azure_foundry.py` (new).
+- **Files:** `rlm/clients/azure_foundry.py` (new), `rlm/clients/__init__.py`, `rlm/core/types.py` (`ClientBackend` literal; additive optional `cost_source` field on `ModelUsageSummary`, omitted from `to_dict` when unset), `tests/clients/test_azure_foundry.py` (new).
 - **Approach:**
-  1. Subclass `OpenAIClient`; resolve `AZURE_API_KEY` and `AZURE_FOUNDRY_ENDPOINT` from env in the constructor, composing the `/openai/v1` base URL; raise a `ValueError` naming the missing variable otherwise.
-  2. Accept a `pricing` kwarg (`{"input_per_million": float, "output_per_million": float}`); raise at construction when absent (R6).
-  3. Override `_track_cost`: call the parent, then when no provider cost was found, synthesize `last_cost` from the just-recorded prompt/completion tokens × pricing and accumulate `model_costs`.
+  1. Subclass `OpenAIClient`; resolve `AZURE_API_KEY` and `AZURE_FOUNDRY_ENDPOINT` from env in the constructor, composing the `/openai/v1` base URL; raise a `ValueError` naming the missing variable otherwise. Validate the endpoint before client construction: `https` scheme and an approved Foundry host suffix (`.services.ai.azure.com` or `.openai.azure.com`), rejecting anything else so the bearer key can never be sent to an unintended host. Raised client errors name the env variable, never the composed base URL.
+  2. Accept a `pricing` kwarg (`{"input_per_million": float, "output_per_million": float}`); validate at construction: both keys present and both values strictly positive — absence, a missing key, or a zero/negative value raises (R6; a zero rate would silently disarm the spend breaker).
+  3. Override `_track_cost`: call the parent, then when no provider cost was found, synthesize `last_cost` from the just-recorded prompt/completion tokens × pricing and accumulate `model_costs`; set `cost_source` (`synthesized` or `provider`) on the per-call usage record (R7). Raise loudly when a response carries missing or invalid token counts, or a non-finite/negative provider cost — a paid call must never be counted as free.
   4. Treat a response with `finish_reason == "content_filter"` or empty content as a loud error, not a `None` return.
   5. Register in `get_client` (extend the error-message backend list) and add `"azure_foundry"` to `ClientBackend`.
 - **Patterns to follow:** `rlm/clients/openai.py` (`_merge_extra_body`, `_normalize_sampling_args`, per-model usage dicts); AGENTS.md client requirements (BaseLM surface, env-only keys); `rlm/clients/azure_openai.py` env-default style for endpoint resolution only.
 - **Test scenarios** (mocked OpenAI client; no network):
-  - Happy path: a mocked response with 1000 prompt / 500 completion tokens and no cost field yields `last_cost == 1000×in/1e6 + 500×out/1e6` and matching `get_usage_summary().total_cost`.
-  - Provider-cost precedence: a mocked response carrying `usage.cost` uses it verbatim, no synthesis.
+  - Happy path: a mocked response with 1000 prompt / 500 completion tokens and no cost field yields `last_cost == 1000×in/1e6 + 500×out/1e6`, matching `get_usage_summary().total_cost`, and `cost_source == "synthesized"`.
+  - Provider-cost precedence: a mocked response carrying `usage.cost` uses it verbatim, no synthesis, `cost_source == "provider"`.
   - Missing `AZURE_API_KEY` or `AZURE_FOUNDRY_ENDPOINT` → `ValueError` naming the variable.
-  - Missing `pricing` kwarg → `ValueError` at construction.
+  - Endpoint validation: an `http://` endpoint or one outside the approved Foundry host suffixes → `ValueError` before any client is constructed.
+  - Pricing validation: missing kwarg, missing key, or zero/negative value → `ValueError` at construction.
+  - Fail-closed usage: a mocked response with absent or malformed token counts → loud error, never a $0 cost.
+  - Error-message hygiene: a construction or completion error's message contains no endpoint host.
   - Sampling fidelity: `sampling_args` with temperature/top_p/max_tokens produce a create call carrying `max_completion_tokens` and the merged `extra_body`.
   - Error path: mocked `finish_reason == "content_filter"` → raises with a message naming content filtering.
 - **Verification:** `uv run pytest tests/clients/test_azure_foundry.py` green offline; ruff clean.
@@ -162,12 +165,13 @@ flowchart TB
 - **Approach:**
   1. TOML: three role tables → `backend = "azure_foundry"`, `model = "Kimi-K2.5"`; new `[backends.azure_foundry]` table with `thinking = false`; keep `[backends.openrouter]` as a commented example or present-but-unused; `[decoding]` → temperature 0.6, top_p 0.95, drop `top_k`/`min_p` lines; `[pricing.*]` → 0.60/3.00 with provenance comments.
   2. Loader: `BackendsConfig` gains optional `azure_foundry` config and optional `openrouter`; `check_keys` accepts role tables plus the known optional provider tables; `DecodingConfig.top_k`/`min_p` optional with omit-when-None semantics in `sampling_args()`.
-  3. `sampling_args()` branches on the role's backend for provider-specific `extra_body` (OpenRouter routing vs `chat_template_kwargs`); `backend_kwargs_for` adds the nested `pricing` entry for cost-synthesizing backends.
+  3. `sampling_args()` branches on the role's backend for provider-specific `extra_body` (OpenRouter routing vs `chat_template_kwargs`); the new role/backend parameter is required, not defaulted — its call sites outside this unit update in U3. `backend_kwargs_for` adds the nested `pricing` entry for cost-synthesizing backends.
 - **Patterns to follow:** existing `build_section`/`check_keys` fail-fast style; `tests/experiment/test_config.py` string-surgery + `write_config` pattern; identity-hash tests via `dataclasses.replace`.
 - **Test scenarios:**
   - Shipped config loads for both profiles; identity hash differs from the pre-change hash (assert it moved, not its value).
   - Absent `[backends.openrouter]` loads fine when no role uses openrouter; a role using `openrouter` with routing table present still injects `extra_body["provider"]`.
   - `azure_foundry` role kwargs carry nested `pricing` matching `[pricing.list_price]` and `extra_body["chat_template_kwargs"]["thinking"] is False`.
+  - A role set to `openrouter` with no `[backends.openrouter]` table present: loading succeeds and `extra_body` carries no provider-routing block (the selectable-fallback promise, R4).
   - `top_k`/`min_p` absent from `extra_body` when unset; still routed when set.
   - Unknown key inside `[backends.azure_foundry]` → `ValueError` naming it.
   - Smoke profile still rejects non-scale keys (unchanged `SMOKE_SCALE_KEYS`).
@@ -178,15 +182,19 @@ flowchart TB
 - **Goal:** Governed stages fail fast on missing Azure env vars before any spend; the $0 mock tier stays green with the new default backend.
 - **Requirements:** R3, R9.
 - **Dependencies:** U2.
-- **Files:** `shrlm/optimization/driver.py`, `tests/experiment/test_smoke_mock.py`, `tests/optimization/test_driver.py` (only if its fixtures name a backend).
+- **Files:** `shrlm/optimization/driver.py`, `examples/experiment_smoke.py` (the `sampling_args` call sites only), `tests/experiment/test_smoke_mock.py`, `tests/optimization/test_driver.py` (only if its fixtures name a backend).
 - **Approach:**
   1. Extend `_BACKEND_ENV_KEYS` so `azure_foundry` requires both `AZURE_API_KEY` and `AZURE_FOUNDRY_ENDPOINT` (value becomes a tuple; `_require_backend_credential` checks all).
   2. Update mock-smoke env stubs and the decline-message assertions that currently hardcode `OPENROUTER_API_KEY`.
+  3. The driver's manifest writer copies `cost_source` from the completion's usage summary into each `runs.jsonl` line as an additive key (R7); lines from clients that report no source omit the key.
+  4. Update the three role-less `sampling_args(config)` call sites in `examples/experiment_smoke.py` to pass the runner role — U2's signature change breaks them, and this unit's gate is the full offline pytest run.
 - **Patterns to follow:** existing `_require_backend_credential` error wording; mock smoke's `ClientFactory` seam (`rlm.core.rlm.get_client` monkeypatch) — unchanged.
 - **Test scenarios:**
   - Driver round with `backend="azure_foundry"` and one env var missing → fails fast naming the variable, zero runs persisted.
   - Full mock smoke passes offline with the network-block wrapper intact.
   - `backend_kwargs` containing a top-level key with a sensitive fragment still rejected (regression guard for the nested-pricing choice).
+  - Manifest provenance: a mocked round persists `runs.jsonl` lines whose `cost_source` matches the client's reported value.
+  - Credential-leak sentinels: with sentinel values in `AZURE_API_KEY` and `AZURE_FOUNDRY_ENDPOINT`, neither value appears in serialized `backend_kwargs`, persisted traces, or exception text from a failed round.
 - **Verification:** `uv run pytest` fully green offline.
 
 ### U4. Live pytest tier: real-model client check and minimal experiment-loop round
@@ -196,9 +204,9 @@ flowchart TB
 - **Dependencies:** U1, U2, U3.
 - **Files:** `tests/clients/test_azure_foundry.py` (live section), `tests/experiment/test_smoke_live.py` (new).
 - **Approach:**
-  1. Client live test (one call, trivial prompt, low max tokens): asserts non-empty content, positive prompt/completion tokens, positive synthesized `total_cost`, no HTTP 400 from the decoding args, and — instant-mode check — no `<think>` markup in content (record, don't assert, `model_extra` reasoning fields).
+  1. Client live test (one call, trivial prompt, low max tokens): asserts non-empty content, positive prompt/completion tokens, positive synthesized `total_cost`, no HTTP 400 from the decoding args, and — instant-mode check — **fails** on any reasoning signal: `<think>` markup in content, a non-empty `reasoning_content` or `model_extra` reasoning field, a nonzero reasoning-token count in usage details, or completion tokens grossly exceeding what the trivial prompt warrants. Any of these is the KTD6 contingency trigger, not a recordable observation. A second tiny-cap call (e.g. `max_tokens=16` on a verbose prompt) asserts `finish_reason == "length"` with completion tokens at or near the cap — proving the output cap is honored, not merely tolerated, before the budget arithmetic that assumes it is trusted.
   2. Loop live test: `run_round` (the mining driver) over 1–2 tiny synthetic instances (trivial prompts, not GraphWalks downloads), 1 attempt, tight caps (`max_budget` ≈ $0.05, few iterations) against the real backend; assert the round directory contract: `harness.json`, `instances.jsonl`, `runs.jsonl` lines carrying positive `cost`, token counts, and the cost-provenance key; verdicts present. Never assert pass/fail outcomes (structure, not behavior).
-  3. Both `skipif` unless `AZURE_API_KEY` and `AZURE_FOUNDRY_ENDPOINT` are set; total tier spend well under $0.50.
+  3. Both `skipif` unless `AZURE_API_KEY`, `AZURE_FOUNDRY_ENDPOINT`, **and** an explicit `SHRLM_RUN_LIVE=1` opt-in are set, and always skipped when a `CI` environment variable is present — credential presence alone must never trigger spend (KTD8).
 - **Patterns to follow:** `tests/clients/test_gemini.py` live gating; driver-round construction from `tests/optimization/test_driver.py` (real `RoundConfig` path, no monkeypatch).
 - **Test scenarios:** the two live tests above, plus: rerunning the loop test with the same out_dir resumes from the manifest without re-spending (persist-first contract).
 - **Execution note:** Run the client live test before the loop test; a single-call failure is the cheapest possible diagnosis of endpoint/deployment-name/auth problems.
@@ -211,10 +219,11 @@ flowchart TB
 - **Dependencies:** U2, U3; run only after U4's client live test has passed once.
 - **Approach:**
   1. Gate on the configured backend's env keys via `_BACKEND_ENV_KEYS` instead of the hardcoded `OPENROUTER_API_KEY` check.
-  2. `probe()`: assert the client's synthesized cost path (the raw-response `usage.cost` half becomes backend-conditional); assert sampling-arg acceptance and instant mode per R10.
+  2. `probe()`: assert the client's synthesized cost path (the raw-response `usage.cost` half becomes backend-conditional); assert sampling-arg acceptance and instant mode per R10 — failing, not recording, on any reasoning signal (same detector set as U4's client live test).
   3. `check_provider`: applies only when the backend is `openrouter`; for `azure_foundry` record endpoint host + deployment name in its place.
   4. Re-derive the ceiling arithmetic: `UNGOVERNED_CONTEXT_TOKENS`, per-call worst-case prices, and the `LIVE_*` caps recomputed for $0.60/$3.00 per 1M — output cost is ~10× the Qwen rate, so `check_budget_arithmetic` will likely force smaller live counts or caps; shrink counts rather than raising the $5 ceiling.
   5. Update `check_costs_present` wording off OpenRouter specifics.
+  6. `--live` assertions cover all three roles: non-empty attribution and proposal artifacts plus positive stage usage records for the attributor and proposer, so a green run cannot leave "all three roles on Azure" as a config-only claim.
 - **Files:** `examples/experiment_smoke.py`.
 - **Patterns to follow:** the file's own docstring budget-proof convention (arithmetic proven before any spend); decline-path spends nothing.
 - **Test scenarios** (static assertions already exercised by the mock tier plus):
@@ -247,7 +256,7 @@ flowchart TB
 | Probe | `uv run python examples/experiment_smoke.py --probe` | R10 preregistered probe | 1 call / ~$0.01 |
 | Full live smoke | `uv run python examples/experiment_smoke.py --live` (fresh out-dir) | R11–R12 whole loop | bounded / <$5 |
 
-Quality gates: mock tier must never gain a network dependency; live tiers must never run in CI; budget arithmetic must be proven statically before `--live` spends.
+Quality gates: mock tier must never gain a network dependency; live tiers must never run in CI; budget arithmetic must be proven statically before `--live` spends. The $5 ceiling is cumulative across all live tiers — probe, client live, loop live, and full `--live` together — so the static proof reserves each earlier tier's worst case before `--live`'s allowance, rather than treating $5 as a per-tier bound.
 
 ---
 
@@ -276,3 +285,17 @@ Quality gates: mock tier must never gain a network dependency; live tiers must n
 - Governing preregistration: `shrlm/docs/plans/2026-08-12-001-feat-experiment-scaffold-plan.md` (smoke tiers, $5 ceiling, probe-first, KTD3 identity doctrine, KTD9 assertion stance)
 - Evidence-byte protection: `docs/plans/2026-08-18-1648-fix-analysis-reproducibility-plan.md`
 - Cost-path anchors: `rlm/clients/openai.py` (`_track_cost`), `rlm/core/rlm.py` (spend breaker), `shrlm/optimization/costs.py` (`breaker_run_cost` raises on cost-less runs), `shrlm/optimization/driver.py` (`_BACKEND_ENV_KEYS`, sensitive-kwarg scan), `shrlm/experiment/config.py` (`IDENTITY_SECTIONS`, `sampling_args`, `check_keys`)
+
+---
+
+## Deferred / Open Questions
+
+### From 2026-08-23 review
+
+- **Endpoint changes can silently reuse an experiment identity** — KTD2 (endpoint and authentication from environment) (P1, adversarial + cross-model codex, confidence 75)
+
+  Changing the endpoint environment variable can redirect a resumed experiment directory to a different Azure resource while the configuration identity stays unchanged — a different serving resource, quota, and billing context with no persisted distinction, weakening reproducibility evidence. A one-way fingerprint of the resolved endpoint in identity material (without storing the endpoint or key) would let resume refuse the mismatch; whether to adopt that identity-material change is an open design call.
+
+- **Should the plan commit exact live counts and caps up front?** — U5 (generalize the smoke script's probe and live tiers) (P1, cross-model codex, confidence 75)
+
+  Different implementers can shrink different dimensions (instance counts, caps, output limits) and both claim the live-smoke requirement is satisfied with materially different coverage. The static budget-arithmetic gate already blocks overspend; the open question is whether the plan should pin exact per-tier call counts and caps now or let the re-derivation own them at implementation.
