@@ -62,6 +62,7 @@
 
 % The initial harness: the sparse floor the optimization loop starts from.
 \newcommand{\hzero}{\ensuremath{\mathrm{H}_{0}}\xspace}
+\newcommand{\hzerostar}{\ensuremath{\mathrm{H}_{0}^{*}}\xspace}
 % Figure_1.tex is a tall float; let it take more of a text page so it lands near
 % the discussion instead of being deferred to a page of its own.
 \renewcommand{\topfraction}{0.9}
@@ -263,11 +264,12 @@ Proposal validation evaluates the incumbent and each candidate on both the sourc
 
 \subsection{Baselines and Evaluation}
 \label{sec:baselines}
-We evaluate the Self-Harnessed RLM (SH-RLM) against two baselines.
+We evaluate the Self-Harnessed RLM (SH-RLM) against three fixed-weight baselines.
 
 \begin{itemize}
-\item \textbf{B1: initial \rlm{} (\hzero{}).} The unmodified reference harness with every surface of \cref{fig:edit-surfaces} at its \hzero{} default, and the starting point of optimization.
-\item \textbf{H1: $\lambda$-RLM~\citep{roy2026ycombinator}.} A hand-designed extension, carried over unmodified, that replaces free-form recursive code generation with a typed functional runtime and invokes the model only on bounded leaf sub-problems. It measures \sh{} against human harness engineering rather than against an unmodified starting point.
+\item \textbf{B1: initial \rlm{} (\hzero{}).} The sparse harness with every editable surface at its initial default and the starting point of optimization.
+\item \textbf{RLM reference (\hzerostar{}).} The upstream hand-designed RLM prompt, evaluated under the same runtime limits as SH-RLM and without learned skills.
+\item \textbf{$\lambda$-RLM~\citep{roy2026ycombinator}.} A hand-designed method that replaces free-form recursive code generation with a typed functional runtime operating on bounded leaf sub-problems.
 \end{itemize}
 
 \noindent One further condition relaxes the fixed-weight constraint and is reported separately.
@@ -284,15 +286,15 @@ Each condition is evaluated on four untouched categories of test set, with the t
 \item \textbf{target-long}, measuring cross-environment transfer under an additional length shift.
 \end{enumerate}
 
-The primary comparisons are SH-RLM versus B1 on source-long, target-short, and target-long, with SH-RLM versus H1 on the same three sets indicating whether a self-discovered harness is competitive with a hand-designed one. Improvement on source-long indicates that the learned harness changes survive a length shift within the optimization environment. Improvement on target-short provides the cleanest evidence that the edits capture a transferable compositional strategy rather than a source-specific rule. Improvement on target-long tests whether that transfer remains effective when environment and input length change simultaneously.
+The primary comparisons are SH-RLM versus B1, \hzerostar{}, and $\lambda$-RLM on source-long, target-short, and target-long. Improvement on source-long indicates that the learned harness changes survive a length shift within the optimization environment. Improvement on target-short provides the cleanest evidence that the edits capture a transferable compositional strategy rather than a source-specific rule. Improvement on target-long tests whether that transfer remains effective when environment and input length change simultaneously.
 
 \subsection{Analysis}
 \label{sec:analysis}
 
 The primary metric is verifier accuracy, reported separately for all four test
 sets. Results are averaged over repeated seeded runs and accompanied by
-bootstrap confidence intervals over task instances. B1 and SH-RLM are compared
-using a paired per-instance test; the exact test and repetition-to-instance
+bootstrap confidence intervals over task instances. SH-RLM is compared with
+B1, \hzerostar{}, and $\lambda$-RLM using paired per-instance tests; the exact tests and repetition-to-instance
 aggregation rule will be preregistered.
 
 Secondary efficiency metrics are total input and output tokens, recursive-call
@@ -326,7 +328,7 @@ runs. The first term collects source held-in traces for weakness mining; the sec
 
 At $n_{\mathrm{in}}=24$, $n_{\mathrm{ho}}=40$, $m=2$, $v=4$, and $K=4$, this is $1{,}328$ runs per round and $19{,}920$ short runs over $T=15$ rounds (\sh{} used 15, 18, and 21, rounds for the three model families tested). Taking three passes over the stored context plus root overhead gives roughly $1.2\times10^{5}$ tokens for a typical short run, so optimization costs approximately $2.4\times10^{9}$ tokens.
 
-After optimization, the three fixed-weight conditions B1, H1, and SH-RLM are evaluated on the source-short, source-long, target-short, and target-long test sets; F1 is budgeted separately (\cref{app:finetune}). The target environment therefore adds final-evaluation cost but no mining, proposal, or candidate-validation cost. Total cost can be expressed as
+After optimization, the four fixed-weight conditions B1, \hzerostar{}, $\lambda$-RLM, and SH-RLM are evaluated on the source-short, source-long, target-short, and target-long test sets; F1 is budgeted separately (\cref{app:finetune}). The target environment therefore adds final-evaluation cost but no mining, proposal, or candidate-validation cost. Total cost can be expressed as
 \begin{equation*}
 C_{\mathrm{total}}
 =
@@ -337,7 +339,7 @@ C_{\mathrm{source\ evaluation}}
 C_{\mathrm{target\ evaluation}}.
 \end{equation*}
 
-Evaluating three conditions on two environments with $3$ repetitions is $720$ short and $1{,}710$ long runs. Both environments contribute $40$ short-test instances. For the long tests they do not match: GraphWalks contributes $150$, while OOLONG-Pairs contributes $40$, the entire pool its pinned release admits---the \texttt{trec\_coarse} validation split ships only two distinct context windows at $262{,}144$ tokens, each of which we pair with the $20$ configured tasks. The long runs dominate: at inputs $8$--$32\times$ larger, they average roughly $1.2\times10^{6}$ tokens each, giving approximately $2\times10^{9}$ tokens for final evaluation against $9\times10^{7}$ for the short tests. The project total is therefore approximately $4$--$5\times10^{9}$ tokens. Served locally that is roughly $650$ H100-hours; purchased as hosted inference at current open-weights rates it is approximately \$$1{,}200$--\$$2{,}000$. The sub-verification ablation of \cref{app:ablations} adds one further optimization run, or approximately $2.4\times10^{9}$ tokens, and is budgeted as contingent.
+Evaluating four conditions on two environments with $3$ repetitions is $960$ short and $2{,}280$ long runs. Both environments contribute $40$ short-test instances. For the long tests they do not match: GraphWalks contributes $150$, while OOLONG-Pairs contributes $40$, the entire pool its pinned release admits---the \texttt{trec\_coarse} validation split ships only two distinct context windows at $262{,}144$ tokens, each of which we pair with the $20$ configured tasks. The long runs dominate: at inputs $8$--$32\times$ larger, they average roughly $1.2\times10^{6}$ tokens each, giving approximately $2.7\times10^{9}$ tokens for final evaluation against $1.2\times10^{8}$ for the short tests. The project total is therefore approximately $5$--$6\times10^{9}$ tokens. Served locally that is roughly $650$ H100-hours; purchased as hosted inference at current open-weights rates it is approximately \$$1{,}200$--\$$2{,}000$. The sub-verification ablation of \cref{app:ablations} adds one further optimization run, or approximately $2.4\times10^{9}$ tokens, and is budgeted as contingent.
 
 Cost is dominated by long-instance evaluation and by repeated reads of the offloaded context during recursion, and the passes-over-context multiplier is the dominant uncertainty: a factor-of-two error moves the total to between $3\times10^{9}$ and $1.1\times10^{10}$ tokens. We will run a small pilot in both environments before optimization to measure tokens per run, recursive calls, and effective passes over the stored context, and these measurements will fix the final test sizes and token budget before the first harness edit is proposed. If needed, we can reduce long-test sample size in all four evaluation conditions to reduce cost.
 
@@ -358,13 +360,13 @@ The remaining work is designed for completion over six weeks. Each week is split
 (i)~Run pilot instances from both environments to estimate token cost, latency, context rereading, and baseline variance; define the promotion gate's empirical noise margin from repeated source-short evaluations; finalize test sizes and apply any preregistered cost de-scoping. (ii)~Implement \textbf{Proposal Validation}: eval on held in/out sets for regression testing, promotion rule based on cost and performance, merged evaluation. (iii)~Write the related work.
 
 \item[Week 8: Validate the loop; build evaluation tooling; write methods.]
-(i)~Test the complete \sh{} loop on a small development subset excluded from the final experiment, and verify that runs are reproducible from saved configurations. (ii)~Integrate the hand-designed $\lambda$-RLM baseline (H1) and build the evaluation and analysis tooling: matched-budget configurations, verifier-accuracy aggregation, confidence intervals, paired tests, and efficiency metrics. (iii)~Write the methods section.
+(i)~Test the complete \sh{} loop on a small development subset excluded from the final experiment, and verify that runs are reproducible from saved configurations. (ii)~Integrate the \hzerostar{} and $\lambda$-RLM baselines and build the evaluation and analysis tooling: matched-budget configurations, verifier-accuracy aggregation, confidence intervals, paired tests, and efficiency metrics. (iii)~Write the methods section.
 
 \item[Week 9: Source-environment optimization and freeze; write ablations and discussion.]
 (i)~Run \sh{} on the source held-in and held-out splits, inspecting logs for infrastructure failures without manually changing proposed edits or promotion decisions, and freeze the final harness once the maximum-round or patience criterion is reached; no test split is opened before the freeze. (ii)~Dry-run the four-way evaluation pipeline on the optimization splits so evaluation starts immediately at freeze, and run the optional alignment-drift probe across the accumulating harness lineage. (iii)~Draft the ablations appendix and begin the discussion from optimization-split trace case studies.
 
 \item[Week 10: Fixed-weight evaluation; analysis; write results.]
-(i)~Run the four-way evaluation of B1, H1, and SH-RLM on the untouched test sets under matched inference budgets, with leave-one-edit-out ablations where budget permits and a published fine-tuned checkpoint if one is available. (ii)~As results arrive, compute verifier accuracy, confidence intervals, paired comparisons, token efficiency, recursion depth, call counts, and whole-input sub-call collapse. (iii)~Write the results section.
+(i)~Run the four-way evaluation of B1, \hzerostar{}, $\lambda$-RLM, and SH-RLM on the untouched test sets under matched inference budgets, with leave-one-edit-out ablations where budget permits and a published fine-tuned checkpoint if one is available. (ii)~As results arrive, compute verifier accuracy, confidence intervals, paired comparisons, token efficiency, recursion depth, call counts, and whole-input sub-call collapse. (iii)~Write the results section.
 
 \item[Week 11: Consolidation and release; write limitations and conclusion.]
 (i)~Complete any remaining long-split evaluation runs and ablations. (ii)~Compare the frequency of mined failure mechanisms before and after optimization and finish the trace case studies. (iii)~Assemble the manuscript, write limitations and conclusion, and release the split identifiers, configurations, harness lineage, proposal and validation logs, and evaluation scripts.
@@ -391,7 +393,7 @@ compute allocation will be recorded before training begins.
 
 \begin{description}
   \item[Backbone.] Qwen3-30B-A3B-Instruct-2507, the model \citet{zhang2026harness}
-    RL-train inside an \rlm{} harness, and the same backbone used for B1, H1, and SH-RLM so that F1
+    RL-train inside an \rlm{} harness, and the same backbone used for B1, \hzerostar{}, $\lambda$-RLM, and SH-RLM so that F1
     differs from B1 only in its weights.
   \item[Algorithm.] RL with \texttt{prime-rl}: decoupled PPO with GRPO-style advantages
     and a KL penalty against the initial policy.
@@ -406,7 +408,7 @@ compute allocation will be recorded before training begins.
     same source-environment short split used for harness optimization. Long instances are
     never trained on.
   \item[Evaluation.] The frozen checkpoint is evaluated on the same four untouched test
-    sets as B1, H1, and SH-RLM, at $256$k--$2$M tokens on the long splits.
+    sets as B1, \hzerostar{}, $\lambda$-RLM, and SH-RLM, at $256$k--$2$M tokens on the long splits.
   \item[Hardware.] $8\times$H100 nodes.
 \end{description}
 
@@ -442,7 +444,7 @@ variation.
 
 \section{Assessing Alignment Drift (Optional)}
 \label{app:alignment}
-  
+
 Given prior work on misevolution in self-optimizing agents~\citep{shao2025misevolution},
 and in particular the finding that capability-driven workflow optimization can sharply
 reduce refusal rates on harmful requests despite passing task-level
@@ -467,8 +469,3 @@ promotion decision depends on the probe, it is purely observational and does not
 the preregistered optimization loop.
 
 \end{document}
-
-
-
-
-  
