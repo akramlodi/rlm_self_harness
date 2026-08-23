@@ -10,18 +10,26 @@ Setup once:
 
 ```bash
 uv pip install -e ".[graphwalks,oolong]"
-echo 'OPENROUTER_API_KEY=sk-or-...' >> .env
+echo 'AZURE_API_KEY=...' >> .env                # Azure AI Foundry key
+echo 'AZURE_FOUNDRY_ENDPOINT=https://<resource>.services.ai.azure.com' >> .env
+```
+
+The configured backend is `azure_foundry` serving `Kimi-K2.5`; the config's `model` value must equal your Foundry deployment name (the catalog default is `Kimi-K2.5`). Before any live spend, verify the deployment's pay-as-you-go rates in the Azure portal match `[pricing.list_price]` in `configs/experiment.toml`, then attest them:
+
+```bash
+export SHRLM_VERIFIED_PRICING='0.6/3.0'        # USD per 1M input/output tokens as verified
 ```
 
 Then, in order:
 
 ```bash
-uv run python examples/experiment_smoke.py --probe                    # ~$0.002
+uv run python examples/experiment_smoke.py --probe                    # ~$0.01, one call
 uv run pytest tests/experiment/test_smoke_mock.py -q                  # $0, offline
+SHRLM_RUN_LIVE=1 uv run pytest tests/experiment/test_smoke_live.py tests/clients/test_azure_foundry.py -q   # < $0.25
 uv run python examples/experiment_smoke.py --live --out-dir ./smoke_$(date +%m%d)
 ```
 
-The probe confirms cost reporting and sampling args before anything expensive. The live tier runs one shrunk optimization round plus evaluation of two conditions across both environments at both lengths — roughly $0.20 and 75 minutes. Use a fresh `--out-dir`: caps and the promotion band are identity keys, so a directory built under different values refuses to resume.
+The probe confirms token usage (cost is synthesized client-side from tokens × configured pricing — Azure returns no cost field), sampling-arg acceptance, and that instant (non-thinking) mode is honored, before anything expensive. The live pytest tier proves the real deployment inside one driver round. The full live tier runs one shrunk optimization round plus evaluation; the cumulative ceiling across all live tiers is proven under $5 before any spend. Use a fresh `--out-dir`: backends, decoding, caps, and the promotion band are identity keys, so a directory built under different values (including pre-switch OpenRouter directories) refuses to resume.
 
 Parameters live in `configs/experiment.toml`. The `[smoke]` table overrides scale counts only; `examples/experiment_smoke.py` carries its own tighter caps for the live tier.
 
