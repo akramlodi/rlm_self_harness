@@ -1,18 +1,22 @@
 """
 S10 record validation shared by the proposal-time belt and the candidate gate.
 
-The S10 (skills) surface is data, not code: the whole skill list as name /
-description / body records (KD2). Both layers that check those records live
-here so neither ``proposal.py`` nor ``candidates.py`` carries the S10
-vocabulary itself:
+The S10 (skills) surface is data, not code: a list of name / description /
+body records. The *edit* is one named skill, added or replacing the same
+name, like an S8 helper -- not a whole-list rewrite. Both layers that check
+those records live here so neither ``proposal.py`` nor ``candidates.py``
+carries the S10 vocabulary itself:
 
-    - ``_validate_skills_edit`` / ``_validate_skill_record``: the proposal-time
-      belt -- record shape, the R7 bounds, REPL-safe names, R5 prompt safety of
-      index fields, R14 ordered-steps bodies, and the R6 stated-limit scan over
-      each description and body individually (a body never enters the
-      assembled prompt, so the prompt-level scan cannot see it). Violations
-      raise ``SkillEditRejection``; ``proposal._validate_edit_shape`` translates
-      it into its own ``ProposalRejection`` so the re-ask loop sees one type.
+    - ``_validate_skill_edit`` / ``_validate_skill_record``: the proposal-time
+      belt -- one skill's shape, the per-field R7 bounds, REPL-safe names, R5
+      prompt safety of index fields, R14 ordered-steps bodies, and the R6
+      stated-limit scan over description and body individually (a body never
+      enters the assembled prompt, so the prompt-level scan cannot see it).
+      Violations raise ``SkillEditRejection``; ``proposal._validate_edit_shape``
+      translates it into its own ``ProposalRejection`` so the re-ask loop sees
+      one type.
+    - ``_merge_skill``: apply that one skill to the incumbent list; the
+      merged library must still satisfy the entry-count and total-length caps.
     - ``_skills_violation``: the shape-only check the candidate gate runs over
       a serialized S10 list, returned as a value (the gate's rejections are
       values, never exceptions).
@@ -34,6 +38,7 @@ from shrlm.rlm_harness import (
     SKILL_NAME_MAX_CHARS,
     SKILL_RECORD_FIELDS,
     SKILL_TOTAL_MAX_CHARS,
+    SkillEntry,
     has_ordered_steps,
     is_repl_safe_identifier,
     skill_description_violation,
@@ -50,24 +55,66 @@ STATED_LIMIT_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 # The S10 bullet of the proposer's edit-format block (``proposal.EDIT_FORMATS``
-# appends it verbatim); ``%``-interpolated there with the caps above.
+# appends it verbatim); ``%``-interpolated there with the caps above. The schema
+# sentence is the validator contract. The writing guidance after it is how to
+# fill a body: distill the shown traces into a procedure, not a knowledge dump.
 SKILLS_EDIT_FORMAT = """\
-- S10 skills (the skill library): {"kind": "skills", "skills": [{"name": \
-"<identifier>", "description": "<one line>", "body": "<ordered steps>"}, ...]} -- \
-the WHOLE list is the new S10 value (write every skill you want kept, not just the \
-new one). Each entry is one named, reusable procedure: "name" is a unique REPL-safe \
-identifier (at most %(name_cap)d characters); "description" is a single line stating \
-when to consult it (at most %(description_cap)d characters); "body" is its ordered \
-steps -- at least %(min_steps)d lines beginning with "1." / "2." or "-" (at most \
-%(body_cap)d characters). At most %(entry_cap)d entries and %(total_cap)d characters \
-in total. Neither description nor body may restate per-turn execution or decomposition \
-guidance, and no field may state a REPL truncation bound, a per-prompt capacity, or a \
-per-batch width. Brace rule: "name" and "description" are rendered into the system \
-prompt and must contain no "{" or "}" at all; "body" is stored raw and returned \
-verbatim by %(skill_loader)s(name), so it may contain literal braces (dicts, JSON, \
-f-strings) without doubling. Skill bodies are never in the prompt: the root reads one \
-by calling the loader and forwards it to a sub-call only as text in that sub-call's \
+- S10 skills (the skill library): {"kind": "skills", "name": "<identifier>", \
+"description": "<one line>", "body": "<ordered steps>"} -- one skill, added or \
+replacing the existing skill of the same name (like S8); every other skill stays. \
+"name" is a REPL-safe identifier (at most %(name_cap)d characters); "description" \
+is a single line stating when to consult it (at most %(description_cap)d characters); \
+"body" is its ordered steps -- at least %(min_steps)d lines beginning with "1." / \
+"2." or "-" (at most %(body_cap)d characters). The merged library is at most \
+%(entry_cap)d entries and %(total_cap)d characters in total. Neither description \
+nor body may restate per-turn execution or decomposition guidance, and no field \
+may state a REPL truncation bound, a per-prompt capacity, or a per-batch width. \
+Brace rule: "name" and "description" are rendered into the system prompt and must \
+contain no "{" or "}" at all; "body" is stored raw and returned verbatim by \
+%(skill_loader)s(name), so it may contain literal braces (dicts, JSON, f-strings) \
+without doubling. Skill bodies are never in the prompt: the root reads one by \
+calling the loader and forwards it to a sub-call only as text in that sub-call's \
 prompt.
+
+When proposing an S10 edit, distill the shown failure pattern's traces into a \
+reusable skill.
+
+A skill is a procedural anchor, not a knowledge dump. Its job is to stabilize \
+action: setup steps, tool sequences, checks, and pitfalls. Do not paste raw \
+trajectory content -- compress it. Verbose process residue (exploration, dead \
+ends, debugging noise) wastes the load budget and the sub-call prompt the body \
+is forwarded into.
+
+Write ONE skill in this format. It is added, or it replaces the existing skill \
+of the same name; every other skill stays.
+
+## Use When
+- {concrete triggering conditions}
+## Don't Use When
+- {conditions where this guidance doesn't apply -- be honest about scope}
+
+## Steps
+1. {ordered, concrete, actionable -- REPL and tool sequences, not vague advice}
+
+## Pitfalls
+- {failure signal -> mitigation, taken from the FAILED runs in the pattern}
+
+## Verify
+- {how to confirm success at runtime -- actually run something, don't just \
+inspect statically}
+
+Rules:
+- Generalize: placeholders instead of task-specific paths/data, but keep \
+concrete command patterns. Over-specific skills break on the next task.
+- Environment setup (imports, missing modules), REPL and sub-call sequences, \
+output formats, and checks are the highest-value things to encode. Skills \
+won't fix wrong algorithms -- don't try to encode the answer, encode the \
+process. A skill is guidance text loaded by %(skill_loader)s, not a REPL \
+helper (those are S8).
+- Adapt-don't-copy: write steps as guidance to be checked against the current \
+task, not a script to follow blindly.
+- Make the description retrieval-friendly: if it's vague, it will be confused \
+with similar skills in the index and never loaded correctly.
 """
 
 
@@ -147,37 +194,57 @@ def _validate_skill_record(label: str, record: Any) -> dict[str, str]:
     return {"name": name, "description": description, "body": body}
 
 
-def _validate_skills_edit(label: str, value: Any) -> list[dict[str, str]]:
-    """The S10 edit value: the whole skill list (KD2), every entry well-formed,
-    names unique, within the entry-count and total-length caps (R7)."""
-    if not isinstance(value, list):
+def _validate_skill_edit(label: str, edit: dict[str, Any]) -> dict[str, str]:
+    """One S10 skill to add or replace by name (like an S8 helper).
+
+    A leftover ``skills`` list is refused by name so a whole-list rewrite
+    cannot silently become "ignore the list, take these three fields."
+    """
+    if "skills" in edit:
         raise SkillEditRejection(
-            f"{label}: edit.skills must be a list of skill records (the whole S10 value), "
-            f"got {type(value).__name__}"
+            f"{label}: S10 is one skill added or replacing the same name, like an S8 "
+            "helper; do not send a whole list under edit.skills"
         )
-    if len(value) > SKILL_MAX_ENTRIES:
+    unknown = set(edit) - {"kind", *SKILL_RECORD_FIELDS}
+    if unknown:
         raise SkillEditRejection(
-            f"{label}: edit.skills carries {len(value)} entries, over the "
-            f"{SKILL_MAX_ENTRIES} entry cap"
+            f"{label}: unknown edit fields {sorted(unknown)}; legal fields: kind, "
+            f"{', '.join(SKILL_RECORD_FIELDS)}"
         )
-    records: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for position, record in enumerate(value):
-        validated = _validate_skill_record(f"{label}: edit.skills[{position}]", record)
-        if validated["name"] in seen:
-            raise SkillEditRejection(
-                f"{label}: edit.skills[{position}] repeats the name {validated['name']!r}; "
-                "skill names must be unique"
-            )
-        seen.add(validated["name"])
-        records.append(validated)
-    total = sum(len(text) for record in records for text in record.values())
+    record = {field: edit.get(field) for field in SKILL_RECORD_FIELDS}
+    return _validate_skill_record(f"{label}: edit", record)
+
+
+def _merge_skill(incumbent: list[SkillEntry], record: dict[str, str]) -> list[SkillEntry]:
+    """Add ``record`` or replace the incumbent skill of the same name.
+
+    The merged library must stay inside the entry-count and total-length caps
+    (R7). A ninth distinct name or a total that overflows is a rejection, not
+    a silent drop of an older skill.
+    """
+    incoming = SkillEntry(**record)
+    merged: list[SkillEntry] = []
+    replaced = False
+    for entry in incumbent:
+        if entry.name == incoming.name:
+            merged.append(incoming)
+            replaced = True
+        else:
+            merged.append(entry)
+    if not replaced:
+        merged.append(incoming)
+    if len(merged) > SKILL_MAX_ENTRIES:
+        raise SkillEditRejection(
+            f"S10 skills would carry {len(merged)} entries after adding "
+            f"{incoming.name!r}, over the {SKILL_MAX_ENTRIES} entry cap"
+        )
+    total = sum(len(getattr(entry, field)) for entry in merged for field in SKILL_RECORD_FIELDS)
     if total > SKILL_TOTAL_MAX_CHARS:
         raise SkillEditRejection(
-            f"{label}: edit.skills totals {total} characters across all fields, over the "
-            f"{SKILL_TOTAL_MAX_CHARS} total cap"
+            f"S10 skills would total {total} characters across all fields after adding "
+            f"{incoming.name!r}, over the {SKILL_TOTAL_MAX_CHARS} total cap"
         )
-    return records
+    return merged
 
 
 def _skills_violation(skills: Any) -> str | None:

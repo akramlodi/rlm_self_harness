@@ -34,12 +34,13 @@ Non-text surfaces are authored declaratively, never freehand JSON:
       directly rather than re-implemented).
     - S8 (repl helpers): the model writes one named helper function, added or
       replacing one entry in ``repl_helpers`` or ``sub_repl_helpers``.
-    - S10 (skills): the model writes the whole skill list as name /
-      description / body records (KD2: edited whole, never appended). Data,
-      not code: index fields are brace-free so the assembled prompt still
-      survives ``str.format``, bodies are stored raw for the runner's fixed
-      loader to return verbatim, and every field is scanned for a runtime
-      limit ``check_stated_limits`` governs (R5, R6, R7, R14).
+    - S10 (skills): the model writes one named skill (name / description /
+      body), added or replacing the incumbent skill of the same name, like
+      an S8 helper. Data, not code: index fields are brace-free so the
+      assembled prompt still survives ``str.format``, bodies are stored raw
+      for the runner's fixed loader to return verbatim, and every field is
+      scanned for a runtime limit ``check_stated_limits`` governs
+      (R5, R6, R7, R14).
 
 A materialized candidate's one-surface-diff is checked with
 ``candidates.changed_surfaces`` -- the real gate's own diffing function -- so
@@ -77,7 +78,8 @@ from shrlm.optimization.candidates import (
 from shrlm.optimization.skill_edit import (
     SKILLS_EDIT_FORMAT,
     SkillEditRejection,
-    _validate_skills_edit,
+    _merge_skill,
+    _validate_skill_edit,
 )
 from shrlm.optimization.taxonomy import (
     MECHANISM_DOCS,
@@ -96,7 +98,6 @@ from shrlm.rlm_harness import (
     SKILL_NAME_MAX_CHARS,
     SKILL_TOTAL_MAX_CHARS,
     Harness,
-    SkillEntry,
     build_runtime_policy,
 )
 from shrlm.runner import declared_metadata_bound
@@ -106,14 +107,14 @@ PROPOSAL_FORMAT = "shrlm-proposal/v1"
 # declaration site) and re-exported here for the proposal writer.
 PROPOSAL_FILENAME = "proposal.json"
 
-# 1.1.0: the prompt names ten surfaces and carries the S10 edit format.
-PROMPT_VERSION = "1.1.0"
+# 1.3.0: S10 edit is one skill added or replaced by name (S8-style), not a
+# whole-list rewrite.
+PROMPT_VERSION = "1.3.0"
 # Version of the validation logic in this module (validate_candidate_spec,
-# _validate_edit_shape, _validate_single_def, skill_edit._validate_skills_edit).
+# _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
-# judged under different rules. 1.1.0: the S10 skills branch and the S8 loader-name
-# refusal.
-VALIDATOR_VERSION = "1.1.0"
+# judged under different rules. 1.2.0: S10 is one named skill, merged by name.
+VALIDATOR_VERSION = "1.2.0"
 
 DEFAULT_K = 4
 DEFAULT_MAX_ATTEMPTS = 3
@@ -633,10 +634,10 @@ def _validate_edit_shape(index: int, surface: str, edit: dict[str, Any]) -> dict
 
     if kind == EDIT_KIND_SKILLS:
         try:
-            records = _validate_skills_edit(label, edit.get("skills"))
+            record = _validate_skill_edit(label, edit)
         except SkillEditRejection as exc:
             raise ProposalRejection(str(exc)) from None
-        return {"kind": kind, "skills": records}
+        return {"kind": kind, **record}
 
     raise ProposalRejection(
         f"{label}: unknown edit.kind {kind!r}"
@@ -751,8 +752,18 @@ def materialize_candidate_harness(
         return replace(incumbent, **{edit["dict"]: updated})
 
     if kind == EDIT_KIND_SKILLS:
-        # The whole list, not an append (KD2); bodies verbatim (R5).
-        return replace(incumbent, skills=[SkillEntry(**record) for record in edit["skills"]])
+        try:
+            merged = _merge_skill(
+                incumbent.skills,
+                {
+                    "name": edit["name"],
+                    "description": edit["description"],
+                    "body": edit["body"],
+                },
+            )
+        except SkillEditRejection as exc:
+            raise MaterializationFailure(spec.pattern_index, str(exc)) from None
+        return replace(incumbent, skills=merged)
 
     raise AssertionError(f"unreachable edit kind {kind!r}")  # validated upstream
 
