@@ -2,7 +2,7 @@
 ---
 
 <h1 align="center" style="font-size:2.8em">
-<span>Recursively self-harnessing recursive language models (<span style="color:orange">RLM</span>s)</span>
+<span>Recursively self-harnessing recursive language models (<span style="color:orange">SH-RLM</span>s)</span>
 </h1>
 
 <p align="center" style="font-size:1.3em">
