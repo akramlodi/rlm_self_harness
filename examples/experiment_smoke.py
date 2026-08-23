@@ -29,10 +29,10 @@ Spend control (KTD7; hard ceiling $5)
     Governed calls -- every run executed under a ``CandidateSpendBreaker``:
 
         per-run budget      $0.20   worst-case long run (below) x ~1.7 headroom
-        per-breaker budget  $0.35   cumulative, per spend breaker
+        per-breaker budget  $0.28   cumulative, per spend breaker
         breakers            7       t x (1 mining + baseline + k candidates +
                                     merged) + 1 per evaluation condition
-        governed ceiling    7 x ($0.35 + $0.20) = $3.85
+        governed ceiling    8 x ($0.28 + $0.20) = $3.84
 
     A breaker trips only *after* a run pushes cumulative spend past its
     budget, so each breaker's true ceiling is its budget plus one per-run
@@ -157,7 +157,7 @@ SPEND_CEILING_USD = 5.0
 # The per-run budget is load-bearing for KTD6 (it must clear the ~$0.12
 # worst-case long run), so the ceiling is fitted by the candidate budget.
 LIVE_MAX_BUDGET_USD = 0.20
-LIVE_CANDIDATE_BUDGET_USD = 0.35
+LIVE_CANDIDATE_BUDGET_USD = 0.28
 LIVE_MAX_TIMEOUT_SECONDS = 1200.0
 
 # Spend breakers armed per round: one for mining, one per validation subject

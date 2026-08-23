@@ -567,11 +567,11 @@ class TestLiveSmokeGuards:
     def test_configured_live_budgets_stay_under_the_five_dollar_ceiling(self):
         config = experiment_smoke.live_config()
 
-        # Governed: t=1 x (1 mining + 2 fixed + k=2) + 2 conditions = 7 breakers,
-        # each admitting $0.35 cumulative + one $0.20 per-run overshoot = $3.85.
-        assert experiment_smoke.breaker_count(config) == 7
-        governed = 7 * (config.caps.candidate_budget + config.caps.max_budget)
-        assert governed == pytest.approx(3.85)
+        # Governed: t=1 x (1 mining + 2 fixed + k=2) + 3 conditions = 8 breakers,
+        # each admitting $0.28 cumulative + one $0.20 per-run overshoot = $3.84.
+        assert experiment_smoke.breaker_count(config) == 8
+        governed = 8 * (config.caps.candidate_budget + config.caps.max_budget)
+        assert governed == pytest.approx(3.84)
 
         # Ungoverned: 2 probe + (1 x 3 instances x 1 attempt x 3 x 3) attribution
         # + (1 x 3 x 3) proposal = 38 calls, each priced at a full context window
@@ -584,9 +584,9 @@ class TestLiveSmokeGuards:
         assert ungoverned == pytest.approx(1.0428, abs=1e-4)
 
         assert experiment_smoke.spend_ceiling(config) == pytest.approx(governed + ungoverned)
-        assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.8928, abs=1e-4)
+        assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.8828, abs=1e-4)
         assert experiment_smoke.spend_ceiling(config) < experiment_smoke.SPEND_CEILING_USD
-        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.8928, abs=1e-4)
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.8828, abs=1e-4)
 
     def test_the_ceiling_scales_with_the_round_count(self):
         """Every per-round breaker and per-round LM call is armed t times."""
@@ -595,8 +595,8 @@ class TestLiveSmokeGuards:
         config = experiment_smoke.live_config()
         three_rounds = replace(config, loop=replace(config.loop, t=3))
 
-        # 3 x (1 mining + 2 fixed + k=2) + 2 conditions.
-        assert experiment_smoke.breaker_count(three_rounds) == 17
+        # 3 x (1 mining + 2 fixed + k=2) + 3 conditions.
+        assert experiment_smoke.breaker_count(three_rounds) == 18
         # 2 probe + 3 x (9 attribution + 3 proposal) x 3 transport retries.
         assert experiment_smoke.ungoverned_call_count(three_rounds) == 2 + 3 * 36
         assert experiment_smoke.spend_ceiling(three_rounds) > experiment_smoke.spend_ceiling(config)

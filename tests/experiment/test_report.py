@@ -14,7 +14,7 @@ so every short bucket has a per-run mean of 1000 in / 100 out and every long
 bucket 10000 in / 500 out, whichever way the buckets are pooled.
 
 Full-profile config arithmetic (m=2, n_in=24, v=4, K=4, n_ho=40, p_merge=0.5,
-T=15, eval_conditions=3, eval_repetitions=3). The evaluation grid covers both
+T=15, eval_conditions=4, eval_repetitions=3). The evaluation grid covers both
 configured environments: source GraphWalks (test_short=40, test_long=150) and
 target OOLONG-Pairs (n_short=40, n_long=40), so each length's eval run count
 sums both environments' test-role size, not GraphWalks alone (see
@@ -24,7 +24,7 @@ sums both environments' test-role size, not GraphWalks alone (see
     optimization runs = 1456 * 15 = 21840
     eval short size = 40 (graphwalks) + 40 (oolong_pairs) = 80
     eval long size  = 150 (graphwalks) + 40 (oolong_pairs) = 190
-    eval runs = 3 * (80 + 190) * 3 = 2430  (720 short + 1,710 long)
+    eval runs = 4 * (80 + 190) * 3 = 3240  (960 short + 2,280 long)
 
 The long leg is smaller than the 2,700 runs quoted in ``paper/proposal.tex``
 (Section: Feasibility and Cost): that figure assumed 150 OOLONG-Pairs long
@@ -71,8 +71,8 @@ FIXTURE = Path(__file__).parent / "fixtures" / "report_experiment"
 # Hand-computed from the fixture + full-profile config (see module docstring).
 RUNS_PER_ROUND = 1456.0
 OPTIMIZATION_RUNS = 21840.0
-EVAL_SHORT_RUNS = 720.0
-EVAL_LONG_RUNS = 1710.0
+EVAL_SHORT_RUNS = 960.0
+EVAL_LONG_RUNS = 2280.0
 
 SHORT_MEAN_INPUT = 1000.0
 SHORT_MEAN_OUTPUT = 100.0
@@ -83,12 +83,12 @@ POINT_INPUT_TOKENS = (
     OPTIMIZATION_RUNS * SHORT_MEAN_INPUT
     + EVAL_SHORT_RUNS * SHORT_MEAN_INPUT
     + EVAL_LONG_RUNS * LONG_MEAN_INPUT
-)  # 49_560_000
+)  # 45_600_000
 POINT_OUTPUT_TOKENS = (
     OPTIMIZATION_RUNS * SHORT_MEAN_OUTPUT
     + EVAL_SHORT_RUNS * SHORT_MEAN_OUTPUT
     + EVAL_LONG_RUNS * LONG_MEAN_OUTPUT
-)  # 3_606_000
+)  # 3_420_000
 
 
 @pytest.fixture
@@ -356,23 +356,23 @@ class TestRunCounts:
         """Pins the full-experiment evaluation projection so an omitted
         environment cannot silently regress it. The eval grid covers BOTH
         configured environments -- source GraphWalks and target OOLONG-Pairs
-        -- not the source split alone: 3 conditions x 2 environments x
+        -- not the source split alone: 4 conditions x 2 environments x
         (40 short + 150 long graphwalks, 40 short + 40 long oolong_pairs)
-        x 3 repetitions = 720 short and 1,710 long
+        x 3 repetitions = 960 short and 2,280 long
         runs, matching paper/proposal.tex's Feasibility and Cost section.
         """
         counts = run_counts(config)
 
-        assert counts.eval_short_runs == 720.0
-        assert counts.eval_long_runs == 1710.0
+        assert counts.eval_short_runs == 960.0
+        assert counts.eval_long_runs == 2280.0
 
     def test_eval_grid_uses_configured_conditions_not_measured_conditions(self, config, experiment):
         report = build_report(config, experiment)
 
         measured_conditions = len(read_summary(experiment)["conditions"])
         assert measured_conditions == 2  # the scaffold evaluates b1 + sh_rlm
-        assert config.report.eval_conditions == 3  # B1, H1, SH-RLM
-        assert report.run_counts.eval_conditions == 3
+        assert config.report.eval_conditions == 4  # B1/H0, H0*, lambda-RLM, SH-RLM
+        assert report.run_counts.eval_conditions == 4
         assert report.run_counts.eval_short_runs == EVAL_SHORT_RUNS
         assert report.run_counts.eval_long_runs == EVAL_LONG_RUNS
         assert report.run_counts.eval_runs == EVAL_SHORT_RUNS + EVAL_LONG_RUNS
@@ -444,7 +444,7 @@ class TestGpuScenarios:
             + long_tokens / profile.throughput_tokens_per_second["long"]
         ) / 3600.0
 
-        assert hours == pytest.approx(9.997222222222222)
+        assert hours == pytest.approx(12.402777777777779)
         assert scenario.detail["gpu_hours_point"] == pytest.approx(hours)
         assert scenario.usd_point == pytest.approx(hours * profile.hourly_rate_usd)
         assert scenario.detail["usd_point_low"] == pytest.approx(

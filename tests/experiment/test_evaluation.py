@@ -25,7 +25,9 @@ import pytest
 from shrlm.experiment.config import ExperimentConfig
 from shrlm.experiment.evaluation import (
     CONDITION_B1,
+    CONDITION_H0_STAR,
     CONDITION_SH_RLM,
+    DEFAULT_CONDITIONS,
     EVAL_DIR,
     EVAL_SUMMARY_FILENAME,
     EvaluationPersistenceError,
@@ -43,7 +45,7 @@ from shrlm.experiment.usage import STAGE_USAGE_FILE, read_stage_usage
 from shrlm.harness_identity import harness_hash, write_harness_json
 from shrlm.optimization.costs import OUTCOME_COMPLETED, OUTCOME_OVER_BUDGET
 from shrlm.optimization.driver import RoundPersistenceError
-from shrlm.rlm_harness import H0
+from shrlm.rlm_harness import H0, H0_STAR
 from tests.experiment.test_orchestrator import fake_loader, make_config, patch_runner
 from tests.optimization.test_driver import ClientFactory, GoldVerifier, final
 
@@ -127,6 +129,33 @@ ONE_ATTEMPT_SCRIPT = ("WRONG", "RIGHT", "RIGHT", "RIGHT")
 
 
 class TestConditionGrid:
+    def test_default_conditions_include_every_implemented_harness_method(self):
+        assert DEFAULT_CONDITIONS == (
+            CONDITION_B1,
+            CONDITION_H0_STAR,
+            CONDITION_SH_RLM,
+        )
+
+    def test_h0_star_uses_the_shipped_reference_registry_harness(self, tmp_path, monkeypatch):
+        config = eval_config(tmp_path)
+        out = tmp_path / "exp"
+        factory = scripted(monkeypatch, "RIGHT", "RIGHT")
+
+        result = evaluate(config, out, conditions=(CONDITION_H0_STAR,))
+
+        assert factory.total_calls == 2
+        assert result.conditions[0].condition_id == CONDITION_H0_STAR
+        assert result.conditions[0].harness_hash == harness_hash(H0_STAR)
+        assert result.summary["conditions"][CONDITION_H0_STAR]["source"] == {
+            "kind": "registry",
+            "registry_name": "H0*",
+        }
+        for set_id in BOTH_SETS:
+            recorded = json.loads(
+                (set_round_dir(out, CONDITION_H0_STAR, set_id) / "harness.json").read_text()
+            )
+            assert recorded["hash"] == harness_hash(H0_STAR)
+
     def test_two_conditions_over_two_test_sets_produce_four_round_dirs(self, tmp_path, monkeypatch):
         config = eval_config(tmp_path)
         out = tmp_path / "exp"

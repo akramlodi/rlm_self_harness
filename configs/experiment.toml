@@ -177,7 +177,7 @@ long = 450.0
 
 [report]
 p_merge = 0.5 # assumed fraction of rounds ending in a promotion + merge re-evaluation
-eval_conditions = 3 # B1, H1, SH-RLM: the full-experiment evaluation grid (section 3.5)
+eval_conditions = 4 # B1/H0, H0*, lambda-RLM, SH-RLM: full fixed-weight grid (section 3.5)
 
 [operational]
 loader_timeout_seconds = 120.0
