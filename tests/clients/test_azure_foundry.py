@@ -1,11 +1,24 @@
-"""Tests for the Azure AI Foundry client (mocked, zero network)."""
+"""Tests for the Azure AI Foundry client.
+
+Two tiers live in this file:
+
+* the mocked tier (everything up to ``TestAzureFoundryLive``): zero network,
+  always runs;
+* the live tier (``TestAzureFoundryLive``): three tiny paid calls against the
+  REAL configured Kimi-K2.5 deployment, gated by KTD8 (see
+  ``tests/live_gates.py``) -- it runs only with both Azure credentials set AND
+  ``SHRLM_RUN_LIVE=1``, and never in CI.
+"""
 
 import asyncio
+import copy
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from tests.live_gates import live_skip_reason
 
 VALID_ENDPOINT = "https://my-resource.services.ai.azure.com"
 VALID_PRICING = {"input_per_million": 0.60, "output_per_million": 3.00}
@@ -361,3 +374,117 @@ class TestGetClientRegistration:
 
         with pytest.raises(ValueError, match="azure_foundry"):
             get_client("nonexistent_backend", {})
+
+
+# ---------------------------------------------------------------------------
+# Live tier (U4): three tiny paid calls against the real deployment (KTD8)
+# ---------------------------------------------------------------------------
+
+_LIVE_SKIP = live_skip_reason()
+
+# Output caps for the live calls. Trivial prompts under these caps keep the
+# whole class well under $0.10 at the configured $0.60/$3.00-per-1M pricing.
+LIVE_TRIVIAL_MAX_TOKENS = 64
+LIVE_CAP_MAX_TOKENS = 16
+# Some gateways report a couple of tokens beyond max_completion_tokens (e.g.
+# a stop token); the cap test tolerates that without tolerating a busted cap.
+LIVE_CAP_SLACK_TOKENS = 8
+
+LIVE_TRIVIAL_PROMPT = "Reply with the single word: ok"
+
+
+def _live_runner_kwargs(max_tokens: int) -> dict[str, Any]:
+    """The REAL configured runner backend_kwargs (smoke profile) with only the
+    output cap lowered for these tiny calls.
+
+    ``backend_kwargs_for`` builds fresh dicts on every call, and the result is
+    deep-copied anyway before the override, so no shared config object is ever
+    mutated. Everything else -- temperature, top_p, the instant-mode
+    ``chat_template_kwargs`` extra_body, and the nested ``pricing`` -- is
+    exactly what a real experiment round sends.
+    """
+    from shrlm.experiment.config import backend_kwargs_for, load_config
+
+    kwargs = copy.deepcopy(backend_kwargs_for(load_config(profile="smoke"), "runner"))
+    kwargs["sampling_args"]["max_tokens"] = max_tokens
+    return kwargs
+
+
+def _raw_live_completion(lm: Any, prompt: str) -> Any:
+    """One paid chat completion through the client's own request builders.
+
+    This is ``OpenAIClient.completion`` taken apart into its two halves --
+    the exact ``chat.completions.create`` parameter shape, then the client's
+    own ``_track_cost`` (the azure_foundry override that validates usage and
+    synthesizes the cost) -- so the test can inspect the raw response
+    (finish_reason, reasoning fields, usage details) while the cost path
+    exercised is byte-for-byte the one every persisted run travels.
+    """
+    from rlm.clients.openai import _merge_extra_body, _normalize_sampling_args
+
+    response = lm.client.chat.completions.create(
+        model=lm.model_name,
+        messages=[{"role": "user", "content": prompt}],
+        extra_body=_merge_extra_body({}, lm.sampling_args),
+        **_normalize_sampling_args(lm.sampling_args),
+    )
+    lm._track_cost(response, lm.model_name)
+    return response
+
+
+@pytest.mark.skipif(_LIVE_SKIP is not None, reason=_LIVE_SKIP or "live gates satisfied")
+class TestAzureFoundryLive:
+    def test_trivial_call_synthesizes_cost_and_shows_no_reasoning(self):
+        """One trivial call: non-empty content, positive token counts, a
+        positive synthesized cost, and NO reasoning signal of any kind."""
+        from rlm.clients import get_client
+
+        lm = get_client("azure_foundry", _live_runner_kwargs(LIVE_TRIVIAL_MAX_TOKENS))
+        response = _raw_live_completion(lm, LIVE_TRIVIAL_PROMPT)
+        payload = response.model_dump()
+
+        content = payload["choices"][0]["message"]["content"]
+        assert content and content.strip()
+
+        last = lm.get_last_usage()
+        assert last.total_input_tokens > 0
+        assert last.total_output_tokens > 0
+        # A trivial "ok" must come nowhere near the cap; near-cap output on
+        # this prompt would itself be a hidden-reasoning smell.
+        assert last.total_output_tokens < LIVE_TRIVIAL_MAX_TOKENS
+        assert last.total_cost is not None and last.total_cost > 0
+        assert last.cost_source == "synthesized"
+
+        # R10/KTD6: fail on ANY reasoning signal -- <think> markup in content,
+        # non-empty reasoning_content/model_extra reasoning fields, nonzero
+        # reasoning-token details, or absurd completion-token counts. The
+        # detector is the very one the tier-2 smoke probe uses; it raises
+        # SmokeError naming each signal it found.
+        from examples.experiment_smoke import check_probe_reasoning
+
+        check_probe_reasoning(payload)
+
+    def test_output_cap_is_honored_not_merely_tolerated(self):
+        """A verbose prompt under max_tokens=16 must be TRUNCATED: the route
+        proves it enforces the cap (finish_reason 'length', completion tokens
+        at the cap), not that it merely accepted the parameter."""
+        from rlm.clients import get_client
+
+        lm = get_client("azure_foundry", _live_runner_kwargs(LIVE_CAP_MAX_TOKENS))
+        response = _raw_live_completion(lm, "Count from 1 to 500, one number per line.")
+
+        assert response.choices[0].finish_reason == "length"
+        completion_tokens = response.usage.completion_tokens
+        assert completion_tokens <= LIVE_CAP_MAX_TOKENS + LIVE_CAP_SLACK_TOKENS
+
+    def test_configured_decoding_args_are_accepted_on_the_client_path(self):
+        """The client's own ``completion`` path with the real configured
+        sampling args (temperature / top_p / max_completion_tokens /
+        chat_template_kwargs all ride this request): a deployment that
+        rejects any of them surfaces as an HTTP 400 -> exception here."""
+        from rlm.clients import get_client
+
+        lm = get_client("azure_foundry", _live_runner_kwargs(LIVE_TRIVIAL_MAX_TOKENS))
+        content = lm.completion(LIVE_TRIVIAL_PROMPT)
+        assert content and content.strip()
+        assert "<think>" not in content

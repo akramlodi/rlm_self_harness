@@ -948,6 +948,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    from tests.live_gates import pricing_attestation_mismatch
+
+    pricing_reason = pricing_attestation_mismatch(
+        os.getenv("SHRLM_VERIFIED_PRICING"),
+        config.pricing.list_price.input_per_million,
+        config.pricing.list_price.output_per_million,
+    )
+    if pricing_reason is not None:
+        print(f"Declining to run: {pricing_reason}. Nothing was spent.")
+        return 1
+
     if args.probe and not args.live:
         return run_probe(config)
     return run_live(config, Path(args.out_dir))
