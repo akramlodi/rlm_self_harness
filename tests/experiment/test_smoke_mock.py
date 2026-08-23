@@ -97,6 +97,12 @@ MERGE_TEXT = "Cover every input chunk and verify before answering. [smoke]"
 
 WRONG_ANSWER = "Final Answer: [not-a-node]"
 
+# Sentinel credentials for the azure_foundry backend the shipped config
+# selects. The driver's fail-fast demands both variables before any run, and
+# the hygiene test below asserts neither VALUE ever reaches a persisted byte.
+AZURE_KEY_SENTINEL = "mock-azure-key-sentinel-51c9"
+AZURE_ENDPOINT_SENTINEL = "https://mock-sentinel-resource.services.ai.azure.com"
+
 
 # ---------------------------------------------------------------------------
 # Offline scaffolding: fixture splits, refusing loaders, network guard
@@ -245,7 +251,8 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
     out_dir = tmp_path_factory.mktemp("smoke") / "exp"
     config = load_config("smoke")
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "mock-key-never-used")
+        monkeypatch.setenv("AZURE_API_KEY", AZURE_KEY_SENTINEL)
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", AZURE_ENDPOINT_SENTINEL)
         block_network(monkeypatch)
         factory = ClientFactory(optimization_script() + evaluation_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
@@ -319,6 +326,20 @@ class TestSmokePipeline:
             assert usage.output_tokens > 0, work_id
             assert usage.wall_seconds > 0.0, work_id
             assert not usage.lower_bound, work_id
+
+    def test_no_credential_sentinel_reaches_any_persisted_byte(self, smoke: SmokeRun):
+        """R3: credentials come from the environment only. The whole pipeline
+        ran with sentinel values in both Azure variables; no file the
+        experiment persisted may contain either value."""
+        scanned = 0
+        for path in sorted(smoke.out_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            scanned += 1
+            content = path.read_text(errors="replace")
+            assert AZURE_KEY_SENTINEL not in content, path
+            assert AZURE_ENDPOINT_SENTINEL not in content, path
+        assert scanned > 10  # config, splits, manifests, traces, usage, eval
 
 
 # ---------------------------------------------------------------------------
@@ -416,9 +437,10 @@ def stub_live_stages(monkeypatch: pytest.MonkeyPatch) -> None:
         experiment_smoke,
         "probe",
         lambda config: {
-            "provider": "mock-provider",
-            "usage_cost": 0.000001,
+            "provider": None,
+            "usage_cost": None,
             "client_cost": 0.000001,
+            "cost_source": "synthesized",
             "input_tokens": 1,
             "output_tokens": 1,
             "sampling_args": {},
@@ -454,7 +476,30 @@ class TestLiveSmokeStructuralChecks:
         )
         persisted = experiment_smoke.check_sampling_args(smoke.out_dir, smoke.config)
         assert persisted["temperature"] == smoke.config.decoding.temperature
-        assert persisted["extra_body"]["top_k"] == smoke.config.decoding.top_k
+        assert persisted["top_p"] == smoke.config.decoding.top_p
+        # Kimi instant mode rides in extra_body; top_k/min_p are unset and
+        # therefore absent rather than sent as defaults.
+        assert persisted["extra_body"]["chat_template_kwargs"] == {"thinking": False}
+        assert "top_k" not in persisted["extra_body"]
+        assert "min_p" not in persisted["extra_body"]
+
+    def test_stage_coverage_check_reads_the_smoke_artifacts(self, smoke: SmokeRun):
+        counts = experiment_smoke.check_stage_coverage(smoke.out_dir)
+        assert set(counts) == set(experiment_smoke.REQUIRED_STAGES)
+        assert all(count > 0 for count in counts.values())
+
+    def test_stage_coverage_names_a_missing_stage(self, smoke: SmokeRun, tmp_path):
+        out_dir = tmp_path / "exp"
+        shutil.copytree(smoke.out_dir, out_dir)
+        usage_path = out_dir / STAGE_USAGE_FILE
+        kept = [
+            line
+            for line in usage_path.read_text().splitlines()
+            if line.strip() and json.loads(line)["stage"] != "proposal"
+        ]
+        usage_path.write_text("".join(line + "\n" for line in kept))
+        with pytest.raises(experiment_smoke.SmokeError, match="proposal"):
+            experiment_smoke.check_stage_coverage(out_dir)
 
     def test_long_coverage_and_measured_spend_read_the_smoke_artifacts(self, smoke: SmokeRun):
         coverage = experiment_smoke.long_run_coverage(smoke.config, smoke.out_dir)
@@ -568,25 +613,31 @@ class TestLiveSmokeGuards:
         config = experiment_smoke.live_config()
 
         # Governed: t=1 x (1 mining + 2 fixed + k=2) + 2 conditions = 7 breakers,
-        # each admitting $0.35 cumulative + one $0.20 per-run overshoot = $3.85.
+        # each admitting $0.24 cumulative + one $0.20 per-run overshoot = $3.08.
         assert experiment_smoke.breaker_count(config) == 7
         governed = 7 * (config.caps.candidate_budget + config.caps.max_budget)
-        assert governed == pytest.approx(3.85)
+        assert governed == pytest.approx(3.08)
 
-        # Ungoverned: 2 probe + (1 x 3 instances x 1 attempt x 3 x 3) attribution
-        # + (1 x 3 x 3) proposal = 38 calls, each priced at a full context window
-        # in plus max_output_tokens out, at the list tier.
-        assert experiment_smoke.ungoverned_call_count(config) == 38
+        # Ungoverned: 2 probe + (1 x 2 live instances x 1 attempt x 3 x 3)
+        # attribution + (1 x 3 x 3) proposal = 29 calls, each priced at the
+        # char-cap-derived input bound plus max_output_tokens out, at the
+        # Kimi list tier ($0.60 / $3.00 per 1M).
+        assert experiment_smoke.ungoverned_call_count(config) == 29
         assert experiment_smoke.ungoverned_call_ceiling(config) == pytest.approx(
-            (262_144 * 0.10 + 4096 * 0.30) / 1_000_000
+            (49_152 * 0.60 + 4096 * 3.00) / 1_000_000
         )
-        ungoverned = 38 * experiment_smoke.ungoverned_call_ceiling(config)
-        assert ungoverned == pytest.approx(1.0428, abs=1e-4)
+        ungoverned = 29 * experiment_smoke.ungoverned_call_ceiling(config)
+        assert ungoverned == pytest.approx(1.2116, abs=1e-4)
 
         assert experiment_smoke.spend_ceiling(config) == pytest.approx(governed + ungoverned)
-        assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.8928, abs=1e-4)
-        assert experiment_smoke.spend_ceiling(config) < experiment_smoke.SPEND_CEILING_USD
-        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.8928, abs=1e-4)
+        assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.2916, abs=1e-4)
+        # The proven figure is cumulative: this invocation plus the $0.60 U4
+        # pytest live reserve, under the one $5 ceiling.
+        cumulative = (
+            experiment_smoke.spend_ceiling(config) + experiment_smoke.PYTEST_LIVE_RESERVE_USD
+        )
+        assert cumulative < experiment_smoke.SPEND_CEILING_USD
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.8916, abs=1e-4)
 
     def test_the_ceiling_scales_with_the_round_count(self):
         """Every per-round breaker and per-round LM call is armed t times."""
@@ -597,33 +648,55 @@ class TestLiveSmokeGuards:
 
         # 3 x (1 mining + 2 fixed + k=2) + 2 conditions.
         assert experiment_smoke.breaker_count(three_rounds) == 17
-        # 2 probe + 3 x (9 attribution + 3 proposal) x 3 transport retries.
-        assert experiment_smoke.ungoverned_call_count(three_rounds) == 2 + 3 * 36
+        # 2 probe + 3 x (6 attribution + 3 proposal) x 3 transport retries.
+        assert experiment_smoke.ungoverned_call_count(three_rounds) == 2 + 3 * 27
         assert experiment_smoke.spend_ceiling(three_rounds) > experiment_smoke.spend_ceiling(config)
         # A three-round smoke is not affordable under the $5 ceiling, and the
         # arithmetic says so rather than discovering it while spending.
         with pytest.raises(experiment_smoke.SmokeError, match="ceiling"):
             experiment_smoke.check_budget_arithmetic(three_rounds)
 
-    def test_the_ceiling_covers_the_ungoverned_calls(self):
-        """The proof is not a proof if the probe and the LM stages are free."""
+    def test_the_ceiling_covers_the_ungoverned_calls_and_the_reserve(self):
+        """The proof is not a proof if the probe, the LM stages, or the U4
+        pytest tier are treated as free."""
         config = experiment_smoke.live_config()
         governed_only = experiment_smoke.breaker_count(config) * (
             config.caps.candidate_budget + config.caps.max_budget
         )
         assert experiment_smoke.spend_ceiling(config) > governed_only
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(
+            experiment_smoke.spend_ceiling(config) + experiment_smoke.PYTEST_LIVE_RESERVE_USD
+        )
 
-    def test_live_profile_keeps_the_smoke_scale_and_semantics(self):
+    def test_live_profile_keeps_the_smoke_semantics_and_documents_its_shrinks(self):
+        """Semantics -- decoding, promotion, loop shape, environments' datasets
+        -- are byte-identical to the smoke profile; only the documented caps
+        and instance counts move (identity keys, so a fresh out-dir)."""
         config = experiment_smoke.live_config()
         smoke_profile = load_config("smoke")
 
         assert config.profile == "smoke"
         assert config.loop == smoke_profile.loop
-        assert config.splits == smoke_profile.splits
         assert config.decoding == smoke_profile.decoding
         assert config.promotion == smoke_profile.promotion
+        assert config.backends == smoke_profile.backends
         assert config.caps.max_budget == experiment_smoke.LIVE_MAX_BUDGET_USD
         assert config.caps.candidate_budget == experiment_smoke.LIVE_CANDIDATE_BUDGET_USD
+        assert config.caps.max_timeout == experiment_smoke.LIVE_MAX_TIMEOUT_SECONDS
+        # The live instance-count shrinks, and nothing else about the splits.
+        assert config.splits.n_in == experiment_smoke.LIVE_HELD_IN == 2
+        assert config.splits.test_short == experiment_smoke.LIVE_TEST_SHORT == 2
+        assert config.splits.test_long == experiment_smoke.LIVE_TEST_LONG == 1
+        assert config.splits.n_ho == smoke_profile.splits.n_ho
+        assert config.splits.seed == smoke_profile.splits.seed
+        oolong = config.environments.oolong_pairs
+        assert oolong.n_short == experiment_smoke.LIVE_OOLONG_SHORT == 2
+        assert oolong.n_long == experiment_smoke.LIVE_OOLONG_LONG == 1
+        smoke_oolong = smoke_profile.environments.oolong_pairs
+        assert oolong.dataset_repo == smoke_oolong.dataset_repo
+        assert oolong.dataset_revision == smoke_oolong.dataset_revision
+        assert oolong.task_ids == smoke_oolong.task_ids
+        assert config.environments.graphwalks == smoke_profile.environments.graphwalks
 
     def test_a_budget_over_the_ceiling_is_refused(self):
         from dataclasses import replace
@@ -634,17 +707,31 @@ class TestLiveSmokeGuards:
             experiment_smoke.check_budget_arithmetic(reckless)
 
     def test_declines_without_the_live_flag(self, capsys, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "present-but-unused")
+        monkeypatch.setenv("AZURE_API_KEY", "present-but-unused")
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://unused.services.ai.azure.com")
         block_network(monkeypatch)
 
         assert experiment_smoke.main([]) == 1
         assert "Nothing was spent" in capsys.readouterr().out
 
-    def test_declines_without_the_api_key(self, capsys, monkeypatch):
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    def test_declines_without_the_azure_variables_and_names_both(self, capsys, monkeypatch):
+        monkeypatch.delenv("AZURE_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
         block_network(monkeypatch)
 
         assert experiment_smoke.main(["--live"]) == 1
         out = capsys.readouterr().out
-        assert "OPENROUTER_API_KEY" in out
+        assert "AZURE_API_KEY" in out
+        assert "AZURE_FOUNDRY_ENDPOINT" in out
+        assert "Nothing was spent" in out
+
+    def test_declines_naming_only_the_missing_variable(self, capsys, monkeypatch):
+        monkeypatch.setenv("AZURE_API_KEY", "present-but-unused")
+        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+        block_network(monkeypatch)
+
+        assert experiment_smoke.main(["--probe"]) == 1
+        out = capsys.readouterr().out
+        assert "AZURE_FOUNDRY_ENDPOINT" in out
+        assert "AZURE_API_KEY" not in out
         assert "Nothing was spent" in out

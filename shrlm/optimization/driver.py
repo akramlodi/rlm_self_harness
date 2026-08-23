@@ -25,9 +25,12 @@ round directory), ``trace_sha256`` (over the trace file's bytes), ``cost``
 (``usage_summary.total_cost`` when the backend reported one), the U4 usage
 keys ``input_tokens``, ``output_tokens``, ``execution_time``, and
 ``usage_lower_bound`` (additive, KTD4; the flag marks terminated runs whose
-persisted figures are lower bounds on true usage), and ``timestamp`` (UTC
-ISO-8601). Lines persisted before U4 lack the usage keys; readers must treat
-them as optional.
+persisted figures are lower bounds on true usage), ``cost_source`` (additive,
+R7: "provider" when the cost was provider-reported, "synthesized" when the
+client computed it from token counts x configured pricing; omitted entirely
+when the client reports no source), and ``timestamp`` (UTC ISO-8601). Lines
+persisted before U4 lack the usage keys; readers must treat them (and
+``cost_source``) as optional.
 
 Resource terminations are runs, not crashes. The four root-level limit
 exceptions (budget, timeout, tokens, error threshold) are caught per run and
@@ -93,8 +96,13 @@ DIGESTS_DIR = "digests"
 # are persisted verbatim.
 _SENSITIVE_KWARG_FRAGMENTS = ("key", "token", "secret", "password", "authorization")
 
-# Backends whose client reads its credential from this environment variable.
-_BACKEND_ENV_KEYS: dict[str, str] = {"openrouter": "OPENROUTER_API_KEY"}
+# Backends whose client reads its credentials from these environment variables.
+# Every listed variable must be non-empty before a paid run starts; a backend
+# may require more than one (azure_foundry needs both the key and the endpoint).
+_BACKEND_ENV_KEYS: dict[str, tuple[str, ...]] = {
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "azure_foundry": ("AZURE_API_KEY", "AZURE_FOUNDRY_ENDPOINT"),
+}
 
 
 class RoundPersistenceError(RuntimeError):
@@ -191,18 +199,24 @@ def _validate_config(config: RoundConfig) -> None:
 
 
 def _require_backend_credential(config: RoundConfig) -> None:
-    """Demand the backend's environment credential.
+    """Demand every one of the backend's environment credentials.
 
     Called only once at least one run remains to execute: a fully persisted
-    round must be resumable as a no-op on a machine without the credential,
+    round must be resumable as a no-op on a machine without the credentials,
     while a round with pending runs still fails fast before any run is paid
-    for.
+    for. The error names each missing variable (and only its name -- never a
+    value) so a partially configured environment is diagnosed in one read.
     """
-    env_key = _BACKEND_ENV_KEYS.get(config.backend)
-    if env_key is not None and not os.environ.get(env_key):
+    missing = [
+        env_key
+        for env_key in _BACKEND_ENV_KEYS.get(config.backend, ())
+        if not os.environ.get(env_key)
+    ]
+    if missing:
         raise RuntimeError(
-            f"backend {config.backend!r} requires the {env_key} environment variable; "
-            "refusing to start a paid round that would fail on its first call."
+            f"backend {config.backend!r} requires the {', '.join(missing)} environment "
+            f"variable{'s' if len(missing) > 1 else ''}; refusing to start a paid round "
+            "that would fail on its first call."
         )
 
 
@@ -378,6 +392,13 @@ def _persist_run(
         "usage_lower_bound": usage_lower_bound,
         "timestamp": _utc_now(),
     }
+    # Cost provenance (R7): additive-only. A client that reports where its cost
+    # came from ("provider" vs "synthesized" from token counts x pricing) has
+    # that recorded beside the cost; a client that reports nothing changes no
+    # persisted byte -- lines without the key keep their exact prior shape.
+    cost_source = completion.usage_summary.cost_source
+    if cost_source is not None:
+        entry["cost_source"] = cost_source
     with open(path / MANIFEST_FILE, "a") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
     return entry
@@ -460,9 +481,10 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
     Raises:
         ValueError: On a misconfigured round (bad attempts, duplicate or unsafe
             instance ids, credential material in backend_kwargs).
-        RuntimeError: When the backend's environment credential is missing and
-            at least one run remains to execute. A fully persisted round needs
-            no credential: it resumes as a no-op straight from the manifest.
+        RuntimeError: When any of the backend's environment credentials is
+            missing and at least one run remains to execute; the message names
+            each missing variable. A fully persisted round needs no
+            credential: it resumes as a no-op straight from the manifest.
         RoundPersistenceError: When persisted state contradicts the
             configuration or a recorded trace no longer matches its sha256.
     """

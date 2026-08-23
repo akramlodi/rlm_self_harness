@@ -88,6 +88,24 @@ class UsageSummary:
         return sum(costs) if costs else None
 
     @property
+    def cost_source(self) -> str | None:
+        """Where the aggregate cost came from.
+
+        "synthesized" when any model's cost was synthesized client-side (the
+        aggregate then rests on configured pricing, not on provider figures),
+        "provider" when every model that reports a source reports "provider",
+        and None when no model reports a source at all.
+        """
+        sources = {
+            summary.cost_source
+            for summary in self.model_usage_summaries.values()
+            if summary.cost_source is not None
+        }
+        if not sources:
+            return None
+        return "synthesized" if "synthesized" in sources else "provider"
+
+    @property
     def total_input_tokens(self) -> int:
         """Aggregate input tokens across all models."""
         return sum(summary.total_input_tokens for summary in self.model_usage_summaries.values())
@@ -106,6 +124,8 @@ class UsageSummary:
         }
         if self.total_cost is not None:
             result["total_cost"] = self.total_cost
+        if self.cost_source is not None:
+            result["cost_source"] = self.cost_source
         return result
 
     @classmethod
