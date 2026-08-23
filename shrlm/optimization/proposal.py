@@ -74,6 +74,11 @@ from shrlm.optimization.candidates import (
     changed_surfaces,
     import_surface_module,
 )
+from shrlm.optimization.skill_edit import (
+    SKILLS_EDIT_FORMAT,
+    SkillEditRejection,
+    _validate_skills_edit,
+)
 from shrlm.optimization.taxonomy import (
     MECHANISM_DOCS,
     MECHANISM_SURFACE,
@@ -89,21 +94,12 @@ from shrlm.rlm_harness import (
     SKILL_LOADER_NAME,
     SKILL_MAX_ENTRIES,
     SKILL_NAME_MAX_CHARS,
-    SKILL_RECORD_FIELDS,
     SKILL_TOTAL_MAX_CHARS,
     Harness,
     SkillEntry,
     build_runtime_policy,
-    has_ordered_steps,
-    is_repl_safe_identifier,
-    skill_description_violation,
 )
-from shrlm.runner import (
-    PER_BATCH_PATTERN,
-    PER_PROMPT_PATTERN,
-    TRUNCATION_PATTERN,
-    declared_metadata_bound,
-)
+from shrlm.runner import declared_metadata_bound
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
 # ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
@@ -113,9 +109,9 @@ PROPOSAL_FILENAME = "proposal.json"
 # 1.1.0: the prompt names ten surfaces and carries the S10 edit format.
 PROMPT_VERSION = "1.1.0"
 # Version of the validation logic in this module (validate_candidate_spec,
-# _validate_edit_shape, _validate_single_def, _validate_skills_edit). Folded
-# into the cache key so a validator change cannot replay stale responses judged
-# under different rules. 1.1.0: the S10 skills branch and the S8 loader-name
+# _validate_edit_shape, _validate_single_def, skill_edit._validate_skills_edit).
+# Folded into the cache key so a validator change cannot replay stale responses
+# judged under different rules. 1.1.0: the S10 skills branch and the S8 loader-name
 # refusal.
 VALIDATOR_VERSION = "1.1.0"
 
@@ -150,19 +146,10 @@ EDIT_KIND_CODE = "code"
 EDIT_KIND_REPL_HELPER = "repl_helper"
 EDIT_KIND_SKILLS = "skills"
 
-# S10 edit bounds (R7), the record field set, and the R14 shape predicates live in
-# ``shrlm.rlm_harness`` so the runner enforces the same numbers and predicates at
-# harness construction (U7) without importing this module; they are re-exported
-# here under their original names.
-
-# R6: the runtime-limit patterns ``check_stated_limits`` governs, applied to
-# each S10 description and body individually (a body never enters the
-# assembled prompt, so the prompt-level scan cannot see it).
-STATED_LIMIT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    TRUNCATION_PATTERN,
-    PER_PROMPT_PATTERN,
-    PER_BATCH_PATTERN,
-)
+# S10 edit bounds (R7) live in ``shrlm.rlm_harness`` so the runner enforces the
+# same numbers at harness construction (U7) without importing this module; the
+# caps the prompt cites are re-exported here under their original names. The S10
+# record validators (shape, bounds, R5/R6/R14) live in ``skill_edit``.
 
 # The one edit shape each surface accepts -- fixed by the harness's own field
 # types, not a proposer choice.
@@ -408,8 +395,10 @@ def _render_history_block(
             subject = record.get("subject_id")
             upstream = record.get("upstream")
             if upstream:
-                lines.append(f"  - {subject}: rejected at loader gate {upstream.get('gate')}: "
-                              f"{upstream.get('reason')}")
+                lines.append(
+                    f"  - {subject}: rejected at loader gate {upstream.get('gate')}: "
+                    f"{upstream.get('reason')}"
+                )
                 continue
             outcome = record.get("decision")
             reasons = "; ".join(record.get("reasons") or [])
@@ -438,7 +427,8 @@ model-capability limit rather than a harness gap). Do not invent a mechanism or 
 surface; only cite patterns from the list below by their bracketed index.
 """
 
-EDIT_FORMATS = """\
+EDIT_FORMATS = (
+    """\
 Edit formats, exactly one of the following depending on the surface named for a \
 pattern:
 - S1-S5 (prompt text): {"kind": "text", "new_text": "<the full replacement surface \
@@ -453,23 +443,9 @@ definition, matching the surface's current signature.
 "repl_helpers" or "sub_repl_helpers", "name": "<function name>", "source": \
 "def <name>(...):\\n    ...\\n"} -- the function name in source must equal "name". \
 The name "%(skill_loader)s" is reserved for the S10 skill loader the runner installs.
-- S10 skills (the skill library): {"kind": "skills", "skills": [{"name": \
-"<identifier>", "description": "<one line>", "body": "<ordered steps>"}, ...]} -- \
-the WHOLE list is the new S10 value (write every skill you want kept, not just the \
-new one). Each entry is one named, reusable procedure: "name" is a unique REPL-safe \
-identifier (at most %(name_cap)d characters); "description" is a single line stating \
-when to consult it (at most %(description_cap)d characters); "body" is its ordered \
-steps -- at least %(min_steps)d lines beginning with "1." / "2." or "-" (at most \
-%(body_cap)d characters). At most %(entry_cap)d entries and %(total_cap)d characters \
-in total. Neither description nor body may restate per-turn execution or decomposition \
-guidance, and no field may state a REPL truncation bound, a per-prompt capacity, or a \
-per-batch width. Brace rule: "name" and "description" are rendered into the system \
-prompt and must contain no "{" or "}" at all; "body" is stored raw and returned \
-verbatim by %(skill_loader)s(name), so it may contain literal braces (dicts, JSON, \
-f-strings) without doubling. Skill bodies are never in the prompt: the root reads one \
-by calling the loader and forwards it to a sub-call only as text in that sub-call's \
-prompt.
 """
+    + SKILLS_EDIT_FORMAT
+)
 
 RESPONSE_FORMAT = """\
 Respond with a single fenced JSON array and nothing else, at most %(k)s objects, one \
@@ -503,8 +479,10 @@ def render_prompt(
     """
     addressable = _addressable_patterns(patterns)
     pattern_text = (
-        "\n\n".join(_render_pattern_block(index, pattern, incumbent_serialization)
-                     for index, pattern in addressable)
+        "\n\n".join(
+            _render_pattern_block(index, pattern, incumbent_serialization)
+            for index, pattern in addressable
+        )
         if addressable
         else "No addressable failure patterns in this bundle."
     )
@@ -590,107 +568,6 @@ def _validate_single_def(source: Any, label: str) -> str:
     return tree.body[0].name
 
 
-def _stated_limit(text: str) -> str | None:
-    """The first runtime-limit statement in ``text`` that ``check_stated_limits``
-    governs, or None."""
-    for pattern in STATED_LIMIT_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            return match.group(0)
-    return None
-
-
-def _validate_skill_record(label: str, record: Any) -> dict[str, str]:
-    """One S10 entry's shape, bounds, prompt safety, and R14 contract."""
-    if not isinstance(record, dict) or set(record) != set(SKILL_RECORD_FIELDS):
-        raise ProposalRejection(
-            f"{label} must be a record with exactly the fields {list(SKILL_RECORD_FIELDS)}"
-        )
-    for field_name in SKILL_RECORD_FIELDS:
-        if not isinstance(record[field_name], str):
-            raise ProposalRejection(f"{label}.{field_name} must be a string")
-    name, description, body = (record[field_name] for field_name in SKILL_RECORD_FIELDS)
-
-    # name: a REPL-safe identifier within the index cap.
-    if not is_repl_safe_identifier(name):
-        raise ProposalRejection(
-            f"{label}.name {name!r} must be a REPL-safe identifier (ASCII, a Python "
-            "identifier, not a keyword)"
-        )
-    if len(name) > SKILL_NAME_MAX_CHARS:
-        raise ProposalRejection(
-            f"{label}.name is {len(name)} characters, over the {SKILL_NAME_MAX_CHARS} cap"
-        )
-
-    # description: one non-empty, brace-free line within the index cap (R5, R14).
-    violation = skill_description_violation(description)
-    if violation is not None:
-        raise ProposalRejection(f"{label}.description {violation}")
-    if len(description) > SKILL_DESCRIPTION_MAX_CHARS:
-        raise ProposalRejection(
-            f"{label}.description is {len(description)} characters, over the "
-            f"{SKILL_DESCRIPTION_MAX_CHARS} index cap"
-        )
-
-    # body: non-empty ordered steps within the body cap (R14, R7); raw, never
-    # format-checked (R5).
-    if not body.strip():
-        raise ProposalRejection(f"{label}.body must be a non-empty string")
-    if not has_ordered_steps(body):
-        raise ProposalRejection(
-            f"{label}.body must be ordered steps: at least {SKILL_BODY_MIN_STEPS} lines "
-            "beginning with a numbered ('1.', '2)') or bulleted ('-', '*') marker"
-        )
-    if len(body) > SKILL_BODY_MAX_CHARS:
-        raise ProposalRejection(
-            f"{label}.body is {len(body)} characters, over the {SKILL_BODY_MAX_CHARS} cap"
-        )
-
-    # R6: no field may state a limit the runtime honors elsewhere.
-    for field_name, text in (("description", description), ("body", body)):
-        stated = _stated_limit(text)
-        if stated is not None:
-            raise ProposalRejection(
-                f"{label}.{field_name} states a runtime limit ({stated!r}) that "
-                "check_stated_limits governs; S10 text may not restate truncation, "
-                "per-prompt capacity, or batch width"
-            )
-    return {"name": name, "description": description, "body": body}
-
-
-def _validate_skills_edit(label: str, value: Any) -> list[dict[str, str]]:
-    """The S10 edit value: the whole skill list (KD2), every entry well-formed,
-    names unique, within the entry-count and total-length caps (R7)."""
-    if not isinstance(value, list):
-        raise ProposalRejection(
-            f"{label}: edit.skills must be a list of skill records (the whole S10 value), "
-            f"got {type(value).__name__}"
-        )
-    if len(value) > SKILL_MAX_ENTRIES:
-        raise ProposalRejection(
-            f"{label}: edit.skills carries {len(value)} entries, over the "
-            f"{SKILL_MAX_ENTRIES} entry cap"
-        )
-    records: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for position, record in enumerate(value):
-        validated = _validate_skill_record(f"{label}: edit.skills[{position}]", record)
-        if validated["name"] in seen:
-            raise ProposalRejection(
-                f"{label}: edit.skills[{position}] repeats the name {validated['name']!r}; "
-                "skill names must be unique"
-            )
-        seen.add(validated["name"])
-        records.append(validated)
-    total = sum(len(text) for record in records for text in record.values())
-    if total > SKILL_TOTAL_MAX_CHARS:
-        raise ProposalRejection(
-            f"{label}: edit.skills totals {total} characters across all fields, over the "
-            f"{SKILL_TOTAL_MAX_CHARS} total cap"
-        )
-    return records
-
-
 def _validate_edit_shape(index: int, surface: str, edit: dict[str, Any]) -> dict[str, Any]:
     kind = edit.get("kind")
     label = f"pattern_index {index} ({surface})"
@@ -744,7 +621,9 @@ def _validate_edit_shape(index: int, surface: str, edit: dict[str, Any]) -> dict
                 f"source ({def_name!r})"
             )
         if name in RESERVED_TOOL_NAMES:
-            raise ProposalRejection(f"{label}: edit.name {name!r} collides with a reserved REPL name")
+            raise ProposalRejection(
+                f"{label}: edit.name {name!r} collides with a reserved REPL name"
+            )
         if name == SKILL_LOADER_NAME:
             raise ProposalRejection(
                 f"{label}: edit.name {name!r} is the harness-reserved S10 skill loader, "
@@ -753,10 +632,15 @@ def _validate_edit_shape(index: int, surface: str, edit: dict[str, Any]) -> dict
         return {"kind": kind, "dict": dict_name, "name": name, "source": edit["source"]}
 
     if kind == EDIT_KIND_SKILLS:
-        records = _validate_skills_edit(label, edit.get("skills"))
+        try:
+            records = _validate_skills_edit(label, edit.get("skills"))
+        except SkillEditRejection as exc:
+            raise ProposalRejection(str(exc)) from None
         return {"kind": kind, "skills": records}
 
-    raise ProposalRejection(f"{label}: unknown edit.kind {kind!r}")  # pragma: no cover - unreachable
+    raise ProposalRejection(
+        f"{label}: unknown edit.kind {kind!r}"
+    )  # pragma: no cover - unreachable
 
 
 def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> CandidateSpec:
@@ -786,11 +670,15 @@ def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> Candid
 
     effect = item.get("predicted_effect")
     if not isinstance(effect, str) or not effect.strip():
-        raise ProposalRejection(f"pattern_index {index}: predicted_effect must be a non-empty string")
+        raise ProposalRejection(
+            f"pattern_index {index}: predicted_effect must be a non-empty string"
+        )
 
     risks = item.get("regression_risks", [])
     if not isinstance(risks, list) or not all(isinstance(risk, str) for risk in risks):
-        raise ProposalRejection(f"pattern_index {index}: regression_risks must be a list of strings")
+        raise ProposalRejection(
+            f"pattern_index {index}: regression_risks must be a list of strings"
+        )
 
     return CandidateSpec(
         pattern_index=index,
@@ -827,7 +715,9 @@ def _import_candidate_function(source: str, def_name: str, workdir: Path, surfac
     return getattr(module, def_name)
 
 
-def materialize_candidate_harness(incumbent: Harness, spec: CandidateSpec, workdir: Path) -> Harness:
+def materialize_candidate_harness(
+    incumbent: Harness, spec: CandidateSpec, workdir: Path
+) -> Harness:
     """Build the live edited Harness for one validated spec.
 
     ``dataclasses.replace`` on the incumbent, per the interface doc's rule:
@@ -943,7 +833,9 @@ def write_proposal(
     if path.exists():
         existing = json.loads(path.read_text())
         if canonical_json(existing) != canonical_json(payload):
-            raise ValueError(f"{path} already exists with different content; refusing to clobber it")
+            raise ValueError(
+                f"{path} already exists with different content; refusing to clobber it"
+            )
         return path
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return path
@@ -1063,7 +955,9 @@ def propose_round(
     cache = cache or ProposalCache()
     proposals_dir = Path(proposals_dir)
     proposals_dir.mkdir(parents=True, exist_ok=True)
-    workdir = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="shrlm-proposal-"))
+    workdir = (
+        Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="shrlm-proposal-"))
+    )
 
     patterns = bundle.get("patterns", [])
     incumbent_serialization = serialize_harness(incumbent)
@@ -1135,7 +1029,9 @@ def propose_round(
     materialization_failures: list[MaterializationFailureRecord] = []
     for position, spec in enumerate(specs, start=1):
         try:
-            _harness, serialization = build_candidate(incumbent, incumbent_serialization, spec, workdir)
+            _harness, serialization = build_candidate(
+                incumbent, incumbent_serialization, spec, workdir
+            )
         except MaterializationFailure as failure:
             materialization_failures.append(
                 MaterializationFailureRecord(spec.pattern_index, spec.surface, failure.reason)

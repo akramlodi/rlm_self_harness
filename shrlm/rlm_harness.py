@@ -345,7 +345,7 @@ SKILL_BODY_MAX_CHARS = 4000
 SKILL_MAX_ENTRIES = 8
 SKILL_TOTAL_MAX_CHARS = 16000
 
-# The fields every S10 record carries (same set ``candidates._skills_violation``
+# The fields every S10 record carries (same set ``skill_edit._skills_violation``
 # demands of the serialized form), each a string.
 SKILL_RECORD_FIELDS: tuple[str, str, str] = ("name", "description", "body")
 

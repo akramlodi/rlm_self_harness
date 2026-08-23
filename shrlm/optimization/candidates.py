@@ -72,13 +72,14 @@ from shrlm.harness_identity import (
     serialize_harness,
 )
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN
+from shrlm.optimization.skill_edit import _skills_violation
 from shrlm.optimization.taxonomy import (
     AgentMechanism,
     CausalStatus,
     FailingLevel,
     VerifierCause,
 )
-from shrlm.rlm_harness import SKILL_RECORD_FIELDS, Harness, SkillEntry
+from shrlm.rlm_harness import Harness, SkillEntry
 from shrlm.runner import check_harness
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
@@ -272,31 +273,6 @@ def _surfaces_violation(surfaces: Any) -> str | None:
     if not isinstance(middleware, dict) or not isinstance(middleware.get("source"), str):
         return "surfaces['S9_answer_middleware'] must carry a string 'source'"
     return _skills_violation(surfaces["S10_skills"])
-
-
-def _skills_violation(skills: Any) -> str | None:
-    """The first shape violation in a serialized S10 list, or None when well-formed.
-
-    Shape only — a list of records, each carrying string ``name``,
-    ``description`` and ``body``, with unique names — so ``SkillEntry(**record)``
-    cannot raise at materialization. The edit-kind bounds (R7) and the prompt
-    safety of index fields (R5) are the proposal layer's and
-    ``check_harness``'s concerns, not this gate's.
-    """
-    if not isinstance(skills, list):
-        return "surfaces['S10_skills'] must be a list of skill records"
-    seen: set[str] = set()
-    for index, record in enumerate(skills):
-        label = f"surfaces['S10_skills'][{index}]"
-        if not isinstance(record, dict) or set(record) != set(SKILL_RECORD_FIELDS):
-            return f"{label} must be a record with exactly the fields {list(SKILL_RECORD_FIELDS)}"
-        for field in SKILL_RECORD_FIELDS:
-            if not isinstance(record[field], str):
-                return f"{label}[{field!r}] must be a string"
-        if record["name"] in seen:
-            return f"{label} repeats the name {record['name']!r}; skill names must be unique"
-        seen.add(record["name"])
-    return None
 
 
 def _unwrap_tool(entry: dict[str, Any]) -> Any:
