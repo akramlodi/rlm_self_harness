@@ -6,7 +6,7 @@ Two tiers live in this file:
   always runs;
 * the live tier (``TestAzureFoundryLive``): three tiny paid calls against the
   REAL configured Kimi-K2.5 deployment, gated by KTD8 (see
-  ``tests/live_gates.py``) -- it runs only with both Azure credentials set AND
+  ``shrlm/experiment/live_gates.py``) -- it runs only with both Azure credentials set AND
   ``SHRLM_RUN_LIVE=1``, and never in CI.
 """
 
@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.live_gates import live_skip_reason
+from shrlm.experiment.live_gates import live_skip_reason
 
 VALID_ENDPOINT = "https://my-resource.services.ai.azure.com"
 VALID_PRICING = {"input_per_million": 0.60, "output_per_million": 3.00}

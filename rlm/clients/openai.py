@@ -31,6 +31,25 @@ def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in args.items() if v is not None}
 
 
+def extract_provider_cost(usage: Any) -> Any:
+    """The provider-reported cost on a usage block, or None.
+
+    OpenRouter surfaces cost either as a direct ``usage.cost`` attribute or
+    inside ``usage.model_extra`` (``cost``, then
+    ``cost_details.upstream_inference_cost`` for BYOK routes). Shared with
+    subclasses that validate the value before recording it.
+    """
+    if hasattr(usage, "cost") and usage.cost:
+        return usage.cost
+    if hasattr(usage, "model_extra") and usage.model_extra:
+        extra = usage.model_extra
+        if extra.get("cost"):
+            return extra["cost"]
+        if extra.get("cost_details", {}).get("upstream_inference_cost"):
+            return extra["cost_details"]["upstream_inference_cost"]
+    return None
+
+
 def _merge_extra_body(
     hardcoded: dict[str, Any], sampling_args: dict[str, Any] | None
 ) -> dict[str, Any]:
@@ -161,22 +180,8 @@ class OpenAIClient(BaseLM):
         self.last_completion_tokens = usage.completion_tokens
 
         # Extract cost from OpenRouter responses (cost is in USD)
-        # OpenRouter returns cost in usage.model_extra for pydantic models
         self.last_cost: float | None = None
-        cost = None
-
-        # Try direct attribute first
-        if hasattr(usage, "cost") and usage.cost:
-            cost = usage.cost
-        # Then try model_extra (OpenRouter uses this)
-        elif hasattr(usage, "model_extra") and usage.model_extra:
-            extra = usage.model_extra
-            # Primary cost field (may be 0 for BYOK)
-            if extra.get("cost"):
-                cost = extra["cost"]
-            # Fallback to upstream cost details
-            elif extra.get("cost_details", {}).get("upstream_inference_cost"):
-                cost = extra["cost_details"]["upstream_inference_cost"]
+        cost = extract_provider_cost(usage)
 
         if cost is not None and cost > 0:
             self.last_cost = float(cost)

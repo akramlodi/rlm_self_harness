@@ -13,7 +13,7 @@ contract. They NEVER assert pass/fail outcomes -- model behavior is the
 model's business, and a run legitimately terminated at these tiny caps
 (RESOURCE_TERMINATED) must satisfy the contract too.
 
-Gating (KTD8, ``tests/live_gates.py``): the live class runs only with both
+Gating (KTD8, ``shrlm/experiment/live_gates.py``): the live class runs only with both
 Azure credentials set AND ``SHRLM_RUN_LIVE=1``, never in CI. The gate-logic
 tests at the bottom always run offline. Worst-case spend: 2 runs x
 (max_budget $0.10 + one post-trip call ~$0.013) ~= $0.23, inside the $0.60
@@ -28,6 +28,12 @@ from typing import Any
 
 import pytest
 
+from shrlm.experiment.live_gates import (
+    LIVE_CREDENTIAL_KEYS,
+    LIVE_FLAG,
+    live_skip_reason,
+    pricing_attestation_mismatch,
+)
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.driver import (
     RoundConfig,
@@ -39,7 +45,7 @@ from shrlm.optimization.driver import (
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
 from shrlm.rlm_harness import H0
-from tests.live_gates import LIVE_CREDENTIAL_KEYS, LIVE_FLAG, live_skip_reason
+from tests.optimization.test_driver import read_manifest
 
 _LIVE_SKIP = live_skip_reason()
 
@@ -120,11 +126,6 @@ def make_live_round_config(out_dir: Path) -> RoundConfig:
         max_budget=LIVE_MAX_BUDGET_USD,
         max_timeout=LIVE_MAX_TIMEOUT_SECONDS,
     )
-
-
-def read_manifest(round_path: Path) -> list[dict[str, Any]]:
-    lines = (round_path / "runs.jsonl").read_text().splitlines()
-    return [json.loads(line) for line in lines if line.strip()]
 
 
 @pytest.fixture(scope="module")
@@ -312,33 +313,23 @@ class TestPricingAttestationOffline:
     attested rate does not match the configured [pricing.list_price]."""
 
     def test_absent_attestation_names_the_variable(self) -> None:
-        from tests.live_gates import pricing_attestation_mismatch
-
         reason = pricing_attestation_mismatch(None, 0.6, 3.0)
         assert reason is not None and "SHRLM_VERIFIED_PRICING" in reason
 
     def test_malformed_attestation_rejected(self) -> None:
-        from tests.live_gates import pricing_attestation_mismatch
-
         assert pricing_attestation_mismatch("cheap", 0.6, 3.0) is not None
         assert pricing_attestation_mismatch("0.60", 0.6, 3.0) is not None
         assert pricing_attestation_mismatch("a/b", 0.6, 3.0) is not None
 
     def test_mismatched_attestation_rejected(self) -> None:
-        from tests.live_gates import pricing_attestation_mismatch
-
         reason = pricing_attestation_mismatch("0.70/3.00", 0.6, 3.0)
         assert reason is not None and "does not match" in reason
 
     def test_matching_attestation_passes(self) -> None:
-        from tests.live_gates import pricing_attestation_mismatch
-
         assert pricing_attestation_mismatch("0.60/3.00", 0.6, 3.0) is None
         assert pricing_attestation_mismatch("0.6/3.0", 0.6, 3.0) is None
 
     def test_live_gate_requires_attestation(self) -> None:
-        from tests.live_gates import live_skip_reason
-
         env = {
             "AZURE_API_KEY": "sentinel-key",
             "AZURE_FOUNDRY_ENDPOINT": "https://sentinel.services.ai.azure.com",

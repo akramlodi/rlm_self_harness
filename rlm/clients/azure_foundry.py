@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import openai
 from dotenv import load_dotenv
 
-from rlm.clients.openai import OpenAIClient
+from rlm.clients.openai import OpenAIClient, extract_provider_cost
 from rlm.core.types import ModelUsageSummary, UsageSummary
 
 load_dotenv()
@@ -66,21 +66,6 @@ def _validate_endpoint(endpoint: str) -> None:
         )
 
 
-def _extract_provider_cost(usage: Any) -> float | None:
-    """Mirror OpenAIClient._track_cost's provider-cost extraction so the value
-    can be validated before the parent silently drops a bad one."""
-    cost = None
-    if hasattr(usage, "cost") and usage.cost:
-        cost = usage.cost
-    elif hasattr(usage, "model_extra") and usage.model_extra:
-        extra = usage.model_extra
-        if extra.get("cost"):
-            cost = extra["cost"]
-        elif extra.get("cost_details", {}).get("upstream_inference_cost"):
-            cost = extra["cost_details"]["upstream_inference_cost"]
-    return cost
-
-
 class AzureFoundryClient(OpenAIClient):
     """
     LM Client for models served from Azure AI Foundry over the
@@ -132,9 +117,10 @@ class AzureFoundryClient(OpenAIClient):
         )
 
         # Where the last call's cost came from ("provider" or "synthesized"),
-        # and whether any call so far had a provider-reported cost.
+        # and each model's accumulated source ("synthesized" wins once any of
+        # that model's calls was synthesized, matching UsageSummary.cost_source).
         self.last_cost_source: str | None = None
-        self._provider_cost_seen: bool = False
+        self.model_cost_sources: dict[str, str] = {}
 
     def _validate_response(self, response: openai.ChatCompletion) -> None:
         """Fail loud on filtered or empty responses instead of returning junk."""
@@ -162,7 +148,7 @@ class AzureFoundryClient(OpenAIClient):
                     f"Azure Foundry usage is missing a valid '{field}' token count "
                     f"(got {value!r}). Refusing to record this call as free."
                 )
-        cost = _extract_provider_cost(usage)
+        cost = extract_provider_cost(usage)
         if cost is not None:
             if isinstance(cost, bool) or not isinstance(cost, (int, float)):
                 raise ValueError(
@@ -188,7 +174,7 @@ class AzureFoundryClient(OpenAIClient):
 
         if self.last_cost is not None:
             self.last_cost_source = "provider"
-            self._provider_cost_seen = True
+            self.model_cost_sources.setdefault(model, "provider")
         else:
             synthesized = (
                 self.last_prompt_tokens * self.pricing["input_per_million"]
@@ -197,13 +183,12 @@ class AzureFoundryClient(OpenAIClient):
             self.last_cost = synthesized
             self.model_costs[model] += synthesized
             self.last_cost_source = "synthesized"
+            self.model_cost_sources[model] = "synthesized"
 
     def get_usage_summary(self) -> UsageSummary:
         summary = super().get_usage_summary()
-        if summary.model_usage_summaries:
-            source = "provider" if self._provider_cost_seen else "synthesized"
-            for model_summary in summary.model_usage_summaries.values():
-                model_summary.cost_source = source
+        for model, model_summary in summary.model_usage_summaries.items():
+            model_summary.cost_source = self.model_cost_sources.get(model)
         return summary
 
     def get_last_usage(self) -> ModelUsageSummary:

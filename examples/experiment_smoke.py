@@ -179,7 +179,12 @@ from shrlm.experiment.orchestrator import (
 )
 from shrlm.experiment.report import build_report, render_markdown, write_report
 from shrlm.experiment.splits import LENGTHS, MANIFEST_FILE, SPLITS_DIR, split_plan
-from shrlm.experiment.usage import STAGE_USAGE_FILE, read_jsonl, read_stage_usage
+from shrlm.experiment.usage import (
+    STAGE_USAGE_FILE,
+    read_jsonl,
+    read_stage_usage,
+    read_usage_records,
+)
 from shrlm.optimization.attribution import DEFAULT_MAX_ATTEMPTS as ATTRIBUTION_MAX_ATTEMPTS
 from shrlm.optimization.attribution import (
     DEFAULT_TRANSPORT_RETRIES as ATTRIBUTION_TRANSPORT_RETRIES,
@@ -671,11 +676,7 @@ def check_stage_coverage(out_dir: Path) -> dict[str, int]:
     Returns:
         Stage name -> number of usage records, for the caller to print.
     """
-    records = [
-        json.loads(line)
-        for line in (out_dir / STAGE_USAGE_FILE).read_text().splitlines()
-        if line.strip()
-    ]
+    records = read_usage_records(out_dir / STAGE_USAGE_FILE).records
     stage_of = {record["stage_work_id"]: str(record["stage"]) for record in records}
     counts: dict[str, int] = {}
     for stage in stage_of.values():
@@ -948,7 +949,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    from tests.live_gates import pricing_attestation_mismatch
+    from shrlm.experiment.live_gates import pricing_attestation_mismatch
 
     pricing_reason = pricing_attestation_mismatch(
         os.getenv("SHRLM_VERIFIED_PRICING"),
