@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** A full-profile validation round finishes in roughly one-fifth of today's wall clock, with every persisted artifact (manifests, summaries, ledger, decision) byte-identical to what the sequential path produces from the same scripted inputs.
 - **Means:** Evaluate the baseline and each candidate in its own OS process (KTD1), driven by a config knob that defaults to sequential (KTD2).
-- **Authority hierarchy:** Experimental reproducibility and resume safety (persist-first, R3 identity, R12 breakers) decide judgement calls; speed never trades against them.
+- **Authority hierarchy:** Experimental reproducibility and resume safety (persist-first, identity-hash checking, spend breakers) decide judgement calls; speed never trades against them.
 - **Stop conditions:** (a) any change that would alter which runs a tripped breaker skips within one subject; (b) any change to `IDENTITY_SECTIONS` or `IDENTITY_OPERATIONAL_KEYS`; (c) the parallel path proving unable to reproduce a sequential ledger byte-for-byte on the scripted e2e fixture.
 - **Execution profile:** One unit at a time; offline scripted tests per unit; one opt-in live smoke at the end.
 
@@ -204,7 +204,7 @@ sequenceDiagram
 - **Dependencies:** U3.
 - **Files:** `shrlm/experiment/orchestrator.py` (`_validate`, `_Experiment` verifier-factory resolution, module docstring resume contract), `shrlm/experiment/config.py` (`evaluation_config_kwargs`), `tests/experiment/test_orchestrator.py`, `tests/experiment/test_smoke_mock.py`.
 - **Approach:**
-  1. `_validate` builds `EvaluationConfig` with `workers` and `verifier_factory`; the default `GraphWalksVerifier` maps to its dotted path, an injected verifier with `workers > 1` raises a configuration error before the stage meter opens.
+  1. `_validate` builds `EvaluationConfig` with `workers` and `verifier_factory`; the default `GraphWalksVerifier` maps to its dotted path, an injected verifier with `workers > 1` and no `verifier_factory` raises a configuration error before the stage meter opens.
   2. `_validation_usage` before/after delta is unchanged; confirm it captures child-persisted manifests.
 - **Patterns to follow:** existing `_validate` meter block.
 - **Test scenarios:**
