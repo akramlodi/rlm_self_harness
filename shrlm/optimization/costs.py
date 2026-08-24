@@ -68,10 +68,13 @@ loudly, because a spend breaker fed cost-less runs is a run counter wearing a
 costume (the same stance ``runner.acceptance_inputs`` takes).
 """
 
+import contextlib
+import os
 import signal
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, TypeVar
 
 from rlm.utils.exceptions import TimeoutExceededError
@@ -327,6 +330,69 @@ def _run_slice(
         return persisted
 
 
+# The claim a governed round holds on its split for as long as it is dispatching
+# into it. A directory rather than a file: exclusive creation is the atomic
+# primitive here, and the pid inside names the holder for the refusal message.
+CLAIM_DIRNAME = ".claim"
+CLAIM_PID_FILENAME = "pid"
+
+
+class SplitClaimedError(RuntimeError):
+    """Another live process is already dispatching runs into this split."""
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@contextlib.contextmanager
+def claim_split(path: Path):
+    """Hold this split exclusively for the duration of the block.
+
+    Two invocations dispatching into one split would interleave manifest
+    appends and double-charge runs, and neither would know the other existed.
+    The guard is not gated on the worker count: a second sequential invocation
+    of the same split is exactly as damaging as a concurrent one, so the claim
+    is taken on every governed round.
+
+    A claim whose pid is gone is reclaimed rather than honoured -- a crashed
+    round must not lock its split forever -- while a claim held by a live
+    process refuses with both the split and the holder named.
+    """
+    claim_dir = path / CLAIM_DIRNAME
+    pid_path = claim_dir / CLAIM_PID_FILENAME
+    try:
+        claim_dir.mkdir(parents=True)
+    except FileExistsError:
+        holder: int | None = None
+        try:
+            holder = int(pid_path.read_text().strip())
+        except (OSError, ValueError):
+            holder = None
+        # Same-pid is refused too: a second dispatch into one split is a bug
+        # whether or not it comes from this process, and nothing here is
+        # legitimately re-entrant.
+        if holder is not None and _pid_alive(holder):
+            raise SplitClaimedError(
+                f"{path} is already claimed by live process {holder}; refusing to "
+                "dispatch a second round into one split."
+            ) from None
+        # Stale: the holder is gone, or the record is unreadable. Take it over.
+    pid_path.write_text(f"{os.getpid()}\n")
+    try:
+        yield
+    finally:
+        pid_path.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            claim_dir.rmdir()
+
+
 def run_governed_round(config: RoundConfig, breaker: CandidateSpendBreaker) -> GovernedRoundResult:
     """Run one round under the breaker: persist-first, one run at a time.
 
@@ -353,7 +419,17 @@ def run_governed_round(config: RoundConfig, breaker: CandidateSpendBreaker) -> G
         The manifest entries, the ``completed``/``over_budget`` outcome, the
         breaker's cumulative spend, and the run ids the breaker skipped.
     """
-    namespace = str(round_dir(config.out_dir, config.round_index))
+    round_path = round_dir(config.out_dir, config.round_index)
+    round_path.mkdir(parents=True, exist_ok=True)
+    with claim_split(round_path):
+        return _run_governed_round_claimed(config, breaker, round_path)
+
+
+def _run_governed_round_claimed(
+    config: RoundConfig, breaker: CandidateSpendBreaker, round_path: Path
+) -> GovernedRoundResult:
+    """``run_governed_round``'s body, with this split's claim already held."""
+    namespace = str(round_path)
     deadline = hard_deadline_seconds(config.max_timeout)
     # The stop_after=0 slice executes no runs but does build the harness when
     # runs are pending -- candidate code that can itself hang, hence the guard.
@@ -397,6 +473,7 @@ __all__ = [
     "CandidateSpendBreaker",
     "GovernedRoundResult",
     "HardDeadlineExceeded",
+    "SplitClaimedError",
     "ValidationCaps",
     "breaker_run_cost",
     "governed_limits",
