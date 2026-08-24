@@ -13,6 +13,9 @@ with a factory of scripted clients that stub per-call costs.
 """
 
 import json
+import os
+import signal
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -769,15 +772,14 @@ class TestParallelSubjects:
             verifier_factory=GOLD_VERIFIER_FACTORY,
             client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS, hold=30.0),
         )
-        terminated: list[int] = []
-        real_popen = worker_module.subprocess.Popen
+        signalled: list[tuple[int, int]] = []
+        real_signal_group = worker_module._signal_group
 
-        class TrackingPopen(real_popen):  # type: ignore[misc,valid-type]
-            def terminate(self) -> None:
-                terminated.append(self.pid)
-                super().terminate()
+        def tracking_signal_group(process: Any, signum: int) -> None:
+            signalled.append((process.pid, signum))
+            real_signal_group(process, signum)
 
-        monkeypatch.setattr(worker_module.subprocess, "Popen", TrackingPopen)
+        monkeypatch.setattr(worker_module, "_signal_group", tracking_signal_group)
 
         # Patch the poll loop's own seam, never the stdlib ``time.sleep`` that
         # ``Popen.wait(timeout=...)`` uses inside the cleanup path.
@@ -793,7 +795,7 @@ class TestParallelSubjects:
         with pytest.raises(KeyboardInterrupt):
             evaluate_validation_round(H0, parallel_candidates(), config)
         assert polls["n"] == 3
-        assert len(terminated) == 2
+        assert sorted(signum for _pid, signum in signalled) == [signal.SIGTERM, signal.SIGTERM]
         for subject_id in PARALLEL_SCRIPTS:
             assert not (
                 subject_dir(config.out_dir, config.round_index, subject_id) / SUMMARY_FILENAME
@@ -815,15 +817,14 @@ class TestParallelSubjects:
                 tmp_path, PARALLEL_SCRIPTS, hold=60.0, ignore_sigterm=True
             ),
         )
-        killed: list[int] = []
-        real_popen = worker_module.subprocess.Popen
+        signalled: list[tuple[int, int]] = []
+        real_signal_group = worker_module._signal_group
 
-        class TrackingPopen(real_popen):  # type: ignore[misc,valid-type]
-            def kill(self) -> None:
-                killed.append(self.pid)
-                super().kill()
+        def tracking_signal_group(process: Any, signum: int) -> None:
+            signalled.append((process.pid, signum))
+            real_signal_group(process, signum)
 
-        monkeypatch.setattr(worker_module.subprocess, "Popen", TrackingPopen)
+        monkeypatch.setattr(worker_module, "_signal_group", tracking_signal_group)
         polls = {"n": 0}
 
         def interrupt(_seconds: float) -> None:
@@ -837,8 +838,126 @@ class TestParallelSubjects:
         with pytest.raises(KeyboardInterrupt):
             evaluate_validation_round(H0, parallel_candidates(), config)
         elapsed = time.perf_counter() - started
-        assert len(killed) == 2
+        assert sorted(signum for _pid, signum in signalled if signum == signal.SIGKILL) == [
+            signal.SIGKILL,
+            signal.SIGKILL,
+        ]
         assert elapsed < 30.0
+
+    def test_a_live_worker_pid_refuses_to_spawn_anything(self, tmp_path, monkeypatch):
+        from shrlm.optimization.subject_worker import PID_FILENAME, SubjectWorkerBusyError
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        cand_a = subject_dir(config.out_dir, config.round_index, "cand-a")
+        cand_a.mkdir(parents=True)
+        (cand_a / PID_FILENAME).write_text(f"{os.getpid()}\n")  # this very process: alive
+
+        with pytest.raises(SubjectWorkerBusyError, match="cand-a"):
+            evaluate_validation_round(H0, parallel_candidates(), config)
+        assert not subject_dir(config.out_dir, config.round_index, BASELINE_ID).exists()
+        assert not (cand_a / REQUEST_FILENAME).exists()
+
+    def test_a_stale_worker_pid_is_cleared_and_pid_files_never_outlive_children(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+
+        from shrlm.optimization.subject_worker import PID_FILENAME
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        cand_b = subject_dir(config.out_dir, config.round_index, "cand-b")
+        cand_b.mkdir(parents=True)
+        # A pid that no longer exists: one from a process that already exited.
+        probe = subprocess.Popen([sys.executable, "-c", "pass"])
+        probe.wait()
+        (cand_b / PID_FILENAME).write_text(f"{probe.pid}\n")
+
+        result = evaluate_validation_round(H0, parallel_candidates(), config)
+        assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b", "cand-c", "cand-d"]
+        for subject_id in PARALLEL_SCRIPTS:
+            assert not (
+                subject_dir(config.out_dir, config.round_index, subject_id) / PID_FILENAME
+            ).exists()
+
+    def test_children_exit_on_their_own_when_the_parent_is_killed(self, tmp_path):
+        import signal
+        import subprocess
+        import textwrap
+        import time
+
+        from shrlm.optimization.subject_worker import PID_FILENAME
+
+        factory_path, args = parallel_client_factory(tmp_path, PARALLEL_SCRIPTS, hold=120.0)
+        spec = tmp_path / "spec.json"
+        spec.write_text(json.dumps({"factory": factory_path, "args": args}))
+        script = tmp_path / "parent.py"
+        script.write_text(
+            textwrap.dedent(
+                f"""
+                import json
+                from pathlib import Path
+                from shrlm.optimization.validation import evaluate_validation_round
+                from shrlm.rlm_harness import H0
+                from tests.optimization.test_validation import (
+                    GOLD_VERIFIER_FACTORY, make_config, parallel_candidates,
+                )
+                spec = json.loads(Path({str(spec)!r}).read_text())
+                config = make_config(
+                    Path({str(tmp_path)!r}),
+                    workers=2,
+                    verifier_factory=GOLD_VERIFIER_FACTORY,
+                    client_factory=(spec["factory"], spec["args"]),
+                )
+                evaluate_validation_round(H0, parallel_candidates(), config)
+                """
+            )
+        )
+        # A script run by path puts its own directory first on sys.path, so the
+        # repo root must reach the child through PYTHONPATH for ``tests`` to import.
+        repo_root = Path(__file__).resolve().parents[2]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
+        parent = subprocess.Popen([sys.executable, str(script)], cwd=repo_root, env=env)
+        out_dir = tmp_path / "validation"
+        deadline = time.monotonic() + 60
+        pids: list[int] = []
+        while time.monotonic() < deadline and len(pids) < 2:
+            pids = [
+                int(path.read_text())
+                for path in out_dir.glob(f"round_*/*/{PID_FILENAME}")
+                if path.read_text().strip()
+            ]
+            time.sleep(0.2)
+        assert len(pids) == 2, "two children never registered their pids"
+
+        parent.send_signal(signal.SIGKILL)
+        parent.wait()
+
+        def alive(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            return True
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and any(alive(pid) for pid in pids):
+            time.sleep(0.2)
+        assert not any(alive(pid) for pid in pids), "orphaned children kept running"
 
     def test_credential_kwargs_are_refused_before_any_request_is_written(self, tmp_path):
         with pytest.raises(ValueError, match="credential material"):

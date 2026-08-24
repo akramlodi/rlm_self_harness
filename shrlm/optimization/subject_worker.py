@@ -39,9 +39,12 @@ boundary.
 """
 
 import json
+import os
 import pkgutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from collections import deque
@@ -61,6 +64,11 @@ REQUEST_FILENAME = "worker_request.json"
 RESULT_FILENAME = "worker_result.json"
 LOG_FILENAME = "worker.log"
 CLIENT_CALLS_FILENAME = "client_calls.json"
+# The live child's pid, written by the parent after spawn and removed when the
+# child exits. A resume that finds a live pid refuses to spawn a second child
+# on the same subject directory (the parent-death case: an orphaned child is
+# still paying for runs the new child would repeat).
+PID_FILENAME = "worker.pid"
 
 REQUEST_FORMAT = "shrlm-subject-worker-request/v1"
 RESULT_FORMAT = "shrlm-subject-worker-result/v1"
@@ -79,6 +87,11 @@ _sleep = time.sleep
 # How long the parent gives a child to exit after SIGTERM before SIGKILL, so an
 # interrupt never hangs on a child that ignores the polite signal.
 TERMINATE_GRACE_SECONDS = 10.0
+
+# How often a child checks that its parent is still alive. A parent that was
+# SIGKILLed cannot terminate its children, so each child watches for itself and
+# exits rather than keep spending on runs a resumed parent will redo.
+PARENT_WATCH_SECONDS = 1.0
 
 BASELINE_REJECTED_MESSAGE = (
     "the incumbent violates the experiment-owned caps ({reason}); a baseline that "
@@ -105,6 +118,59 @@ class SubjectWorkerError(RuntimeError):
             f"{len(failures)} validation subject worker(s) failed; every other subject's "
             "runs are persisted, so re-running resumes only the missing runs:\n" + "\n".join(lines)
         )
+
+
+class SubjectWorkerBusyError(RuntimeError):
+    """A subject directory still has a live worker; refusing to spawn a second one."""
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def live_worker_pid(subject_path: Path) -> int | None:
+    """The pid recorded in ``worker.pid`` when that process is still alive.
+
+    A stale file (its process is gone) is removed and reads as ``None``.
+    """
+    path = subject_path / PID_FILENAME
+    try:
+        pid = int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if _pid_alive(pid):
+        return pid
+    path.unlink(missing_ok=True)
+    return None
+
+
+def _watch_parent(parent_pid: int, subject_path: Path, subject_id: str) -> None:
+    """Child-side watchdog: exit when the parent that spawned us is gone."""
+    while True:
+        time.sleep(PARENT_WATCH_SECONDS)
+        if os.getppid() != parent_pid:
+            try:
+                (subject_path / RESULT_FILENAME).write_text(
+                    json.dumps(
+                        {
+                            "format": RESULT_FORMAT,
+                            "ok": False,
+                            "subject_id": subject_id,
+                            "error": f"parent process {parent_pid} died; worker exited",
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            finally:
+                os._exit(3)
 
 
 def resolve_dotted(path: str) -> Any:
@@ -275,15 +341,23 @@ def run_subject_worker(request_path: str | Path) -> dict[str, Any]:
     return result
 
 
+def _signal_group(process: subprocess.Popen[bytes], signum: int) -> None:
+    """Signal the child's whole process group (it was spawned as a session leader)."""
+    try:
+        os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+
+
 def _terminate_all(children: list[subprocess.Popen[bytes]]) -> None:
-    """SIGTERM every child, then SIGKILL any that outlives the grace period."""
+    """SIGTERM every child's group, then SIGKILL any that outlives the grace period."""
     for process in children:
-        process.terminate()
+        _signal_group(process, signal.SIGTERM)
     for process in children:
         try:
             process.wait(timeout=TERMINATE_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
-            process.kill()
+            _signal_group(process, signal.SIGKILL)
             process.wait()
 
 
@@ -302,8 +376,14 @@ def evaluate_subjects_in_processes(
     or leaves no ``ok`` result is recorded as a failure; the remaining children
     still run to completion, then ``SubjectWorkerError`` names every failure
     with its log path (R6). A ``KeyboardInterrupt`` (or any other escape)
-    terminates every live child -- SIGTERM, then SIGKILL after
+    terminates every live child's process group -- SIGTERM, then SIGKILL after
     ``TERMINATE_GRACE_SECONDS`` -- before propagating (R8).
+
+    Orphan guard: every admitted subject's ``worker.pid`` is checked before
+    the first spawn, and a live pid raises ``SubjectWorkerBusyError`` -- a
+    parent that was SIGKILLed left a child still paying for that subject, and
+    a second child would redo its runs. Each child also exits on its own when
+    its parent disappears (``_watch_parent``).
     """
     # Deferred: validation imports this module at load time.
     from shrlm.optimization.validation import (
@@ -325,6 +405,20 @@ def evaluate_subjects_in_processes(
             results[index] = limits
             continue
         queue.append((index, subject_id, harness, expected_hash))
+
+    busy = [
+        (subject_id, pid)
+        for _index, subject_id, _harness, _hash in queue
+        if (pid := live_worker_pid(subject_dir(config.out_dir, config.round_index, subject_id)))
+        is not None
+    ]
+    if busy:
+        named = ", ".join(f"{subject_id} (pid {pid})" for subject_id, pid in busy)
+        raise SubjectWorkerBusyError(
+            f"a worker is still running for subject(s) {named}; a previous invocation's "
+            "parent died without terminating its children. Wait for or kill those "
+            "processes, then re-run to resume."
+        )
 
     split_instances = {split_id: instances for split_id, instances in config.splits.items()}
     factory_args = config.client_factory[1] if config.client_factory is not None else {}
@@ -360,10 +454,12 @@ def evaluate_subjects_in_processes(
                         [sys.executable, "-m", __name__, str(request_path)],
                         stdout=log,
                         stderr=subprocess.STDOUT,
+                        start_new_session=True,
                     )
                 except BaseException:
                     log.close()
                     raise
+                (subject_path / PID_FILENAME).write_text(f"{process.pid}\n")
                 running[index] = (process, subject_path, log, subject_id)
 
             finished = [
@@ -375,6 +471,7 @@ def evaluate_subjects_in_processes(
             for index in finished:
                 process, subject_path, log, subject_id = running.pop(index)
                 log.close()
+                (subject_path / PID_FILENAME).unlink(missing_ok=True)
                 result = read_result(subject_path)
                 if process.returncode == 0 and result is not None and result.get("ok"):
                     results[index] = SubjectEvaluation(
@@ -396,8 +493,9 @@ def evaluate_subjects_in_processes(
                 )
     except BaseException:
         _terminate_all([process for process, *_ in running.values()])
-        for _process, _path, log, _subject_id in running.values():
+        for _process, subject_path, log, _subject_id in running.values():
             log.close()
+            (subject_path / PID_FILENAME).unlink(missing_ok=True)
         raise
     if failures:
         raise SubjectWorkerError(failures)
@@ -411,6 +509,18 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 2
+    request_path = Path(argv[1])
+    subject_id = "<unknown>"
+    try:
+        subject_id = str(json.loads(request_path.read_text()).get("subject_id", subject_id))
+    except (OSError, ValueError):
+        pass
+    threading.Thread(
+        target=_watch_parent,
+        args=(os.getppid(), request_path.parent, subject_id),
+        daemon=True,
+        name="parent-watchdog",
+    ).start()
     result = run_subject_worker(argv[1])
     print(json.dumps({key: value for key, value in result.items() if key != "traceback"}))
     if not result["ok"]:

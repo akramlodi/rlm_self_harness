@@ -211,7 +211,10 @@ caps, backend, verifier factory dotted path), redirects the child's stdout/stder
 and reads back `worker_result.json` plus the persisted `summary.json`. The child refuses a harness
 that does not rematerialize to the expected hash. A crashed subject never aborts its siblings:
 the parent waits for every child, then raises `SubjectWorkerError` naming each failed subject and
-its log; re-running the same command resumes only the missing runs. The caps gate runs in the
+its log; re-running the same command resumes only the missing runs. Each subject directory also
+carries `worker.pid` while its child is alive: a resume that finds a live pid refuses to spawn
+(`SubjectWorkerBusyError`) rather than pay for the same runs twice, and every child exits on its
+own when its parent disappears (a SIGKILLed parent cannot terminate anyone). The caps gate runs in the
 parent, so a rejected candidate never gets a child, and the merged re-evaluation stays sequential
 in-process. Tests script the children through the request's test-only `client_factory` seam
 (`tests/optimization/subject_worker_support.py`).
