@@ -7,12 +7,19 @@ import pytest
 
 import shrlm.baselines.upstream.lambda_rlm as upstream_lambda
 from rlm.core.types import RLMChatCompletion
+from rlm.utils.exceptions import BudgetExceededError
 from shrlm.baselines.lambda_rlm import LambdaBaselineConfig, lambda_method_envelope
-from shrlm.baselines.lambda_runner import LambdaRoundConfig, run_lambda_round
+from shrlm.baselines.lambda_runner import (
+    BudgetGuardClient,
+    LambdaRoundConfig,
+    run_lambda_round,
+    validate_lambda_round,
+)
 from shrlm.optimization.bundle import round_dir
 from shrlm.optimization.driver import RoundPersistenceError, load_manifest
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
+from tests.mock_lm import MockLM
 from tests.optimization.test_driver import ClientFactory
 
 
@@ -151,3 +158,83 @@ def test_rejects_secret_backend_kwargs_before_writing(tmp_path: Path) -> None:
         run_lambda_round(config)
 
     assert not round_dir(tmp_path, 1).exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_budget", 0),
+        ("max_budget", -0.1),
+        ("max_budget", True),
+        ("max_timeout", 0),
+        ("max_timeout", -1.0),
+        ("max_timeout", False),
+    ],
+)
+def test_rejects_invalid_lambda_limits(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    config = make_config(tmp_path, **{field: value})
+
+    with pytest.raises(ValueError, match=field):
+        validate_lambda_round(config)
+
+
+def test_accepts_positive_or_unset_lambda_limits(tmp_path: Path) -> None:
+    validate_lambda_round(make_config(tmp_path))
+    validate_lambda_round(make_config(tmp_path, max_budget=0.1, max_timeout=30.0))
+
+
+def test_budget_guard_allows_exact_budget_then_blocks_after_crossing() -> None:
+    factory = ClientFactory(["one", "two", "three", "must-not-run"], cost_per_call=0.001)
+    delegate = factory("openai", {"model_name": "guard-test"})
+    client = BudgetGuardClient(delegate, max_budget=0.002)
+
+    assert client.completion("first") == "one"
+    assert client.completion("second") == "two"
+    assert client.spent == pytest.approx(0.002)
+
+    with pytest.raises(BudgetExceededError) as crossing:
+        client.completion("third")
+
+    assert crossing.value.spent == pytest.approx(0.003)
+    assert crossing.value.budget == pytest.approx(0.002)
+    assert client.budget_error is crossing.value
+    assert factory.total_calls == 3
+
+    with pytest.raises(BudgetExceededError) as blocked:
+        client.completion("fourth")
+
+    assert blocked.value is crossing.value
+    assert factory.total_calls == 3
+    assert factory.script == ["must-not-run"]
+
+
+@pytest.mark.asyncio
+async def test_budget_guard_enforces_async_calls() -> None:
+    factory = ClientFactory(["over"], cost_per_call=0.002)
+    delegate = factory("openai", {"model_name": "guard-test"})
+    client = BudgetGuardClient(delegate, max_budget=0.001)
+
+    with pytest.raises(BudgetExceededError, match="Budget exceeded"):
+        await client.acompletion("prompt")
+
+    assert factory.total_calls == 1
+
+
+def test_budget_guard_delegates_usage_and_allows_unpriced_clients() -> None:
+    delegate = MockLM(responses=["answer"])
+    client = BudgetGuardClient(delegate, max_budget=0.1)
+
+    assert client.completion("prompt") == "answer"
+    assert client.spent is None
+    assert client.get_usage_summary() == delegate.get_usage_summary()
+    assert client.get_last_usage() == delegate.get_last_usage()
+
+
+@pytest.mark.parametrize("value", [0, -0.1, True])
+def test_budget_guard_rejects_invalid_caps(value: object) -> None:
+    with pytest.raises(ValueError, match="max_budget"):
+        BudgetGuardClient(MockLM(), value)
