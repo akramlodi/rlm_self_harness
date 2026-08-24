@@ -51,6 +51,12 @@ from shrlm.optimization.promotion import (
     plan_promotion,
     promote_decision,
 )
+from shrlm.optimization.subject_worker import (
+    CLIENT_CALLS_FILENAME,
+    LOG_FILENAME,
+    REQUEST_FILENAME,
+    SubjectWorkerError,
+)
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
 from shrlm.optimization.validation import (
@@ -533,6 +539,262 @@ class TestBudget:
         assert result.gate == GATE_CAPS
         assert idle.total_calls == 0
         assert not subject_dir(config.out_dir, config.round_index, "cand-deep").exists()
+
+
+# ---------------------------------------------------------------------------
+# Subject parallelism: one child process per subject (U3)
+# ---------------------------------------------------------------------------
+
+
+def parallel_client_factory(
+    tmp_path: Path, scripts: dict[str, list[str]], **extra: Any
+) -> tuple[str, dict[str, Any]]:
+    """Per-subject scripts on disk, addressed by the child-side seam (KTD9)."""
+    from tests.optimization.subject_worker_support import SCRIPTED_FACTORY, write_script
+
+    args: dict[str, Any] = {}
+    for subject_id, script in scripts.items():
+        path = write_script(tmp_path / "scripts" / f"{subject_id}.json", script)
+        args[subject_id] = {"script_path": str(path), **extra}
+    return (SCRIPTED_FACTORY, args)
+
+
+def subject_calls(config: EvaluationConfig, subject_id: str) -> int:
+    path = subject_dir(config.out_dir, config.round_index, subject_id) / CLIENT_CALLS_FILENAME
+    return int(json.loads(path.read_text())["calls"])
+
+
+PARALLEL_SCRIPTS: dict[str, list[str]] = {
+    BASELINE_ID: [final("RIGHT")] * 8,
+    "cand-a": [final("RIGHT"), final("RIGHT"), final("WRONG"), final("RIGHT")]
+    + [final("WRONG"), final("WRONG"), final("RIGHT"), final("RIGHT")],
+    "cand-b": [final("RIGHT")] * 8,
+    "cand-c": [final("WRONG")] * 8,
+    "cand-d": [final("RIGHT")] * 8,
+}
+
+
+def parallel_candidates() -> list[LoadedCandidate]:
+    return [
+        fake_candidate(candidate_id, candidate_harness(candidate_id))
+        for candidate_id in ("cand-a", "cand-b", "cand-c", "cand-d")
+    ]
+
+
+class TestParallelSubjects:
+    def test_subjects_run_in_bounded_concurrent_children_in_loader_order(
+        self, tmp_path, monkeypatch
+    ):
+        from tests.optimization.subject_worker_support import max_concurrency
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)  # the parent makes no calls
+        concurrency_dir = tmp_path / "alive"
+        concurrency_dir.mkdir()
+        config = make_config(
+            tmp_path,
+            workers=3,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(
+                tmp_path, PARALLEL_SCRIPTS, concurrency_dir=str(concurrency_dir), hold=1.0
+            ),
+        )
+
+        result = evaluate_validation_round(H0, parallel_candidates(), config)
+
+        assert idle.total_calls == 0
+        assert result.baseline.subject_id == BASELINE_ID
+        assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b", "cand-c", "cand-d"]
+        assert result.baseline.summary["splits"][SPLIT_HELDIN]["pass_count"] == 4
+        cand_a = result.candidates[0]
+        assert isinstance(cand_a, SubjectEvaluation)
+        assert cand_a.summary["splits"][SPLIT_HELDIN]["pass_count"] == 3
+        assert cand_a.summary["splits"][SPLIT_HELDOUT]["pass_count"] == 2
+        cand_c = result.candidates[2]
+        assert isinstance(cand_c, SubjectEvaluation)
+        assert cand_c.summary["splits"][SPLIT_HELDOUT]["pass_count"] == 0
+        for subject_id in PARALLEL_SCRIPTS:
+            subject_path = subject_dir(config.out_dir, config.round_index, subject_id)
+            assert load_summary(subject_path)["subject_id"] == subject_id
+            assert (subject_path / REQUEST_FILENAME).exists()
+            assert (subject_path / LOG_FILENAME).exists()
+            assert subject_calls(config, subject_id) == 8
+        observed = max_concurrency(concurrency_dir)
+        assert 2 <= observed <= 3, observed
+
+    def test_parallel_summaries_match_the_sequential_bytes(self, tmp_path, monkeypatch):
+        # Sequential: the in-process seam, one shared script in evaluation order.
+        sequential = ClientFactory(
+            PARALLEL_SCRIPTS[BASELINE_ID]
+            + PARALLEL_SCRIPTS["cand-a"]
+            + PARALLEL_SCRIPTS["cand-b"]
+            + PARALLEL_SCRIPTS["cand-c"]
+            + PARALLEL_SCRIPTS["cand-d"]
+        )
+        monkeypatch.setattr(rlm_module, "get_client", sequential)
+        seq_config = make_config(tmp_path, out_dir=tmp_path / "sequential")
+        seq = evaluate_validation_round(H0, parallel_candidates(), seq_config)
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        par_config = make_config(
+            tmp_path,
+            out_dir=tmp_path / "parallel",
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        par = evaluate_validation_round(H0, parallel_candidates(), par_config)
+
+        assert idle.total_calls == 0
+        assert seq.baseline.summary_path.read_bytes() == par.baseline.summary_path.read_bytes()
+        for left, right in zip(seq.candidates, par.candidates, strict=True):
+            assert isinstance(left, SubjectEvaluation) and isinstance(right, SubjectEvaluation)
+            assert left.summary_path.read_bytes() == right.summary_path.read_bytes()
+            for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+                seq_manifest = read_manifest(
+                    split_dir(seq_config.out_dir, 1, left.subject_id, split_id) / "round_00"
+                )
+                par_manifest = read_manifest(
+                    split_dir(par_config.out_dir, 1, right.subject_id, split_id) / "round_00"
+                )
+                keys = ("run_id", "passed", "cost", "cause", "harness_hash")
+                assert [{k: e.get(k) for k in keys} for e in seq_manifest] == [
+                    {k: e.get(k) for k in keys} for e in par_manifest
+                ]
+
+    def test_a_crashed_subject_lets_siblings_finish_then_raises_and_resumes(
+        self, tmp_path, monkeypatch
+    ):
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        factory_path, args = parallel_client_factory(tmp_path, PARALLEL_SCRIPTS)
+        # cand-c's child crashes on its first completion; its siblings must still land.
+        crashing_args = dict(args)
+        crashing_args["cand-c"] = {"crash": True}
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=(factory_path, crashing_args),
+        )
+        with pytest.raises(SubjectWorkerError) as excinfo:
+            evaluate_validation_round(H0, parallel_candidates(), config)
+
+        failure = excinfo.value.failures
+        assert [f["subject_id"] for f in failure] == ["cand-c"]
+        log_path = subject_dir(config.out_dir, config.round_index, "cand-c") / LOG_FILENAME
+        assert failure[0]["log_path"] == str(log_path)
+        assert "scripted crash" in log_path.read_text()
+        assert str(log_path) in str(excinfo.value)
+        for subject_id in (BASELINE_ID, "cand-a", "cand-b", "cand-d"):
+            assert load_summary(subject_dir(config.out_dir, config.round_index, subject_id))
+        assert not (
+            subject_dir(config.out_dir, config.round_index, "cand-c") / SUMMARY_FILENAME
+        ).exists()
+
+        # Resume with a working script for cand-c: only its runs are paid for.
+        fixed = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        result = evaluate_validation_round(H0, parallel_candidates(), fixed)
+        assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b", "cand-c", "cand-d"]
+        assert subject_calls(fixed, "cand-c") == 8
+        for subject_id in (BASELINE_ID, "cand-a", "cand-b", "cand-d"):
+            assert subject_calls(fixed, subject_id) == 0
+        assert idle.total_calls == 0
+
+    def test_caps_gate_rejects_in_the_parent_without_spawning(self, tmp_path, monkeypatch):
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        scripts = {BASELINE_ID: [final("RIGHT")] * 8, "cand-ok": [final("RIGHT")] * 8}
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, scripts),
+        )
+        policy = build_runtime_policy() | {"enabled": True, "max_depth": 3}
+        deep = fake_candidate("cand-deep", replace(H0, runtime_policy=policy))
+        ok = fake_candidate("cand-ok", candidate_harness("cand-ok"))
+
+        result = evaluate_validation_round(H0, [deep, ok], config)
+
+        rejection, evaluated = result.candidates
+        assert isinstance(rejection, CandidateRejection)
+        assert rejection.candidate_id == "cand-deep" and rejection.gate == GATE_CAPS
+        assert not subject_dir(config.out_dir, config.round_index, "cand-deep").exists()
+        assert isinstance(evaluated, SubjectEvaluation) and evaluated.subject_id == "cand-ok"
+
+    def test_a_rejected_baseline_raises_before_any_spawn(self, tmp_path, monkeypatch):
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        policy = build_runtime_policy() | {"enabled": True, "max_depth": 3}
+        with pytest.raises(ValueError, match="incumbent violates"):
+            evaluate_validation_round(
+                replace(H0, runtime_policy=policy), parallel_candidates(), config
+            )
+        assert not Path(config.out_dir).exists()
+
+    def test_workers_one_spawns_no_child(self, tmp_path, monkeypatch):
+        import subprocess
+
+        def refuse(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("workers=1 must never spawn a child process")
+
+        monkeypatch.setattr(subprocess, "Popen", refuse)
+        _config, result, factory = run_full_evaluation(tmp_path, monkeypatch)
+        assert factory.total_calls == 24
+        assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b"]
+
+    def test_an_interrupt_terminates_live_children_and_propagates(self, tmp_path, monkeypatch):
+        import shrlm.optimization.validation as validation_module
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS, hold=30.0),
+        )
+        terminated: list[int] = []
+        real_popen = validation_module.subprocess.Popen
+
+        class TrackingPopen(real_popen):  # type: ignore[misc,valid-type]
+            def terminate(self) -> None:
+                terminated.append(self.pid)
+                super().terminate()
+
+        monkeypatch.setattr(validation_module.subprocess, "Popen", TrackingPopen)
+
+        polls = {"n": 0}
+
+        def interrupt(_seconds: float) -> None:
+            polls["n"] += 1
+            if polls["n"] >= 3:
+                raise KeyboardInterrupt
+            import time as real_time
+
+            real_time.sleep(0.2)
+
+        monkeypatch.setattr(validation_module.time, "sleep", interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            evaluate_validation_round(H0, parallel_candidates(), config)
+        assert len(terminated) == 2
+        for subject_id in PARALLEL_SCRIPTS:
+            assert not (
+                subject_dir(config.out_dir, config.round_index, subject_id) / SUMMARY_FILENAME
+            ).exists()
 
 
 # ---------------------------------------------------------------------------
