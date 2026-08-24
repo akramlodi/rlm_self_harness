@@ -14,14 +14,14 @@ so every short bucket has a per-run mean of 1000 in / 100 out and every long
 bucket 10000 in / 500 out, whichever way the buckets are pooled.
 
 Full-profile config arithmetic (m=2, n_in=24, v=4, K=4, n_ho=40, p_merge=0.5,
-T=15, eval_conditions=3, eval_repetitions=3). The evaluation grid covers both
+T=3, eval_conditions=3, eval_repetitions=3). The evaluation grid covers both
 configured environments: source GraphWalks (test_short=40, test_long=150) and
 target OOLONG-Pairs (n_short=40, n_long=40), so each length's eval run count
 sums both environments' test-role size, not GraphWalks alone (see
 ``shrlm.experiment.report.eval_test_sizes``):
 
     runs/round = 2*24 + 4*5*64 + 0.5*4*64 = 48 + 1280 + 128 = 1456
-    optimization runs = 1456 * 15 = 21840
+    optimization runs = 1456 * 3 = 4368
     eval short size = 40 (graphwalks) + 40 (oolong_pairs) = 80
     eval long size  = 150 (graphwalks) + 40 (oolong_pairs) = 190
     eval runs = 3 * (80 + 190) * 3 = 2430  (720 short + 1,710 long)
@@ -70,7 +70,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "report_experiment"
 
 # Hand-computed from the fixture + full-profile config (see module docstring).
 RUNS_PER_ROUND = 1456.0
-OPTIMIZATION_RUNS = 21840.0
+OPTIMIZATION_RUNS = 4368.0
 EVAL_SHORT_RUNS = 720.0
 EVAL_LONG_RUNS = 1710.0
 
@@ -83,12 +83,12 @@ POINT_INPUT_TOKENS = (
     OPTIMIZATION_RUNS * SHORT_MEAN_INPUT
     + EVAL_SHORT_RUNS * SHORT_MEAN_INPUT
     + EVAL_LONG_RUNS * LONG_MEAN_INPUT
-)  # 49_560_000
+)  # 22_188_000
 POINT_OUTPUT_TOKENS = (
     OPTIMIZATION_RUNS * SHORT_MEAN_OUTPUT
     + EVAL_SHORT_RUNS * SHORT_MEAN_OUTPUT
     + EVAL_LONG_RUNS * LONG_MEAN_OUTPUT
-)  # 3_606_000
+)  # 1_363_800
 
 
 @pytest.fixture
@@ -406,9 +406,7 @@ class TestApiScenarios:
         )
         assert promo.usd_point == pytest.approx(expected_promo)
         assert listed.usd_point == pytest.approx(expected_list)
-        # Azure publishes a single Kimi-K2.5 tier (KTD4): the promo slot is
-        # repurposed to equal the list price, so the two scenarios coincide.
-        assert promo.usd_point == listed.usd_point
+        assert promo.usd_point < listed.usd_point
 
     def test_round_extrapolation_identity(self, config, experiment):
         """(m*n_in + v(K+1)(n_in+n_ho) + p_merge*v(n_in+n_ho)) * mean short tokens * price."""
@@ -446,7 +444,7 @@ class TestGpuScenarios:
             + long_tokens / profile.throughput_tokens_per_second["long"]
         ) / 3600.0
 
-        assert hours == pytest.approx(9.997222222222222)
+        assert hours == pytest.approx(7.772777777777778)
         assert scenario.detail["gpu_hours_point"] == pytest.approx(hours)
         assert scenario.usd_point == pytest.approx(hours * profile.hourly_rate_usd)
         assert scenario.detail["usd_point_low"] == pytest.approx(
@@ -510,8 +508,8 @@ class TestPessimisticScenario:
         ceiling = config.promotion.cost_band[1]
         factor = sum(ceiling**index for index in range(config.loop.t))
         # Geometric in the ceiling, so this value is highly sensitive to it:
-        # the shipped 1.25 gives ~109.7 over 15 rounds, where 2.0 gave 32,767.
-        assert factor == pytest.approx(sum(1.25**i for i in range(15)))
+        # the shipped 1.25 gives 3.8125 over 3 rounds (~109.7 over 15).
+        assert factor == pytest.approx(sum(1.25**i for i in range(3)))
 
         point_optimization = next(leg for leg in report.point.legs if leg.name == "optimization")
         pessimistic_optimization = next(
@@ -552,9 +550,9 @@ class TestRecommendationPolicy:
         assert report.recommendation.failing_gates == []
         eligible = [s for s in report.scenarios if s.eligible and not s.changes_numerics]
         assert report.recommendation.scenario == min(eligible, key=lambda s: s.usd_point).name
-        # At Azure Kimi-K2.5 rates ($0.60/$3.00 per 1M, single-tier) the rented
-        # H100 undercuts both API tiers on this fixture's token volumes.
-        assert report.recommendation.scenario == "h100_sxm_rented"
+        # At OpenRouter Qwen rates ($0.08/$0.29 promo per 1M) the promo API
+        # tier undercuts the rented H100 on this fixture's token volumes.
+        assert report.recommendation.scenario == "api_promo"
 
     def test_lower_bound_long_mean_yields_a_provisional_label(self, config, experiment):
         edit_sets(experiment, "graphwalks_long", usage_lower_bound=True)

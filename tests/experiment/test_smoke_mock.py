@@ -97,11 +97,10 @@ MERGE_TEXT = "Cover every input chunk and verify before answering. [smoke]"
 
 WRONG_ANSWER = "Final Answer: [not-a-node]"
 
-# Sentinel credentials for the azure_foundry backend the shipped config
-# selects. The driver's fail-fast demands both variables before any run, and
-# the hygiene test below asserts neither VALUE ever reaches a persisted byte.
-AZURE_KEY_SENTINEL = "mock-azure-key-sentinel-51c9"
-AZURE_ENDPOINT_SENTINEL = "https://mock-sentinel-resource.services.ai.azure.com"
+# Sentinel credential for the openrouter backend the shipped config selects.
+# The driver's fail-fast demands the variable before any run, and the hygiene
+# test below asserts the VALUE never reaches a persisted byte.
+OPENROUTER_KEY_SENTINEL = "mock-openrouter-key-sentinel-51c9"
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +250,7 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
     out_dir = tmp_path_factory.mktemp("smoke") / "exp"
     config = load_config("smoke")
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setenv("AZURE_API_KEY", AZURE_KEY_SENTINEL)
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", AZURE_ENDPOINT_SENTINEL)
+        monkeypatch.setenv("OPENROUTER_API_KEY", OPENROUTER_KEY_SENTINEL)
         block_network(monkeypatch)
         factory = ClientFactory(optimization_script() + evaluation_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
@@ -329,16 +327,15 @@ class TestSmokePipeline:
 
     def test_no_credential_sentinel_reaches_any_persisted_byte(self, smoke: SmokeRun):
         """R3: credentials come from the environment only. The whole pipeline
-        ran with sentinel values in both Azure variables; no file the
-        experiment persisted may contain either value."""
+        ran with a sentinel value in OPENROUTER_API_KEY; no file the
+        experiment persisted may contain it."""
         scanned = 0
         for path in sorted(smoke.out_dir.rglob("*")):
             if not path.is_file():
                 continue
             scanned += 1
             content = path.read_text(errors="replace")
-            assert AZURE_KEY_SENTINEL not in content, path
-            assert AZURE_ENDPOINT_SENTINEL not in content, path
+            assert OPENROUTER_KEY_SENTINEL not in content, path
         assert scanned > 10  # config, splits, manifests, traces, usage, eval
 
 
@@ -477,11 +474,11 @@ class TestLiveSmokeStructuralChecks:
         persisted = experiment_smoke.check_sampling_args(smoke.out_dir, smoke.config)
         assert persisted["temperature"] == smoke.config.decoding.temperature
         assert persisted["top_p"] == smoke.config.decoding.top_p
-        # Kimi instant mode rides in extra_body; top_k/min_p are unset and
-        # therefore absent rather than sent as defaults.
-        assert persisted["extra_body"]["chat_template_kwargs"] == {"thinking": False}
-        assert "top_k" not in persisted["extra_body"]
-        assert "min_p" not in persisted["extra_body"]
+        # The Qwen knobs ride in extra_body; no azure-only chat_template_kwargs
+        # ride an openrouter role.
+        assert persisted["extra_body"]["top_k"] == smoke.config.decoding.top_k
+        assert persisted["extra_body"]["min_p"] == smoke.config.decoding.min_p
+        assert "chat_template_kwargs" not in persisted["extra_body"]
 
     def test_stage_coverage_check_reads_the_smoke_artifacts(self, smoke: SmokeRun):
         counts = experiment_smoke.check_stage_coverage(smoke.out_dir)
@@ -666,31 +663,38 @@ class TestLiveSmokeGuards:
         # Ungoverned: 2 probe + (1 x 2 live instances x 1 attempt x 3 x 3)
         # attribution + (1 x 3 x 3) proposal = 29 calls, each priced at the
         # char-cap-derived input bound plus max_output_tokens out, at the
-        # Kimi list tier ($0.60 / $3.00 per 1M).
+        # configured LIST tier -- computed from the config so a pricing flip
+        # moves the assertions with it.
+        price = config.pricing.list_price
+        per_call = (
+            experiment_smoke.UNGOVERNED_INPUT_TOKENS * price.input_per_million
+            + config.decoding.max_output_tokens * price.output_per_million
+        ) / 1_000_000
         assert experiment_smoke.ungoverned_call_count(config) == 29
-        assert experiment_smoke.ungoverned_call_ceiling(config) == pytest.approx(
-            (49_152 * 0.60 + 4096 * 3.00) / 1_000_000
-        )
+        assert experiment_smoke.ungoverned_call_ceiling(config) == pytest.approx(per_call)
+        # Literal sanity pin at the shipped Qwen list rate ($0.10 / $0.30 per
+        # 1M): (49,152 x 0.10 + 4,096 x 0.30) / 1e6 = $0.0061440 per call.
+        assert per_call == pytest.approx(0.0061440)
         ungoverned = 29 * experiment_smoke.ungoverned_call_ceiling(config)
-        assert ungoverned == pytest.approx(1.2116, abs=1e-4)
+        assert ungoverned == pytest.approx(0.178176)
 
         assert experiment_smoke.spend_ceiling(config) == pytest.approx(governed + ungoverned)
-        assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.2916, abs=1e-4)
         # The standalone --probe invocation (run FIRST) spends two more
         # ungoverned calls on top of the --live run's own probe.
         probe_reserve = experiment_smoke.standalone_probe_reserve_usd(config)
         assert probe_reserve == pytest.approx(2 * experiment_smoke.ungoverned_call_ceiling(config))
-        assert probe_reserve == pytest.approx(0.0836, abs=1e-4)
         # The proven figure is cumulative: this invocation plus the standalone
         # probe reserve plus the $0.60 U4 pytest live reserve, under the one
-        # $5 ceiling.
+        # $5 ceiling. Literal sanity pin: 3.08 + 0.178176 + 0.012288 + 0.60.
         cumulative = (
             experiment_smoke.spend_ceiling(config)
             + probe_reserve
             + experiment_smoke.PYTEST_LIVE_RESERVE_USD
         )
+        assert cumulative < 5.0
         assert cumulative < experiment_smoke.SPEND_CEILING_USD
-        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.9752, abs=1e-4)
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(cumulative)
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(3.870464)
 
     def test_the_ceiling_scales_with_the_round_count(self):
         """Every per-round breaker and per-round LM call is armed t times."""
@@ -762,31 +766,28 @@ class TestLiveSmokeGuards:
             experiment_smoke.check_budget_arithmetic(reckless)
 
     def test_declines_without_the_live_flag(self, capsys, monkeypatch):
-        monkeypatch.setenv("AZURE_API_KEY", "present-but-unused")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://unused.services.ai.azure.com")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "present-but-unused")
         block_network(monkeypatch)
 
         assert experiment_smoke.main([]) == 1
         assert "Nothing was spent" in capsys.readouterr().out
 
-    def test_declines_without_the_azure_variables_and_names_both(self, capsys, monkeypatch):
-        monkeypatch.delenv("AZURE_API_KEY", raising=False)
-        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+    def test_declines_without_the_openrouter_key_and_names_it(self, capsys, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         block_network(monkeypatch)
 
         assert experiment_smoke.main(["--live"]) == 1
         out = capsys.readouterr().out
-        assert "AZURE_API_KEY" in out
-        assert "AZURE_FOUNDRY_ENDPOINT" in out
+        assert "OPENROUTER_API_KEY" in out
         assert "Nothing was spent" in out
 
-    def test_declines_naming_only_the_missing_variable(self, capsys, monkeypatch):
-        monkeypatch.setenv("AZURE_API_KEY", "present-but-unused")
-        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+    def test_probe_declines_without_the_openrouter_key(self, capsys, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         block_network(monkeypatch)
 
         assert experiment_smoke.main(["--probe"]) == 1
         out = capsys.readouterr().out
-        assert "AZURE_FOUNDRY_ENDPOINT" in out
+        assert "OPENROUTER_API_KEY" in out
+        # Only the configured backend's credentials are demanded.
         assert "AZURE_API_KEY" not in out
         assert "Nothing was spent" in out

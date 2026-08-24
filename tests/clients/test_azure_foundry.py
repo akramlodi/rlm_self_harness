@@ -6,8 +6,11 @@ Two tiers live in this file:
   always runs;
 * the live tier (``TestAzureFoundryLive``): three tiny paid calls against the
   REAL configured Kimi-K2.5 deployment, gated by KTD8 (see
-  ``shrlm/experiment/live_gates.py``) -- it runs only with both Azure credentials set AND
-  ``SHRLM_RUN_LIVE=1``, and never in CI.
+  ``shrlm/experiment/live_gates.py``) -- it runs only when the SHIPPED smoke
+  profile's runner backend is azure_foundry (this is an azure-specific tier;
+  with another backend shipped the gate would demand that backend's
+  credentials and then run azure code paths) AND both Azure credentials are
+  set AND ``SHRLM_RUN_LIVE=1``, and never in CI.
 """
 
 import asyncio
@@ -442,7 +445,27 @@ class TestGetClientRegistration:
 # Live tier (U4): three tiny paid calls against the real deployment (KTD8)
 # ---------------------------------------------------------------------------
 
-_LIVE_SKIP = live_skip_reason()
+
+def _azure_live_skip() -> str | None:
+    """Skip reason for the azure-specific live tier, or ``None`` to run it.
+
+    ``live_skip_reason`` gates on the CONFIGURED runner backend, so with a
+    non-azure backend shipped an open gate would demand that backend's
+    credentials and then run this module's azure code paths (backend_kwargs
+    without pricing -> constructor error). The azure live tier therefore also
+    requires the shipped smoke config to select azure_foundry.
+    """
+    from shrlm.experiment.config import load_config
+
+    if load_config(profile="smoke").backends.runner.backend != "azure_foundry":
+        return (
+            "shipped runner backend is not azure_foundry -- azure live tier requires "
+            "the azure config"
+        )
+    return live_skip_reason()
+
+
+_LIVE_SKIP = _azure_live_skip()
 
 # Output caps for the live calls. Trivial prompts under these caps keep the
 # whole class well under $0.10 at the configured $0.60/$3.00-per-1M pricing.

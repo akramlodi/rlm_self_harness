@@ -5,7 +5,8 @@ its real (non-mocked) rounds -- baseline harness ``H0`` through
 ``build_harnessed_rlm`` with the REPL, a ``Verifier``-protocol verifier, and
 ``run_round``'s persist-first contract -- except the client is the real
 azure_foundry Kimi-K2.5 deployment with the REAL configured backend_kwargs
-(``backend_kwargs_for(load_config(profile="smoke"), "runner")``).
+(``backend_kwargs_for`` over the smoke profile, runner role forced to
+azure_foundry when the shipped config selects another backend).
 
 Structure, not behavior: the tests assert the persisted round contract (files,
 shas, costs, cost provenance, verdict presence) and the resume-as-no-op
@@ -13,11 +14,14 @@ contract. They NEVER assert pass/fail outcomes -- model behavior is the
 model's business, and a run legitimately terminated at these tiny caps
 (RESOURCE_TERMINATED) must satisfy the contract too.
 
-Gating (KTD8, ``shrlm/experiment/live_gates.py``): the live class runs only with both
-Azure credentials set AND ``SHRLM_RUN_LIVE=1``, never in CI. The gate-logic
-tests at the bottom always run offline. Worst-case spend: 2 runs x
-(max_budget $0.10 + one post-trip call ~$0.013) ~= $0.23, inside the $0.60
-U4 reserve (``examples/experiment_smoke.PYTEST_LIVE_RESERVE_USD``).
+Gating (KTD8, ``shrlm/experiment/live_gates.py``): this is an azure-specific
+live tier, so the live class runs only when the SHIPPED smoke profile's runner
+backend is azure_foundry (otherwise the gate would demand another backend's
+credentials and then run azure code paths) AND both Azure credentials are set
+AND ``SHRLM_RUN_LIVE=1``, never in CI. The gate-logic tests at the bottom
+always run offline. Worst-case spend: 2 runs x (max_budget $0.10 + one
+post-trip call ~$0.013) ~= $0.23, inside the $0.60 U4 reserve
+(``examples/experiment_smoke.PYTEST_LIVE_RESERVE_USD``).
 """
 
 import copy
@@ -47,11 +51,30 @@ from shrlm.optimization.types import Verdict
 from shrlm.rlm_harness import H0
 from tests.optimization.test_driver import read_manifest
 
-# The shipped smoke profile's runner backend is azure_foundry, so these are
-# the credentials the default (config-read) gate path demands.
+# The credentials the azure_foundry gate path demands.
 AZURE_CREDENTIAL_KEYS = _BACKEND_ENV_KEYS["azure_foundry"]
 
-_LIVE_SKIP = live_skip_reason()
+
+def _azure_live_skip() -> str | None:
+    """Skip reason for the azure-specific live tier, or ``None`` to run it.
+
+    ``live_skip_reason`` gates on the CONFIGURED runner backend, so with a
+    non-azure backend shipped an open gate would demand that backend's
+    credentials and then run this module's azure code paths (backend_kwargs
+    without pricing -> constructor error). The azure live tier therefore also
+    requires the shipped smoke config to select azure_foundry.
+    """
+    from shrlm.experiment.config import load_config
+
+    if load_config(profile="smoke").backends.runner.backend != "azure_foundry":
+        return (
+            "shipped runner backend is not azure_foundry -- azure live tier requires "
+            "the azure config"
+        )
+    return live_skip_reason()
+
+
+_LIVE_SKIP = _azure_live_skip()
 
 # Per-run RLM limits: tiny, so a misbehaving run is cut off cheaply. A run
 # that trips one lands as RESOURCE_TERMINATED -- a recorded, paid run the
@@ -108,15 +131,41 @@ class ContainsGoldVerifier:
         )
 
 
+def azure_smoke_config() -> Any:
+    """The shipped smoke profile with the runner role forced to azure_foundry.
+
+    A no-op when the shipped config already selects azure_foundry (the only
+    case the paid tier runs in); otherwise -- e.g. the shipped openrouter
+    config -- it gives the offline construction tests the azure semantics they
+    exercise, using the shipped ``[backends.azure_foundry]`` table and
+    ``[pricing.list_price]``.
+    """
+    from dataclasses import replace
+
+    from shrlm.experiment.config import load_config
+
+    config = load_config(profile="smoke")
+    runner = config.backends.runner
+    if runner.backend == "azure_foundry":
+        return config
+    return replace(
+        config,
+        backends=replace(
+            config.backends,
+            runner=replace(runner, backend="azure_foundry", model="Kimi-K2.5"),
+        ),
+    )
+
+
 def make_live_round_config(out_dir: Path) -> RoundConfig:
     """The real construction path: H0 + real configured runner backend_kwargs.
 
     ``backend_kwargs_for`` builds fresh dicts per call; the deep copy makes
     doubly sure no shared config object can be mutated through the RoundConfig.
     """
-    from shrlm.experiment.config import backend_kwargs_for, load_config
+    from shrlm.experiment.config import backend_kwargs_for
 
-    backend_kwargs = copy.deepcopy(backend_kwargs_for(load_config(profile="smoke"), "runner"))
+    backend_kwargs = copy.deepcopy(backend_kwargs_for(azure_smoke_config(), "runner"))
     return RoundConfig(
         round_index=1,
         harness=H0,
@@ -261,40 +310,50 @@ class TestLiveRoundConstructionOffline:
 # ---------------------------------------------------------------------------
 
 
+def configured_list_price_attestation() -> str:
+    """The attestation string matching the shipped [pricing.list_price] (the
+    azure branch checks the attestation against the config even when the
+    shipped roles run another backend)."""
+    from shrlm.experiment.config import load_config
+
+    pricing = load_config(profile="smoke").pricing.list_price
+    return f"{pricing.input_per_million}/{pricing.output_per_million}"
+
+
 class TestLiveGateOffline:
     ALL_GATES_OPEN = {
         "AZURE_API_KEY": "sentinel-key",
         "AZURE_FOUNDRY_ENDPOINT": "https://sentinel.services.ai.azure.com",
         LIVE_FLAG: "1",
-        "SHRLM_VERIFIED_PRICING": "0.6/3.0",
+        "SHRLM_VERIFIED_PRICING": configured_list_price_attestation(),
     }
 
     def test_all_gates_open_returns_none(self):
-        assert live_skip_reason(self.ALL_GATES_OPEN) is None
+        assert live_skip_reason(self.ALL_GATES_OPEN, runner_backend="azure_foundry") is None
 
     def test_ci_wins_over_fully_credentialed_environment(self):
         env = dict(self.ALL_GATES_OPEN, CI="true")
-        reason = live_skip_reason(env)
+        reason = live_skip_reason(env, runner_backend="azure_foundry")
         assert reason is not None and "CI" in reason
 
     def test_empty_ci_value_does_not_gate(self):
         env = dict(self.ALL_GATES_OPEN, CI="")
-        assert live_skip_reason(env) is None
+        assert live_skip_reason(env, runner_backend="azure_foundry") is None
 
     def test_credentials_alone_never_spend(self):
         env = {key: "sentinel" for key in AZURE_CREDENTIAL_KEYS}
-        reason = live_skip_reason(env)
+        reason = live_skip_reason(env, runner_backend="azure_foundry")
         assert reason is not None and LIVE_FLAG in reason
 
     def test_flag_value_must_be_exactly_one(self):
         env = dict(self.ALL_GATES_OPEN, **{LIVE_FLAG: "true"})
-        reason = live_skip_reason(env)
+        reason = live_skip_reason(env, runner_backend="azure_foundry")
         assert reason is not None and LIVE_FLAG in reason
 
     def test_each_missing_credential_is_named(self):
         for missing in AZURE_CREDENTIAL_KEYS:
             env = {key: value for key, value in self.ALL_GATES_OPEN.items() if key != missing}
-            reason = live_skip_reason(env)
+            reason = live_skip_reason(env, runner_backend="azure_foundry")
             assert reason is not None and missing in reason
 
     def test_openrouter_backend_requires_only_its_own_credential(self):
@@ -325,7 +384,7 @@ class TestLiveGateOffline:
             "AZURE_API_KEY": "sentinel-value-1f9c",
             "AZURE_FOUNDRY_ENDPOINT": "https://sentinel-value-2e8d.services.ai.azure.com",
         }
-        reason = live_skip_reason(env)
+        reason = live_skip_reason(env, runner_backend="azure_foundry")
         assert reason is not None
         assert "sentinel-value-1f9c" not in reason
         assert "sentinel-value-2e8d" not in reason
@@ -362,7 +421,7 @@ class TestPricingAttestationOffline:
             "AZURE_FOUNDRY_ENDPOINT": "https://sentinel.services.ai.azure.com",
             "SHRLM_RUN_LIVE": "1",
         }
-        reason = live_skip_reason(env)
+        reason = live_skip_reason(env, runner_backend="azure_foundry")
         assert reason is not None and "SHRLM_VERIFIED_PRICING" in reason
-        env["SHRLM_VERIFIED_PRICING"] = "0.6/3.0"
-        assert live_skip_reason(env) is None
+        env["SHRLM_VERIFIED_PRICING"] = configured_list_price_attestation()
+        assert live_skip_reason(env, runner_backend="azure_foundry") is None

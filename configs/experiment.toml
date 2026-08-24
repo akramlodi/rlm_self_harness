@@ -10,16 +10,15 @@
 # =============================================================================
 
 [decoding]
-# Kimi-K2.5 model-card instant-mode defaults (moonshotai/Kimi-K2.5), applied
-# identically to root and sub-calls per the section 3.0 invariant. The Kimi
-# card specifies neither top_k nor min_p, so both are omitted here (an absent
-# key is never sent -- the Foundry v1 route's handling of unknown body params
-# is unconfirmed); when set they are routed through
-# sampling_args["extra_body"]. max_output_tokens is passed as
-# sampling_args["max_tokens"] -- the OpenAI client itself renames it to
-# max_completion_tokens, so the rename must never happen in config code.
-temperature = 0.6
-top_p = 0.95
+# Qwen3-30B-A3B-Instruct-2507 model-card defaults (non-thinking mode), applied
+# identically to root and sub-calls per the section 3.0 invariant. top_k and
+# min_p are routed through sampling_args["extra_body"]; max_output_tokens is
+# passed as sampling_args["max_tokens"] -- the OpenAI client itself renames it
+# to max_completion_tokens, so the rename must never happen in config code.
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.0
 max_output_tokens = 4096 # pilot tuning range 2048-8192 (section 3.10 row 3)
 
 [splits]
@@ -35,7 +34,9 @@ seed = 0 # seeded partition of the source-short pool
 m = 2 # mining repetitions per held-in instance
 v = 4 # validation repetitions per instance per subject
 k = 4 # candidate edits proposed per round
-t = 15 # maximum optimization rounds
+# Set to 3 for the 2026-08-23 Qwen comparison run (was 15, section 3.2). t is
+# an identity key (R3), so extending the run later needs a fresh out-dir.
+t = 3 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
 
 [promotion]
@@ -106,48 +107,48 @@ n_long = 40 # target-long test size; the upstream ceiling, not a choice:
 # so 2 x 20 = 40 is every instance that exists at 262,144. A larger value fails
 # the coverage gate in load_oolong_pairs before any spend.
 
-# The model value must equal the user's Azure AI Foundry deployment name;
-# "Kimi-K2.5" assumes the deployment kept the catalog default name.
+# Shipped roles run OpenRouter Qwen3-30B-A3B-Instruct-2507 (the 2026-08-23
+# comparison run); azure_foundry / Kimi-K2.5 is the alternate backbone. To
+# switch back, edit these three role tables plus [decoding] and [pricing].
 
 [backends.runner]
-backend = "azure_foundry"
-model = "Kimi-K2.5"
+backend = "openrouter"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
 
 [backends.attributor]
-backend = "azure_foundry"
-model = "Kimi-K2.5"
+backend = "openrouter"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
 
 [backends.proposer]
-backend = "azure_foundry"
-model = "Kimi-K2.5"
+backend = "openrouter"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
 
 [backends.openrouter]
-# Optional provider table: kept so the openrouter path stays selectable (KTD9)
-# even though no shipped role uses it. Provider routing is sent as
-# sampling_args["extra_body"]["provider"] for openrouter-backed roles only. An
-# empty order list means no restriction.
+# Provider routing, sent as sampling_args["extra_body"]["provider"] for
+# openrouter-backed roles only. An empty order list means no restriction; the
+# pilot pins the serving provider before the main run so quantization cannot
+# drift mid-experiment.
 provider_order = []
 allow_fallbacks = true
 
 [backends.azure_foundry]
-# Optional provider table for azure_foundry-backed roles. thinking = false is
-# sent as sampling_args["extra_body"]["chat_template_kwargs"] = {"thinking":
-# false}: Kimi-K2.5 runs in instant (non-thinking) mode.
+# Optional provider table for azure_foundry-backed roles, kept so the
+# Kimi-K2.5 path stays selectable (unused while no role selects it; the
+# loader allows its presence). thinking = false is sent as
+# sampling_args["extra_body"]["chat_template_kwargs"] = {"thinking": false}:
+# Kimi-K2.5 runs in instant (non-thinking) mode.
 thinking = false
 
 [pricing.promo]
-# Azure AI Foundry rate for Kimi-K2.5, USD per 1M tokens (Azure catalog +
-# aggregators, read 2026-08; refresh before the main run). Azure publishes a
-# single tier, so the promo slot is repurposed to equal the list price.
-input_per_million = 0.60
-output_per_million = 3.00
+# OpenRouter promotional rate for qwen/qwen3-30b-a3b-instruct-2507, USD per
+# 1M tokens (read 2026-08-12; refresh before the main run).
+input_per_million = 0.08
+output_per_million = 0.29
 
 [pricing.list_price]
-# Azure AI Foundry list rate for Kimi-K2.5, same units and provenance
-# (single-tier: identical to [pricing.promo] by construction). Cost synthesis
-# reads this tier.
-input_per_million = 0.60
-output_per_million = 3.00
+# Non-promotional list rate, same units and provenance.
+input_per_million = 0.10
+output_per_million = 0.30
 
 [[gpu_scenarios]]
 name = "h100_sxm_rented"
