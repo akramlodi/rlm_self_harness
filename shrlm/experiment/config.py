@@ -350,25 +350,15 @@ class OperationalConfig:
     validation_workers: int = 1
 
     def __post_init__(self) -> None:
-        if isinstance(self.validation_workers, bool) or not isinstance(
-            self.validation_workers, int
-        ):
-            raise ValueError(
-                "operational.validation_workers must be an integer, got "
-                f"{self.validation_workers!r}"
-            )
-        if self.validation_workers < 1:
-            raise ValueError(
-                f"operational.validation_workers must be >= 1, got {self.validation_workers}"
-            )
-        if isinstance(self.eval_repetitions, bool) or not isinstance(self.eval_repetitions, int):
-            raise ValueError(
-                f"operational.eval_repetitions must be an integer, got {self.eval_repetitions!r}"
-            )
-        if self.eval_repetitions < 1:
-            raise ValueError(
-                f"operational.eval_repetitions must be >= 1, got {self.eval_repetitions}"
-            )
+        _require_positive_int("operational.eval_repetitions", self.eval_repetitions)
+        _require_positive_int("operational.validation_workers", self.validation_workers)
+
+
+def _require_positive_int(label: str, value: Any) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be an integer, got {value!r}")
+    if value < 1:
+        raise ValueError(f"{label} must be >= 1, got {value}")
 
 
 @dataclass(frozen=True)

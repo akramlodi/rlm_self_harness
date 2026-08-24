@@ -918,8 +918,8 @@ class TestParallelValidationStage:
             loaders=None,
         )
         assert experiment.verifier_factory == GRAPHWALKS_VERIFIER_FACTORY
-        sequential = replace_config = make_config(tmp_path / "seq")
-        assert replace_config.operational.validation_workers == 1
+        sequential = make_config(tmp_path / "seq")
+        assert sequential.operational.validation_workers == 1
         assert (
             _Experiment(
                 config=sequential,

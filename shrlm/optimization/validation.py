@@ -533,8 +533,7 @@ def evaluate_validation_round(
             evaluate_subject(candidate.candidate_id, candidate.harness, config)
             for candidate in candidates
         ]
-    if isinstance(baseline, CandidateRejection):  # pragma: no cover - gated before spawn
-        raise ValueError(_BASELINE_REJECTED.format(reason=baseline.reason))
+    assert isinstance(baseline, SubjectEvaluation), "the baseline is caps-gated before any spawn"
     return RoundEvaluation(
         round_path=round_dir(config.out_dir, config.round_index),
         baseline=baseline,
@@ -615,7 +614,6 @@ def _evaluate_subjects_in_processes(
                     [sys.executable, "-m", "shrlm.optimization.subject_worker", str(request_path)],
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    env=dict(os.environ),
                 )
                 running[index] = (process, subject_path, log, subject_id)
 

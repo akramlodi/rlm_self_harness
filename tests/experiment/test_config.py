@@ -153,7 +153,6 @@ def test_validation_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
 
 
 def test_smoke_may_override_validation_workers(tmp_path: Path) -> None:
-    text = shipped_text() + "\n[smoke.operational]\nvalidation_workers = 3\n"
     # The shipped [smoke.operational] table already exists; append the key to it
     # instead of declaring the table twice.
     text = shipped_text().replace(

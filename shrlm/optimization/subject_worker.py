@@ -138,11 +138,9 @@ def write_request(subject_path: Path, request: dict[str, Any]) -> Path:
 def read_result(subject_path: Path) -> dict[str, Any] | None:
     """The child's result document, or ``None`` when it never wrote one."""
     path = subject_path / RESULT_FILENAME
-    if not path.exists():
-        return None
     try:
         payload = json.loads(path.read_text())
-    except json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict) or payload.get("format") != RESULT_FORMAT:
         return None

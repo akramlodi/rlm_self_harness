@@ -11,7 +11,6 @@ persist-first (a second run makes zero model calls).
 """
 
 import json
-import os
 import subprocess
 import sys
 from dataclasses import asdict
@@ -82,7 +81,6 @@ def run_child(request_path: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=120,
-        env=dict(os.environ),
     )
 
 
