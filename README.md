@@ -77,19 +77,33 @@ loaded config is hashed into an **identity** that is stamped into the output dir
 Re-invoking the same command resumes an interrupted experiment exactly; a changed config
 refuses to resume, so every distinct configuration gets its own fresh `--out-dir`.
 
-All shipped configurations run on OpenRouter and require `OPENROUTER_API_KEY` in the
-environment (a `.env` file at the repo root works). The launcher refuses to start — and
-spends nothing — if a required credential is missing.
+The smoke, Qwen, and Ox configurations run on OpenRouter and require
+`OPENROUTER_API_KEY` in the environment (a `.env` file at the repo root works). The
+Azure Kimi-K2.5 configuration instead requires:
 
-### The three configurations
+```bash
+echo 'AZURE_API_KEY=...' >> .env
+echo 'AZURE_FOUNDRY_ENDPOINT=https://<your-resource>.services.ai.azure.com' >> .env
+# Verify the deployment's pay-as-you-go rates in the Azure portal match the
+# config's [pricing] tables ($0.60 in / $3.00 out per 1M), then attest them --
+# Azure returns no per-response cost, so cost is synthesized from these rates
+# and the launcher refuses any live spend until the attestation matches:
+export SHRLM_VERIFIED_PRICING='0.6/3.0'
+```
 
-| | Smoke | Qwen (main) | Ox |
-|---|---|---|---|
-| Config file | `configs/experiment.toml` | `configs/experiment.toml` | `configs/experiment_ox.toml` |
-| Profile | `smoke` | `full` (default) | `full` (default) |
-| Model (all 3 roles) | `qwen/qwen3-30b-a3b-instruct-2507` | `qwen/qwen3-30b-a3b-instruct-2507` | `stealth/ox-alpha` (free stealth model) |
-| Scale | tiny: 3 held-in / 3 held-out instances, 1 round, 2 candidates | 24 / 40 instances, up to 3 rounds, 4 candidates | same instances as Qwen, up to **16 rounds** |
-| Purpose | end-to-end plumbing check for cents | the 2026-08-23 comparison run | free-model comparison arm; bounded by wall clock and `patience`, not spend |
+The config's `model` value must equal your Foundry **deployment name** (the catalog
+default is `Kimi-K2.5`). In every configuration the launcher refuses to start — and
+spends nothing — if a required credential or attestation is missing.
+
+### The four configurations
+
+| | Smoke | Qwen (main) | Ox | Kimi-K2.5 (Azure) |
+|---|---|---|---|---|
+| Config file | `configs/experiment.toml` | `configs/experiment.toml` | `configs/experiment_ox.toml` | `configs/experiment_kimiK25.toml` |
+| Profile | `smoke` | `full` (default) | `full` (default) | `full` (default) |
+| Model (all 3 roles) | `qwen/qwen3-30b-a3b-instruct-2507` | `qwen/qwen3-30b-a3b-instruct-2507` | `stealth/ox-alpha` (free stealth model) | `Kimi-K2.5` deployment on Azure AI Foundry |
+| Scale | tiny: 3 held-in / 3 held-out instances, 1 round, 2 candidates | 24 / 40 instances, up to 3 rounds, 4 candidates | same instances as Qwen, up to **16 rounds** | same instances as Qwen, up to 3 rounds |
+| Purpose | end-to-end plumbing check for cents | the 2026-08-23 comparison run | free-model comparison arm; bounded by wall clock and `patience`, not spend | Azure comparison arm; cost synthesized from `[pricing]` (no provider cost field) |
 
 The `smoke` profile is the same TOML as the Qwen run with the `[smoke.*]` tables at the
 bottom overriding **scale counts only** (instance counts, repetitions, candidate width,
@@ -98,6 +112,11 @@ Qwen TOML that changes the role models, `loop.t = 16`, `max_output_tokens` (ox-a
 reasoning model; see the comment in `[decoding]`), zeroes the `[pricing]` tables (the
 model bills $0), and gives the attribution/proposal caches `_ox`-suffixed paths so two
 experiments running concurrently from this directory never append to the same cache file.
+The Kimi config is likewise a fork of the Qwen TOML that switches the three roles to the
+`azure_foundry` backend, restores the Kimi-K2.5 instant-mode decoding defaults
+(temperature 0.6, top_p 0.95, no top_k/min_p), sets both `[pricing]` tables to the Azure
+rate ($0.60/$3.00 per 1M — these arm the spend breaker, since Azure reports no cost), and
+uses `_kimi`-suffixed cache paths.
 
 ### Exact commands
 
@@ -109,10 +128,13 @@ prints the identity and per-role backends without creating anything or spending 
 uv run python examples/run_experiment.py --profile smoke --out-dir ./experiment_smoke
 
 # Qwen: the main comparison run
-uv run python examples/run_experiment.py --out-dir ./experiment_qwen_0823
+uv run python examples/run_experiment.py --out-dir ./experiment_qwen_
 
 # Ox: the stealth/ox-alpha free-model arm
-uv run python examples/run_experiment.py --config configs/experiment_ox.toml --out-dir ./experiment_ox_0823
+uv run python examples/run_experiment.py --config configs/experiment_ox.toml --out-dir ./experiment_ox
+
+# Azure: KimiK-2.5
+uv run python examples/run_experiment.py --config configs/experiment_kimiK25.toml --out-dir ./experiment_kimi
 ```
 
 Interrupting with Ctrl-C loses nothing — re-run the same command and the experiment
