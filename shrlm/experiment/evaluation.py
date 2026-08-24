@@ -126,6 +126,7 @@ ROLE_TEST = "test"
 CONDITION_B1 = "b1"
 CONDITION_H0_STAR = "h0_star"
 CONDITION_SH_RLM = "sh_rlm"
+CONDITION_LAMBDA_RLM = "lambda_rlm"
 
 
 class EvaluationPersistenceError(ExperimentError):

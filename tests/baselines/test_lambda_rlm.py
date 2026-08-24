@@ -1,20 +1,35 @@
+import hashlib
+import json
+from dataclasses import replace
+from pathlib import Path
+
 import pytest
 
 import shrlm.baselines.upstream.lambda_rlm as upstream_lambda
 from shrlm.baselines.lambda_rlm import (
+    LAMBDA_RLM_DISPLAY_NAME,
+    LAMBDA_RLM_METHOD_FORMAT,
+    LAMBDA_RLM_METHOD_KIND,
+    LAMBDA_RLM_SOURCE_SHA256,
     LAMBDA_RLM_UPSTREAM_REVISION,
     LambdaBaselineConfig,
     lambda_input,
+    lambda_method_hash,
+    serialize_lambda_method,
+    write_lambda_method_json,
 )
 from shrlm.baselines.upstream.lambda_rlm import LambdaRLM
 from tests.optimization.test_driver import ClientFactory
 
 
 def test_pins_paper_release_revision() -> None:
-    assert (
-        LAMBDA_RLM_UPSTREAM_REVISION
-        == "c70c6db2cf8498eaf05fa6999dc41088827158f4"
-    )
+    assert LAMBDA_RLM_UPSTREAM_REVISION == "c70c6db2cf8498eaf05fa6999dc41088827158f4"
+
+
+def test_pinned_source_hash_matches_upstream_file() -> None:
+    source_path = Path(upstream_lambda.__file__)
+
+    assert hashlib.sha256(source_path.read_bytes()).hexdigest() == LAMBDA_RLM_SOURCE_SHA256
 
 
 def test_uses_upstream_defaults() -> None:
@@ -84,6 +99,52 @@ def test_builds_upstream_method_without_calling_model() -> None:
     assert method.backend_kwargs is not backend_kwargs
     assert method.query == "Test question"
     assert method.context_window_chars == 100_000
+
+
+def test_serializes_complete_method_identity() -> None:
+    serialization = serialize_lambda_method(LambdaBaselineConfig())
+
+    assert serialization == {
+        "kind": LAMBDA_RLM_METHOD_KIND,
+        "display_name": LAMBDA_RLM_DISPLAY_NAME,
+        "upstream": {
+            "repository": "https://github.com/lambda-calculus-LLM/lambda-RLM",
+            "revision": LAMBDA_RLM_UPSTREAM_REVISION,
+            "source_sha256": LAMBDA_RLM_SOURCE_SHA256,
+        },
+        "runtime": {"environment": "local"},
+        "configuration": {
+            "context_window_chars": 100_000,
+            "accuracy_target": 0.80,
+            "a_leaf": 0.95,
+            "a_compose": 0.90,
+        },
+    }
+
+
+def test_method_hash_is_stable_and_configuration_sensitive() -> None:
+    config = LambdaBaselineConfig()
+
+    assert lambda_method_hash(config) == lambda_method_hash(config)
+    assert len(lambda_method_hash(config)) == 64
+    assert lambda_method_hash(config) != lambda_method_hash(
+        replace(config, context_window_chars=200_000)
+    )
+
+
+def test_writes_method_identity_envelope(tmp_path: Path) -> None:
+    config = LambdaBaselineConfig()
+    path = tmp_path / "method.json"
+
+    envelope = write_lambda_method_json(config, path)
+
+    assert json.loads(path.read_text()) == envelope
+    assert path.read_text().endswith("\n")
+    assert envelope["format"] == LAMBDA_RLM_METHOD_FORMAT
+    assert envelope["kind"] == LAMBDA_RLM_METHOD_KIND
+    assert envelope["display_name"] == LAMBDA_RLM_DISPLAY_NAME
+    assert envelope["hash"] == lambda_method_hash(config)
+    assert envelope["method"] == serialize_lambda_method(config)
 
 
 def test_runs_short_qa_through_upstream_runtime(

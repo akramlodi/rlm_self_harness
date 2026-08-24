@@ -264,7 +264,7 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
-def _verify_trace(path: Path, entry: dict[str, Any]) -> Path:
+def verify_trace(path: Path, entry: dict[str, Any]) -> Path:
     """Check one manifest entry's trace file exists and matches its sha256."""
     trace_path = path / str(entry["trace_path"])
     if not trace_path.exists():
@@ -306,7 +306,7 @@ def _partial_completion(
     never undercounts a paid termination. The other limit exceptions carry no
     cost, and their usage stays empty; token counts are genuinely unknown and
     stay zero -- the manifest line's ``usage_lower_bound`` flag (see
-    ``_persist_run``) marks them as lower bounds, never as free runs.
+    ``persist_run``) marks them as lower bounds, never as free runs.
     ``elapsed_seconds`` is the driver-observed wall clock around the
     terminated completion call (zero when nothing was timed, as in
     ``persist_interrupted_run``). Some limit exceptions carry a partial
@@ -338,7 +338,7 @@ def _partial_completion(
     )
 
 
-def _persist_run(
+def persist_run(
     path: Path,
     run_id: str,
     instance_id: str,
@@ -434,7 +434,7 @@ def persist_interrupted_run(config: RoundConfig, error: Exception) -> dict[str, 
                 produced=completion.response,
                 detail=f"{type(error).__name__}: {error}",
             )
-            return _persist_run(
+            return persist_run(
                 path, run_id, instance_id, attempt, completion, verdict, usage_lower_bound=True
             )
     return None
@@ -471,7 +471,7 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
 
     existing = _load_manifest(path)
     for entry in existing:
-        _verify_trace(path, entry)
+        verify_trace(path, entry)
     done = {str(entry["run_id"]) for entry in existing}
 
     pending = [
@@ -536,7 +536,7 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
             usage_lower_bound = True
 
         entries.append(
-            _persist_run(
+            persist_run(
                 path,
                 run_id,
                 instance_id,
@@ -582,7 +582,7 @@ def load_round(
     verdicts: list[Verdict] = []
     entries: list[dict[str, Any]] = []
     for entry in _load_manifest(path):
-        trace_path = _verify_trace(path, entry)
+        trace_path = verify_trace(path, entry)
         instance_id = str(entry["instance_id"])
         if instance_id not in instances:
             raise RoundPersistenceError(
@@ -734,16 +734,20 @@ def _persist_mining_artifacts(path: Path, result: MiningResult) -> None:
 
 
 __all__ = [
+    "INSTANCES_FILE",
     "ROOT_LIMIT_EXCEPTIONS",
+    "TRACES_DIR",
     "RoundConfig",
     "RoundPersistenceError",
     "instance_lines",
     "load_manifest",
     "load_round",
     "mine_round",
+    "persist_run",
     "persist_interrupted_run",
     "round_dir",
     "run_id_for",
     "run_round",
     "sha256_file",
+    "verify_trace",
 ]
