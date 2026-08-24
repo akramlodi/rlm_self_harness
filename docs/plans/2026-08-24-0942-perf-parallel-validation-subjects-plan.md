@@ -248,3 +248,26 @@ sequenceDiagram
 - `identity_hash` of the shipped config unchanged.
 - No abandoned dispatcher variants (thread pool, multiprocessing pool) left in the diff.
 - Docs (U5) updated.
+
+## Correction and follow-through (added 2026-08-24)
+
+Two things this plan said are no longer accurate, recorded here rather than
+edited in place so the original reasoning stays readable.
+
+**"Persisted artifacts are byte-identical to the sequential path."** True only
+for a subject that does not stop early. A subject the breaker stops leaves a
+contiguous tail of skipped runs whose boundary depends on realised costs, so
+where it stops can legitimately differ between two runs of one configuration.
+Run-level fan-out adds a second way to stop early -- the reservation gate --
+which can halt dispatch while spend is still inside the budget.
+
+**Its deferred per-run fan-out item is implemented**, in
+`2026-08-24-1207-perf-parallel-validation-runs-plan.md`, along with the
+recursive sub-call accounting gap that plan had in turn deferred. The stop
+condition this plan placed on the breaker's skip sets was lifted deliberately:
+a non-empty skipped set reports `over_budget` at the subject level, not only
+per split, because the promotion rule reads the subject outcome and would
+otherwise score a sample that never fully ran. (This paragraph originally
+described that derivation as already done when it was not; a review caught the
+gap, and `evaluate_subject` now derives the subject outcome from the splits'
+skipped sets as well as the breaker.)

@@ -176,6 +176,11 @@ class RoundConfig:
     # while siblings compete for one API key is not under the same conditions
     # as one that ran alone, and that is a confound on measured cost.
     run_workers: int = 1
+    # Test-only seam for run children: a dotted path to a factory plus its
+    # arguments. A child resolves it and installs the result on the runtime's
+    # client seam, which is what in-process tests monkeypatch directly. Live
+    # runs leave it None.
+    client_factory: tuple[str, dict[str, Any]] | None = None
 
 
 def run_id_for(instance_id: str, attempt: int) -> str:
@@ -252,7 +257,7 @@ def reject_sensitive_backend_kwargs(backend_kwargs: dict[str, Any]) -> None:
             )
 
 
-def _require_backend_credential(config: RoundConfig) -> None:
+def require_backend_credential(config: RoundConfig) -> None:
     """Demand every one of the backend's environment credentials.
 
     Called only once at least one run remains to execute: a fully persisted
@@ -308,13 +313,28 @@ def read_run_workers(path: Path | str) -> int:
     their absent value and a recorded 1 mean the same thing.
     """
     sidecar = Path(path) / EXECUTION_FILE
-    try:
-        return int(json.loads(sidecar.read_text())["run_workers"])
-    except (OSError, ValueError, KeyError, TypeError):
-        # Absent, truncated, or unreadable. This describes execution conditions,
-        # not results: losing it must never make an otherwise-sound round
-        # unreadable, and the sequential path is the honest assumption.
+    if not sidecar.exists():
+        # Written before the sidecar existed, which means strictly sequential.
+        # This is the only case where 1 is an inference rather than a reading.
         return 1
+    try:
+        payload = json.loads(sidecar.read_text())
+        recorded = payload["run_workers"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RoundPersistenceError(
+            f"{sidecar} exists but cannot be read ({error}); refusing to report this round "
+            "as sequential when the conditions it ran under are unknown"
+        ) from error
+    if payload.get("format") != EXECUTION_FORMAT:
+        raise RoundPersistenceError(
+            f"{sidecar} is not a {EXECUTION_FORMAT} document; refusing to guess what "
+            "concurrency it describes"
+        )
+    if isinstance(recorded, bool) or not isinstance(recorded, int) or recorded < 1:
+        raise RoundPersistenceError(
+            f"{sidecar} records run_workers={recorded!r}, which is not a positive integer"
+        )
+    return recorded
 
 
 def _prepare_round_dir(config: RoundConfig) -> Path:
@@ -568,6 +588,81 @@ def _persist_run(
     return entry
 
 
+def read_child_trace(trace_path: Path) -> RLMChatCompletion | None:
+    """Rehydrate a trace a run child wrote, or None when it is unusable.
+
+    A child publishes its trace by atomic rename, so a file that exists is
+    complete. Unusable here therefore means a child that died before publishing
+    at all, or wrote something that is not a trace -- either way the parent has
+    no evidence of what the run produced and must treat it as a lost run rather
+    than guess.
+    """
+    try:
+        payload = json.loads(trace_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or "response" not in payload:
+        return None
+    return RLMChatCompletion.from_dict(payload)
+
+
+def append_child_run(
+    path: Path,
+    run_id: str,
+    instance_id: str,
+    attempt: int,
+    completion: RLMChatCompletion,
+    verdict: Verdict,
+    *,
+    usage_lower_bound: bool = False,
+) -> dict[str, Any]:
+    """Record a run whose trace a child already wrote, without rewriting it.
+
+    The sibling of ``_persist_run`` for the concurrent path. The bytes on disk
+    are the child's; the parent hashes exactly those bytes rather than
+    re-serializing the rehydrated completion, so the recorded sha256 describes
+    the file a reader will actually load. Re-serializing could differ in
+    whitespace or key order and turn every later verification into a mismatch.
+
+    Only the parent appends to the manifest (KTD4), so this is called on the
+    reaping side, after the child has exited.
+    """
+    trace_rel = f"{TRACES_DIR}/{run_id}.json"
+    trace_path = path / trace_rel
+    if not trace_path.exists():
+        raise RoundPersistenceError(
+            f"cannot record run {run_id!r}: its child left no trace at {trace_path}"
+        )
+    entry = {
+        "run_id": run_id,
+        "instance_id": instance_id,
+        "attempt": attempt,
+        "passed": verdict.passed,
+        "cause": verdict.cause.value if verdict.cause is not None else None,
+        "verdict": verdict.to_dict(),
+        "trace_path": trace_rel,
+        "trace_sha256": sha256_file(trace_path),
+        "cost": completion.usage_summary.total_cost,
+        "input_tokens": completion.usage_summary.total_input_tokens,
+        "output_tokens": completion.usage_summary.total_output_tokens,
+        "execution_time": completion.execution_time,
+        "usage_lower_bound": usage_lower_bound,
+        ACCOUNTING_VERSION_KEY: ACCOUNTING_VERSION,
+        "timestamp": _utc_now(),
+    }
+    cost_source = completion.usage_summary.cost_source
+    if cost_source is not None:
+        entry["cost_source"] = cost_source
+    with open(path / MANIFEST_FILE, "a") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+    return entry
+
+
+def trace_path_for(path: Path, run_id: str) -> Path:
+    """Where a run's trace lives inside a prepared round directory."""
+    return path / TRACES_DIR / f"{run_id}.json"
+
+
 def load_manifest(out_dir: Path | str, round_index: int) -> list[dict[str, Any]]:
     """The round's persisted manifest lines, in file order; ``[]`` before any run.
 
@@ -724,7 +819,7 @@ def build_round_rlm(config: RoundConfig) -> HarnessedRLM:
     persisted round stays resumable on a machine without the key: callers only
     reach this once at least one run must actually execute.
     """
-    _require_backend_credential(config)
+    require_backend_credential(config)
 
     rlm_kwargs: dict[str, Any] = {"max_iterations": config.max_iterations}
     for name in ("max_depth", "max_budget", "max_timeout"):

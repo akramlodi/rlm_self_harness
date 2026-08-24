@@ -124,6 +124,7 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
         "caps.candidate_budget",
         "operational.eval_repetitions",
         "operational.validation_workers",
+        "operational.validation_run_workers",
         "environments.oolong_pairs.n_short",
         "environments.oolong_pairs.n_long",
     }
@@ -343,6 +344,19 @@ class OperationalConfig:
     excluded from the identity hash and may change under an existing
     experiment directory. ``1`` (the default) is the sequential in-process
     path with no child process at all.
+
+    ``validation_run_workers`` does the same one level down: how many of a
+    single subject's runs execute concurrently, each in its own child process.
+    It is the knob that actually shortens a round, because a round producing
+    one candidate leaves most subject slots idle. Same reasoning for excluding
+    it from identity -- the parent still owns every shared file, appends every
+    manifest line, and charges every run through one breaker.
+
+    **The two multiply.** Total in-flight runs is ``validation_workers x
+    validation_run_workers``, and provider rate limiting is the real ceiling,
+    so raising both at once raises the request rate by their product. Prefer
+    run-level fan-out: it yields a two-level process tree and keeps each
+    subject's breaker charging in a strict order.
     """
 
     loader_timeout_seconds: float
@@ -350,10 +364,12 @@ class OperationalConfig:
     proposal_cache_path: str
     eval_repetitions: int
     validation_workers: int = 1
+    validation_run_workers: int = 1
 
     def __post_init__(self) -> None:
         _require_positive_int("operational.eval_repetitions", self.eval_repetitions)
         _require_positive_int("operational.validation_workers", self.validation_workers)
+        _require_positive_int("operational.validation_run_workers", self.validation_run_workers)
 
 
 def _require_positive_int(label: str, value: Any) -> None:
@@ -720,6 +736,7 @@ def evaluation_config_kwargs(config: ExperimentConfig) -> dict[str, Any]:
         "backend": config.backends.runner.backend,
         "backend_kwargs": backend_kwargs_for(config, "runner"),
         "workers": config.operational.validation_workers,
+        "run_workers": config.operational.validation_run_workers,
     }
 
 

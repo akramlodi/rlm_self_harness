@@ -188,6 +188,7 @@ def build_request(
     repetitions: int,
     backend: str,
     backend_kwargs: dict[str, Any],
+    run_workers: int,
     out_dir: Path | str,
     round_index: int,
     verifier_factory: str,
@@ -203,6 +204,11 @@ def build_request(
         "repetitions": repetitions,
         "backend": backend,
         "backend_kwargs": backend_kwargs,
+        # A child rebuilds its EvaluationConfig field by field, so a knob that
+        # is absent here silently defaults to 1 in every child -- the subject
+        # would fan out at the parent's setting but run its own runs one at a
+        # time, and nothing would say so.
+        "run_workers": run_workers,
         "out_dir": str(out_dir),
         "round_index": round_index,
         "verifier_factory": verifier_factory,
@@ -305,6 +311,7 @@ def run_subject_worker(request_path: str | Path) -> dict[str, Any]:
             repetitions=int(request["repetitions"]),
             backend=str(request["backend"]),
             backend_kwargs=dict(request["backend_kwargs"]),
+            run_workers=int(request.get("run_workers", 1)),
         )
         outcome = evaluate_subject(subject_id, harness, config)
         if isinstance(outcome, CandidateRejection):
@@ -438,6 +445,7 @@ def evaluate_subjects_in_processes(
                     repetitions=config.repetitions,
                     backend=config.backend,
                     backend_kwargs=dict(config.backend_kwargs),
+                    run_workers=config.run_workers,
                     out_dir=config.out_dir,
                     round_index=config.round_index,
                     verifier_factory=config.verifier_factory,

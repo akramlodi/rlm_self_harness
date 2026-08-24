@@ -1501,3 +1501,44 @@ class TestPromotionLedger:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestSubjectOutcomeReflectsSkippedRuns:
+    """R8/KTD10: a subject that skipped any run never reports `completed`.
+
+    The promotion rule reads the *subject* outcome. Dispatch can stop while
+    spend is still inside the budget -- the reservation gate holds back a
+    slot's worth of headroom per in-flight run -- so deriving the outcome from
+    the breaker alone would mark a truncated subject complete and let the
+    preregistered rule score a sample that never ran.
+    """
+
+    def test_a_split_with_a_skipped_run_makes_the_subject_over_budget(self):
+        from shrlm.optimization.validation import _any_split_skipped
+
+        assert _any_split_skipped({"heldin": {"skipped_run_ids": []}}) is False
+        assert _any_split_skipped({"heldin": {"skipped_run_ids": ["inst-1__a01"]}}) is True
+        assert (
+            _any_split_skipped(
+                {"heldin": {"skipped_run_ids": []}, "heldout": {"skipped_run_ids": ["x__a01"]}}
+            )
+            is True
+        )
+
+    def test_a_truncated_subject_is_not_scored_as_completed(self, tmp_path, monkeypatch):
+        """End to end: a breaker that stops mid-subject must not read complete."""
+        caps = replace(CAPS, candidate_budget=COST_PER_CALL * 1.5)
+        factory = ClientFactory([final("RIGHT")] * 8)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, caps=caps, splits=make_splits(2), repetitions=1)
+
+        evaluation = evaluate_subject("cand-trunc", candidate_harness("trunc"), config)
+
+        assert isinstance(evaluation, SubjectEvaluation)
+        skipped = [
+            run_id
+            for split in evaluation.summary["splits"].values()
+            for run_id in split["skipped_run_ids"]
+        ]
+        assert skipped
+        assert evaluation.summary["outcome"] == OUTCOME_OVER_BUDGET

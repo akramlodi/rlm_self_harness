@@ -220,6 +220,10 @@ class EvaluationConfig:
     backend: str = "openrouter"
     backend_kwargs: dict[str, Any] = field(default_factory=dict)
     workers: int = 1
+    # How many of one subject's runs execute concurrently. Multiplies with
+    # ``workers``: the two knobs are independent process tiers, so total
+    # in-flight runs is ``workers x run_workers`` (KTD15).
+    run_workers: int = 1
     verifier_factory: str | None = None
     client_factory: tuple[str, dict[str, Any]] | None = None
 
@@ -230,6 +234,10 @@ class EvaluationConfig:
             raise ValueError(f"workers must be an integer, got {self.workers!r}")
         if self.workers < 1:
             raise ValueError(f"workers must be >= 1, got {self.workers}")
+        if isinstance(self.run_workers, bool) or not isinstance(self.run_workers, int):
+            raise ValueError(f"run_workers must be an integer, got {self.run_workers!r}")
+        if self.run_workers < 1:
+            raise ValueError(f"run_workers must be >= 1, got {self.run_workers}")
         if self.workers > 1 and not self.verifier_factory:
             raise ValueError(
                 f"workers={self.workers} evaluates subjects in child processes, which rebuild "
@@ -389,6 +397,16 @@ def _persist_once(path: Path, text: str, diverging: str) -> None:
     os.replace(tmp_path, path)
 
 
+def _any_split_skipped(split_summaries: dict[str, dict[str, Any]]) -> bool:
+    """Whether any split left a run unexecuted.
+
+    A skipped run means the evaluated sample is smaller than the configured
+    one, whatever the reason -- and that is a property of the subject, not of
+    one split, because the promotion rule scores the subject.
+    """
+    return any(split.get("skipped_run_ids") for split in split_summaries.values())
+
+
 def _write_summary(path: Path, payload: dict[str, Any]) -> None:
     """Persist one subject's summary, refusing to clobber a diverging one.
 
@@ -459,6 +477,8 @@ def evaluate_subject(
         split_path = split_dir(config.out_dir, config.round_index, subject_id, split_id)
         round_config = RoundConfig(
             round_index=EVAL_ROUND_INDEX,
+            run_workers=config.run_workers,
+            client_factory=config.client_factory,
             harness=harness,
             instances=instances,
             verifier=config.verifier,
@@ -502,7 +522,18 @@ def evaluate_subject(
         "subject_id": subject_id,
         "harness_hash": next(iter(split_summaries.values()))["harness_hash"],
         "repetitions": config.repetitions,
-        "outcome": OUTCOME_OVER_BUDGET if breaker.tripped else OUTCOME_COMPLETED,
+        # Derived from the splits' skipped sets as well as the breaker. The
+        # promotion rule reads THIS outcome, and dispatch can stop while spend
+        # is still inside the budget -- the reservation gate holds back a
+        # slot's worth of headroom per in-flight run, so a subject can end with
+        # runs never executed and the breaker never tripped. Deriving from the
+        # breaker alone would mark such a subject `completed` and let the
+        # preregistered rule score a sample that never ran.
+        "outcome": (
+            OUTCOME_OVER_BUDGET
+            if (breaker.tripped or _any_split_skipped(split_summaries))
+            else OUTCOME_COMPLETED
+        ),
         "spent": breaker.spent,
         "splits": split_summaries,
     }
