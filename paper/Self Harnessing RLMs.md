@@ -110,15 +110,15 @@ Unlike Zhang et al. [2], when multiple compatible edits pass, we re-evaluate the
 
 ## 3.4 Baselines and Evaluation
 
-We evaluate the self-harnessed RLM against two baselines.
+We evaluate the self-harnessed RLM against three fixed-weight baselines.
 
 - SH-RLM: Self-Harnessed RLM (ours). The frozen harness produced by section 3.3. [URL 🔗](#page-0)
 
 - H0: mechanism floor. The starting point of optimization. Eight of the ten surfaces are empty, disabled, or a single generic line: no orchestrator framing, no decomposition protocol, no per-prompt capacity ceiling, no batch-width rule, no answer-discipline instruction. Every clause it lacks is one the loop must recover from its own traces.
 
-- H0\*: shipped reference. The unmodified reference implementation of Zhang et al. [1], byte-identical to its default configuration. Because that default appends an orchestration addendum to every root system prompt, H0\* already carries the authors' hand-tuned guidance on decomposition, sub-call capacity, batch fan-out, and answer discipline — which is precisely why it cannot also serve as the mechanism floor. It is therefore reported as a *human-engineering* baseline alongside H1 rather than as the optimization starting point, and the gap H0\* − H0 measures the human-supplied orchestration prior rather than assuming it.
+- H0\*: shipped reference. The upstream hand-designed RLM prompt, evaluated under the same runtime limits as SH-RLM and without learned skills. The gap H0\* − H0 measures the human-supplied orchestration prior.
 
-- H1: λ-RLM [8]. A hand-designed extension, carried over unmodified, that replaces free- form recursive code generation with a typed functional runtime and invokes the model only on bounded leaf sub-problems. It measures Self-Harness against human harness engineering rather than against an unmodified starting point. [URL 🔗](#page-0)
+- λ-RLM [8]. A hand-designed method, carried over unmodified, that replaces free-form recursive code generation with a typed functional runtime and invokes the model only on bounded leaf sub-problems. [URL 🔗](#page-0)
 
 One further condition relaxes the fixed-weight constraint and is reported separately.
 
@@ -136,9 +136,9 @@ reported separately for each target environment:
 
 - 4. target-long, measuring cross-environment transfer under an additional length shift.
 
-The primary comparisons are SH-RLM versus H0 on source-long, target-short, and target-long,
+The primary comparisons are SH-RLM versus H0, H0\*, and λ-RLM on source-long, target-short, and target-long.
 
-with SH-RLM versus H1 on the same three sets indicating whether a self-discovered harness is competitive with a hand-designed one. Improvement on source-long indicates that the learned harness changes survive a length shift within the optimization environment. Improvement on target- short provides the cleanest evidence that the edits capture a transferable compositional strategy rather than a source-specific rule. Improvement on target-long tests whether that transfer remains effective when environment and input length change simultaneously.
+Improvement on source-long indicates that the learned harness changes survive a length shift within the optimization environment. Improvement on target-short provides the cleanest evidence that the edits capture a transferable compositional strategy rather than a source-specific rule. Improvement on target-long tests whether that transfer remains effective when environment and input length change simultaneously.
 
 ## 3.5 Analysis
 
@@ -167,11 +167,11 @@ runs over T = 15 rounds (Self-Harness used 15, 18, and 21, rounds for the three 
 
 tokens for a typical short run, so optimization costs approximately 2.4 × 109 tokens.
 
-After optimization, the four fixed-weight conditions H0, H0\*, H1, and SH-RLM are evaluated on the source-short, source-long, target-short, and target-long test sets; F1 is budgeted separately (ap- pendix A). The target environment therefore adds final-evaluation cost but no mining, proposal, or candidate-validation cost. Total cost can be expressed as [URL 🔗](#page-0)
+After optimization, the four fixed-weight conditions H0, H0\*, λ-RLM, and SH-RLM are evaluated on the source-short, source-long, target-short, and target-long test sets; F1 is budgeted separately (appendix A). The target environment therefore adds final-evaluation cost but no mining, proposal, or candidate-validation cost. Total cost can be expressed as [URL 🔗](#page-0)
 
-Evaluating four conditions on two environments at 40 short-test and 150 long-test instances with 3 repetitions is 960 short and 3,600 long runs. The long runs dominate: at inputs 8–32× larger, they average roughly 1.2 × 106 tokens each, giving approximately 3.2 × 109 tokens for final evaluation
+Evaluating four conditions with 3 repetitions is 960 short and 2,280 long runs. Both environments contribute 40 short-test instances; GraphWalks contributes 150 long-test instances and OOLONG-Pairs contributes 40. The long runs dominate: at inputs 8–32× larger, they average roughly 1.2 × 106 tokens each, giving approximately 2.7 × 109 tokens for final evaluation
 
-against 9 × 107 for the short tests. The project total is therefore approximately 5–6 × 109 tokens. Served locally that is roughly 650 H100-hours; purchased as hosted inference at current open- weights rates it is approximately \$1,200–\$2,000. The sub-verification ablation of appendix B adds [URL 🔗](#page-0)
+against 1.2 × 108 for the short tests. The project total is therefore approximately 5–6 × 109 tokens. Served locally that is roughly 650 H100-hours; purchased as hosted inference at current open-weights rates it is approximately \$1,200–\$2,000. The sub-verification ablation of appendix B adds [URL 🔗](#page-0)
 
 one further optimization run, or approximately 2.4 × 109 tokens, and is budgeted as contingent.
 
@@ -258,7 +258,7 @@ risks in self-evolving LLM agents. arXiv preprint arXiv:2509.26354, 2025. URL ht
 
 F1 reproduces the weight-training arm of Zhang and Khattab [3] so that harness optimization and weight optimization are compared on the same backbone, harness, and environment. The recipe below follows their reported setup; any deviation forced by our compute allocation will be recorded before training begins. [URL 🔗](#page-0)
 
-- Backbone. Qwen3-30B-A3B-Instruct-2507, the model Zhang and Khattab [3] RL-train inside an RLM harness, and the same backbone used for H0, H0\*, H1, and SH-RLM so that F1 differs from H0 only in its weights. [URL 🔗](#page-0)
+- Backbone. Qwen3-30B-A3B-Instruct-2507, the model Zhang and Khattab [3] RL-train inside an RLM harness, and the same backbone used for H0, H0\*, λ-RLM, and SH-RLM so that F1 differs from H0 only in its weights. [URL 🔗](#page-0)
 
 - Algorithm. RL with prime-rl: decoupled PPO with GRPO-style advantages and a KL penalty against the initial policy.
 
@@ -270,7 +270,7 @@ F1 reproduces the weight-training arm of Zhang and Khattab [3] so that harness o
 
 - Training inputs. Short instances only, at 8k–64k tokens, drawn from the same source-environment short split used for harness optimization. Long instances are never trained on.
 
-- Evaluation. The frozen checkpoint is evaluated on the same four untouched test sets as H0, H0\*, H1, and SH-RLM, at 256k–2M tokens on the long splits.
+- Evaluation. The frozen checkpoint is evaluated on the same four untouched test sets as H0, H0\*, λ-RLM, and SH-RLM, at 256k–2M tokens on the long splits.
 
 - Hardware. 8×H100 nodes.
 

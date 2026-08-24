@@ -4,7 +4,7 @@ This section describes the two-stage experimental procedure used to produce and 
 
 ## **3.0 Backbone and harness invariants**
 
-All conditions (B1, H1, SH-RLM) share a single frozen backbone model, `Qwen3-30B-A3B-Instruct-2507`, with an identical decoding configuration (`[temperature, placeholder]`, `[top-p, placeholder]`, `[max output tokens, placeholder]`) used for both root and recursive sub-calls. No condition updates model weights; only the harness code surrounding the model differs between conditions.
+All fixed-weight conditions (B1, H₀\*, λ-RLM, SH-RLM) share a single frozen backbone model, `Qwen3-30B-A3B-Instruct-2507`, with an identical decoding configuration (`[temperature, placeholder]`, `[top-p, placeholder]`, `[max output tokens, placeholder]`) used for both root and recursive sub-calls. No condition updates model weights; only the inference method or harness differs between conditions.
 
 The RLM architecture is defined by three invariant properties that no harness edit is permitted to alter:
 
@@ -89,19 +89,23 @@ Once the stopping criterion in Section 3.2 is met, the harness is frozen and rec
 
 ## **3.4 Baselines**
 
-Three harness conditions share the frozen backbone and decoding configuration described in Section 3.0:
+We evaluate SH-RLM against three fixed-weight baselines. All ordinary RLM conditions use the same experiment-owned `max_depth = 3`.
 
-* **B1** — the unmodified reference RLM harness (all ten editable surfaces at their initial/minimal state), unchanged throughout.  
-* **H1 (λ-RLM)** — a hand-engineered harness from prior work, held fixed and used as an upper-bound reference for manually designed harness engineering.  
-* **SH-RLM** — the frozen output of the optimization procedure in Sections 3.2–3.3.
+* **B1: initial RLM (H₀).** The sparse harness with every editable surface at its initial default and the starting point of optimization.
 
-An optional fourth condition, **F1**, is a weight-fine-tuned model on the same backbone and source-short training distribution, evaluated where a published checkpoint is available (Appendix A); F1 differs from the other three in that it modifies weights rather than harness code, and is reported separately rather than as a primary comparison.
+* **RLM reference (H₀\*).** The upstream hand-designed RLM prompt, evaluated under the same runtime limits as SH-RLM and without learned S10 skills.
+
+* **λ-RLM.** A hand-designed method that replaces free-form recursive code generation with a typed functional runtime operating on bounded leaf subproblems.
+
+One additional condition relaxes the fixed-weight constraint and is reported separately.
+
+* **F1: fine-tuned RLM.** The same backbone RL-trained inside the initial harness. Because it changes model weights, F1 is excluded from the primary comparisons.
 
 ## **3.5 Fixed-weight evaluation**
 
-With weights and harness both frozen, B1, H1, and SH-RLM are each evaluated on all four test sets (source-short, source-long, target-short, target-long), with `3` seeded repetitions per instance per condition to support confidence-interval estimation. No harness or weight changes occur during this stage for any condition.
+With weights and harnesses frozen, B1, H₀\*, λ-RLM, and SH-RLM are each evaluated on all four test sets (source-short, source-long, target-short, target-long), with `3` seeded repetitions per instance per condition to support confidence-interval estimation. No harness or weight changes occur during this stage for any condition.
 
-The **primary comparisons** are SH-RLM vs. B1 and SH-RLM vs. H1 on **source-long, target-short, and target-long** — the three settings in which nothing about the optimization procedure directly targeted the evaluated length or environment, making improvement here evidence of a transferable strategy rather than a memorized fix. Source-short is reported as a sanity check but is not treated as a primary result, since it is drawn from the same distribution used for weakness mining.
+The **primary comparisons** are SH-RLM vs. B1, SH-RLM vs. H₀\*, and SH-RLM vs. λ-RLM on **source-long, target-short, and target-long**. Source-short is reported as a sanity check but is not treated as a primary result, since it is drawn from the same distribution used for weakness mining.
 
 | Test set | Environment | Length | Comparison role |
 | ----- | ----- | ----- | ----- |
@@ -112,7 +116,7 @@ The **primary comparisons** are SH-RLM vs. B1 and SH-RLM vs. H1 on **source-long
 
 ## **3.6 Metrics**
 
-**Primary metric.** Verifier-scored task accuracy per test set, reported with bootstrap confidence intervals (`[n_bootstrap, placeholder]` resamples) and a paired significance test (`[test type, placeholder — e.g. paired bootstrap / Wilcoxon signed-rank]`) between B1 and SH-RLM and between H1 and SH-RLM on each test set.
+**Primary metric.** Verifier-scored task accuracy per test set, reported with bootstrap confidence intervals (`[n_bootstrap, placeholder]` resamples) and paired significance tests comparing SH-RLM with B1, H₀\*, and λ-RLM on each test set.
 
 **Secondary (efficiency) metrics.** Total tokens per instance, sub-call count, maximum recursion depth, and accuracy per million tokens, reported per condition per test set.
 
@@ -125,7 +129,7 @@ The **primary comparisons** are SH-RLM vs. B1 and SH-RLM vs. H1 on **source-long
 
 ## **3.8 Compute budget**
 
-Total optimization cost is `(n_in · m) + (n_in + n_ho) · (K+1) · v` runs per round, times up to `T` rounds. Total evaluation cost is `3 conditions × 3 repetitions × (80 short-test + 190 long-test instances)` \= `720` short runs and `1,710` long runs. The long-test count is not symmetric across environments: GraphWalks supplies `150` long-test instances, but OOLONG-Pairs supplies `40`, which is the entire upstream pool — the pinned `trec_coarse` validation split ships only `2` distinct context windows at `262,144` tokens, and the loader pairs each window with the `20` configured `task_ids` (see `DATASET_INVENTORY.md`). `[Report final measured token totals, GPU-hours, and cost here after the Section 3.9 pilot and main run.]` The source plan's initial estimate: optimization ≈`2.4×10⁹` tokens; evaluation ≈`9×10⁷` tokens for the 720 short runs plus ≈`2×10⁹` tokens for the 1,710 long runs (long runs dominate, since long instances are 8–32× larger and involve repeated context re-reads during recursion); project total ≈`4–5×10⁹` tokens, ≈`650` H100-hours served locally, or ≈`$1,200–$2,000` at current hosted open-weights inference rates. Measured smoke extrapolation at these sizes (`experiment_smoke/report_full_profile.md`, full profile) puts the point estimate far lower: ≈`7.2×10⁸` input plus ≈`4.1×10⁷` output tokens, `$69.74` on the configured promotional API tier, `$321.65` on rented H100 SXM. The sub-verification ablation (Section 3.7), where run, is budgeted as a separate full optimization pass (≈`2.4×10⁹` tokens) and is not included in the primary total above.
+Total optimization cost is `(n_in · m) + (n_in + n_ho) · (K+1) · v` runs per round, times up to `T` rounds. Total evaluation cost is `4 conditions × 3 repetitions × (80 short-test + 190 long-test instances)` \= `960` short runs and `2,280` long runs. The long-test count is not symmetric across environments: GraphWalks supplies `150` long-test instances, but OOLONG-Pairs supplies `40`, which is the entire upstream pool — the pinned `trec_coarse` validation split ships only `2` distinct context windows at `262,144` tokens, and the loader pairs each window with the `20` configured `task_ids` (see `DATASET_INVENTORY.md`). Final measured token totals, GPU-hours, and cost will be reported after the pilot and main run. The sub-verification ablation (Section 3.7), where run, is budgeted separately and is not included in the primary total above.
 
 ## **3.9 Pilot calibration (Section 3.0 reference run)**
 
@@ -152,7 +156,7 @@ Prior to the main experiment, a small-scale pilot is run on both environments (s
 | 3 | Self-Harness loop validation | Run the full mining → proposal → validation loop on a held-out dev subset (excluded from the real experiment) to confirm it works and is reproducible from saved configs |
 | 4 | Self-Harness optimization | Run the full loop on source held-in/held-out; mine failures, propose edits, validate and promote across rounds |
 | 5 | Freeze harness (→ SH-RLM) | Lock the final harness once the round cap or patience criterion is hit; no further edits permitted after this point |
-| 6 | H1 (λ-RLM) baseline integration | Bring the hand-engineered harness online as the upper-bound reference for manual harness engineering |
+| 6 | H₀\* and λ-RLM baseline integration | Bring both hand-engineered references into the matched evaluation pipeline |
 | 7 | Source-short evaluation | Improvement on the training environment (in-distribution sanity check — secondary, not primary) |
 | 8 | Source-long evaluation | Length generalization within the source environment (primary) |
 | 9 | Target-short evaluation | Task/environment generalization without a length shift (primary) |
@@ -245,14 +249,15 @@ This specifies the two evaluation components for SH-RLM: (1) quality of final re
 
 ### **1.1 Purpose**
 
-Determine whether the Self-Harnessed RLM (SH-RLM) produces higher-quality outputs than (a) an unmodified reference harness and (b) a hand-engineered harness, and whether any gains survive a length shift and a change of task environment.
+Determine whether the Self-Harnessed RLM (SH-RLM) outperforms its sparse starting point and the H₀\* and λ-RLM hand-engineered baselines, and whether any gains survive a length shift and a change of task environment.
 
 ### **1.2 Conditions compared**
 
 | Condition | Description | Role |
 | ----- | ----- | ----- |
-| **B1 — Initial RLM (H₀)** | Unmodified reference harness; every editable surface at its sparse default | Zero-intervention baseline; starting point of optimization |
-| **H1 — λ-RLM** | Hand-designed harness (typed functional runtime, bounded leaf sub-problems), unmodified | Expert-engineered baseline; tests SH-RLM against human harness engineering |
+| **B1 — Initial RLM (H₀)** | Every editable surface at its sparse default | Zero-intervention baseline; starting point of optimization |
+| **RLM reference (H₀\*)** | Upstream hand-designed RLM prompt under matched runtime limits | Reference for upstream human-written orchestration |
+| **λ-RLM** | Typed functional runtime with bounded leaf sub-problems | Hand-designed alternative inference method |
 | **SH-RLM** | Frozen harness produced by the propose-validate-promote optimization loop | System under test |
 | **F1 — Fine-tuned RLM**(secondary, reported separately) | Same backbone, RL-trained inside the initial harness on the source-short split | Reference point only — not weight-matched to the other three, so excluded from primary comparisons |
 
@@ -269,12 +274,13 @@ Source and target are two different task environments (e.g., GraphWalks and OOLO
 
 ### **1.4 Primary metric**
 
-* **Verifier accuracy**, reported separately for each of the four test sets, for each of the three primary conditions (B1, H1, SH-RLM).
+* **Verifier accuracy**, reported separately for each test set and each fixed-weight condition (B1, H₀\*, λ-RLM, SH-RLM).
 
 ### **1.5 Primary comparisons**
 
 * **SH-RLM vs. B1** on source-long, target-short, and target-long — tests whether self-discovered harness improvements generalize beyond the conditions they were mined from.  
-* **SH-RLM vs. H1** on the same three sets — tests whether a self-discovered harness is competitive with hand-designed harness engineering.
+* **SH-RLM vs. H₀\*** on the same three sets — compares the learned harness with the upstream hand-designed RLM prompt.
+* **SH-RLM vs. λ-RLM** on the same three sets — compares self-discovered harnessing with a hand-designed alternative inference method.
 
 Interpretation of each test set:
 
@@ -286,7 +292,7 @@ Interpretation of each test set:
 
 * Results averaged over repeated seeded runs.  
 * **Bootstrap confidence intervals** computed over task instances.  
-* **Paired per-instance significance test** between B1 and SH-RLM (exact test and repetition-to-instance aggregation rule to be preregistered).
+* **Paired per-instance significance tests** comparing SH-RLM with B1, H₀\*, and λ-RLM (exact test and repetition-to-instance aggregation rule to be preregistered).
 
 ### **1.7 Supporting / diagnostic evals**
 
@@ -321,7 +327,7 @@ Establish whether SH-RLM's quality gains are worth the compute/token cost they r
 ### **2.3 Cost accounting (from feasibility budget)**
 
 * **Optimization cost**: driven by weakness-mining runs plus validation runs across held-in/held-out splits and candidate harnesses per round, capped at a preregistered number of rounds (early-stopped after several rounds without a promotion). Estimated at roughly 2.4×10⁹ tokens for the full optimization run.  
-* **Evaluation cost**: dominated by long-instance runs (8–32× larger inputs), estimated at roughly 3.2×10⁹ tokens for final evaluation across all four test sets, vs. \~9×10⁷ tokens for the short-test runs.  
+* **Evaluation cost**: dominated by long-instance runs (8–32× larger inputs); final totals are fixed after the pilot using the four-condition grid.
 * **Total project cost**: approximately 5–6×10⁹ tokens end-to-end (optimization \+ source evaluation \+ target evaluation), roughly 650 H100-hours if served locally, or approximately $1,200–$2,000 at current hosted open-weights inference rates.  
 * **Sub-verification ablation** adds one further full optimization run (\~2.4×10⁹ tokens), budgeted as contingent.  
 * A **pilot run** (small sample, both environments) precedes full optimization specifically to measure tokens per run, recursive-call counts, and effective passes over the stored context — these pilot measurements fix the final test sizes and token budget before optimization begins, and can trigger a preregistered reduction in long-test sample size if costs run high.
@@ -338,7 +344,7 @@ This framing lets the write-up show, qualitatively, how much *quality* a much mo
 ### **2.5 How to present this in the paper**
 
 * Report accuracy-per-million-tokens alongside raw verifier accuracy for every condition/test-set pair, so the reader sees quality and cost side by side rather than in separate tables.  
-* Consider a cost-quality plot (tokens or $ on x-axis, verifier accuracy on y-axis) with B1, H1, SH-RLM (and F1, marked as a non-matched reference) as separate points/series — this is the natural way to visualize a Pareto-style tradeoff.  
+* Consider a cost-quality plot (tokens or $ on x-axis, verifier accuracy on y-axis) with B1, H₀\*, λ-RLM, and SH-RLM (and F1, marked as a non-matched reference) as separate points/series — this is the natural way to visualize a Pareto-style tradeoff.
 * Call out explicitly that optimization cost is a **one-time, amortized** cost (paid once to produce the frozen harness) whereas the efficiency metrics per test run reflect the **marginal, per-inference** cost of using that harness going forward — these are different cost regimes and shouldn't be conflated in the writeup.
 
 ---

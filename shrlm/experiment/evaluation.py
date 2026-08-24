@@ -21,11 +21,10 @@ Directory contract under ``out_dir``::
 
 Conditions are named harness *sources*, resolved from one mapping
 (``CONDITIONS``) rather than branched on at the call sites: ``b1`` is the
-registry incumbent ``H0``, ``sh_rlm`` is the frozen envelope rematerialized
-through ``materialize_harness`` and re-hashed against the freeze-time hash
-(a tampered envelope raises before any run executes). Adding ``h1`` -- or a
-fine-tuned ``f1`` reading a different frozen path -- is one entry in that
-mapping; nothing else in this module changes.
+registry incumbent ``H0``, ``h0_star`` is the registry's shipped reference
+``H0*``, and ``sh_rlm`` is the frozen envelope rematerialized through
+``materialize_harness`` and re-hashed against the freeze-time hash (a tampered
+envelope raises before any run executes).
 
 Byte-identical instances across conditions (R8) is enforced, not assumed. Each
 split file is the single source for every condition's round, the driver
@@ -125,6 +124,7 @@ STAGE_EVAL = "eval"
 ROLE_TEST = "test"
 
 CONDITION_B1 = "b1"
+CONDITION_H0_STAR = "h0_star"
 CONDITION_SH_RLM = "sh_rlm"
 
 
@@ -187,15 +187,19 @@ class FrozenHarnessSource:
 
 HarnessSource = RegistryHarnessSource | FrozenHarnessSource
 
-# The condition registry. Every condition the scaffold can evaluate is one
-# entry here; H1 (lambda-RLM) and F1 (fine-tuned baseline) land as further
-# entries without reshaping this module's API.
+# The harness-condition registry. Lambda-RLM is a different inference method,
+# not a ``Harness``, and joins evaluation after the method-level adapter phase.
 CONDITIONS: dict[str, HarnessSource] = {
     CONDITION_B1: RegistryHarnessSource(INITIAL_INCUMBENT),
+    CONDITION_H0_STAR: RegistryHarnessSource("H0*"),
     CONDITION_SH_RLM: FrozenHarnessSource(f"{FROZEN_DIR}/{FROZEN_HARNESS_FILENAME}"),
 }
 
-DEFAULT_CONDITIONS: tuple[str, ...] = (CONDITION_B1, CONDITION_SH_RLM)
+DEFAULT_CONDITIONS: tuple[str, ...] = (
+    CONDITION_B1,
+    CONDITION_H0_STAR,
+    CONDITION_SH_RLM,
+)
 
 DEFAULT_VERIFIERS: dict[str, Verifier] = {
     "graphwalks": GraphWalksVerifier(),
@@ -541,8 +545,8 @@ def run_evaluation(
     Args:
         config: The loaded experiment configuration (one profile).
         conditions: Condition names to evaluate, in evaluation order; each must
-            be a key of ``CONDITIONS`` (``DEFAULT_CONDITIONS`` is the scaffold's
-            pair, ``b1`` and ``sh_rlm``).
+            be a key of ``CONDITIONS`` (``DEFAULT_CONDITIONS`` contains
+            ``b1``, ``h0_star``, and ``sh_rlm``).
         out_dir: The experiment directory (the one the orchestrator wrote).
         verifiers: Per-environment verifiers; defaults to ``DEFAULT_VERIFIERS``.
         loaders: Optional environment-loader overrides for ``materialize_splits``
@@ -574,6 +578,7 @@ def run_evaluation(
 __all__ = [
     "CONDITIONS",
     "CONDITION_B1",
+    "CONDITION_H0_STAR",
     "CONDITION_SH_RLM",
     "DEFAULT_CONDITIONS",
     "DEFAULT_VERIFIERS",

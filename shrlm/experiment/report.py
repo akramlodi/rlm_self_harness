@@ -40,7 +40,8 @@ Extrapolation (KTD6)
             * sum(env test-role size at that length, from splits.split_plan)
             * eval_repetitions
 
-    ``report.eval_conditions`` is the FULL-experiment grid (B1, H1, SH-RLM)
+    ``report.eval_conditions`` is the FULL-experiment grid (B1/H0, H0*,
+    lambda-RLM, SH-RLM)
     and is deliberately independent of how many conditions the scaffold
     actually evaluated. The experiment evaluates every configured
     environment -- source GraphWalks and target OOLONG-Pairs -- so each
@@ -541,8 +542,9 @@ def run_counts(config: ExperimentConfig) -> RunCounts:
     The merge leg is the last term: a promoting round re-evaluates the merged
     harness over both splits, up to ``v(n_in+n_ho)`` further runs, assumed to
     happen in a ``report.p_merge`` fraction of rounds. The evaluation grid uses
-    ``report.eval_conditions`` -- the FULL experiment's condition count (B1,
-    H1, SH-RLM) -- not however many conditions this scaffold measured -- times
+    ``report.eval_conditions`` -- the FULL experiment's condition count (B1/H0,
+    H0*, lambda-RLM, SH-RLM) -- not however many conditions this scaffold
+    measured -- times
     the test-role instance count summed across every configured environment
     (see ``eval_test_sizes``), not the source split alone.
     """

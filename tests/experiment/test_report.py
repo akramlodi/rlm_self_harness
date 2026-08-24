@@ -24,7 +24,7 @@ sums both environments' test-role size, not GraphWalks alone (see
     optimization runs = 1456 * 3 = 4368
     eval short size = 40 (graphwalks) + 40 (oolong_pairs) = 80
     eval long size  = 150 (graphwalks) + 40 (oolong_pairs) = 190
-    eval runs = 3 * (80 + 190) * 3 = 2430  (720 short + 1,710 long)
+    eval runs = 4 * (80 + 190) * 3 = 3240  (960 short + 2,280 long)
 
 The long leg is smaller than the 2,700 runs quoted in ``paper/proposal.tex``
 (Section: Feasibility and Cost): that figure assumed 150 OOLONG-Pairs long
@@ -356,23 +356,23 @@ class TestRunCounts:
         """Pins the full-experiment evaluation projection so an omitted
         environment cannot silently regress it. The eval grid covers BOTH
         configured environments -- source GraphWalks and target OOLONG-Pairs
-        -- not the source split alone: 3 conditions x 2 environments x
+        -- not the source split alone: 4 conditions x 2 environments x
         (40 short + 150 long graphwalks, 40 short + 40 long oolong_pairs)
-        x 3 repetitions = 720 short and 1,710 long
+        x 3 repetitions = 960 short and 2,280 long
         runs, matching paper/proposal.tex's Feasibility and Cost section.
         """
         counts = run_counts(config)
 
-        assert counts.eval_short_runs == 720.0
-        assert counts.eval_long_runs == 1710.0
+        assert counts.eval_short_runs == 960.0
+        assert counts.eval_long_runs == 2280.0
 
     def test_eval_grid_uses_configured_conditions_not_measured_conditions(self, config, experiment):
         report = build_report(config, experiment)
 
         measured_conditions = len(read_summary(experiment)["conditions"])
         assert measured_conditions == 2  # the scaffold evaluates b1 + sh_rlm
-        assert config.report.eval_conditions == 3  # B1, H1, SH-RLM
-        assert report.run_counts.eval_conditions == 3
+        assert config.report.eval_conditions == 4  # B1/H0, H0*, lambda-RLM, SH-RLM
+        assert report.run_counts.eval_conditions == 4
         assert report.run_counts.eval_short_runs == EVAL_SHORT_RUNS
         assert report.run_counts.eval_long_runs == EVAL_LONG_RUNS
         assert report.run_counts.eval_runs == EVAL_SHORT_RUNS + EVAL_LONG_RUNS

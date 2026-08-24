@@ -26,9 +26,9 @@
 ### 1.2 Evaluation phase (frozen harness, four test sets, vs. baselines)
 
 **Primary metric**
-- Verifier accuracy per condition (B1, H1, SH-RLM, optionally F1) × per test set (source-short, source-long, target-short, target-long)
+- Verifier accuracy per condition (B1, H₀\*, λ-RLM, SH-RLM, optionally F1) × per test set (source-short, source-long, target-short, target-long)
 - Bootstrap confidence intervals over task instances
-- Paired per-instance test: SH-RLM vs. B1, and SH-RLM vs. H1
+- Paired per-instance tests: SH-RLM vs. B1, H₀\*, and λ-RLM
 
 **Secondary efficiency metrics** (same condition × test-set grid)
 - Total input/output tokens

@@ -17,10 +17,11 @@ filler_lines.insert(insert_at, f"SECRET_NUMBER={secret_number}")
 haystack = "\n".join(filler_lines)
 
 rlm = RLM(
-    backend="openai",
+    backend="openrouter",
     backend_kwargs={
-        "model_name": "gpt-5-nano",
-        "api_key": os.getenv("OPENAI_API_KEY"),
+        "model_name": "qwen/qwen3-30b-a3b",
+        "api_key": os.getenv("OPENROUTER-API-KEY"),
+        "sampling_args": {"max_tokens": 2000},
     },
     environment="local",
     max_iterations=10,
