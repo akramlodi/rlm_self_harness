@@ -1,3 +1,4 @@
+import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -60,7 +61,7 @@ def _skill_index_of(custom_tools: dict[str, Any] | None) -> list[dict[str, str]]
     return None
 
 
-def _terminated_child_usage(child: Any, error: Exception, model: str) -> UsageSummary | None:
+def _terminated_child_usage(child: "RLM", error: Exception, model: str) -> UsageSummary | None:
     """What a child RLM spent before an exception ended it, or None.
 
     A child that raised returns no completion, so its usage reaches the parent
@@ -271,6 +272,12 @@ class RLM:
         # therefore invisible to this RLM's handler aggregate. Reset per
         # completion alongside ``_cumulative_cost``.
         self._subcall_usage: UsageSummary = UsageSummary(model_usage_summaries={})
+        # ``rlm_query_batched`` dispatches sub-calls across a thread pool, so the
+        # accumulators below are written from several threads at once. Every read
+        # and write of them takes this lock: an unguarded read-modify-write
+        # silently loses a child's spend, which is the exact failure this
+        # accounting exists to prevent.
+        self._subcall_usage_lock = threading.Lock()
         # What the last completion recorded, published by the completion context
         # on its way out (see ``last_completion_usage``). None until one runs.
         self._last_completion_usage: UsageSummary | None = None
@@ -392,7 +399,7 @@ class RLM:
             # checks. A terminated completion returns nothing, so without this
             # its usage would be unrecoverable and the run would read as free.
             self._last_completion_usage = lm_handler.get_usage_summary().merged_with(
-                self._subcall_usage
+                self._subcall_usage_snapshot()
             )
             lm_handler.stop()
             if not self.persistent and hasattr(environment, "cleanup"):
@@ -570,7 +577,9 @@ class RLM:
 
                     if final_answer is not None:
                         time_end = time.perf_counter()
-                        usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage)
+                        usage = lm_handler.get_usage_summary().merged_with(
+                            self._subcall_usage_snapshot()
+                        )
                         self.verbose.print_final_answer(final_answer)
                         self.verbose.print_summary(i + 1, time_end - time_start, usage.to_dict())
 
@@ -608,7 +617,7 @@ class RLM:
             # Default behavior: we run out of iterations, provide one final answer
             time_end = time.perf_counter()
             final_answer = self._default_answer(message_history, lm_handler)
-            usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage)
+            usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage_snapshot())
             self.verbose.print_final_answer(final_answer)
             self.verbose.print_summary(self.max_iterations, time_end - time_start, usage.to_dict())
 
@@ -755,7 +764,7 @@ class RLM:
         # through their own handlers, so their total is folded in here or it
         # never counts against either cap at all. Both checks read this one
         # snapshot -- nothing between them can move it.
-        current_usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage)
+        current_usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage_snapshot())
 
         # Check budget
         if self.max_budget is not None:
@@ -797,9 +806,10 @@ class RLM:
         ``run_round`` reuses one RLM for every run in a round, so without this
         a run would inherit its predecessor's spend.
         """
-        self._cumulative_cost = 0.0
-        self._subcall_usage = UsageSummary(model_usage_summaries={})
-        self._last_completion_usage = None
+        with self._subcall_usage_lock:
+            self._cumulative_cost = 0.0
+            self._subcall_usage = UsageSummary(model_usage_summaries={})
+            self._last_completion_usage = None
 
     @property
     def last_completion_usage(self) -> UsageSummary | None:
@@ -813,10 +823,24 @@ class RLM:
         return self._last_completion_usage
 
     def _record_subcall_usage(self, usage_summary: UsageSummary | None) -> None:
-        """Fold one child completion's usage into this completion's total."""
+        """Fold one child completion's usage into this completion's total.
+
+        ``_cumulative_cost`` is advanced here as well as in the budget check.
+        The check only runs between iterations, but a single iteration can spawn
+        many children through ``rlm_query_batched``; without this each of them
+        would compute its own headroom from the same stale figure and the last
+        one could be handed a budget its siblings had already spent.
+        """
         if usage_summary is None:
             return
-        self._subcall_usage = self._subcall_usage.merged_with(usage_summary)
+        with self._subcall_usage_lock:
+            self._subcall_usage = self._subcall_usage.merged_with(usage_summary)
+            self._cumulative_cost += usage_summary.total_cost or 0.0
+
+    def _subcall_usage_snapshot(self) -> UsageSummary:
+        """This completion's sub-call total, read consistently."""
+        with self._subcall_usage_lock:
+            return self._subcall_usage
 
     def _get_compaction_status(self, message_history: list[dict[str, Any]]) -> tuple[int, int, int]:
         """Return (current_tokens, threshold_tokens, max_tokens) for compaction."""

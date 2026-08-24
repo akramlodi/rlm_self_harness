@@ -81,7 +81,7 @@ from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import RunTraceLink, Verdict, Verifier
 from shrlm.rlm_harness import Harness
-from shrlm.runner import build_harnessed_rlm
+from shrlm.runner import HarnessedRLM, build_harnessed_rlm
 
 # The root-level limit exceptions ``RLM.completion`` can raise. Each one is a
 # paid, recorded run that the verifier never sees; CancellationError (Ctrl+C)
@@ -123,6 +123,11 @@ EXECUTION_FORMAT = "shrlm-round-execution/v1"
 ACCOUNTING_VERSION = "shrlm-accounting/v2"
 ACCOUNTING_VERSION_KEY = "accounting_version"
 LEGACY_ACCOUNTING_VERSION = "shrlm-accounting/v1"
+# Every version this build knows how to reason about. A line stamped with
+# anything else was written by a build from the future: its figures cannot be
+# compared with these, and guessing which way they differ is worse than
+# refusing, so an unrecognized version is rejected by name.
+KNOWN_ACCOUNTING_VERSIONS = frozenset({LEGACY_ACCOUNTING_VERSION, ACCOUNTING_VERSION})
 DIGESTS_DIR = "digests"
 
 # Credentials must come from the environment, never from backend_kwargs: the
@@ -280,7 +285,7 @@ def _write_execution_sidecar(path: Path, run_workers: int) -> None:
     the aggregate reports the last count rather than pretending to a single
     figure it does not have.
     """
-    (path / EXECUTION_FILE).write_text(
+    payload = (
         json.dumps(
             {"format": EXECUTION_FORMAT, "run_workers": int(run_workers)},
             indent=2,
@@ -288,6 +293,12 @@ def _write_execution_sidecar(path: Path, run_workers: int) -> None:
         )
         + "\n"
     )
+    # Written through a temp file and renamed: a crash mid-write would
+    # otherwise leave truncated JSON that turns the read-only aggregate path
+    # into a parse error on a round whose runs are all perfectly fine.
+    staged = path / f"{EXECUTION_FILE}.tmp-{os.getpid()}"
+    staged.write_text(payload)
+    os.replace(staged, path / EXECUTION_FILE)
 
 
 def read_run_workers(path: Path | str) -> int:
@@ -297,9 +308,13 @@ def read_run_workers(path: Path | str) -> int:
     their absent value and a recorded 1 mean the same thing.
     """
     sidecar = Path(path) / EXECUTION_FILE
-    if not sidecar.exists():
+    try:
+        return int(json.loads(sidecar.read_text())["run_workers"])
+    except (OSError, ValueError, KeyError, TypeError):
+        # Absent, truncated, or unreadable. This describes execution conditions,
+        # not results: losing it must never make an otherwise-sound round
+        # unreadable, and the sequential path is the honest assumption.
         return 1
-    return int(json.loads(sidecar.read_text())["run_workers"])
 
 
 def _prepare_round_dir(config: RoundConfig) -> Path:
@@ -371,16 +386,27 @@ def _accounting_version_of(entry: dict[str, Any]) -> str:
     return str(entry.get(ACCOUNTING_VERSION_KEY, LEGACY_ACCOUNTING_VERSION))
 
 
-def _reject_mixed_accounting(manifest_path: Path, entries: list[dict[str, Any]]) -> None:
-    """Refuse a manifest whose lines were priced under different accounting rules.
+def manifest_accounting_version(entries: list[dict[str, Any]]) -> str:
+    """The single accounting version every one of these lines was priced under.
 
-    Resuming an out-dir written before the accounting correction would leave
-    already-persisted runs at their old figures while new ones carry real
-    terminated costs, and the promotion rule would then compare a baseline and
-    a candidate priced differently. Deleting summaries does not fix it, because
-    the old manifest lines are the problem. Fail loudly here rather than let a
-    fresh-out-dir instruction be the only thing standing between the experiment
-    and a silently invalid comparison.
+    An empty manifest is this build's own version: nothing has been priced yet,
+    so the first run that lands sets it.
+    """
+    versions = {_accounting_version_of(entry) for entry in entries}
+    return next(iter(versions)) if len(versions) == 1 else ACCOUNTING_VERSION
+
+
+def _reject_mixed_accounting(manifest_path: Path, entries: list[dict[str, Any]]) -> None:
+    """Refuse a manifest whose lines cannot be read under one accounting rule.
+
+    Two ways that happens. Lines priced under *different* rules cannot be
+    compared with each other at all, and deleting summaries does not fix it
+    because the manifest lines are the problem. Lines priced under a rule this
+    build does not know are equally unusable -- it cannot say how they differ.
+
+    This is the backstop, not the gate: it fires when the damage already
+    exists. ``prepare_round`` refuses a resume that *would* mix versions before
+    any run is paid for, which is the check that actually protects money.
     """
     versions = {_accounting_version_of(entry) for entry in entries}
     if len(versions) > 1:
@@ -388,6 +414,14 @@ def _reject_mixed_accounting(manifest_path: Path, entries: list[dict[str, Any]])
             f"{manifest_path} mixes cost-accounting versions {sorted(versions)}. "
             "Runs priced under different accounting rules are not comparable; "
             "use a fresh out-dir rather than resuming this one."
+        )
+    unknown = versions - KNOWN_ACCOUNTING_VERSIONS
+    if unknown:
+        raise RoundPersistenceError(
+            f"{manifest_path} was priced under unrecognized cost-accounting version "
+            f"{sorted(unknown)[0]!r}; this build knows "
+            f"{sorted(KNOWN_ACCOUNTING_VERSIONS)}. Refusing to read figures whose "
+            "accounting rules are unknown."
         )
 
 
@@ -662,10 +696,28 @@ def prepare_round(
         for attempt in range(1, config.attempts + 1)
         if run_id_for(str(instance["id"]), attempt) not in done
     ]
+
+    # Refuse before the first run is paid for, not after. A directory written
+    # under older accounting reads back fine on its own -- every line agrees --
+    # so the mixed-version backstop cannot see the problem until a new line has
+    # already landed beside the old ones. By then the operator has paid for a
+    # run and the directory is unreadable for good. The moment there is work to
+    # execute is the moment to refuse.
+    if pending:
+        persisted_version = manifest_accounting_version(existing)
+        if existing and persisted_version != ACCOUNTING_VERSION:
+            raise RoundPersistenceError(
+                f"{path} holds runs priced under cost-accounting version "
+                f"{persisted_version!r}, but this build prices runs as "
+                f"{ACCOUNTING_VERSION!r}. Executing the {len(pending)} pending run(s) "
+                "here would leave the round priced two ways and unreadable. Use a "
+                "fresh out-dir; the existing directory stays readable as it is."
+            )
+
     return path, existing, pending
 
 
-def build_round_rlm(config: RoundConfig):
+def build_round_rlm(config: RoundConfig) -> HarnessedRLM:
     """The harnessed RLM one round's runs execute under.
 
     The credential is demanded here rather than at validation, so a fully
@@ -692,7 +744,7 @@ def build_round_rlm(config: RoundConfig):
 
 
 def execute_run(
-    harnessed: Any,
+    harnessed: HarnessedRLM,
     instance: dict[str, Any],
     *,
     model_name: str,
@@ -785,6 +837,10 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
             model_name=model_name,
             verifier=config.verifier,
         )
+        # ``config.verifier`` is mandatory, so the in-process path always gets a
+        # verdict back; only a run child omits the verifier, and it never
+        # persists. Narrow explicitly rather than leave the guarantee implicit.
+        assert outcome.verdict is not None
         entries.append(
             _persist_run(
                 path,

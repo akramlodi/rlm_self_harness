@@ -695,6 +695,56 @@ class TestSplitClaim:
 
         assert not (round_path / ".claim").exists()
 
+    def test_a_claim_that_never_named_an_owner_is_evicted(self, tmp_path, monkeypatch):
+        """A claim directory with no owner inside can only be debris.
+
+        Ownership is published by a single rename of a directory that already
+        contains its pid, so a live claim always names someone. An empty one is
+        either external tampering or a process killed mid-staging, and honouring
+        it forever would lock the split with nobody holding it.
+        """
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory([final("RIGHT")] * 3))
+        config = make_config(tmp_path)
+        round_path = round_dir(config.out_dir, config.round_index)
+        (round_path / ".claim").mkdir(parents=True)
+
+        result = run_governed_round(config, CandidateSpendBreaker(CAPS))
+
+        assert result.outcome == OUTCOME_COMPLETED
+        assert not (round_path / ".claim").exists()
+
+    def test_release_leaves_a_claim_another_process_now_holds(self, tmp_path):
+        """Eviction hands the split to someone else; the evicted process must
+        not delete the new owner's claim on its way out."""
+        round_path = tmp_path / "split"
+        round_path.mkdir()
+
+        with claim_split(round_path):
+            # Someone else took over while we were running.
+            (round_path / ".claim" / "pid").write_text("4242\n")
+
+        assert (round_path / ".claim" / "pid").read_text().strip() == "4242"
+
+    def test_acquisition_leaves_no_staging_debris(self, tmp_path):
+        round_path = tmp_path / "split"
+        round_path.mkdir()
+
+        with claim_split(round_path):
+            pass
+
+        assert [child.name for child in round_path.iterdir()] == []
+
+    def test_a_refused_claim_leaves_no_staging_debris(self, tmp_path):
+        round_path = tmp_path / "split"
+        round_path.mkdir()
+
+        with claim_split(round_path):
+            with pytest.raises(SplitClaimedError):
+                with claim_split(round_path):
+                    pass
+            # Only the live claim itself remains; the refused attempt cleaned up.
+            assert sorted(c.name for c in round_path.iterdir()) == [".claim"]
+
     def test_a_sequential_round_still_completes_under_the_claim(self, tmp_path, monkeypatch):
         """The guard is not gated on concurrency; the default path is unaffected."""
         monkeypatch.setattr(rlm_module, "get_client", ClientFactory([final("RIGHT")] * 3))

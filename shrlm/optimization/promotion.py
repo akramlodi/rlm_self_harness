@@ -43,6 +43,7 @@ from typing import Any
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.candidates import CandidateRejection, LoadedCandidate
 from shrlm.optimization.costs import OUTCOME_COMPLETED
+from shrlm.optimization.driver import ACCOUNTING_VERSION_KEY, LEGACY_ACCOUNTING_VERSION
 from shrlm.optimization.validation import (
     SPLIT_HELDIN,
     SPLIT_HELDOUT,
@@ -252,6 +253,21 @@ def _scoring_violation(baseline: dict[str, Any], candidate: dict[str, Any]) -> s
                 f"{split_id} n_runs differ (baseline {base_runs}, candidate {cand_runs}) or are "
                 "zero; pass-count deltas need one shared, non-empty denominator"
             )
+    # The cost band is a ratio between the two arms, so it is only meaningful
+    # when both were priced the same way. A terminated run's cost changed from
+    # absent to real between accounting versions, which moves the ratio by more
+    # than the band's own width on a realistic termination count -- comparing
+    # across versions would decide promotions on the accounting rather than on
+    # the candidate. A summary written before the version was recorded reads as
+    # legacy, which is what it is.
+    base_accounting = baseline.get(ACCOUNTING_VERSION_KEY, LEGACY_ACCOUNTING_VERSION)
+    cand_accounting = candidate.get(ACCOUNTING_VERSION_KEY, LEGACY_ACCOUNTING_VERSION)
+    if base_accounting != cand_accounting:
+        return (
+            f"baseline is priced under cost-accounting {base_accounting!r} but candidate "
+            f"{candidate['subject_id']!r} under {cand_accounting!r}; a cost band compared "
+            "across accounting versions measures the accounting, not the candidate"
+        )
     return None
 
 

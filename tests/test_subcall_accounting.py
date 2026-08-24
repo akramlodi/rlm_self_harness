@@ -316,3 +316,102 @@ class TestPerCompletionReset:
         assert rlm._cumulative_cost == 0.0
         assert rlm._subcall_usage.total_cost is None
         assert rlm._subcall_usage.model_usage_summaries == {}
+
+
+class TestConcurrentSubcallAccounting:
+    """``rlm_query_batched`` runs sub-calls on a thread pool, so the accumulator
+    is written from several threads at once. An unguarded read-modify-write
+    loses a child's spend silently -- the exact failure this accounting exists
+    to prevent, and one that only appears under load.
+    """
+
+    def test_every_concurrent_child_survives_the_merge(self, live):
+        from concurrent.futures import ThreadPoolExecutor
+
+        parent = an_rlm(live, max_budget=1000.0)
+        children = 64
+        per_child = usage(live, "m", calls=1, inp=10, out=5, cost=0.01)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            list(pool.map(lambda _: parent._record_subcall_usage(per_child), range(children)))
+
+        assert parent._subcall_usage.model_usage_summaries["m"].total_calls == children
+        assert parent._subcall_usage.total_cost == pytest.approx(children * 0.01)
+
+    def test_the_running_cost_tracks_every_child(self, live):
+        """``_cumulative_cost`` is what a sibling's budget headroom is derived
+        from, so it has to advance with each child, not once per iteration."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        parent = an_rlm(live, max_budget=1000.0)
+        per_child = usage(live, "m", calls=1, cost=0.02)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _: parent._record_subcall_usage(per_child), range(50)))
+
+        assert parent._cumulative_cost == pytest.approx(50 * 0.02)
+
+
+class TestSubcallBudgetHeadroom:
+    def test_a_second_child_in_one_iteration_sees_its_siblings_spend(self, live, monkeypatch):
+        """Several children can be spawned inside a single iteration. Without a
+        running total each would be handed the same headroom and the budget
+        would only bite at the next iteration boundary -- far too late.
+        """
+        handed_out: list[float | None] = []
+
+        class RecordingChild:
+            last_completion_usage = None
+
+            def __init__(self, *args, **kwargs):
+                handed_out.append(kwargs.get("max_budget"))
+                self.last_completion_usage = None
+
+            def completion(self, prompt, root_prompt=None):
+                return live.RLMChatCompletion(
+                    root_model="m",
+                    prompt=prompt,
+                    response="done",
+                    usage_summary=usage(live, "m", calls=1, cost=0.30),
+                    execution_time=0.0,
+                )
+
+            def close(self):
+                pass
+
+        parent = an_rlm(live, max_depth=3, max_budget=1.00)
+        monkeypatch.setattr(live, "RLM", RecordingChild)
+
+        parent._subcall("one")
+        parent._subcall("two")
+        parent._subcall("three")
+
+        assert handed_out == [pytest.approx(1.00), pytest.approx(0.70), pytest.approx(0.40)]
+
+    def test_an_exhausted_budget_stops_further_children(self, live, monkeypatch):
+        class GreedyChild:
+            last_completion_usage = None
+
+            def __init__(self, *args, **kwargs):
+                self.last_completion_usage = None
+
+            def completion(self, prompt, root_prompt=None):
+                return live.RLMChatCompletion(
+                    root_model="m",
+                    prompt=prompt,
+                    response="done",
+                    usage_summary=usage(live, "m", calls=1, cost=0.60),
+                    execution_time=0.0,
+                )
+
+            def close(self):
+                pass
+
+        parent = an_rlm(live, max_depth=3, max_budget=1.00)
+        monkeypatch.setattr(live, "RLM", GreedyChild)
+
+        parent._subcall("one")
+        parent._subcall("two")
+        third = parent._subcall("three")
+
+        assert "budget exhausted" in third.response.lower()

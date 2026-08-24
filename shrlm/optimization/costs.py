@@ -58,11 +58,13 @@ escalation. A candidate that swallows ``BaseException`` inside its hang can
 still defeat a signal-raised exception -- that adversarial case is also v2's.
 
 Pricing one persisted run (``breaker_run_cost``) has one policy worth pinning:
-a budget-terminated run carries the limit exception's actual ``spent`` figure
-as its persisted cost (see ``driver._partial_completion``) and is charged
-verbatim, even above the per-run cap; a termination that genuinely persisted no
-cost (a timeout on a cost-less backend) is charged at the per-run budget
-ceiling -- the worst a run is allowed to spend, never zero, so a candidate
+a terminated run carries whatever the runtime recorded for it (see
+``driver._partial_completion``, which persists the total the completion context
+published) and is charged verbatim, even above the per-run cap;
+``BudgetExceededError.spent`` remains the fallback when nothing was published.
+Only a termination that recorded no calls at all -- a request that hung before
+it was counted, or a run that never reached the runtime -- is charged at the
+per-run budget ceiling: the worst a run is allowed to spend, never zero, so a candidate
 cannot burn wall-clock for free; and a *non*-terminated run with no cost fails
 loudly, because a spend breaker fed cost-less runs is a run counter wearing a
 costume (the same stance ``runner.acceptance_inputs`` takes).
@@ -70,9 +72,11 @@ costume (the same stance ``runner.acceptance_inputs`` takes).
 
 import contextlib
 import os
+import shutil
 import signal
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
@@ -335,10 +339,23 @@ def _run_slice(
 # primitive here, and the pid inside names the holder for the refusal message.
 CLAIM_DIRNAME = ".claim"
 CLAIM_PID_FILENAME = "pid"
+# How long to keep re-examining a claim that resolves to neither a live owner
+# nor an evictable one. Only a process killed between staging and rename can
+# produce that state, and the next loop turn sees the finished claim, so this
+# bound exists to fail loudly rather than spin.
+CLAIM_ACQUIRE_SECONDS = 10.0
 
 
 class SplitClaimedError(RuntimeError):
     """Another live process is already dispatching runs into this split."""
+
+
+def _claim_holder(claim_dir: Path) -> int | None:
+    """The pid recorded inside a claim, or None when it records no readable one."""
+    try:
+        return int((claim_dir / CLAIM_PID_FILENAME).read_text().strip())
+    except (OSError, ValueError):
+        return None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -352,45 +369,77 @@ def _pid_alive(pid: int) -> bool:
 
 
 @contextlib.contextmanager
-def claim_split(path: Path):
+def claim_split(path: Path) -> Iterator[None]:
     """Hold this split exclusively for the duration of the block.
 
     Two invocations dispatching into one split would interleave manifest
     appends and double-charge runs, and neither would know the other existed.
     The guard is not gated on the worker count: a second sequential invocation
     of the same split is exactly as damaging as a concurrent one, so the claim
-    is taken on every governed round.
+    is taken on every governed round. Same-pid is refused too -- nothing here
+    is legitimately re-entrant.
 
-    A claim whose pid is gone is reclaimed rather than honoured -- a crashed
-    round must not lock its split forever -- while a claim held by a live
-    process refuses with both the split and the holder named.
+    Ownership changes hands atomically. The claim is staged as a private
+    directory that already contains its owner's pid and then moved into place
+    with a single rename, so a claim is never observable without an owner: a
+    reader that finds the claim directory always finds a pid inside it. Only
+    that rename decides who holds the split, which is what makes the three
+    races here unwinnable -- a holder descheduled between creating the
+    directory and naming itself, two processes both reclaiming one dead
+    holder, and a reader mistaking a half-built claim for an abandoned one.
+
+    A claim whose owner is gone is evicted rather than honoured, since a
+    crashed round must not lock its split forever; eviction is itself a rename,
+    so only one of several racing processes can perform it and the losers
+    re-examine what the winner left behind.
     """
     claim_dir = path / CLAIM_DIRNAME
-    pid_path = claim_dir / CLAIM_PID_FILENAME
-    try:
-        claim_dir.mkdir(parents=True)
-    except FileExistsError:
-        holder: int | None = None
+    staging = path / f"{CLAIM_DIRNAME}.staging-{os.getpid()}"
+    deadline = time.monotonic() + CLAIM_ACQUIRE_SECONDS
+    while True:
+        staging.mkdir(parents=True, exist_ok=True)
+        (staging / CLAIM_PID_FILENAME).write_text(f"{os.getpid()}\n")
         try:
-            holder = int(pid_path.read_text().strip())
-        except (OSError, ValueError):
-            holder = None
-        # Same-pid is refused too: a second dispatch into one split is a bug
-        # whether or not it comes from this process, and nothing here is
-        # legitimately re-entrant.
+            # Atomic: fails when the claim already exists, and publishes a
+            # claim that already names its owner when it succeeds.
+            os.rename(staging, claim_dir)
+            break
+        except OSError:
+            pass
+
+        holder = _claim_holder(claim_dir)
         if holder is not None and _pid_alive(holder):
+            shutil.rmtree(staging, ignore_errors=True)
             raise SplitClaimedError(
                 f"{path} is already claimed by live process {holder}; refusing to "
                 "dispatch a second round into one split."
             ) from None
-        # Stale: the holder is gone, or the record is unreadable. Take it over.
-    pid_path.write_text(f"{os.getpid()}\n")
+
+        # The owner is gone, or the claim has not finished being published.
+        # Evict by rename so exactly one racer wins the right to clear it; a
+        # loser simply loops and re-reads whatever the winner left.
+        if time.monotonic() >= deadline:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise SplitClaimedError(
+                f"{path} holds a claim that never resolved to a live or dead owner "
+                f"within {CLAIM_ACQUIRE_SECONDS:.0f}s; refusing to dispatch. Remove "
+                f"{claim_dir} by hand once no round is running against this split."
+            )
+        evicted = path / f"{CLAIM_DIRNAME}.evicted-{os.getpid()}"
+        try:
+            os.rename(claim_dir, evicted)
+        except OSError:
+            continue  # another racer got there first; re-examine
+        shutil.rmtree(evicted, ignore_errors=True)
+
     try:
         yield
     finally:
-        pid_path.unlink(missing_ok=True)
-        with contextlib.suppress(OSError):
-            claim_dir.rmdir()
+        # Only tear down a claim this process still owns. A claim evicted as
+        # stale and retaken by someone else must not be deleted from under
+        # them, which is what an unconditional release would do.
+        if _claim_holder(claim_dir) == os.getpid():
+            shutil.rmtree(claim_dir, ignore_errors=True)
 
 
 def run_governed_round(config: RoundConfig, breaker: CandidateSpendBreaker) -> GovernedRoundResult:

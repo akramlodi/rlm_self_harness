@@ -112,6 +112,7 @@ from shrlm.optimization.driver import (
     HARNESS_FILE,
     RoundConfig,
     load_round,
+    manifest_accounting_version,
     read_run_workers,
     reject_sensitive_backend_kwargs,
 )
@@ -337,6 +338,11 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
     total_cost = float(sum(entry["cost"] for entry in entries if entry.get("cost") is not None))
     return {
         "harness_hash": str(envelope["hash"]),
+        # The accounting rules these figures were produced under, read from the
+        # lines themselves rather than assumed to be this build's. A split
+        # aggregated after the correction but whose runs predate it must say so,
+        # or promotion would compare it against a differently-priced arm.
+        ACCOUNTING_VERSION_KEY: manifest_accounting_version(entries),
         # What conditions produced these numbers (R5). Concurrency is a
         # confound on measured cost, so it is recorded beside the measurement
         # rather than left for the reader to reconstruct.
@@ -474,12 +480,25 @@ def evaluate_subject(
     # Both splits' aggregates carry the hash their persisted harness.json
     # recorded for this same harness, so reuse it rather than paying for a
     # second full serialization here.
+    split_versions = {
+        str(split[ACCOUNTING_VERSION_KEY])
+        for split in split_summaries.values()
+        if ACCOUNTING_VERSION_KEY in split
+    }
+    if len(split_versions) > 1:
+        raise ValueError(
+            f"subject {subject_id!r} mixes cost-accounting versions "
+            f"{sorted(split_versions)} across its splits; its held-in and held-out "
+            "figures are not comparable with each other, let alone with another "
+            "subject's."
+        )
     summary = {
         "format": SUMMARY_FORMAT,
-        # Which cost-accounting rules produced every figure below. A summary
-        # written before the correction carries no such key, so a reader can
-        # tell the two apart without re-deriving them from the manifests.
-        ACCOUNTING_VERSION_KEY: ACCOUNTING_VERSION,
+        # Which cost-accounting rules produced every figure below -- taken from
+        # the runs, never assumed to be this build's. Stamping the current
+        # version unconditionally would let a legacy round re-aggregated after
+        # the correction claim an accounting it was not priced under.
+        ACCOUNTING_VERSION_KEY: next(iter(split_versions), ACCOUNTING_VERSION),
         "subject_id": subject_id,
         "harness_hash": next(iter(split_summaries.values()))["harness_hash"],
         "repetitions": config.repetitions,

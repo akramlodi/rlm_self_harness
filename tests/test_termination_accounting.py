@@ -41,7 +41,9 @@ class RaisingLM(MockLM):
 
     Stands in for a limit the provider enforces inside the call -- a token cap
     rejected server-side, say. The runtime's between-iteration checks never see
-    it, which is the path an exception-attribute scheme would miss.
+    it, which is the path an exception-attribute scheme would miss. The failing
+    call is counted before it raises, matching a client that issued the request
+    and then had it rejected.
     """
 
     def __init__(self, error: Exception, *, raise_on: int = 2, **kwargs):
@@ -54,6 +56,18 @@ class RaisingLM(MockLM):
             self._call_count += 1
             raise self._error
         return super().completion(prompt)
+
+
+class NeverCallsLM(MockLM):
+    """A client that fails before the request is ever issued or counted.
+
+    The genuinely-zero-call case: a connection refused before anything left the
+    process. Its usage is empty rather than merely cheap, which is what the
+    driver's ceiling pricing keys on.
+    """
+
+    def completion(self, prompt):
+        raise RuntimeError("connection refused before the request was sent")
 
 
 def an_rlm(live, **kwargs):
@@ -80,9 +94,9 @@ class TestPublicationOnTermination:
         assert published.total_calls == 2
         assert published.total_input_tokens == 20
 
-    def test_a_completion_that_made_no_calls_publishes_nothing_recorded(self, live, monkeypatch):
-        """No calls means no evidence of spend -- the breaker must keep its ceiling."""
-        client = RaisingLM(RuntimeError("died before any call"), raise_on=1)
+    def test_a_request_that_was_issued_then_rejected_still_counts(self, live, monkeypatch):
+        """The client counted the call before raising, so the spend is real."""
+        client = RaisingLM(RuntimeError("rejected server-side"), raise_on=1)
         monkeypatch.setattr(live, "get_client", lambda *a, **k: client)
 
         rlm = an_rlm(live, max_iterations=5)
@@ -90,6 +104,22 @@ class TestPublicationOnTermination:
             rlm.completion("prompt")
 
         assert rlm.last_completion_usage.total_calls == 1
+
+    def test_a_completion_that_made_no_calls_publishes_nothing_recorded(self, live, monkeypatch):
+        """No calls means no evidence of spend -- the breaker must keep its ceiling.
+
+        This is the branch ``driver._partial_completion`` keys its ceiling
+        pricing on: a published summary recording zero calls is not a free run,
+        it is a run nothing is known about.
+        """
+        monkeypatch.setattr(live, "get_client", lambda *a, **k: NeverCallsLM())
+
+        rlm = an_rlm(live, max_iterations=5)
+        with pytest.raises(RuntimeError):
+            rlm.completion("prompt")
+
+        assert rlm.last_completion_usage.total_calls == 0
+        assert rlm.last_completion_usage.total_cost is None
 
     def test_the_published_figure_does_not_leak_into_the_next_completion(self, live, monkeypatch):
         """One RLM is reused across a round's runs; run two must not inherit run one."""

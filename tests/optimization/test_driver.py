@@ -649,6 +649,81 @@ class TestAccountingVersionMarker:
         assert all(ACCOUNTING_VERSION_KEY not in entry for entry in entries)
 
 
+class TestAccountingPreflight:
+    """The guard has to fire before money is spent, not after.
+
+    A directory written under older accounting reads back perfectly well on its
+    own -- every line agrees with every other. The mixed-version backstop
+    therefore cannot see the problem until a new line has already landed beside
+    the old ones, by which point a real run has been paid for and the directory
+    is unreadable for good. The refusal belongs at the moment work is about to
+    execute.
+    """
+
+    def _legacy_manifest(self, config) -> Path:
+        round_path = round_dir(config.out_dir, config.round_index)
+        entries = read_manifest(round_path)
+        stripped = [
+            {key: value for key, value in entry.items() if key != ACCOUNTING_VERSION_KEY}
+            for entry in entries
+        ]
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in stripped)
+        )
+        return round_path
+
+    def test_resuming_a_legacy_round_is_refused_before_any_run_executes(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        run_round(config, stop_after=1)
+        round_path = self._legacy_manifest(config)
+        before = (round_path / "runs.jsonl").read_text()
+
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        with pytest.raises(RoundPersistenceError) as excinfo:
+            run_round(config)
+
+        assert "accounting" in str(excinfo.value)
+        assert "fresh out-dir" in str(excinfo.value)
+        # Nothing was executed and nothing was appended: the directory is
+        # exactly as readable as it was before the attempt.
+        assert (round_path / "runs.jsonl").read_text() == before
+        assert len(read_manifest(round_path)) == 1
+
+    def test_a_fully_persisted_legacy_round_still_resumes_as_a_no_op(self, tmp_path, monkeypatch):
+        """Nothing pending means nothing to mix; the round is complete as it is."""
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        run_round(config)
+        self._legacy_manifest(config)
+
+        entries = run_round(config)
+
+        assert len(entries) == 3
+        assert all(ACCOUNTING_VERSION_KEY not in entry for entry in entries)
+
+    def test_a_manifest_priced_under_an_unknown_version_is_refused(self, tmp_path, monkeypatch):
+        """A build from the future priced these lines; how they differ is unknown."""
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        run_round(config)
+        round_path = round_dir(config.out_dir, config.round_index)
+        entries = read_manifest(round_path)
+        for entry in entries:
+            entry[ACCOUNTING_VERSION_KEY] = "shrlm-accounting/v9"
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries)
+        )
+
+        with pytest.raises(RoundPersistenceError) as excinfo:
+            load_round(config.out_dir, config.round_index)
+
+        assert "unrecognized" in str(excinfo.value)
+        assert "shrlm-accounting/v9" in str(excinfo.value)
+
+
 class TestManifestBackwardCompatibility:
     def test_old_format_manifest_lines_still_load_through_load_round(self, tmp_path, monkeypatch):
         """Manifest lines persisted before U4 carry no token/time keys; they
