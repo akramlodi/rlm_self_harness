@@ -1,4 +1,7 @@
+import asyncio
 import os
+import sys
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -29,6 +32,33 @@ def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
         args["max_completion_tokens"] = args.pop("max_tokens")
     args.pop("extra_body", None)
     return {k: v for k, v in args.items() if v is not None}
+
+
+# A provider can return HTTP 200 with a deficient body -- no usage block, no
+# choices, sometimes an embedded error payload (seen intermittently on
+# OpenRouter when an upstream provider fails). The OpenAI SDK retries only
+# HTTP-level failures, so the client retries these itself, bounded. A call
+# whose cost is unknowable is never recorded; after the retries run out the
+# error is raised loudly with whatever the provider embedded.
+TRANSPORT_ATTEMPTS = 3
+_TRANSPORT_BACKOFF_SECONDS = 2.0
+
+
+def _response_deficiency(response: Any) -> str | None:
+    """Why this 200 response cannot be used, or None when it is usable."""
+    problems = []
+    if getattr(response, "usage", None) is None:
+        problems.append("no usage data received")
+    if not getattr(response, "choices", None):
+        problems.append("no choices")
+    if not problems:
+        return None
+    error = getattr(response, "error", None)
+    if error is None and getattr(response, "model_extra", None):
+        error = response.model_extra.get("error")
+    if error:
+        problems.append(f"provider error payload: {str(error)[:300]}")
+    return "; ".join(problems)
 
 
 def extract_provider_cost(usage: Any) -> Any:
@@ -127,12 +157,27 @@ class OpenAIClient(BaseLM):
             extra_body["usage"] = {"include": True}
         extra_body = _merge_extra_body(extra_body, self.sampling_args)
 
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=messages,
-            extra_body=extra_body,
-            **_normalize_sampling_args(self.sampling_args),
-        )
+        for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+                extra_body=extra_body,
+                **_normalize_sampling_args(self.sampling_args),
+            )
+            deficiency = _response_deficiency(response)
+            if deficiency is None:
+                break
+            if attempt == TRANSPORT_ATTEMPTS:
+                raise ValueError(
+                    f"Deficient completion response after {TRANSPORT_ATTEMPTS} attempts "
+                    f"({deficiency}). Tracking tokens not possible."
+                )
+            print(
+                f"Deficient completion response ({deficiency}); "
+                f"retrying ({attempt}/{TRANSPORT_ATTEMPTS})...",
+                file=sys.stderr,
+            )
+            time.sleep(_TRANSPORT_BACKOFF_SECONDS * attempt)
         self._track_cost(response, model)
         return response.choices[0].message.content
 
@@ -155,12 +200,27 @@ class OpenAIClient(BaseLM):
             extra_body["usage"] = {"include": True}
         extra_body = _merge_extra_body(extra_body, self.sampling_args)
 
-        response = await self.async_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            extra_body=extra_body,
-            **_normalize_sampling_args(self.sampling_args),
-        )
+        for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
+            response = await self.async_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                extra_body=extra_body,
+                **_normalize_sampling_args(self.sampling_args),
+            )
+            deficiency = _response_deficiency(response)
+            if deficiency is None:
+                break
+            if attempt == TRANSPORT_ATTEMPTS:
+                raise ValueError(
+                    f"Deficient completion response after {TRANSPORT_ATTEMPTS} attempts "
+                    f"({deficiency}). Tracking tokens not possible."
+                )
+            print(
+                f"Deficient completion response ({deficiency}); "
+                f"retrying ({attempt}/{TRANSPORT_ATTEMPTS})...",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(_TRANSPORT_BACKOFF_SECONDS * attempt)
         self._track_cost(response, model)
         return response.choices[0].message.content
 
