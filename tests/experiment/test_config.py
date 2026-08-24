@@ -131,6 +131,40 @@ def test_eval_repetitions_must_be_a_positive_integer() -> None:
     assert isinstance(operational, OperationalConfig)
 
 
+def test_validation_workers_defaults_to_one_and_is_identity_exempt() -> None:
+    """``operational.validation_workers`` scales wall clock, never behavior (R4, R5)."""
+    config = load_config()
+    assert config.operational.validation_workers == 1
+    assert load_config("smoke").operational.validation_workers == 1
+    base = identity_hash(config)
+    wider = dataclasses.replace(config.operational, validation_workers=5)
+    assert identity_hash(dataclasses.replace(config, operational=wider)) == base
+
+
+def test_validation_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
+    operational = load_config().operational
+    with pytest.raises(ValueError, match="validation_workers"):
+        dataclasses.replace(operational, validation_workers=0)
+    with pytest.raises(ValueError, match="validation_workers"):
+        dataclasses.replace(operational, validation_workers=cast(int, True))
+    text = shipped_text().replace("validation_workers = 1", "validation_workers = 0")
+    with pytest.raises(ValueError, match="validation_workers"):
+        load_config(path=write_config(tmp_path, text))
+
+
+def test_smoke_may_override_validation_workers(tmp_path: Path) -> None:
+    # The shipped [smoke.operational] table already exists; append the key to it
+    # instead of declaring the table twice.
+    text = shipped_text().replace(
+        "[smoke.operational]\neval_repetitions = 1",
+        "[smoke.operational]\neval_repetitions = 1\nvalidation_workers = 3",
+    )
+    path = write_config(tmp_path, text)
+    assert load_config("smoke", path=path).operational.validation_workers == 3
+    assert load_config("full", path=path).operational.validation_workers == 1
+    assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
+
+
 def test_unknown_profile_raises() -> None:
     with pytest.raises(ValueError, match="unknown profile"):
         load_config("dev")
@@ -526,6 +560,7 @@ def test_evaluation_config_kwargs_accepted_by_evaluation_config(tmp_path: Path) 
     assert evaluation.repetitions == config.loop.v == 1
     assert evaluation.caps.candidate_budget == 3.0
     assert evaluation.backend == "openrouter"
+    assert evaluation.workers == config.operational.validation_workers == 1
 
 
 def test_unknown_client_role_raises() -> None:

@@ -188,7 +188,16 @@ def _validate_config(config: RoundConfig) -> None:
         if "prompt" not in instance:
             raise ValueError(f"instance {instance_id!r} carries no 'prompt' field")
 
-    for name in config.backend_kwargs:
+    reject_sensitive_backend_kwargs(config.backend_kwargs)
+
+
+def reject_sensitive_backend_kwargs(backend_kwargs: dict[str, Any]) -> None:
+    """Refuse kwargs that look like credentials: they are persisted verbatim.
+
+    Shared by the round driver and by every caller that writes kwargs to disk
+    before a round runs (the validation subject worker's request file).
+    """
+    for name in backend_kwargs:
         lowered = name.lower()
         if any(fragment in lowered for fragment in _SENSITIVE_KWARG_FRAGMENTS):
             raise ValueError(

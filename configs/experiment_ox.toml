@@ -222,6 +222,7 @@ loader_timeout_seconds = 120.0
 attribution_cache_path = ".cache/shrlm/attribution_ox.jsonl"
 proposal_cache_path = ".cache/shrlm/proposals_ox.jsonl"
 eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
+validation_workers = 5
 
 # -----------------------------------------------------------------------------
 # Smoke profile: scale counts only. Any key here outside the loader's

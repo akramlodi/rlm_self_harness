@@ -56,6 +56,18 @@ round directories, and ``harness.json`` identities, so an audit can walk ledger
 -> round dirs -> sha-verified traces. Both files are non-clobbering in the
 bundle style: byte-identical rewrites are no-ops, divergence is refused.
 
+Subject parallelism: ``EvaluationConfig.workers`` above ``1`` evaluates the
+baseline and the candidates concurrently, each subject in its own child
+process (``shrlm.optimization.subject_worker``, which also owns the parent-side
+dispatcher), at most ``workers`` alive at once. Subjects share nothing -- directory, breaker, hard deadline, and
+manifests are all per subject -- so the persisted artifacts are byte-identical
+to the sequential path's; only the wall clock changes. The parent gates the
+caps before spawning (a rejection never gets a child), rebuilds each result
+from the child's persisted ``summary.json``, keeps results in loader order,
+and raises ``SubjectWorkerError`` only after every child has exited, so a
+failed subject never discards its siblings' persisted runs. The merged
+re-evaluation stays on the sequential in-process path.
+
 ``validate_round`` (U6) is the stage as one call: loader -> evaluation ->
 promotion -> merged re-evaluation -> ledger. It gates a proposals directory
 with the U1 loader under the round's caps, evaluates the baseline and every
@@ -78,6 +90,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from shrlm.harness_identity import harness_hash
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
 from shrlm.optimization.candidates import (
     DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
@@ -93,7 +106,16 @@ from shrlm.optimization.costs import (
     governed_limits,
     run_governed_round,
 )
-from shrlm.optimization.driver import HARNESS_FILE, RoundConfig, load_round
+from shrlm.optimization.driver import (
+    HARNESS_FILE,
+    RoundConfig,
+    load_round,
+    reject_sensitive_backend_kwargs,
+)
+from shrlm.optimization.subject_worker import (
+    BASELINE_REJECTED_MESSAGE,
+    evaluate_subjects_in_processes,
+)
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verifier
 from shrlm.rlm_harness import Harness
@@ -172,6 +194,17 @@ class EvaluationConfig:
     ``repetitions`` becomes each round's ``attempts``; ``caps`` are the
     experiment-owned limits every subject runs under (merged tighten-only
     against its S6 policy by ``governed_limits``).
+
+    ``workers`` caps how many subjects ``evaluate_validation_round`` evaluates
+    concurrently. ``1`` is the sequential in-process path. Above ``1`` every
+    subject runs in its own child process (``shrlm.optimization.subject_worker``),
+    which rebuilds the verifier from ``verifier_factory`` -- a dotted path
+    (``pkg.mod:attr`` or ``pkg.mod.attr``) to a zero-argument callable
+    returning a ``Verifier`` -- so the factory is mandatory once ``workers > 1``.
+    ``client_factory`` is the test-only seam for those children: a dotted path
+    to a callable taking one JSON-safe ``dict`` and returning a ``get_client``
+    replacement, plus per-subject-id args; a child installs it on
+    ``rlm.core.rlm.get_client`` before evaluating (KTD9).
     """
 
     splits: ValidationSplits
@@ -182,10 +215,26 @@ class EvaluationConfig:
     repetitions: int = 1
     backend: str = "openrouter"
     backend_kwargs: dict[str, Any] = field(default_factory=dict)
+    workers: int = 1
+    verifier_factory: str | None = None
+    client_factory: tuple[str, dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if self.repetitions < 1:
             raise ValueError(f"repetitions must be >= 1, got {self.repetitions}")
+        if isinstance(self.workers, bool) or not isinstance(self.workers, int):
+            raise ValueError(f"workers must be an integer, got {self.workers!r}")
+        if self.workers < 1:
+            raise ValueError(f"workers must be >= 1, got {self.workers}")
+        if self.workers > 1 and not self.verifier_factory:
+            raise ValueError(
+                f"workers={self.workers} evaluates subjects in child processes, which rebuild "
+                "the verifier from verifier_factory; pass the dotted path of a zero-argument "
+                "verifier factory (or keep workers=1 for the in-process path)"
+            )
+        # The parallel path writes these kwargs into every worker_request.json
+        # before any round runs, so the driver's credential scan must fire here.
+        reject_sensitive_backend_kwargs(self.backend_kwargs)
 
 
 def subject_dir(out_dir: Path | str, round_index: int, subject_id: str) -> Path:
@@ -469,17 +518,23 @@ def evaluate_validation_round(
             )
         seen.add(candidate.candidate_id)
 
-    baseline = evaluate_subject(BASELINE_ID, incumbent, config)
-    if isinstance(baseline, CandidateRejection):
-        raise ValueError(
-            f"the incumbent violates the experiment-owned caps ({baseline.reason}); a "
-            "baseline that cannot run under the validation limits is a misconfigured "
-            "experiment, not a rejectable candidate"
-        )
-    results: list[SubjectEvaluation | CandidateRejection] = [
-        evaluate_subject(candidate.candidate_id, candidate.harness, config)
-        for candidate in candidates
-    ]
+    if config.workers > 1:
+        subjects = [(BASELINE_ID, incumbent, harness_hash(incumbent))] + [
+            (candidate.candidate_id, candidate.harness, candidate.harness_hash)
+            for candidate in candidates
+        ]
+        outcomes = evaluate_subjects_in_processes(subjects, config)
+        baseline = outcomes[0]
+        results = outcomes[1:]
+    else:
+        baseline = evaluate_subject(BASELINE_ID, incumbent, config)
+        if isinstance(baseline, CandidateRejection):
+            raise ValueError(BASELINE_REJECTED_MESSAGE.format(reason=baseline.reason))
+        results = [
+            evaluate_subject(candidate.candidate_id, candidate.harness, config)
+            for candidate in candidates
+        ]
+    assert isinstance(baseline, SubjectEvaluation), "the baseline is caps-gated before any spawn"
     return RoundEvaluation(
         round_path=round_dir(config.out_dir, config.round_index),
         baseline=baseline,

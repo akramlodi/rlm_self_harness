@@ -256,6 +256,7 @@ def make_config(
     candidate_budget: float = 1.0,
     graphwalks_revision: str = "rev-gw",
     proposer_model: str = "proposer-test",
+    validation_workers: int = 1,
 ) -> ExperimentConfig:
     text = TOML_TEMPLATE.format(
         temperature=temperature,
@@ -265,6 +266,10 @@ def make_config(
         candidate_budget=candidate_budget,
         graphwalks_revision=graphwalks_revision,
         proposer_model=proposer_model,
+    ).replace(
+        "eval_repetitions = 1\n",
+        f"eval_repetitions = 1\nvalidation_workers = {validation_workers}\n",
+        1,
     )
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "experiment.toml"
@@ -839,6 +844,129 @@ class TestCrashedStageUsage:
         usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
         assert usage.input_tokens == 20  # the two persisted validation runs
         assert usage.lower_bound is True
+
+
+# ---------------------------------------------------------------------------
+# Parallel validation subjects inside the loop (U4)
+# ---------------------------------------------------------------------------
+
+
+class TestParallelValidationStage:
+    def test_child_evaluated_subjects_complete_the_round_and_are_metered(
+        self, tmp_path, monkeypatch
+    ):
+        from shrlm.experiment.orchestrator import _validation_usage
+        from tests.optimization.test_validation import (
+            GOLD_VERIFIER_FACTORY,
+            parallel_client_factory,
+        )
+
+        config = make_config(tmp_path, validation_workers=2)
+        out = tmp_path / "exp"
+        # The parent's seam scripts mining only; the two validation subjects
+        # (baseline, the one S4 candidate) read per-subject scripts in children.
+        factory = patch_runner(monkeypatch, MINING_FAIL)
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
+        client_factory = parallel_client_factory(
+            tmp_path, {"baseline": SUBJECT_FAIL, "r01-c01-s4": SUBJECT_PASS}
+        )
+
+        result = run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=attributor,
+            proposer_lm=proposer,
+            loaders=LOADERS,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=client_factory,
+        )
+
+        assert factory.total_calls == 2  # mining only; validation ran in children
+        assert [outcome.promoted for outcome in result.rounds] == [True]
+        expected = replace(H0, verification_instruction=TEXT_ROUND_1)
+        assert result.final_harness_hash == harness_hash(expected)
+
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
+        persisted = _validation_usage(validation_round_path(out, 1))
+        assert usage.input_tokens == persisted.input_tokens == 80  # 8 runs x 10 tokens
+        assert usage.cost == persisted.cost
+        assert usage.lower_bound is False
+
+    def test_a_crashed_parallel_worker_still_meters_the_siblings_it_paid_for(
+        self, tmp_path, monkeypatch
+    ):
+        from shrlm.experiment.orchestrator import _validation_usage
+        from shrlm.optimization.subject_worker import SubjectWorkerError
+        from tests.optimization.test_validation import (
+            GOLD_VERIFIER_FACTORY,
+            parallel_client_factory,
+        )
+
+        config = make_config(tmp_path, validation_workers=2)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL)
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
+        factory_path, args = parallel_client_factory(tmp_path, {"baseline": SUBJECT_FAIL})
+        args["r01-c01-s4"] = {"crash": True}  # the candidate's child dies on its first call
+
+        with pytest.raises(SubjectWorkerError, match="r01-c01-s4"):
+            run_experiment(
+                config,
+                out,
+                verifier=GoldVerifier(),
+                attributor_lm=attributor,
+                proposer_lm=proposer,
+                loaders=LOADERS,
+                verifier_factory=GOLD_VERIFIER_FACTORY,
+                client_factory=(factory_path, args),
+            )
+
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
+        persisted = _validation_usage(validation_round_path(out, 1))
+        assert usage.input_tokens == persisted.input_tokens == 40  # the baseline's 4 runs
+        assert usage.lower_bound is True
+
+    def test_injected_verifier_without_a_factory_is_refused_before_any_write(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path, validation_workers=2)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL)
+        with pytest.raises(ValueError, match="verifier_factory"):
+            run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+        assert not out.exists()
+
+    def test_default_verifier_resolves_its_own_factory(self, tmp_path):
+        from shrlm.environments.graphwalks import GraphWalksVerifier
+        from shrlm.experiment.orchestrator import GRAPHWALKS_VERIFIER_FACTORY, _Experiment
+
+        experiment = _Experiment(
+            config=make_config(tmp_path, validation_workers=3),
+            out_dir=tmp_path / "exp",
+            verifier=GraphWalksVerifier(),
+            sub_verifier=None,
+            attributor_lm=None,
+            proposer_lm=None,
+            loaders=None,
+        )
+        assert experiment.verifier_factory == GRAPHWALKS_VERIFIER_FACTORY
+        sequential = make_config(tmp_path / "seq")
+        assert sequential.operational.validation_workers == 1
+        assert (
+            _Experiment(
+                config=sequential,
+                out_dir=tmp_path / "exp2",
+                verifier=GoldVerifier(),
+                sub_verifier=None,
+                attributor_lm=None,
+                proposer_lm=None,
+                loaders=None,
+            ).verifier_factory
+            is None
+        )
 
 
 # ---------------------------------------------------------------------------

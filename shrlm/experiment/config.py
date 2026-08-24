@@ -25,9 +25,12 @@ Identity hash (R3; KTD3)
     optional provider tables (OpenRouter routing, Azure Foundry thinking
     mode), and the evaluation repetition count
     (``IDENTITY_OPERATIONAL_KEYS``; see below). The remaining operational keys
-    -- cache paths, loader timeout, pricing and GPU tables, report settings --
-    are excluded: they change what a run costs or how it is summarized, never
-    what it does or how much of it lands on disk.
+    -- cache paths, loader timeout, the validation worker count, pricing and
+    GPU tables, report settings -- are excluded: they change what a run costs,
+    how long it takes, or how it is summarized, never what it does or which
+    runs land on disk (the worker count adds per-subject bookkeeping files --
+    request, log, result -- beside the run manifests, nothing the experiment
+    measures).
 
 eval_repetitions -> attempts (KTD8)
     ``operational.eval_repetitions`` is the evaluation-stage repetition count
@@ -120,6 +123,7 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
         "caps.max_timeout",
         "caps.candidate_budget",
         "operational.eval_repetitions",
+        "operational.validation_workers",
         "environments.oolong_pairs.n_short",
         "environments.oolong_pairs.n_long",
     }
@@ -328,23 +332,35 @@ class ReportConfig:
 
 @dataclass(frozen=True)
 class OperationalConfig:
-    """Keys that never change run behavior: timeouts, cache paths, and the
-    evaluation repetition count (see the module docstring on KTD8)."""
+    """Keys that never change run behavior: timeouts, cache paths, the
+    evaluation repetition count (see the module docstring on KTD8), and the
+    validation worker count.
+
+    ``validation_workers`` caps how many validation subjects (the baseline
+    plus candidates) evaluate concurrently, each in its own child process. It
+    changes wall clock and peak request rate only -- every subject still runs
+    under its own breaker, deadline, and persist-first manifests -- so it is
+    excluded from the identity hash and may change under an existing
+    experiment directory. ``1`` (the default) is the sequential in-process
+    path with no child process at all.
+    """
 
     loader_timeout_seconds: float
     attribution_cache_path: str
     proposal_cache_path: str
     eval_repetitions: int
+    validation_workers: int = 1
 
     def __post_init__(self) -> None:
-        if isinstance(self.eval_repetitions, bool) or not isinstance(self.eval_repetitions, int):
-            raise ValueError(
-                f"operational.eval_repetitions must be an integer, got {self.eval_repetitions!r}"
-            )
-        if self.eval_repetitions < 1:
-            raise ValueError(
-                f"operational.eval_repetitions must be >= 1, got {self.eval_repetitions}"
-            )
+        _require_positive_int("operational.eval_repetitions", self.eval_repetitions)
+        _require_positive_int("operational.validation_workers", self.validation_workers)
+
+
+def _require_positive_int(label: str, value: Any) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be an integer, got {value!r}")
+    if value < 1:
+        raise ValueError(f"{label} must be >= 1, got {value}")
 
 
 @dataclass(frozen=True)
@@ -703,6 +719,7 @@ def evaluation_config_kwargs(config: ExperimentConfig) -> dict[str, Any]:
         "repetitions": config.loop.v,
         "backend": config.backends.runner.backend,
         "backend_kwargs": backend_kwargs_for(config, "runner"),
+        "workers": config.operational.validation_workers,
     }
 
 
