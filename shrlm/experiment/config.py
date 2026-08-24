@@ -27,8 +27,10 @@ Identity hash (R3; KTD3)
     (``IDENTITY_OPERATIONAL_KEYS``; see below). The remaining operational keys
     -- cache paths, loader timeout, the validation worker count, pricing and
     GPU tables, report settings -- are excluded: they change what a run costs,
-    how long it takes, or how it is summarized, never what it does or how much
-    of it lands on disk.
+    how long it takes, or how it is summarized, never what it does or which
+    runs land on disk (the worker count adds per-subject bookkeeping files --
+    request, log, result -- beside the run manifests, nothing the experiment
+    measures).
 
 eval_repetitions -> attempts (KTD8)
     ``operational.eval_repetitions`` is the evaluation-stage repetition count

@@ -58,8 +58,8 @@ bundle style: byte-identical rewrites are no-ops, divergence is refused.
 
 Subject parallelism: ``EvaluationConfig.workers`` above ``1`` evaluates the
 baseline and the candidates concurrently, each subject in its own child
-process (``shrlm.optimization.subject_worker``), at most ``workers`` alive at
-once. Subjects share nothing -- directory, breaker, hard deadline, and
+process (``shrlm.optimization.subject_worker``, which also owns the parent-side
+dispatcher), at most ``workers`` alive at once. Subjects share nothing -- directory, breaker, hard deadline, and
 manifests are all per subject -- so the persisted artifacts are byte-identical
 to the sequential path's; only the wall clock changes. The parent gates the
 caps before spawning (a rejection never gets a child), rebuilds each result
@@ -85,16 +85,12 @@ round directory at all.
 
 import json
 import os
-import subprocess
-import sys
-import time
-from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any
 
-from shrlm.harness_identity import harness_hash, serialize_harness
+from shrlm.harness_identity import harness_hash
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
 from shrlm.optimization.candidates import (
     DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
@@ -110,13 +106,15 @@ from shrlm.optimization.costs import (
     governed_limits,
     run_governed_round,
 )
-from shrlm.optimization.driver import HARNESS_FILE, RoundConfig, load_round
+from shrlm.optimization.driver import (
+    HARNESS_FILE,
+    RoundConfig,
+    load_round,
+    reject_sensitive_backend_kwargs,
+)
 from shrlm.optimization.subject_worker import (
-    LOG_FILENAME,
-    SubjectWorkerError,
-    build_request,
-    read_result,
-    write_request,
+    BASELINE_REJECTED_MESSAGE,
+    evaluate_subjects_in_processes,
 )
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verifier
@@ -234,6 +232,9 @@ class EvaluationConfig:
                 "the verifier from verifier_factory; pass the dotted path of a zero-argument "
                 "verifier factory (or keep workers=1 for the in-process path)"
             )
+        # The parallel path writes these kwargs into every worker_request.json
+        # before any round runs, so the driver's credential scan must fire here.
+        reject_sensitive_backend_kwargs(self.backend_kwargs)
 
 
 def subject_dir(out_dir: Path | str, round_index: int, subject_id: str) -> Path:
@@ -522,13 +523,13 @@ def evaluate_validation_round(
             (candidate.candidate_id, candidate.harness, candidate.harness_hash)
             for candidate in candidates
         ]
-        outcomes = _evaluate_subjects_in_processes(subjects, config)
+        outcomes = evaluate_subjects_in_processes(subjects, config)
         baseline = outcomes[0]
         results = outcomes[1:]
     else:
         baseline = evaluate_subject(BASELINE_ID, incumbent, config)
         if isinstance(baseline, CandidateRejection):
-            raise ValueError(_BASELINE_REJECTED.format(reason=baseline.reason))
+            raise ValueError(BASELINE_REJECTED_MESSAGE.format(reason=baseline.reason))
         results = [
             evaluate_subject(candidate.candidate_id, candidate.harness, config)
             for candidate in candidates
@@ -539,123 +540,6 @@ def evaluate_validation_round(
         baseline=baseline,
         candidates=results,
     )
-
-
-_BASELINE_REJECTED = (
-    "the incumbent violates the experiment-owned caps ({reason}); a baseline that "
-    "cannot run under the validation limits is a misconfigured experiment, not a "
-    "rejectable candidate"
-)
-
-# How often the parent polls its children. Runs take seconds to minutes, so a
-# coarse poll costs nothing measurable.
-_POLL_SECONDS = 0.2
-
-
-def _evaluate_subjects_in_processes(
-    subjects: list[tuple[str, Harness, str]], config: EvaluationConfig
-) -> list[SubjectEvaluation | CandidateRejection]:
-    """Evaluate ``subjects`` concurrently, one child process each (KTD1).
-
-    The caps gate runs here in the parent (KTD4), so a subject whose enabled
-    S6 policy exceeds the caps comes back as its ``CandidateRejection`` without
-    a child ever starting; a rejected *baseline* raises before any spawn. Every
-    admitted subject gets a request file and a child under
-    ``<subject_dir>/worker.log``; at most ``config.workers`` children are alive
-    at once, in ``subjects`` order. Results land by index (KTD8), rebuilt from
-    each child's persisted ``summary.json`` (KTD5). A child that exits non-zero
-    or leaves no ``ok`` result is recorded as a failure; the remaining children
-    still run to completion, then ``SubjectWorkerError`` names every failure
-    with its log path (R6). A ``KeyboardInterrupt`` (or any other escape)
-    terminates every live child before propagating (R8).
-    """
-    assert config.verifier_factory, "EvaluationConfig admits workers > 1 only with a factory"
-    results: list[SubjectEvaluation | CandidateRejection | None] = [None] * len(subjects)
-    queue: deque[tuple[int, str, Harness, str]] = deque()
-    for index, (subject_id, harness, expected_hash) in enumerate(subjects):
-        limits = governed_limits(subject_id, harness.runtime_policy, config.caps)
-        if isinstance(limits, CandidateRejection):
-            if subject_id == BASELINE_ID:
-                raise ValueError(_BASELINE_REJECTED.format(reason=limits.reason))
-            results[index] = limits
-            continue
-        queue.append((index, subject_id, harness, expected_hash))
-
-    split_instances = {split_id: instances for split_id, instances in config.splits.items()}
-    factory_args = config.client_factory[1] if config.client_factory is not None else {}
-    running: dict[int, tuple[subprocess.Popen[bytes], Path, IO[bytes], str]] = {}
-    failures: list[dict[str, Any]] = []
-    try:
-        while queue or running:
-            while queue and len(running) < config.workers:
-                index, subject_id, harness, expected_hash = queue.popleft()
-                subject_path = subject_dir(config.out_dir, config.round_index, subject_id)
-                request = build_request(
-                    subject_id=subject_id,
-                    harness_serialization=serialize_harness(harness),
-                    expected_hash=expected_hash,
-                    splits=split_instances,
-                    caps=config.caps,
-                    repetitions=config.repetitions,
-                    backend=config.backend,
-                    backend_kwargs=dict(config.backend_kwargs),
-                    out_dir=config.out_dir,
-                    round_index=config.round_index,
-                    verifier_factory=config.verifier_factory,
-                    client_factory=(
-                        (config.client_factory[0], dict(factory_args.get(subject_id, {})))
-                        if config.client_factory is not None
-                        else None
-                    ),
-                )
-                request_path = write_request(subject_path, request)
-                log = open(subject_path / LOG_FILENAME, "ab")  # noqa: SIM115 - closed on exit
-                process = subprocess.Popen(
-                    [sys.executable, "-m", "shrlm.optimization.subject_worker", str(request_path)],
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                )
-                running[index] = (process, subject_path, log, subject_id)
-
-            finished = [
-                index for index, (process, *_) in running.items() if process.poll() is not None
-            ]
-            if not finished:
-                time.sleep(_POLL_SECONDS)
-                continue
-            for index in finished:
-                process, subject_path, log, subject_id = running.pop(index)
-                log.close()
-                result = read_result(subject_path)
-                if process.returncode == 0 and result is not None and result.get("ok"):
-                    summary_path = subject_path / SUMMARY_FILENAME
-                    results[index] = SubjectEvaluation(
-                        subject_id=subject_id,
-                        path=subject_path,
-                        summary_path=summary_path,
-                        summary=load_summary(subject_path),
-                    )
-                    continue
-                error = (result or {}).get("error") or (
-                    f"worker exited {process.returncode} without a result document"
-                )
-                failures.append(
-                    {
-                        "subject_id": subject_id,
-                        "error": str(error),
-                        "log_path": str(subject_path / LOG_FILENAME),
-                    }
-                )
-    except BaseException:
-        for process, _path, _log, _subject_id in running.values():
-            process.terminate()
-        for process, _path, log, _subject_id in running.values():
-            process.wait()
-            log.close()
-        raise
-    if failures:
-        raise SubjectWorkerError(failures)
-    return [outcome for outcome in results if outcome is not None]
 
 
 # ---------------------------------------------------------------------------

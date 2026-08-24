@@ -204,7 +204,8 @@ eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (
 # 1 = the sequential in-process path. Wall clock and peak request rate only:
 # every subject keeps its own breaker, hard deadline, and resumable manifests,
 # and worst-case spend is unchanged (same run count, same caps), so this key is
-# identity-exempt and may change under an existing out-dir. The full profile's
+# identity-exempt and may change under an existing out-dir. Above 1 each subject
+# directory also carries worker_request.json, worker.log, and worker_result.json. The full profile's
 # 5 subjects (1 + k) make 5 the useful ceiling.
 validation_workers = 1
 

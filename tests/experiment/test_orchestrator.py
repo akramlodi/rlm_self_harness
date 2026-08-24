@@ -894,6 +894,41 @@ class TestParallelValidationStage:
         assert usage.cost == persisted.cost
         assert usage.lower_bound is False
 
+    def test_a_crashed_parallel_worker_still_meters_the_siblings_it_paid_for(
+        self, tmp_path, monkeypatch
+    ):
+        from shrlm.experiment.orchestrator import _validation_usage
+        from shrlm.optimization.subject_worker import SubjectWorkerError
+        from tests.optimization.test_validation import (
+            GOLD_VERIFIER_FACTORY,
+            parallel_client_factory,
+        )
+
+        config = make_config(tmp_path, validation_workers=2)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL)
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
+        factory_path, args = parallel_client_factory(tmp_path, {"baseline": SUBJECT_FAIL})
+        args["r01-c01-s4"] = {"crash": True}  # the candidate's child dies on its first call
+
+        with pytest.raises(SubjectWorkerError, match="r01-c01-s4"):
+            run_experiment(
+                config,
+                out,
+                verifier=GoldVerifier(),
+                attributor_lm=attributor,
+                proposer_lm=proposer,
+                loaders=LOADERS,
+                verifier_factory=GOLD_VERIFIER_FACTORY,
+                client_factory=(factory_path, args),
+            )
+
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
+        persisted = _validation_usage(validation_round_path(out, 1))
+        assert usage.input_tokens == persisted.input_tokens == 40  # the baseline's 4 runs
+        assert usage.lower_bound is True
+
     def test_injected_verifier_without_a_factory_is_refused_before_any_write(
         self, tmp_path, monkeypatch
     ):

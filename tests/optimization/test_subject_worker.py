@@ -170,6 +170,13 @@ class TestRefusals:
         assert "shrlm-subject-worker-request/v1" in result["error"]
         assert (subject_path / RESULT_FILENAME).exists()
 
+    def test_write_request_unlinks_a_stale_result(self, tmp_path):
+        request_path = request_for(tmp_path, "cand-s", [final("RIGHT")] * 8)
+        stale = request_path.parent / RESULT_FILENAME
+        stale.write_text(json.dumps({"format": "shrlm-subject-worker-result/v1", "ok": True}))
+        write_request(request_path.parent, json.loads(request_path.read_text()))
+        assert not stale.exists()
+
     def test_missing_result_file_reads_as_none(self, tmp_path):
         assert read_result(tmp_path) is None
         (tmp_path / RESULT_FILENAME).write_text("{not json")

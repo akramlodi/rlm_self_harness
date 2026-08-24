@@ -757,7 +757,9 @@ class TestParallelSubjects:
         assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b"]
 
     def test_an_interrupt_terminates_live_children_and_propagates(self, tmp_path, monkeypatch):
-        import shrlm.optimization.validation as validation_module
+        import time
+
+        import shrlm.optimization.subject_worker as worker_module
 
         idle = ClientFactory([])
         monkeypatch.setattr(rlm_module, "get_client", idle)
@@ -768,33 +770,85 @@ class TestParallelSubjects:
             client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS, hold=30.0),
         )
         terminated: list[int] = []
-        real_popen = validation_module.subprocess.Popen
+        real_popen = worker_module.subprocess.Popen
 
         class TrackingPopen(real_popen):  # type: ignore[misc,valid-type]
             def terminate(self) -> None:
                 terminated.append(self.pid)
                 super().terminate()
 
-        monkeypatch.setattr(validation_module.subprocess, "Popen", TrackingPopen)
+        monkeypatch.setattr(worker_module.subprocess, "Popen", TrackingPopen)
 
+        # Patch the poll loop's own seam, never the stdlib ``time.sleep`` that
+        # ``Popen.wait(timeout=...)`` uses inside the cleanup path.
         polls = {"n": 0}
 
         def interrupt(_seconds: float) -> None:
             polls["n"] += 1
             if polls["n"] >= 3:
                 raise KeyboardInterrupt
-            import time as real_time
+            time.sleep(0.2)
 
-            real_time.sleep(0.2)
-
-        monkeypatch.setattr(validation_module.time, "sleep", interrupt)
+        monkeypatch.setattr(worker_module, "_sleep", interrupt)
         with pytest.raises(KeyboardInterrupt):
             evaluate_validation_round(H0, parallel_candidates(), config)
+        assert polls["n"] == 3
         assert len(terminated) == 2
         for subject_id in PARALLEL_SCRIPTS:
             assert not (
                 subject_dir(config.out_dir, config.round_index, subject_id) / SUMMARY_FILENAME
             ).exists()
+
+    def test_a_child_ignoring_sigterm_is_killed_after_the_grace_period(self, tmp_path, monkeypatch):
+        import time
+
+        import shrlm.optimization.subject_worker as worker_module
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        monkeypatch.setattr(worker_module, "TERMINATE_GRACE_SECONDS", 1.0)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(
+                tmp_path, PARALLEL_SCRIPTS, hold=60.0, ignore_sigterm=True
+            ),
+        )
+        killed: list[int] = []
+        real_popen = worker_module.subprocess.Popen
+
+        class TrackingPopen(real_popen):  # type: ignore[misc,valid-type]
+            def kill(self) -> None:
+                killed.append(self.pid)
+                super().kill()
+
+        monkeypatch.setattr(worker_module.subprocess, "Popen", TrackingPopen)
+        polls = {"n": 0}
+
+        def interrupt(_seconds: float) -> None:
+            polls["n"] += 1
+            if polls["n"] >= 5:
+                raise KeyboardInterrupt
+            time.sleep(0.2)
+
+        monkeypatch.setattr(worker_module, "_sleep", interrupt)
+        started = time.perf_counter()
+        with pytest.raises(KeyboardInterrupt):
+            evaluate_validation_round(H0, parallel_candidates(), config)
+        elapsed = time.perf_counter() - started
+        assert len(killed) == 2
+        assert elapsed < 30.0
+
+    def test_credential_kwargs_are_refused_before_any_request_is_written(self, tmp_path):
+        with pytest.raises(ValueError, match="credential material"):
+            make_config(
+                tmp_path,
+                workers=2,
+                verifier_factory=GOLD_VERIFIER_FACTORY,
+                backend_kwargs={"model_name": "m", "api_key": "sk-should-never-persist"},
+            )
+        assert not (tmp_path / "validation").exists()
 
 
 # ---------------------------------------------------------------------------

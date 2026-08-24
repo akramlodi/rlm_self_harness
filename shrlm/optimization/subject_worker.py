@@ -40,15 +40,22 @@ boundary.
 
 import json
 import pkgutil
+import subprocess
 import sys
+import time
 import traceback
+from collections import deque
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import IO, TYPE_CHECKING, Any
 
-from shrlm.harness_identity import harness_hash
+from shrlm.harness_identity import harness_hash, serialize_harness
 from shrlm.optimization.candidates import CandidateRejection, materialize_harness
-from shrlm.optimization.costs import ValidationCaps
+from shrlm.optimization.costs import ValidationCaps, governed_limits
+from shrlm.rlm_harness import Harness
+
+if TYPE_CHECKING:  # validation imports this module; its types stay annotations here
+    from shrlm.optimization.validation import EvaluationConfig, SubjectEvaluation
 
 REQUEST_FILENAME = "worker_request.json"
 RESULT_FILENAME = "worker_result.json"
@@ -61,6 +68,23 @@ RESULT_FORMAT = "shrlm-subject-worker-result/v1"
 # The child materializes its harness into a subject-local module file, named
 # by the expected hash so two subjects' modules never collide.
 MODULE_PREFIX = "subject_module_"
+
+# How often the parent polls its children. Runs take seconds to minutes, so a
+# coarse poll costs nothing measurable. ``_sleep`` is the poll's own seam so a
+# test can interrupt the loop without touching the stdlib ``time.sleep`` that
+# ``Popen.wait(timeout=...)`` relies on during cleanup.
+POLL_SECONDS = 0.2
+_sleep = time.sleep
+
+# How long the parent gives a child to exit after SIGTERM before SIGKILL, so an
+# interrupt never hangs on a child that ignores the polite signal.
+TERMINATE_GRACE_SECONDS = 10.0
+
+BASELINE_REJECTED_MESSAGE = (
+    "the incumbent violates the experiment-owned caps ({reason}); a baseline that "
+    "cannot run under the validation limits is a misconfigured experiment, not a "
+    "rejectable candidate"
+)
 
 
 class SubjectWorkerError(RuntimeError):
@@ -130,6 +154,10 @@ def write_request(subject_path: Path, request: dict[str, Any]) -> Path:
     because an ephemeral request document drifted by a byte.
     """
     subject_path.mkdir(parents=True, exist_ok=True)
+    # A stale result from an earlier invocation must never be read as this
+    # child's outcome: the child rewrites it, and a child that dies before
+    # doing so leaves none.
+    (subject_path / RESULT_FILENAME).unlink(missing_ok=True)
     path = subject_path / REQUEST_FILENAME
     path.write_text(json.dumps(request, indent=2, sort_keys=True, allow_nan=False) + "\n")
     return path
@@ -245,6 +273,135 @@ def run_subject_worker(request_path: str | Path) -> dict[str, Any]:
         json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n"
     )
     return result
+
+
+def _terminate_all(children: list[subprocess.Popen[bytes]]) -> None:
+    """SIGTERM every child, then SIGKILL any that outlives the grace period."""
+    for process in children:
+        process.terminate()
+    for process in children:
+        try:
+            process.wait(timeout=TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def evaluate_subjects_in_processes(
+    subjects: list[tuple[str, Harness, str]], config: "EvaluationConfig"
+) -> list["SubjectEvaluation | CandidateRejection"]:
+    """Evaluate ``subjects`` concurrently, one child process each (KTD1). Parent-side.
+
+    The caps gate runs here in the parent (KTD4), so a subject whose enabled
+    S6 policy exceeds the caps comes back as its ``CandidateRejection`` without
+    a child ever starting; a rejected *baseline* raises before any spawn. Every
+    admitted subject gets a request file and a child under
+    ``<subject_dir>/worker.log``; at most ``config.workers`` children are alive
+    at once, in ``subjects`` order. Results land by index (KTD8), rebuilt from
+    each child's persisted ``summary.json`` (KTD5). A child that exits non-zero
+    or leaves no ``ok`` result is recorded as a failure; the remaining children
+    still run to completion, then ``SubjectWorkerError`` names every failure
+    with its log path (R6). A ``KeyboardInterrupt`` (or any other escape)
+    terminates every live child -- SIGTERM, then SIGKILL after
+    ``TERMINATE_GRACE_SECONDS`` -- before propagating (R8).
+    """
+    # Deferred: validation imports this module at load time.
+    from shrlm.optimization.validation import (
+        BASELINE_ID,
+        SUMMARY_FILENAME,
+        SubjectEvaluation,
+        load_summary,
+        subject_dir,
+    )
+
+    assert config.verifier_factory, "EvaluationConfig admits workers > 1 only with a factory"
+    results: list[SubjectEvaluation | CandidateRejection | None] = [None] * len(subjects)
+    queue: deque[tuple[int, str, Harness, str]] = deque()
+    for index, (subject_id, harness, expected_hash) in enumerate(subjects):
+        limits = governed_limits(subject_id, harness.runtime_policy, config.caps)
+        if isinstance(limits, CandidateRejection):
+            if subject_id == BASELINE_ID:
+                raise ValueError(BASELINE_REJECTED_MESSAGE.format(reason=limits.reason))
+            results[index] = limits
+            continue
+        queue.append((index, subject_id, harness, expected_hash))
+
+    split_instances = {split_id: instances for split_id, instances in config.splits.items()}
+    factory_args = config.client_factory[1] if config.client_factory is not None else {}
+    running: dict[int, tuple[subprocess.Popen[bytes], Path, IO[bytes], str]] = {}
+    failures: list[dict[str, Any]] = []
+    try:
+        while queue or running:
+            while queue and len(running) < config.workers:
+                index, subject_id, harness, expected_hash = queue.popleft()
+                subject_path = subject_dir(config.out_dir, config.round_index, subject_id)
+                request = build_request(
+                    subject_id=subject_id,
+                    harness_serialization=serialize_harness(harness),
+                    expected_hash=expected_hash,
+                    splits=split_instances,
+                    caps=config.caps,
+                    repetitions=config.repetitions,
+                    backend=config.backend,
+                    backend_kwargs=dict(config.backend_kwargs),
+                    out_dir=config.out_dir,
+                    round_index=config.round_index,
+                    verifier_factory=config.verifier_factory,
+                    client_factory=(
+                        (config.client_factory[0], dict(factory_args.get(subject_id, {})))
+                        if config.client_factory is not None
+                        else None
+                    ),
+                )
+                request_path = write_request(subject_path, request)
+                log = open(subject_path / LOG_FILENAME, "ab")  # noqa: SIM115 - closed on exit
+                try:
+                    process = subprocess.Popen(
+                        [sys.executable, "-m", __name__, str(request_path)],
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                    )
+                except BaseException:
+                    log.close()
+                    raise
+                running[index] = (process, subject_path, log, subject_id)
+
+            finished = [
+                index for index, (process, *_) in running.items() if process.poll() is not None
+            ]
+            if not finished:
+                _sleep(POLL_SECONDS)
+                continue
+            for index in finished:
+                process, subject_path, log, subject_id = running.pop(index)
+                log.close()
+                result = read_result(subject_path)
+                if process.returncode == 0 and result is not None and result.get("ok"):
+                    results[index] = SubjectEvaluation(
+                        subject_id=subject_id,
+                        path=subject_path,
+                        summary_path=subject_path / SUMMARY_FILENAME,
+                        summary=load_summary(subject_path),
+                    )
+                    continue
+                error = (result or {}).get("error") or (
+                    f"worker exited {process.returncode} without a result document"
+                )
+                failures.append(
+                    {
+                        "subject_id": subject_id,
+                        "error": str(error),
+                        "log_path": str(subject_path / LOG_FILENAME),
+                    }
+                )
+    except BaseException:
+        _terminate_all([process for process, *_ in running.values()])
+        for _process, _path, log, _subject_id in running.values():
+            log.close()
+        raise
+    if failures:
+        raise SubjectWorkerError(failures)
+    return [outcome for outcome in results if outcome is not None]
 
 
 def main(argv: list[str]) -> int:

@@ -21,6 +21,7 @@ persisting nothing.
 import atexit
 import json
 import os
+import signal
 import time
 from pathlib import Path
 from typing import Any
@@ -47,9 +48,16 @@ class _TrackingFactory(ClientFactory):
     """
 
     def __init__(
-        self, script: list[str], cost_per_call: float, concurrency_dir: Path | None, hold: float
+        self,
+        script: list[str],
+        cost_per_call: float,
+        concurrency_dir: Path | None,
+        hold: float,
+        ignore_sigterm: bool = False,
     ):
         super().__init__(script, cost_per_call)
+        if ignore_sigterm:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
         self.concurrency_dir = concurrency_dir
         self.hold = hold
         self.max_seen = 0
@@ -93,6 +101,7 @@ def scripted_client_factory(args: dict[str, Any]) -> Any:
         float(args.get("cost_per_call", COST_PER_CALL)),
         concurrency_dir,
         float(args.get("hold", 0.0)),
+        bool(args.get("ignore_sigterm", False)),
     )
 
 
