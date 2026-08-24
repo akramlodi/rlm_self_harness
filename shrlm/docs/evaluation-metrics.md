@@ -39,11 +39,11 @@ pass_count, pass_rate, n_runs, n_instances, n_resource_terminated
 total_cost, mean_cost, input_tokens, output_tokens, wall_seconds
 mean_sub_calls/total_sub_calls (recursion usage)
 instances_sha256 + split_file (proof it ran on the exact frozen split, byte-identical across conditions — R8)
-harness_hash (proof it ran the exact frozen harness, re-verified against the freeze-time hash)
+method_kind + method_hash (proof it ran the exact inference method; harness-backed conditions re-verify the underlying harness against the freeze-time hash)
 usage_lower_bound flag, skipped_run_ids if the spend breaker tripped
 Plus report.py/scenarios.py roll measured usage into report.json — extrapolated token/cost/time projections (pessimistic/point scenarios) per pricing tier or GPU profile, used to answer "was optimization worth it and what would scaling this cost."
 
-The throughline: everything is hash-addressed (harness_hash, trace_sha256, digest_sha256, instances_sha256) so any later number in a report can be walked back to the exact harness, trace, and prompt that produced it — that's what audit.py mechanically checks.
+The throughline: everything is hash-addressed (method_hash, trace_sha256, digest_sha256, instances_sha256) so any later number in a report can be walked back to the exact method, trace, and prompt that produced it — that's what audit.py mechanically checks.
 
 Analysis layer (shrlm/experiment/rounds.py, analysis_io.py, the four aggregation CLIs)
 Nothing above is an analysis; the loops only persist evidence. Everything downstream — the four aggregations, the two plot scripts, and report.py — reads that evidence through two shared modules, and that indirection is the point rather than a tidiness preference:
@@ -57,4 +57,3 @@ analysis_io.py is the one output layer. Every batch of analyses writes into a fr
 The orchestrator refreshes those snapshots itself, best-effort, after every executed round (and once at catch-up when a resume replays finished rounds), so mid-study outputs never go stale. The hook writes only under analysis/, is never read back by the loop, and cannot fail, block, or alter a round.
 
 See `SH-RLM Metrics & Graphs — Reference.md` §3 for the snapshot layout, the provenance field list, the completeness columns each output carries, `surface_source`, and how to reproduce a figure from a pinned snapshot.
-

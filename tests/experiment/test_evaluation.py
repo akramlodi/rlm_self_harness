@@ -27,10 +27,14 @@ from shrlm.experiment.evaluation import (
     CONDITION_B1,
     CONDITION_H0_STAR,
     CONDITION_SH_RLM,
+    CONDITIONS,
     DEFAULT_CONDITIONS,
     EVAL_DIR,
     EVAL_SUMMARY_FILENAME,
+    EVAL_SUMMARY_FORMAT,
     EvaluationPersistenceError,
+    EvaluationSetRequest,
+    HarnessEvaluationMethod,
     run_evaluation,
     verify_instance_identity,
 )
@@ -43,7 +47,12 @@ from shrlm.experiment.orchestrator import (
 from shrlm.experiment.splits import MANIFEST_FILE, SPLITS_DIR, LoaderFn
 from shrlm.experiment.usage import STAGE_USAGE_FILE, read_stage_usage
 from shrlm.harness_identity import harness_hash, write_harness_json
-from shrlm.optimization.costs import OUTCOME_COMPLETED, OUTCOME_OVER_BUDGET
+from shrlm.optimization.costs import (
+    OUTCOME_COMPLETED,
+    OUTCOME_OVER_BUDGET,
+    GovernedRoundResult,
+    ValidationCaps,
+)
 from shrlm.optimization.driver import RoundPersistenceError
 from shrlm.rlm_harness import H0, H0_STAR
 from tests.experiment.test_orchestrator import fake_loader, make_config, patch_runner
@@ -123,6 +132,43 @@ def scripted(monkeypatch: pytest.MonkeyPatch, *responses: str) -> ClientFactory:
 ONE_ATTEMPT_SCRIPT = ("WRONG", "RIGHT", "RIGHT", "RIGHT")
 
 
+class RecordingMethod:
+    """A non-harness-labeled method proving evaluation dispatches by protocol."""
+
+    def __init__(self) -> None:
+        self.delegate = HarnessEvaluationMethod(H0)
+        self.run_calls: list[str] = []
+
+    @property
+    def method_kind(self) -> str:
+        return "recording_test_method"
+
+    @property
+    def method_hash(self) -> str:
+        return self.delegate.method_hash
+
+    def validate_caps(self, condition_id: str, caps: ValidationCaps) -> None:
+        self.delegate.validate_caps(condition_id, caps)
+
+    def run_set(self, request: EvaluationSetRequest) -> GovernedRoundResult:
+        self.run_calls.append(Path(request.out_dir).name)
+        return self.delegate.run_set(request)
+
+    def aggregate_set(self, set_path: Path) -> dict[str, Any]:
+        return self.delegate.aggregate_set(set_path)
+
+
+class RecordingSource:
+    def __init__(self, method: RecordingMethod) -> None:
+        self.method = method
+
+    def describe(self) -> dict[str, str]:
+        return {"kind": "recording_test_source"}
+
+    def load(self, out_dir: Path, work_dir: Path) -> RecordingMethod:
+        return self.method
+
+
 # ---------------------------------------------------------------------------
 # The grid: conditions x test sets, over byte-identical instances (R8)
 # ---------------------------------------------------------------------------
@@ -136,6 +182,25 @@ class TestConditionGrid:
             CONDITION_SH_RLM,
         )
 
+    def test_condition_dispatch_uses_method_protocol_without_id_branching(
+        self, tmp_path, monkeypatch
+    ):
+        config = eval_config(tmp_path)
+        out = tmp_path / "exp"
+        method = RecordingMethod()
+        monkeypatch.setitem(CONDITIONS, "protocol_method", RecordingSource(method))
+        factory = scripted(monkeypatch, "RIGHT", "RIGHT")
+
+        result = evaluate(config, out, conditions=("protocol_method",))
+
+        assert factory.total_calls == 2
+        assert method.run_calls == list(BOTH_SETS)
+        assert result.conditions[0].method_kind == "recording_test_method"
+        assert result.conditions[0].method_hash == harness_hash(H0)
+        assert result.summary["conditions"]["protocol_method"]["source"] == {
+            "kind": "recording_test_source"
+        }
+
     def test_h0_star_uses_the_shipped_reference_registry_harness(self, tmp_path, monkeypatch):
         config = eval_config(tmp_path)
         out = tmp_path / "exp"
@@ -145,7 +210,8 @@ class TestConditionGrid:
 
         assert factory.total_calls == 2
         assert result.conditions[0].condition_id == CONDITION_H0_STAR
-        assert result.conditions[0].harness_hash == harness_hash(H0_STAR)
+        assert result.conditions[0].method_kind == "harness"
+        assert result.conditions[0].method_hash == harness_hash(H0_STAR)
         assert result.summary["conditions"][CONDITION_H0_STAR]["source"] == {
             "kind": "registry",
             "registry_name": "H0*",
@@ -313,7 +379,7 @@ class TestAggregation:
                 assert aggregate["total_sub_calls"] == 0
                 assert aggregate["usage_lower_bound"] is False
 
-    def test_harness_hashes_distinguish_the_conditions(self, tmp_path, monkeypatch):
+    def test_method_hashes_distinguish_the_conditions(self, tmp_path, monkeypatch):
         config = eval_config(tmp_path)
         out = tmp_path / "exp"
         frozen_hash = freeze(out)
@@ -322,11 +388,15 @@ class TestAggregation:
         result = evaluate(config, out)
         b1, sh_rlm = result.conditions
 
-        assert b1.harness_hash == harness_hash(H0)
-        assert sh_rlm.harness_hash == frozen_hash
+        assert b1.method_kind == "harness"
+        assert sh_rlm.method_kind == "harness"
+        assert b1.method_hash == harness_hash(H0)
+        assert sh_rlm.method_hash == frozen_hash
         for set_id in BOTH_SETS:
-            assert b1.test_sets[set_id]["harness_hash"] == harness_hash(H0)
-            assert sh_rlm.test_sets[set_id]["harness_hash"] == frozen_hash
+            assert b1.test_sets[set_id]["method_kind"] == "harness"
+            assert sh_rlm.test_sets[set_id]["method_kind"] == "harness"
+            assert b1.test_sets[set_id]["method_hash"] == harness_hash(H0)
+            assert sh_rlm.test_sets[set_id]["method_hash"] == frozen_hash
 
     def test_stage_usage_records_one_work_id_per_condition_per_set(self, tmp_path, monkeypatch):
         config = eval_config(tmp_path)
@@ -367,7 +437,7 @@ class TestFrozenCondition:
             (set_round_dir(out, CONDITION_SH_RLM, SET_SHORT) / "harness.json").read_text()
         )
         assert recorded["hash"] == frozen_hash
-        assert result.conditions[1].harness_hash == frozen_hash
+        assert result.conditions[1].method_hash == frozen_hash
 
     def test_tampered_envelope_raises_before_any_run(self, tmp_path, monkeypatch):
         config = eval_config(tmp_path)
@@ -598,9 +668,13 @@ class TestEvalSummary:
         summary = summary_of(out)
 
         assert summary == result.summary
+        assert summary["format"] == EVAL_SUMMARY_FORMAT
+        assert summary["format"] == "shrlm-eval-summary/v2"
         assert summary["profile"] == "full"
         assert summary["conditions"][CONDITION_B1]["source"]["kind"] == "registry"
         assert summary["conditions"][CONDITION_SH_RLM]["source"]["kind"] == "frozen"
+        assert summary["conditions"][CONDITION_B1]["method_kind"] == "harness"
+        assert summary["conditions"][CONDITION_B1]["method_hash"] == harness_hash(H0)
         # The evaluation order lives in the top-level list; the per-condition
         # mapping is written with sorted keys (deterministic bytes).
         assert summary["test_sets"] == list(BOTH_SETS)

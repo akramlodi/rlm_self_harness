@@ -1,12 +1,12 @@
-"""The evaluation runner: fixed harness conditions over frozen test splits (R8).
+"""The evaluation runner: fixed inference methods over frozen test splits (R8).
 
 ``run_evaluation`` is a thin loop -- condition x test set x one governed
-``run_round`` -- over artifacts the rest of the scaffold already produced. It
-mints nothing: split instances come only from the persisted
-``splits/<env>_<length>_test.jsonl`` files (R8: never re-sampled here), the
+method execution -- over artifacts the rest of the scaffold already produced.
+It mints nothing: split instances come only from the persisted
+``splits/<env>_<length>_test.jsonl`` files (R8: never re-sampled here), and the
 ``sh_rlm`` condition's harness comes only from the orchestrator's frozen
-``sh_rlm/harness.json`` envelope, and every run persists through the same
-persist-first driver the optimization loop uses.
+``sh_rlm/harness.json`` envelope. Each loaded ``EvaluationMethod`` owns its
+persist-first runner and aggregate reader.
 
 Directory contract under ``out_dir``::
 
@@ -17,14 +17,16 @@ Directory contract under ``out_dir``::
         eval_summary.json        # the aggregate (new artifact; see below)
         <condition>/
             work/                # materialized modules for frozen harnesses
-            <env>_<length>/round_00/{harness.json,instances.jsonl,runs.jsonl,runs/}
+            <env>_<length>/round_00/{harness.json|method.json,instances.jsonl,runs.jsonl,runs/}
 
-Conditions are named harness *sources*, resolved from one mapping
-(``CONDITIONS``) rather than branched on at the call sites: ``b1`` is the
-registry incumbent ``H0``, ``h0_star`` is the registry's shipped reference
-``H0*``, and ``sh_rlm`` is the frozen envelope rematerialized through
-``materialize_harness`` and re-hashed against the freeze-time hash (a tampered
-envelope raises before any run executes).
+Conditions are named method sources, resolved from one mapping (``CONDITIONS``)
+rather than branched on at call sites. A source loads an ``EvaluationMethod``
+that owns method identity, cap validation, governed execution, and aggregation.
+The three conditions here remain harness-backed: ``b1`` is the registry
+incumbent ``H0``, ``h0_star`` is the shipped reference ``H0*``, and ``sh_rlm``
+is the frozen envelope rematerialized and re-hashed against its freeze-time
+hash. Non-harness methods join through the same protocol, not a condition-id
+branch.
 
 Byte-identical instances across conditions (R8) is enforced, not assumed. Each
 split file is the single source for every condition's round, the driver
@@ -63,7 +65,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from shrlm.environments.graphwalks import GraphWalksVerifier
 from shrlm.environments.oolong_pairs import OolongPairsVerifier
@@ -104,6 +106,7 @@ from shrlm.optimization.costs import (
     OUTCOME_COMPLETED,
     OUTCOME_OVER_BUDGET,
     CandidateSpendBreaker,
+    GovernedRoundResult,
     ValidationCaps,
     governed_limits,
     run_governed_round,
@@ -115,7 +118,7 @@ from shrlm.rlm_harness import HARNESSES, Harness
 
 EVAL_DIR = "eval"
 EVAL_SUMMARY_FILENAME = "eval_summary.json"
-EVAL_SUMMARY_FORMAT = "shrlm-eval-summary/v1"
+EVAL_SUMMARY_FORMAT = "shrlm-eval-summary/v2"
 
 STAGE_EVAL = "eval"
 
@@ -134,8 +137,105 @@ class EvaluationPersistenceError(ExperimentError):
 
 
 # ---------------------------------------------------------------------------
-# Conditions: named harness sources
+# Conditions: named sources of executable evaluation methods
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EvaluationSetRequest:
+    """Method-neutral inputs for one condition x test-set execution."""
+
+    config: ExperimentConfig
+    condition_id: str
+    instances: list[dict[str, Any]]
+    verifier: Verifier
+    out_dir: Path
+    attempts: int
+    breaker: CandidateSpendBreaker
+    caps: ValidationCaps
+
+
+class EvaluationMethod(Protocol):
+    """A loaded inference method that evaluation can identify, run, and aggregate."""
+
+    @property
+    def method_kind(self) -> str: ...
+
+    @property
+    def method_hash(self) -> str: ...
+
+    def validate_caps(self, condition_id: str, caps: ValidationCaps) -> None: ...
+
+    def run_set(self, request: EvaluationSetRequest) -> GovernedRoundResult: ...
+
+    def aggregate_set(self, set_path: Path) -> dict[str, Any]: ...
+
+
+class ConditionSource(Protocol):
+    """Persistent provenance capable of loading one executable evaluation method."""
+
+    def describe(self) -> dict[str, str]: ...
+
+    def load(self, out_dir: Path, work_dir: Path) -> EvaluationMethod: ...
+
+
+@dataclass(frozen=True)
+class HarnessEvaluationMethod:
+    """EvaluationMethod adapter for the existing editable RLM harness runtime."""
+
+    harness: Harness
+
+    @property
+    def method_kind(self) -> str:
+        return "harness"
+
+    @property
+    def method_hash(self) -> str:
+        return harness_hash(self.harness)
+
+    def limits_for(
+        self,
+        condition_id: str,
+        caps: ValidationCaps,
+    ) -> dict[str, Any]:
+        """Resolve the harness policy under experiment-owned caps or fail loudly."""
+        limits = governed_limits(condition_id, self.harness.runtime_policy, caps)
+        if isinstance(limits, CandidateRejection):
+            raise EvaluationPersistenceError(
+                f"evaluation condition {condition_id!r} violates the experiment-owned caps "
+                f"({limits.reason}); a fixed condition that cannot run under the eval limits "
+                "is a misconfigured experiment, not a rejectable candidate"
+            )
+        return limits
+
+    def validate_caps(self, condition_id: str, caps: ValidationCaps) -> None:
+        self.limits_for(condition_id, caps)
+
+    def run_set(self, request: EvaluationSetRequest) -> GovernedRoundResult:
+        kwargs = round_config_kwargs(request.config)
+        for key in GOVERNED_ROUND_KEYS:
+            kwargs.pop(key)
+        round_config = RoundConfig(
+            round_index=EVAL_ROUND_INDEX,
+            harness=self.harness,
+            instances=request.instances,
+            verifier=request.verifier,
+            out_dir=request.out_dir,
+            attempts=request.attempts,
+            **kwargs,
+            **self.limits_for(request.condition_id, request.caps),
+        )
+        return run_governed_round(round_config, request.breaker)
+
+    def aggregate_set(self, set_path: Path) -> dict[str, Any]:
+        aggregate = split_aggregate(set_path)
+        recorded_hash = str(aggregate.pop("harness_hash"))
+        if recorded_hash != self.method_hash:
+            raise EvaluationPersistenceError(
+                f"{set_path} records harness hash {recorded_hash}, but the loaded "
+                f"evaluation method hashes to {self.method_hash}"
+            )
+        return aggregate
 
 
 @dataclass(frozen=True)
@@ -147,13 +247,13 @@ class RegistryHarnessSource:
     def describe(self) -> dict[str, str]:
         return {"kind": "registry", "registry_name": self.registry_name}
 
-    def load(self, out_dir: Path, work_dir: Path) -> Harness:
+    def load(self, out_dir: Path, work_dir: Path) -> EvaluationMethod:
         if self.registry_name not in HARNESSES:
             raise EvaluationPersistenceError(
                 f"harness {self.registry_name!r} is not in the registry "
                 f"({sorted(HARNESSES)}); an evaluation condition must name a real harness"
             )
-        return HARNESSES[self.registry_name]
+        return HarnessEvaluationMethod(HARNESSES[self.registry_name])
 
 
 @dataclass(frozen=True)
@@ -171,26 +271,26 @@ class FrozenHarnessSource:
     def describe(self) -> dict[str, str]:
         return {"kind": "frozen", "path": self.relative_path}
 
-    def load(self, out_dir: Path, work_dir: Path) -> Harness:
+    def load(self, out_dir: Path, work_dir: Path) -> EvaluationMethod:
         path = out_dir / self.relative_path
         if not path.exists():
             raise EvaluationPersistenceError(
                 f"{path} does not exist; this condition evaluates the frozen harness, so "
                 "the optimization experiment must have completed and frozen it first"
             )
-        return rematerialize_harness_envelope(
-            path,
-            work_dir,
-            module_prefix="_frozen_",
-            error=EvaluationPersistenceError,
+        return HarnessEvaluationMethod(
+            rematerialize_harness_envelope(
+                path,
+                work_dir,
+                module_prefix="_frozen_",
+                error=EvaluationPersistenceError,
+            )
         )
 
 
-HarnessSource = RegistryHarnessSource | FrozenHarnessSource
-
-# The harness-condition registry. Lambda-RLM is a different inference method,
-# not a ``Harness``, and joins evaluation after the method-level adapter phase.
-CONDITIONS: dict[str, HarnessSource] = {
+# The condition-source registry. λ-RLM joins this mapping in the next phase via
+# its own source and EvaluationMethod adapter; no evaluator branch is required.
+CONDITIONS: dict[str, ConditionSource] = {
     CONDITION_B1: RegistryHarnessSource(INITIAL_INCUMBENT),
     CONDITION_H0_STAR: RegistryHarnessSource("H0*"),
     CONDITION_SH_RLM: FrozenHarnessSource(f"{FROZEN_DIR}/{FROZEN_HARNESS_FILENAME}"),
@@ -208,12 +308,12 @@ DEFAULT_VERIFIERS: dict[str, Verifier] = {
 }
 
 
-def resolve_conditions(conditions: Sequence[str]) -> list[tuple[str, HarnessSource]]:
-    """Resolve condition names to their harness sources, in the caller's order."""
+def resolve_conditions(conditions: Sequence[str]) -> list[tuple[str, ConditionSource]]:
+    """Resolve condition names to their method sources, in the caller's order."""
     if not conditions:
         raise ValueError("run_evaluation needs at least one condition")
     seen: set[str] = set()
-    resolved: list[tuple[str, HarnessSource]] = []
+    resolved: list[tuple[str, ConditionSource]] = []
     for condition_id in conditions:
         if condition_id not in CONDITIONS:
             raise ValueError(
@@ -325,7 +425,8 @@ class ConditionEvaluation:
     """One condition's evaluation across every test set."""
 
     condition_id: str
-    harness_hash: str
+    method_kind: str
+    method_hash: str
     outcome: str
     spent: float
     test_sets: dict[str, dict[str, Any]]
@@ -334,11 +435,12 @@ class ConditionEvaluation:
     def over_budget(self) -> bool:
         return self.outcome == OUTCOME_OVER_BUDGET
 
-    def to_payload(self, source: HarnessSource) -> dict[str, Any]:
+    def to_payload(self, source: ConditionSource) -> dict[str, Any]:
         return {
             "condition_id": self.condition_id,
             "source": source.describe(),
-            "harness_hash": self.harness_hash,
+            "method_kind": self.method_kind,
+            "method_hash": self.method_hash,
             "outcome": self.outcome,
             "spent": self.spent,
             "test_sets": self.test_sets,
@@ -366,7 +468,7 @@ class _Evaluation:
     """One invocation's shared state; ``run`` is the whole condition x set loop."""
 
     config: ExperimentConfig
-    conditions: list[tuple[str, HarnessSource]]
+    conditions: list[tuple[str, ConditionSource]]
     out_dir: Path
     verifiers: dict[str, Verifier]
     loaders: dict[str, LoaderFn] | None
@@ -415,30 +517,23 @@ class _Evaluation:
     def _evaluate_condition(
         self,
         condition_id: str,
-        source: HarnessSource,
+        source: ConditionSource,
         splits_dir: Path,
         sets: list[TestSet],
     ) -> ConditionEvaluation:
         """One condition over every test set, under one cumulative breaker."""
         condition_dir = self.out_dir / EVAL_DIR / condition_id
-        harness = source.load(self.out_dir, condition_dir / WORK_DIR)
-        limits = governed_limits(condition_id, harness.runtime_policy, self.caps)
-        if isinstance(limits, CandidateRejection):
-            raise EvaluationPersistenceError(
-                f"evaluation condition {condition_id!r} violates the experiment-owned caps "
-                f"({limits.reason}); a fixed condition that cannot run under the eval limits "
-                "is a misconfigured experiment, not a rejectable candidate"
-            )
+        method = source.load(self.out_dir, condition_dir / WORK_DIR)
+        method.validate_caps(condition_id, self.caps)
         breaker = CandidateSpendBreaker(self.caps)
         aggregates = {
-            test_set.set_id: self._evaluate_set(
-                condition_id, harness, limits, breaker, splits_dir, test_set
-            )
+            test_set.set_id: self._evaluate_set(condition_id, method, breaker, splits_dir, test_set)
             for test_set in sets
         }
         return ConditionEvaluation(
             condition_id=condition_id,
-            harness_hash=harness_hash(harness),
+            method_kind=method.method_kind,
+            method_hash=method.method_hash,
             outcome=OUTCOME_OVER_BUDGET if breaker.tripped else OUTCOME_COMPLETED,
             spent=breaker.spent,
             test_sets=aggregates,
@@ -447,8 +542,7 @@ class _Evaluation:
     def _evaluate_set(
         self,
         condition_id: str,
-        harness: Harness,
-        limits: dict[str, Any],
+        method: EvaluationMethod,
         breaker: CandidateSpendBreaker,
         splits_dir: Path,
         test_set: TestSet,
@@ -457,18 +551,15 @@ class _Evaluation:
         split_path = splits_dir / test_set.file_name
         instances = read_instances(split_path)
         set_path = self.out_dir / EVAL_DIR / condition_id / test_set.set_id
-        kwargs = round_config_kwargs(self.config)
-        for key in GOVERNED_ROUND_KEYS:
-            kwargs.pop(key)
-        round_config = RoundConfig(
-            round_index=EVAL_ROUND_INDEX,
-            harness=harness,
+        request = EvaluationSetRequest(
+            config=self.config,
+            condition_id=condition_id,
             instances=instances,
             verifier=self.verifier_for(test_set.environment),
             out_dir=set_path,
             attempts=self.config.operational.eval_repetitions,
-            **kwargs,
-            **limits,
+            breaker=breaker,
+            caps=self.caps,
         )
         with StageMeter(
             stage=STAGE_EVAL,
@@ -478,7 +569,7 @@ class _Evaluation:
         ) as meter:
             known = len(load_manifest(set_path, EVAL_ROUND_INDEX))
             try:
-                result = run_governed_round(round_config, breaker)
+                result = method.run_set(request)
             finally:
                 # Re-read from disk rather than from the (possibly unbound)
                 # result: a stage that raised still persisted every run it
@@ -497,9 +588,11 @@ class _Evaluation:
             "instances_sha256": verify_instance_identity(set_path, split_path),
             "n_instances": len(instances),
             "attempts": self.config.operational.eval_repetitions,
+            "method_kind": method.method_kind,
+            "method_hash": method.method_hash,
             "outcome": result.outcome,
             "skipped_run_ids": list(result.skipped_run_ids),
-            **split_aggregate(set_path),
+            **method.aggregate_set(set_path),
             **_usage_payload(usage),
         }
 
@@ -530,7 +623,7 @@ def run_evaluation(
     verifiers: dict[str, Verifier] | None = None,
     loaders: dict[str, LoaderFn] | None = None,
 ) -> EvaluationResult:
-    """Evaluate fixed harness conditions on the frozen test splits (R8).
+    """Evaluate fixed inference-method conditions on frozen test splits (R8).
 
     For each condition (in the caller's order) and each persisted test split:
     one ``run_governed_round`` of ``operational.eval_repetitions`` attempts per
@@ -587,10 +680,13 @@ __all__ = [
     "EVAL_SUMMARY_FILENAME",
     "EVAL_SUMMARY_FORMAT",
     "ConditionEvaluation",
+    "ConditionSource",
+    "EvaluationMethod",
     "EvaluationPersistenceError",
     "EvaluationResult",
+    "EvaluationSetRequest",
     "FrozenHarnessSource",
-    "HarnessSource",
+    "HarnessEvaluationMethod",
     "RegistryHarnessSource",
     "TestSet",
     "resolve_conditions",
