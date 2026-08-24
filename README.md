@@ -52,7 +52,6 @@ uv.lock                               lockfile for the uv environment
 configs/                              optional configuration files
 docs/                                 additional documentation
 examples/                              example scripts and small demos
-experiment_smoke/                      small experiment harnesses / smoke tests
 paper/                                 paper source and assets
 patches/                               auxiliary patches
 rlm/                                   core RLM runtime package (clients, environments, logger, utils)
