@@ -169,15 +169,3 @@ invariants I1-I3) is documented in [`shrlm/README.md`](shrlm/README.md).
 * **[Jun '26]** [Self-Harness: Harnesses That Improve Themselves](https://arxiv.org/pdf/2606.09498)
   
 If you use this code or repository in your research, please cite:
-
-```bibtex
-@misc{zhang2026recursivelanguagemodels,
-      title={Recursive Language Models},
-      author={Alex L. Zhang and Tim Kraska and Omar Khattab},
-      year={2026},
-      eprint={2512.24601},
-      archivePrefix={arXiv},
-      primaryClass={cs.AI},
-      url={https://arxiv.org/abs/2512.24601},
-}
-```

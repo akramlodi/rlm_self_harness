@@ -233,7 +233,11 @@ class OpenAIClient(BaseLM):
             )
             time.sleep(_transport_backoff_seconds(attempt))
         self._track_cost(response, model)
-        return response.choices[0].message.content
+        # content is None when the model emitted no visible text -- reasoning
+        # models can spend the whole max_tokens budget on hidden reasoning
+        # (observed on OpenRouter stealth/ox-alpha). The declared return type
+        # is str, and callers regex/parse it, so an absent text is "".
+        return response.choices[0].message.content or ""
 
     async def acompletion(
         self, prompt: str | list[dict[str, Any]], model: str | None = None
@@ -282,7 +286,8 @@ class OpenAIClient(BaseLM):
             )
             await asyncio.sleep(_transport_backoff_seconds(attempt))
         self._track_cost(response, model)
-        return response.choices[0].message.content
+        # Same None-content coercion as the sync path above.
+        return response.choices[0].message.content or ""
 
     def _track_cost(self, response: openai.ChatCompletion, model: str):
         self.model_call_counts[model] += 1
