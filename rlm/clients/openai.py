@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from rlm.clients.base_lm import BaseLM
 from rlm.core.types import ModelUsageSummary, UsageSummary
+from rlm.utils.exceptions import TokenLimitExceededError
 
 load_dotenv()
 
@@ -55,6 +56,35 @@ def _transport_backoff_seconds(attempt: int) -> float:
         _TRANSPORT_BACKOFF_CAP_SECONDS, _TRANSPORT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
     )
     return random.uniform(0, ceiling)
+
+
+# Provider phrasings for "this prompt does not fit the model's context
+# window" inside an HTTP 400 body (OpenRouter relays the upstream text
+# verbatim; observed from Nebius/CoreWeave, SiliconFlow, StreamLake, Alibaba).
+# A prompt that outgrew the window is a run-level resource condition, not a
+# transport fault: it is mapped to TokenLimitExceededError so the driver
+# records the run as RESOURCE_TERMINATED instead of crashing the experiment.
+_CONTEXT_OVERFLOW_MARKERS = (
+    "maximum context length",
+    "max input length",
+    "max_seq_len",
+    "range of input length",
+    "input tokens",
+    "context length",
+    "context_length_exceeded",
+)
+
+
+def _context_overflow_error(exc: openai.BadRequestError) -> TokenLimitExceededError | None:
+    """A TokenLimitExceededError when this 400 is a context-window overflow."""
+    text = str(exc).lower()
+    if not any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS):
+        return None
+    return TokenLimitExceededError(
+        tokens_used=0,
+        token_limit=0,
+        message=f"Prompt exceeded the model's context window (provider 400): {str(exc)[:600]}",
+    )
 
 
 def _response_deficiency(response: Any) -> str | None:
@@ -176,12 +206,18 @@ class OpenAIClient(BaseLM):
         extra_body = _merge_extra_body(extra_body, self.sampling_args)
 
         for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                extra_body=extra_body,
-                **_normalize_sampling_args(self.sampling_args),
-            )
+            try:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    extra_body=extra_body,
+                    **_normalize_sampling_args(self.sampling_args),
+                )
+            except openai.BadRequestError as exc:
+                overflow = _context_overflow_error(exc)
+                if overflow is not None:
+                    raise overflow from exc
+                raise
             deficiency = _response_deficiency(response)
             if deficiency is None:
                 break
@@ -219,12 +255,18 @@ class OpenAIClient(BaseLM):
         extra_body = _merge_extra_body(extra_body, self.sampling_args)
 
         for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
-            response = await self.async_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                extra_body=extra_body,
-                **_normalize_sampling_args(self.sampling_args),
-            )
+            try:
+                response = await self.async_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    extra_body=extra_body,
+                    **_normalize_sampling_args(self.sampling_args),
+                )
+            except openai.BadRequestError as exc:
+                overflow = _context_overflow_error(exc)
+                if overflow is not None:
+                    raise overflow from exc
+                raise
             deficiency = _response_deficiency(response)
             if deficiency is None:
                 break

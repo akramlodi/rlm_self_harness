@@ -124,3 +124,60 @@ class TestBackoffShape:
             for _ in range(20):
                 delay = _transport_backoff_seconds(attempt)
                 assert 0 <= delay <= ceiling <= _TRANSPORT_BACKOFF_CAP_SECONDS
+
+
+class TestContextOverflowMapping:
+    """A provider 400 for an over-window prompt is a run-level resource
+    condition (TokenLimitExceededError -> RESOURCE_TERMINATED run), never an
+    experiment-crashing transport error."""
+
+    @staticmethod
+    def bad_request(message: str) -> Exception:
+        import httpx
+        import openai as openai_sdk
+
+        response = httpx.Response(
+            400, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+        )
+        return openai_sdk.BadRequestError(message, response=response, body=None)
+
+    def _client_raising(self, exc: Exception) -> OpenAIClient:
+        client = make_client()
+
+        def raise_exc(**kwargs: Any) -> None:
+            raise exc
+
+        client.client = SimpleNamespace(
+            base_url="https://openrouter.ai/api/v1",
+            chat=SimpleNamespace(completions=SimpleNamespace(create=raise_exc)),
+        )
+        return client
+
+    def test_context_overflow_400_maps_to_token_limit(self) -> None:
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        message = (
+            "Error code: 400 - This model's maximum context length is 262144 tokens. "
+            "However, you requested 4096 output tokens and your prompt contains at "
+            "least 258049 input tokens."
+        )
+        client = self._client_raising(self.bad_request(message))
+        with pytest.raises(TokenLimitExceededError) as excinfo:
+            client.completion("hi")
+        assert "context window" in str(excinfo.value)
+
+    def test_max_seq_len_variant_maps_too(self) -> None:
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        client = self._client_raising(
+            self.bad_request("number of input tokens (262841) has exceeded max_seq_len (262144)")
+        )
+        with pytest.raises(TokenLimitExceededError):
+            client.completion("hi")
+
+    def test_unrelated_400_still_raises_bad_request(self) -> None:
+        import openai as openai_sdk
+
+        client = self._client_raising(self.bad_request("invalid model slug"))
+        with pytest.raises(openai_sdk.BadRequestError):
+            client.completion("hi")
