@@ -81,14 +81,19 @@ def extract_provider_cost(usage: Any) -> Any:
     inside ``usage.model_extra`` (``cost``, then
     ``cost_details.upstream_inference_cost`` for BYOK routes). Shared with
     subclasses that validate the value before recording it.
+
+    An explicit ``0`` is a report, not an absence: free-tier OpenRouter models
+    bill $0 per call, and a breaker fed ``None`` for those runs refuses to
+    count them at all (``costs.breaker_run_cost``). Only a missing field
+    returns None.
     """
-    if hasattr(usage, "cost") and usage.cost:
+    if getattr(usage, "cost", None) is not None:
         return usage.cost
     if hasattr(usage, "model_extra") and usage.model_extra:
         extra = usage.model_extra
-        if extra.get("cost"):
+        if extra.get("cost") is not None:
             return extra["cost"]
-        if extra.get("cost_details", {}).get("upstream_inference_cost"):
+        if extra.get("cost_details", {}).get("upstream_inference_cost") is not None:
             return extra["cost_details"]["upstream_inference_cost"]
     return None
 
@@ -252,23 +257,28 @@ class OpenAIClient(BaseLM):
         self.last_prompt_tokens = usage.prompt_tokens
         self.last_completion_tokens = usage.completion_tokens
 
-        # Extract cost from OpenRouter responses (cost is in USD)
+        # Extract cost from OpenRouter responses (cost is in USD). A reported
+        # zero (free-tier model) is recorded as 0.0 so the spend breaker sees
+        # a cost-reporting backend; negative values are provider junk and are
+        # dropped like an absent field.
         self.last_cost: float | None = None
         cost = extract_provider_cost(usage)
 
-        if cost is not None and cost > 0:
+        if cost is not None and cost >= 0:
             self.last_cost = float(cost)
             self.model_costs[model] += self.last_cost
 
     def get_usage_summary(self) -> UsageSummary:
         model_summaries = {}
         for model in self.model_call_counts:
+            # .get() distinguishes "never reported" (absent key -> None) from
+            # an accumulated $0 total on a free-tier model (0.0 stays 0.0).
             cost = self.model_costs.get(model)
             model_summaries[model] = ModelUsageSummary(
                 total_calls=self.model_call_counts[model],
                 total_input_tokens=self.model_input_tokens[model],
                 total_output_tokens=self.model_output_tokens[model],
-                total_cost=cost if cost else None,
+                total_cost=cost,
             )
         return UsageSummary(model_usage_summaries=model_summaries)
 

@@ -38,7 +38,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from shrlm.experiment.config import CLIENT_ROLES, ExperimentConfig, identity_hash, load_config
+from shrlm.experiment.config import (
+    CLIENT_ROLES,
+    CONFIG_PATH,
+    ExperimentConfig,
+    identity_hash,
+    load_config,
+)
 from shrlm.experiment.orchestrator import run_experiment
 from shrlm.optimization.driver import _BACKEND_ENV_KEYS
 
@@ -85,13 +91,19 @@ def main(argv: list[str] | None = None) -> int:
         help="the config profile to run (default: full)",
     )
     parser.add_argument(
+        "--config",
+        default=str(CONFIG_PATH),
+        help="path to the experiment TOML (default: configs/experiment.toml); a "
+        "second concurrent experiment runs from its own TOML + fresh --out-dir",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="pre-flight only: env gate, config load, identity print; spends nothing",
     )
     args = parser.parse_args(argv)
 
-    config = load_config(args.profile)
+    config = load_config(args.profile, args.config)
 
     missing = missing_env_keys(config)
     if missing:

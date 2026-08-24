@@ -178,10 +178,16 @@ class AzureFoundryClient(OpenAIClient):
                 self._validate_usage(usage)
 
             # Parent raises when usage is None, accumulates token counts, and
-            # sets last_cost only when the provider reported a positive cost.
+            # sets last_cost whenever the provider reported a non-negative
+            # cost (including an explicit zero, for free-tier backends).
             super()._track_cost(response, model)
 
-            if self.last_cost is not None:
+            # Azure Foundry is a paid backend: a provider-reported zero here
+            # is not credible, so anything non-positive falls through to the
+            # synthesized [pricing.list_price] cost -- a paid call must never
+            # count as free. The parent accumulated the bogus zero into
+            # model_costs, which adds nothing to the total.
+            if self.last_cost is not None and self.last_cost > 0:
                 self.last_cost_source = "provider"
                 self.model_cost_sources.setdefault(model, "provider")
             else:
