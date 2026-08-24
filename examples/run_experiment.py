@@ -18,6 +18,15 @@ t = 3 rounds = 4,368 runs x $0.50 = $2,184 as an absolute ceiling, with the
 per-candidate ``candidate_budget`` breakers binding far earlier in practice
 (prior smoke measurements put the mean run at $0.0024-$0.0134).
 
+Wall clock: validation is ~95% of a round's runs (1 baseline + k candidates,
+each v*(n_in+n_ho) runs). ``[operational] validation_workers`` in the TOML
+evaluates that many subjects concurrently, one child process each
+(``python -m shrlm.optimization.subject_worker``); 5 covers the full profile's
+1 + k subjects. It is identity-exempt (safe to change under an existing
+--out-dir), leaves worst-case spend unchanged, and only raises the peak
+request rate against the provider. A failed worker never discards its
+siblings' persisted runs: re-run the same command to resume it.
+
 The experiment is resumable (persist-first): re-invoking with the same
 ``--out-dir`` verifies the config identity, replays completed rounds from
 their markers, and resumes an interrupted round at its exact stage boundary.

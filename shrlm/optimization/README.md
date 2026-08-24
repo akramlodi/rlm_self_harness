@@ -14,7 +14,7 @@ three stages (§3.3 of the proposal):
 |---|---|---|
 | **1. Weakness Mining** | Run the current harness on short held-in instances. Record verifier outcomes and recursive traces. Score each sub-call with the environment's synthesized sub-verifier. Convert failures to structured records and cluster them by signature → an **evidence bundle** `B_t`. | **implemented** (`shrlm/optimization/`) |
 | **2. Harness Proposal** | Give the model the mined patterns, behaviors to preserve, and prior edit history; get back several minimal candidate edits, each targeting one pattern on one declared surface. | not implemented |
-| **3. Proposal Validation** | Evaluate candidates on held-in plus a disjoint held-out split never shown to the proposer. Promote only on no meaningful accuracy regression with sub-call/cost in a preregistered band. Merged compatible edits are re-evaluated before promotion. | not implemented |
+| **3. Proposal Validation** | Evaluate candidates on held-in plus a disjoint held-out split never shown to the proposer. Promote only on no meaningful accuracy regression with sub-call/cost in a preregistered band. Merged compatible edits are re-evaluated before promotion. | `validation.py`, `subject_worker.py` |
 
 The ten editable surfaces declared by the harness (`shrlm/rlm_harness.py`, `SURFACES`) are
 enumerated in code as `EditableSurface` ([taxonomy.py:51](optimization/taxonomy.py#L51)), keyed by
@@ -187,6 +187,34 @@ The miner **does not execute the harness**. It consumes runs that already happen
 experiment driver's concerns (splits, repetitions, budgets) out of mining and makes mining testable
 without a live model. It also holds the package's only `try` — one bad attribution must not abort a
 round.
+
+### `validation.py` + `subject_worker.py` — stage-3 evaluation, optionally in parallel
+`validate_round` is the whole validation stage (loader → evaluation → promotion → merged
+re-evaluation → ledger). `evaluate_validation_round` evaluates the baseline and every loaded
+candidate; with `operational.validation_workers > 1` (`configs/experiment.toml`) it does so
+concurrently, one **child process per subject**, at most that many alive at once:
+
+```
+python -m shrlm.optimization.subject_worker <round>/<subject_id>/worker_request.json
+```
+
+Subjects share nothing — directory, spend breaker, SIGALRM hard deadline, and persist-first
+manifests are all per subject — so the persisted artifacts (`summary.json`, `promotions.jsonl`,
+`decision.json`) are byte-identical to the sequential path's; only the wall clock changes. The
+worker count is identity-exempt (it may change under an existing out-dir) and worst-case spend is
+unchanged (same run count, same caps); peak request rate scales with it. Child processes are the
+chosen mechanism because threads would lose the hard deadline (SIGALRM binds on the main thread
+only) and share the runtime logger.
+
+Per subject the parent writes `worker_request.json` (harness envelope + expected hash, splits,
+caps, backend, verifier factory dotted path), redirects the child's stdout/stderr to `worker.log`,
+and reads back `worker_result.json` plus the persisted `summary.json`. The child refuses a harness
+that does not rematerialize to the expected hash. A crashed subject never aborts its siblings:
+the parent waits for every child, then raises `SubjectWorkerError` naming each failed subject and
+its log; re-running the same command resumes only the missing runs. The caps gate runs in the
+parent, so a rejected candidate never gets a child, and the merged re-evaluation stays sequential
+in-process. Tests script the children through the request's test-only `client_factory` seam
+(`tests/optimization/subject_worker_support.py`).
 
 ## Dependency graph
 
