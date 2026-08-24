@@ -22,10 +22,20 @@ from typing import Any
 
 import pytest
 
+import shrlm.baselines.upstream.lambda_rlm as upstream_lambda
+from shrlm.baselines.lambda_rlm import (
+    LAMBDA_RLM_METHOD_KIND,
+    LAMBDA_RLM_SOURCE_SHA256,
+    LAMBDA_RLM_UPSTREAM_REPOSITORY,
+    LAMBDA_RLM_UPSTREAM_REVISION,
+    LambdaBaselineConfig,
+    lambda_method_hash,
+)
 from shrlm.experiment.config import ExperimentConfig
 from shrlm.experiment.evaluation import (
     CONDITION_B1,
     CONDITION_H0_STAR,
+    CONDITION_LAMBDA_RLM,
     CONDITION_SH_RLM,
     CONDITIONS,
     DEFAULT_CONDITIONS,
@@ -179,6 +189,7 @@ class TestConditionGrid:
         assert DEFAULT_CONDITIONS == (
             CONDITION_B1,
             CONDITION_H0_STAR,
+            CONDITION_LAMBDA_RLM,
             CONDITION_SH_RLM,
         )
 
@@ -221,6 +232,45 @@ class TestConditionGrid:
                 (set_round_dir(out, CONDITION_H0_STAR, set_id) / "harness.json").read_text()
             )
             assert recorded["hash"] == harness_hash(H0_STAR)
+
+    def test_lambda_rlm_runs_as_a_pinned_non_harness_method(self, tmp_path, monkeypatch):
+        config = eval_config(tmp_path)
+        out = tmp_path / "exp"
+        factory = ClientFactory(["2", "RIGHT", "2", "RIGHT"])
+        monkeypatch.setattr(upstream_lambda, "get_client", factory)
+
+        result = evaluate(config, out, conditions=(CONDITION_LAMBDA_RLM,))
+
+        assert factory.total_calls == 4  # task detection + answer, over two test sets
+        condition = result.conditions[0]
+        assert condition.condition_id == CONDITION_LAMBDA_RLM
+        assert condition.method_kind == LAMBDA_RLM_METHOD_KIND
+        assert condition.method_hash == lambda_method_hash(LambdaBaselineConfig())
+        assert result.summary["conditions"][CONDITION_LAMBDA_RLM]["source"] == {
+            "kind": "pinned_upstream",
+            "method_kind": LAMBDA_RLM_METHOD_KIND,
+            "repository": LAMBDA_RLM_UPSTREAM_REPOSITORY,
+            "revision": LAMBDA_RLM_UPSTREAM_REVISION,
+            "source_sha256": LAMBDA_RLM_SOURCE_SHA256,
+        }
+        for set_id in BOTH_SETS:
+            round_path = set_round_dir(out, CONDITION_LAMBDA_RLM, set_id)
+            assert (round_path / "method.json").exists()
+            assert not (round_path / "harness.json").exists()
+            aggregate = condition.test_sets[set_id]
+            assert aggregate["n_runs"] == 1
+            assert aggregate["pass_count"] == 1
+            assert aggregate["total_cost"] == pytest.approx(0.002)
+            assert aggregate["total_sub_calls"] == 2
+            assert aggregate["total_skill_loads"] == 0
+            assert aggregate["input_tokens"] == 20
+            assert aggregate["output_tokens"] == 20
+
+        no_op_factory = ClientFactory([])
+        monkeypatch.setattr(upstream_lambda, "get_client", no_op_factory)
+        resumed = evaluate(config, out, conditions=(CONDITION_LAMBDA_RLM,))
+        assert no_op_factory.total_calls == 0
+        assert resumed.summary == result.summary
 
     def test_two_conditions_over_two_test_sets_produce_four_round_dirs(self, tmp_path, monkeypatch):
         config = eval_config(tmp_path)

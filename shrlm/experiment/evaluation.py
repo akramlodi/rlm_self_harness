@@ -22,11 +22,11 @@ Directory contract under ``out_dir``::
 Conditions are named method sources, resolved from one mapping (``CONDITIONS``)
 rather than branched on at call sites. A source loads an ``EvaluationMethod``
 that owns method identity, cap validation, governed execution, and aggregation.
-The three conditions here remain harness-backed: ``b1`` is the registry
-incumbent ``H0``, ``h0_star`` is the shipped reference ``H0*``, and ``sh_rlm``
-is the frozen envelope rematerialized and re-hashed against its freeze-time
-hash. Non-harness methods join through the same protocol, not a condition-id
-branch.
+The four conditions are ``b1`` (the registry incumbent ``H0``), ``h0_star``
+(the shipped reference ``H0*``), ``lambda_rlm`` (the pinned upstream λ-RLM
+method), and ``sh_rlm`` (the frozen envelope rematerialized and re-hashed
+against its freeze-time hash). Harness and non-harness methods join through
+the same protocol, not a condition-id branch.
 
 Byte-identical instances across conditions (R8) is enforced, not assumed. Each
 split file is the single source for every condition's round, the driver
@@ -67,6 +67,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from rlm.core.types import RLMChatCompletion
+from shrlm.baselines.lambda_rlm import (
+    LAMBDA_RLM_METHOD_KIND,
+    LAMBDA_RLM_SOURCE_SHA256,
+    LAMBDA_RLM_UPSTREAM_REPOSITORY,
+    LAMBDA_RLM_UPSTREAM_REVISION,
+    LambdaBaselineConfig,
+    lambda_method_hash,
+)
+from shrlm.baselines.lambda_runner import (
+    METHOD_FILE,
+    LambdaRoundConfig,
+    run_governed_lambda_round,
+)
 from shrlm.environments.graphwalks import GraphWalksVerifier
 from shrlm.environments.oolong_pairs import OolongPairsVerifier
 from shrlm.experiment.config import (
@@ -111,7 +125,13 @@ from shrlm.optimization.costs import (
     governed_limits,
     run_governed_round,
 )
-from shrlm.optimization.driver import INSTANCES_FILE, RoundConfig, load_manifest
+from shrlm.optimization.driver import (
+    INSTANCES_FILE,
+    RoundConfig,
+    load_manifest,
+    verify_trace,
+)
+from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verifier
 from shrlm.optimization.validation import EVAL_ROUND_INDEX, split_aggregate
 from shrlm.rlm_harness import HARNESSES, Harness
@@ -239,6 +259,95 @@ class HarnessEvaluationMethod:
 
 
 @dataclass(frozen=True)
+class LambdaEvaluationMethod:
+    """Evaluation adapter for the pinned, non-harness λ-RLM baseline."""
+
+    method: LambdaBaselineConfig = field(default_factory=LambdaBaselineConfig)
+
+    @property
+    def method_kind(self) -> str:
+        return LAMBDA_RLM_METHOD_KIND
+
+    @property
+    def method_hash(self) -> str:
+        return lambda_method_hash(self.method)
+
+    def validate_caps(self, condition_id: str, caps: ValidationCaps) -> None:
+        # λ-RLM has no editable runtime-policy surface to merge. Its runner
+        # receives the experiment's exact per-run budget and timeout below and
+        # validates those values against the shared breaker before execution.
+        return None
+
+    def run_set(self, request: EvaluationSetRequest) -> GovernedRoundResult:
+        kwargs = round_config_kwargs(request.config)
+        round_config = LambdaRoundConfig(
+            round_index=EVAL_ROUND_INDEX,
+            instances=request.instances,
+            verifier=request.verifier,
+            out_dir=request.out_dir,
+            method=self.method,
+            backend=kwargs["backend"],
+            backend_kwargs=kwargs["backend_kwargs"],
+            attempts=request.attempts,
+            max_budget=request.caps.max_budget,
+            max_timeout=request.caps.max_timeout,
+        )
+        return run_governed_lambda_round(round_config, request.breaker)
+
+    def aggregate_set(self, set_path: Path) -> dict[str, Any]:
+        """Aggregate λ-RLM's verified method artifact, manifest, and traces.
+
+        λ-RLM has no RLM root/child distinction. For the common comparison
+        field, every model call made by the method is therefore counted as a
+        sub-call; this includes its task-detection call as well as bounded leaf
+        calls. Skill loading is an SH-RLM harness feature and is always zero.
+        """
+        path = round_dir(set_path, EVAL_ROUND_INDEX)
+        method_path = path / METHOD_FILE
+        if not method_path.exists():
+            raise EvaluationPersistenceError(
+                f"{method_path} does not exist; a λ-RLM round must persist its method identity"
+            )
+        envelope = json.loads(method_path.read_text())
+        recorded_hash = str(envelope.get("hash"))
+        if recorded_hash != self.method_hash:
+            raise EvaluationPersistenceError(
+                f"{method_path} records method hash {recorded_hash}, but the loaded "
+                f"evaluation method hashes to {self.method_hash}"
+            )
+
+        entries = load_manifest(set_path, EVAL_ROUND_INDEX)
+        total_model_calls = 0
+        for entry in entries:
+            trace_path = verify_trace(path, entry)
+            completion = RLMChatCompletion.from_dict(json.loads(trace_path.read_text()))
+            total_model_calls += sum(
+                usage.total_calls
+                for usage in completion.usage_summary.model_usage_summaries.values()
+            )
+
+        n_runs = len(entries)
+        pass_count = sum(1 for entry in entries if entry["passed"])
+        total_cost = float(sum(entry["cost"] for entry in entries if entry.get("cost") is not None))
+        return {
+            "n_runs": n_runs,
+            "pass_count": pass_count,
+            "pass_rate": pass_count / n_runs if n_runs else None,
+            "n_resource_terminated": sum(
+                1
+                for entry in entries
+                if entry.get("cause") == VerifierCause.RESOURCE_TERMINATED.value
+            ),
+            "total_cost": total_cost,
+            "mean_cost": total_cost / n_runs if n_runs else None,
+            "total_sub_calls": total_model_calls,
+            "mean_sub_calls": total_model_calls / n_runs if n_runs else None,
+            "total_skill_loads": 0,
+            "mean_skill_loads": 0.0 if n_runs else None,
+        }
+
+
+@dataclass(frozen=True)
 class RegistryHarnessSource:
     """A condition served by a harness in the module registry (e.g. B1 = H0)."""
 
@@ -288,17 +397,38 @@ class FrozenHarnessSource:
         )
 
 
-# The condition-source registry. λ-RLM joins this mapping in the next phase via
-# its own source and EvaluationMethod adapter; no evaluator branch is required.
+@dataclass(frozen=True)
+class LambdaMethodSource:
+    """The pinned upstream λ-RLM method and its complete source provenance."""
+
+    method: LambdaBaselineConfig = field(default_factory=LambdaBaselineConfig)
+
+    def describe(self) -> dict[str, str]:
+        return {
+            "kind": "pinned_upstream",
+            "method_kind": LAMBDA_RLM_METHOD_KIND,
+            "repository": LAMBDA_RLM_UPSTREAM_REPOSITORY,
+            "revision": LAMBDA_RLM_UPSTREAM_REVISION,
+            "source_sha256": LAMBDA_RLM_SOURCE_SHA256,
+        }
+
+    def load(self, out_dir: Path, work_dir: Path) -> EvaluationMethod:
+        return LambdaEvaluationMethod(self.method)
+
+
+# The complete fixed-weight comparison grid. Ordering keeps the two RLM
+# references first, then the hand-designed λ-RLM method, then learned SH-RLM.
 CONDITIONS: dict[str, ConditionSource] = {
     CONDITION_B1: RegistryHarnessSource(INITIAL_INCUMBENT),
     CONDITION_H0_STAR: RegistryHarnessSource("H0*"),
+    CONDITION_LAMBDA_RLM: LambdaMethodSource(),
     CONDITION_SH_RLM: FrozenHarnessSource(f"{FROZEN_DIR}/{FROZEN_HARNESS_FILENAME}"),
 }
 
 DEFAULT_CONDITIONS: tuple[str, ...] = (
     CONDITION_B1,
     CONDITION_H0_STAR,
+    CONDITION_LAMBDA_RLM,
     CONDITION_SH_RLM,
 )
 
@@ -640,7 +770,7 @@ def run_evaluation(
         config: The loaded experiment configuration (one profile).
         conditions: Condition names to evaluate, in evaluation order; each must
             be a key of ``CONDITIONS`` (``DEFAULT_CONDITIONS`` contains
-            ``b1``, ``h0_star``, and ``sh_rlm``).
+            ``b1``, ``h0_star``, ``lambda_rlm``, and ``sh_rlm``).
         out_dir: The experiment directory (the one the orchestrator wrote).
         verifiers: Per-environment verifiers; defaults to ``DEFAULT_VERIFIERS``.
         loaders: Optional environment-loader overrides for ``materialize_splits``
@@ -673,6 +803,7 @@ __all__ = [
     "CONDITIONS",
     "CONDITION_B1",
     "CONDITION_H0_STAR",
+    "CONDITION_LAMBDA_RLM",
     "CONDITION_SH_RLM",
     "DEFAULT_CONDITIONS",
     "DEFAULT_VERIFIERS",
@@ -687,6 +818,8 @@ __all__ = [
     "EvaluationSetRequest",
     "FrozenHarnessSource",
     "HarnessEvaluationMethod",
+    "LambdaEvaluationMethod",
+    "LambdaMethodSource",
     "RegistryHarnessSource",
     "TestSet",
     "resolve_conditions",

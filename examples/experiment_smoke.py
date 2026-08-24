@@ -29,14 +29,14 @@ Spend control (KTD7; hard ceiling $5)
     Governed calls -- every run executed under a ``CandidateSpendBreaker``:
 
         per-run budget      $0.20   worst-case long run (below) x ~1.7 headroom
-        per-breaker budget  $0.28   cumulative, per spend breaker
-        breakers            7       t x (1 mining + baseline + k candidates +
+        per-breaker budget  $0.23   cumulative, per spend breaker
+        breakers            9       t x (1 mining + baseline + k candidates +
                                     merged) + 1 per evaluation condition
-        governed ceiling    8 x ($0.28 + $0.20) = $3.84
+        governed ceiling    9 x ($0.23 + $0.20) = $3.87
 
     A breaker trips only *after* a run pushes cumulative spend past its
     budget, so each breaker's true ceiling is its budget plus one per-run
-    budget -- that is the $0.55 term. The per-round breakers are armed afresh
+    budget -- that is the $0.43 term. The per-round breakers are armed afresh
     in each of ``loop.t`` rounds, hence the ``t`` factor (the shipped smoke
     profile runs t = 1, so it is latent there and load-bearing anywhere else).
 
@@ -52,7 +52,7 @@ Spend control (KTD7; hard ceiling $5)
                                     price
         ungoverned ceiling  38 x $0.0274 = $1.04
 
-        ceiling             $3.85 + $1.04 = $4.89 < $5.00
+        ceiling             $3.87 + $1.04 = $4.91 < $5.00
 
     ``caps.max_budget`` is deliberately NOT the per-call bound for the
     ungoverned classes: at $0.20 x 38 calls it would claim $7.60 of a $5
@@ -157,7 +157,7 @@ SPEND_CEILING_USD = 5.0
 # The per-run budget is load-bearing for KTD6 (it must clear the ~$0.12
 # worst-case long run), so the ceiling is fitted by the candidate budget.
 LIVE_MAX_BUDGET_USD = 0.20
-LIVE_CANDIDATE_BUDGET_USD = 0.28
+LIVE_CANDIDATE_BUDGET_USD = 0.23
 LIVE_MAX_TIMEOUT_SECONDS = 1200.0
 
 # Spend breakers armed per round: one for mining, one per validation subject

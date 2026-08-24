@@ -234,7 +234,7 @@ output_per_million = 0.30
 
 [report]
 p_merge = 0.5
-eval_conditions = 3
+eval_conditions = 4
 
 [operational]
 loader_timeout_seconds = 60.0
