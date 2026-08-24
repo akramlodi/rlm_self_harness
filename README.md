@@ -156,100 +156,12 @@ One caveat for any tool that resolves the config from an out-dir: the default TO
 from a config the experiment never ran under). For the Ox experiment, always pass
 `--config configs/experiment_ox.toml` where the tool accepts it.
 
-## Quick Setup
-> [!NOTE]
-> `rlms` requires **Python 3.11 or later**.
+## RLM runtime
 
-You can try out RLMs quickly by installing from PyPi:
-```bash
-pip install rlms
-```
-
-The default RLM client uses a REPL environment that runs on the host process through Python `exec` calls. It uses the same virtual environment as the host process (i.e. it will have access to the [...]
-```python
-from rlm import RLM
-
-rlm = RLM(
-    backend="openai",
-    backend_kwargs={"model_name": "gpt-5-nano"},
-    verbose=True,  # For printing to console with rich, disabled by default.
-)
-
-print(rlm.completion("Print me the first 100 powers of two, each on a newline.").response)
-```
-
-<details>
-<summary><b>Manual Setup</b></summary>
-
-Set up the dependencies with `uv` (or your virtual environment of choice):
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv init && uv venv --python 3.12  # change version as needed
-uv pip install -e .
-```
-
-This project includes a `Makefile` to simplify common tasks.
-
-- `make install`: Install base dependencies.
-- `make check`: Run linter, formatter, and tests.
-
-To run a quick test, the following will run an RLM query with the OpenAI client using your environment variable `OPENAI_API_KEY` (feel free to change this). This will generate console output as we[...]
-```bash
-make quickstart
-```
-
-</details>
-
-## REPL Environments
-We support two types of REPL environments -- isolated, and non-isolated. Non-isolated environments (default) run code execution on the same machine as the RLM (e.g. through `exec`), which is prett[...]
-
-```python
-rlm = RLM(
-    environment="...", # "local", "ipython", "docker", "modal", "prime", "daytona", "e2b"
-    environment_kwargs={...},
-)
-```
-
-### Local Environments
-The default `local` environment `LocalREPL` runs in the same process as the RLM itself, with specified global and local namespaces for minimal security. Using this REPL is generally safe, but shou[...]
-
-#### IPython (*requires `pip install 'rlms[ipython]'`*)
-`IPythonREPL` runs cells inside a real IPython session — either in-process (default) or in a separate `ipykernel` subprocess. Subprocess mode adds hard `cell_timeout` enforcement and full namesp[...]
-
-#### Docker <img src="https://github.com/docker.png" alt="Docker" height="20" style="vertical-align: middle;"/> (*requires [Docker installed](https://docs.docker.com/desktop/setup/install/)* )
-We also support a Docker-based environment called `DockerREPL` that launches the REPL environment as a Docker image. By default, we use the `python:3.11-slim` image, but the user can specify cust[...]
-
-`DockerREPL` supports the full feature set of the local environment: single LM calls (`llm_query` / `llm_query_batched`), recursive sub-RLM calls (`rlm_query` / `rlm_query_batched`, including par[...]
-
-### Isolated Environments
-We support several different REPL environments that run on separate, cloud-based machines. Whenever a recursive sub-call is made in these instances, it is requested from the host process.
-
-#### Modal Sandboxes <img src="https://github.com/modal-labs.png" alt="Modal" height="20" style="vertical-align: middle;"/>
-To use [Modal Sandboxes](https://modal.com/docs/guide/sandboxes) as the REPL environment, you need to install and authenticate your Modal account.
-```bash
-uv add modal  # add modal library
-modal setup   # authenticate account
-```
-
-#### Prime Intellect Sandboxes <img src="https://github.com/PrimeIntellect-ai.png" alt="Prime Intellect" height="20" style="vertical-align: middle;"/>
-> [!NOTE]
-> **Prime Intellect Sandboxes** are currently a beta feature. See the [documentation](https://docs.primeintellect.ai/sandboxes/overview) for more information. We noticed slow runtimes when using [...]
-
-
-To use [Prime Sandboxes](https://docs.primeintellect.ai/sandboxes/sdk), install the SDK and set your API key:
-```bash
-uv pip install -e ".[prime]"
-export PRIME_API_KEY=...
-```
-
-
-### Model Providers
-We currently support most major clients (OpenAI, Anthropic), as well as the router platforms (OpenRouter, Portkey). For local models, we recommend using vLLM (which interfaces with the [OpenAI cl[...]
-
-## Training
-We provide a simple RL training harness for training RLMs used in this repo (specifically the `local` REPL). The implementation uses no sandboxes for simplicity and slots easily your use case, bu[...]
-
-A worked example with an example `.toml` lives in [`training/environments/oolong/`](https://github.com/alexzhang13/rlm/tree/main/training/environments/oolong) (OOLONG long-context QA). New traini[...]
+The `rlm/` package (runtime setup, REPL environments -- local, IPython, Docker, Modal,
+Prime -- model providers, trajectory logging, and the visualizer) is documented in
+[`rlm/Readme.md`](rlm/Readme.md). The self-harness specification (surfaces S1-S10,
+invariants I1-I3) is documented in [`shrlm/README.md`](shrlm/README.md).
 
 ## Relevant Reading
 * **[Dec '25]** [Recursive Language Models arXiv](https://arxiv.org/abs/2512.24601)
@@ -268,25 +180,4 @@ If you use this code or repository in your research, please cite:
       primaryClass={cs.AI},
       url={https://arxiv.org/abs/2512.24601},
 }
-```
-
-## Optional: Trajectory metadata, logging, and debugging
-`RLMChatCompletion` has an optional `metadata` field (default `None`) that holds the full trajectory (run config + all iterations and sub-calls) so you can reconstruct the run. Pass an `RLMLogger[...]
-
-- **In-memory only** (trajectory on `completion.metadata`): `logger=RLMLogger()` (no `log_dir`).
-- **Also save to disk** (JSONL for the visualizer): `logger=RLMLogger(log_dir="./logs")`.
-
-**Visualizing logs.** We also provide a simple visualizer to inspect code, sub-LM, and root-LM calls. Use `RLMLogger(log_dir="./logs")` so each completion writes a `.jsonl` file:
-```python
-from rlm.logger import RLMLogger
-from rlm import RLM
-
-logger = RLMLogger(log_dir="./logs")
-rlm = RLM(..., logger=logger)
-```
-
-To run the visualizer locally, we use Node.js and shadcn/ui:
-```
-cd visualizer/
-npm run dev        # default localhost:3001
 ```
