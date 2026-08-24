@@ -15,6 +15,7 @@ reports no cost, and the breaker prices runs from persisted costs alone).
 """
 
 import json
+import os
 import signal
 import time
 from dataclasses import dataclass, replace
@@ -33,8 +34,10 @@ from shrlm.optimization.costs import (
     OUTCOME_OVER_BUDGET,
     CandidateSpendBreaker,
     HardDeadlineExceeded,
+    SplitClaimedError,
     ValidationCaps,
     breaker_run_cost,
+    claim_split,
     governed_limits,
     hard_deadline_seconds,
     run_governed_round,
@@ -123,6 +126,23 @@ class HangingScriptLM(ScriptedLM):
             while True:
                 time.sleep(0.01)
         return turn
+
+
+class UnrecordedHangingScriptLM(ScriptedLM):
+    """A client that hangs *before* the call is recorded.
+
+    The counterpart to ``HangingScriptLM``, which counts the request and then
+    blocks -- there the runtime has a real figure to publish for the
+    terminated run. Here nothing was recorded at all, which is the case that
+    keeps today's ceiling pricing: the breaker cannot know what a run it has
+    no figure for cost, so it assumes the worst.
+    """
+
+    def completion(self, prompt: str | dict[str, Any]) -> str:
+        if self._script and self._script[0] == HANG:
+            while True:
+                time.sleep(0.01)
+        return super().completion(prompt)
 
 
 class ClientFactory:
@@ -500,9 +520,10 @@ class TestHardDeadlineBackstop:
         self, tmp_path, monkeypatch
     ):
         # Run 1 hangs inside its live call; the backstop interrupts it, the
-        # driver persists it as an ordinary RESOURCE_TERMINATED run, the
-        # breaker charges the cost-less termination at the per-run ceiling,
-        # and runs 2 and 3 proceed normally.
+        # driver persists it as an ordinary RESOURCE_TERMINATED run, and runs
+        # 2 and 3 proceed normally. The client counted the request before it
+        # blocked, so the completion context has a real figure to publish and
+        # the breaker charges that instead of the per-run ceiling.
         caps = self._tight_deadline(monkeypatch)
         factory = ClientFactory([HANG, final("RIGHT"), final("RIGHT")], client_cls=HangingScriptLM)
         monkeypatch.setattr(rlm_module, "get_client", factory)
@@ -522,7 +543,8 @@ class TestHardDeadlineBackstop:
         assert hung["cause"] == VerifierCause.RESOURCE_TERMINATED.value
         assert "HardDeadlineExceeded" in hung["verdict"]["detail"]
         assert "hard wall-clock deadline" in hung["verdict"]["detail"]
-        assert hung["cost"] is None
+        assert hung["cost"] == pytest.approx(COST_PER_CALL)
+        assert hung["usage_lower_bound"] is True
         assert not result.entries[1]["cause"] and not result.entries[2]["cause"]
         # The persist-first contract: the terminated run is on disk like any other.
         manifest = read_manifest(round_dir(tmp_path, 1))
@@ -530,14 +552,16 @@ class TestHardDeadlineBackstop:
             entry["run_id"] for entry in result.entries
         ]
         assert result.skipped_run_ids == []
-        assert result.spent == pytest.approx(caps.max_budget + 2 * COST_PER_CALL)
+        assert result.spent == pytest.approx(3 * COST_PER_CALL)
 
     def test_hung_run_charge_trips_the_breaker_and_skips_the_rest(self, tmp_path, monkeypatch):
-        # The ceiling charge for the hung run (max_budget) exceeds the
-        # candidate budget: the remaining runs are skipped per budget, exactly
-        # like an ordinary budget termination.
+        # A run that hung before its request was ever recorded leaves the
+        # runtime with nothing to publish, so the breaker still prices it at
+        # the per-run ceiling (max_budget). That charge exceeds the candidate
+        # budget: the remaining runs are skipped, exactly like an ordinary
+        # budget termination.
         caps = replace(self._tight_deadline(monkeypatch), candidate_budget=0.001)
-        factory = ClientFactory([HANG], client_cls=HangingScriptLM)
+        factory = ClientFactory([HANG], client_cls=UnrecordedHangingScriptLM)
         monkeypatch.setattr(rlm_module, "get_client", factory)
 
         result = run_governed_round(make_config(tmp_path, caps=caps), CandidateSpendBreaker(caps))
@@ -610,3 +634,74 @@ class TestHardDeadlineBackstop:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestSplitClaim:
+    """R17: two invocations must not dispatch runs into one split directory.
+
+    Interleaved manifest appends would tear lines and double-charge runs, and
+    neither invocation would know the other existed. The claim is taken on
+    every governed round, not only concurrent ones -- a second *sequential*
+    invocation of the same split does exactly the same damage.
+    """
+
+    def test_a_split_claimed_by_this_live_process_is_refused(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory([final("RIGHT")] * 3))
+        config = make_config(tmp_path)
+        round_path = round_dir(config.out_dir, config.round_index)
+        round_path.mkdir(parents=True, exist_ok=True)
+
+        with claim_split(round_path):
+            with pytest.raises(SplitClaimedError) as excinfo:
+                run_governed_round(config, CandidateSpendBreaker(CAPS))
+
+        assert str(round_path) in str(excinfo.value)
+        assert str(os.getpid()) in str(excinfo.value)
+
+    def test_a_claim_left_by_a_dead_pid_is_reclaimed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory([final("RIGHT")] * 3))
+        config = make_config(tmp_path)
+        round_path = round_dir(config.out_dir, config.round_index)
+        claim_dir = round_path / ".claim"
+        claim_dir.mkdir(parents=True)
+        # A pid that cannot be alive: a crashed round must not lock its split
+        # forever, or an operator's only recovery is deleting files by hand.
+        (claim_dir / "pid").write_text("999999999\n")
+
+        result = run_governed_round(config, CandidateSpendBreaker(CAPS))
+
+        assert result.outcome == OUTCOME_COMPLETED
+        assert not claim_dir.exists()
+
+    def test_the_claim_is_released_after_a_normal_round(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory([final("RIGHT")] * 3))
+        config = make_config(tmp_path)
+
+        run_governed_round(config, CandidateSpendBreaker(CAPS))
+
+        assert not (round_dir(config.out_dir, config.round_index) / ".claim").exists()
+
+    def test_the_claim_is_released_when_the_round_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory([final("RIGHT")] * 3))
+        config = make_config(tmp_path)
+        round_path = round_dir(config.out_dir, config.round_index)
+
+        def explode(*args, **kwargs):
+            raise RuntimeError("round blew up")
+
+        monkeypatch.setattr(costs_module, "_run_slice", explode)
+        with pytest.raises(RuntimeError, match="round blew up"):
+            run_governed_round(config, CandidateSpendBreaker(CAPS))
+
+        assert not (round_path / ".claim").exists()
+
+    def test_a_sequential_round_still_completes_under_the_claim(self, tmp_path, monkeypatch):
+        """The guard is not gated on concurrency; the default path is unaffected."""
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory([final("RIGHT")] * 3))
+        config = make_config(tmp_path)
+
+        result = run_governed_round(config, CandidateSpendBreaker(CAPS))
+
+        assert result.outcome == OUTCOME_COMPLETED
+        assert len(result.entries) == 3
+        assert result.skipped_run_ids == []

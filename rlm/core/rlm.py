@@ -12,6 +12,7 @@ from rlm.core.types import (
     ClientBackend,
     CodeBlock,
     EnvironmentType,
+    ModelUsageSummary,
     REPLResult,
     RLMChatCompletion,
     RLMIteration,
@@ -56,6 +57,34 @@ def _skill_index_of(custom_tools: dict[str, Any] | None) -> list[dict[str, str]]
         value = extract_tool_value(entry)
         if isinstance(value, SkillLoader):
             return [dict(item) for item in value.index]
+    return None
+
+
+def _terminated_child_usage(child: Any, error: Exception, model: str) -> UsageSummary | None:
+    """What a child RLM spent before an exception ended it, or None.
+
+    A child that raised returns no completion, so its usage reaches the parent
+    only through the total its completion context published on the way out.
+    That figure is the accurate one and covers every termination path, so it is
+    preferred. ``BudgetExceededError.spent`` is the fallback for a child that
+    died before publishing -- a cost with no token breakdown, recorded as a
+    zero-call cost-only record rather than dropped.
+    """
+    published = getattr(child, "last_completion_usage", None)
+    if isinstance(published, UsageSummary):
+        return published
+    spent = getattr(error, "spent", None)
+    if isinstance(spent, int | float) and not isinstance(spent, bool):
+        return UsageSummary(
+            model_usage_summaries={
+                model: ModelUsageSummary(
+                    total_calls=0,
+                    total_input_tokens=0,
+                    total_output_tokens=0,
+                    total_cost=float(spent),
+                )
+            }
+        )
     return None
 
 
@@ -238,6 +267,13 @@ class RLM:
 
         # Tracking (cumulative across all calls including children)
         self._cumulative_cost: float = 0.0
+        # Spend by recursive children, which run their own handlers and are
+        # therefore invisible to this RLM's handler aggregate. Reset per
+        # completion alongside ``_cumulative_cost``.
+        self._subcall_usage: UsageSummary = UsageSummary(model_usage_summaries={})
+        # What the last completion recorded, published by the completion context
+        # on its way out (see ``last_completion_usage``). None until one runs.
+        self._last_completion_usage: UsageSummary | None = None
         self._consecutive_errors: int = 0
         self._last_error: str | None = None
         self._best_partial_answer: str | None = None
@@ -348,6 +384,16 @@ class RLM:
         try:
             yield lm_handler, environment
         finally:
+            # Publish the run's total before the only object holding it dies.
+            # This block runs during exception propagation too, after every
+            # completed call has been recorded, which makes it the one point
+            # where "the run is over" is true however it ended -- including a
+            # limit raised inside a client, which never reaches the iteration
+            # checks. A terminated completion returns nothing, so without this
+            # its usage would be unrecoverable and the run would read as free.
+            self._last_completion_usage = lm_handler.get_usage_summary().merged_with(
+                self._subcall_usage
+            )
             lm_handler.stop()
             if not self.persistent and hasattr(environment, "cleanup"):
                 environment.cleanup()
@@ -402,6 +448,7 @@ class RLM:
         self._consecutive_errors = 0
         self._last_error = None
         self._best_partial_answer = None
+        self._reset_completion_accounting()
         # If we're at max depth, the RLM is an LM, so we fallback to the regular LM.
         if self.depth >= self.max_depth:
             return self._fallback_answer(prompt)
@@ -523,7 +570,7 @@ class RLM:
 
                     if final_answer is not None:
                         time_end = time.perf_counter()
-                        usage = lm_handler.get_usage_summary()
+                        usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage)
                         self.verbose.print_final_answer(final_answer)
                         self.verbose.print_summary(i + 1, time_end - time_start, usage.to_dict())
 
@@ -561,7 +608,7 @@ class RLM:
             # Default behavior: we run out of iterations, provide one final answer
             time_end = time.perf_counter()
             final_answer = self._default_answer(message_history, lm_handler)
-            usage = lm_handler.get_usage_summary()
+            usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage)
             self.verbose.print_final_answer(final_answer)
             self.verbose.print_summary(self.max_iterations, time_end - time_start, usage.to_dict())
 
@@ -701,9 +748,17 @@ class RLM:
                 ),
             )
 
+        if self.max_budget is None and self.max_tokens is None:
+            return
+
+        # The handler sees only this RLM's own calls; recursive children spend
+        # through their own handlers, so their total is folded in here or it
+        # never counts against either cap at all. Both checks read this one
+        # snapshot -- nothing between them can move it.
+        current_usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage)
+
         # Check budget
         if self.max_budget is not None:
-            current_usage = lm_handler.get_usage_summary()
             current_cost = current_usage.total_cost or 0.0
             self._cumulative_cost = current_cost
             if self._cumulative_cost > self.max_budget:
@@ -718,9 +773,8 @@ class RLM:
                     ),
                 )
 
-        # Check token limit
+        # Check token limit, over the same combined view as the budget.
         if self.max_tokens is not None:
-            current_usage = lm_handler.get_usage_summary()
             total_tokens = current_usage.total_input_tokens + current_usage.total_output_tokens
             if total_tokens > self.max_tokens:
                 self.verbose.print_limit_exceeded(
@@ -736,6 +790,33 @@ class RLM:
                         f"{total_tokens:,} of {self.max_tokens:,} tokens"
                     ),
                 )
+
+    def _reset_completion_accounting(self) -> None:
+        """Clear per-completion spend state.
+
+        ``run_round`` reuses one RLM for every run in a round, so without this
+        a run would inherit its predecessor's spend.
+        """
+        self._cumulative_cost = 0.0
+        self._subcall_usage = UsageSummary(model_usage_summaries={})
+        self._last_completion_usage = None
+
+    @property
+    def last_completion_usage(self) -> UsageSummary | None:
+        """What the most recent completion on this instance recorded, or None.
+
+        Read-only, and the only way a caller can price a completion that raised
+        instead of returning: a terminated run has no ``RLMChatCompletion`` to
+        carry its usage. Reset per completion, so it never reports the
+        predecessor's figure on a reused instance.
+        """
+        return self._last_completion_usage
+
+    def _record_subcall_usage(self, usage_summary: UsageSummary | None) -> None:
+        """Fold one child completion's usage into this completion's total."""
+        if usage_summary is None:
+            return
+        self._subcall_usage = self._subcall_usage.merged_with(usage_summary)
 
     def _get_compaction_status(self, message_history: list[dict[str, Any]]) -> tuple[int, int, int]:
         """Return (current_tokens, threshold_tokens, max_tokens) for compaction."""
@@ -897,6 +978,9 @@ class RLM:
                 end_time = time.perf_counter()
                 model_usage = client.get_last_usage()
                 usage_summary = UsageSummary(model_usage_summaries={root_model: model_usage})
+                # This branch returns before the recursive path's accounting, so
+                # a depth-capped sub-call would otherwise spend invisibly.
+                self._record_subcall_usage(usage_summary)
                 return RLMChatCompletion(
                     root_model=root_model,
                     prompt=prompt,
@@ -993,13 +1077,10 @@ class RLM:
         )
         try:
             result = child.completion(prompt, root_prompt=None)
-            # Track child's cost in parent's cumulative cost
-            if result.usage_summary and result.usage_summary.total_cost:
-                self._cumulative_cost += result.usage_summary.total_cost
+            self._record_subcall_usage(result.usage_summary)
             return result
         except BudgetExceededError as e:
-            # Propagate child's spending to parent
-            self._cumulative_cost += e.spent
+            self._record_subcall_usage(_terminated_child_usage(child, e, resolved_model))
             error_msg = f"Budget exceeded - {e}"
             return RLMChatCompletion(
                 root_model=resolved_model,
@@ -1009,6 +1090,10 @@ class RLM:
                 execution_time=time.perf_counter() - subcall_start,
             )
         except Exception as e:
+            # Token, timeout and error-threshold terminations land here. They
+            # carry no spend figure of their own, so the usage the root attached
+            # on its way out is the only record of what the child burned.
+            self._record_subcall_usage(_terminated_child_usage(child, e, resolved_model))
             error_msg = str(e)
             return RLMChatCompletion(
                 root_model=resolved_model,

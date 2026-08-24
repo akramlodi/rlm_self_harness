@@ -507,6 +507,47 @@ class TestBudget:
             assert entries[0]["cause"] == VerifierCause.RESOURCE_TERMINATED.value
             assert split_aggregate(split_path)["n_resource_terminated"] == 1
 
+    def test_a_sequential_split_records_run_worker_concurrency_of_one(self, tmp_path, monkeypatch):
+        """R5: the conditions a measurement was taken under travel with it.
+
+        A subject evaluated while siblings compete for one API key is not under
+        the same conditions as one that ran alone, so the aggregate says which
+        it was. The sequential path records 1 rather than omitting the key --
+        a reader should never have to distinguish "ran alone" from "written
+        before anyone recorded this".
+        """
+        factory = ClientFactory([final("RIGHT")] * 4)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+
+        evaluation = evaluate_subject("cand-solo", candidate_harness("solo"), config)
+
+        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            assert evaluation.summary["splits"][split_id]["run_workers"] == 1
+            split_path = split_dir(config.out_dir, config.round_index, "cand-solo", split_id)
+            assert split_aggregate(split_path)["run_workers"] == 1
+
+    def test_a_terminated_run_contributes_its_real_cost_to_the_split_total(
+        self, tmp_path, monkeypatch
+    ):
+        """The accounting correction is visible in the aggregate, not just the line.
+
+        Before it, a run terminated by anything other than the budget persisted
+        no cost and contributed nothing here, so a split full of terminations
+        read as nearly free. The published runtime total ends that.
+        """
+        factory = ClientFactory(["Scanning part one.", "Scanning part two."] * 2)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+
+        evaluate_subject("cand-priced", candidate_harness("priced"), config)
+
+        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            split_path = split_dir(config.out_dir, config.round_index, "cand-priced", split_id)
+            aggregate = split_aggregate(split_path)
+            assert aggregate["n_resource_terminated"] == 1
+            assert aggregate["total_cost"] == pytest.approx(2 * COST_PER_CALL)
+
     def test_breaker_is_cumulative_across_both_splits(self, tmp_path, monkeypatch):
         caps = replace(CAPS, candidate_budget=0.0015)
         factory = ClientFactory([final("RIGHT")] * 4)

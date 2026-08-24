@@ -32,6 +32,14 @@ when the client reports no source), and ``timestamp`` (UTC ISO-8601). Lines
 persisted before U4 lack the usage keys; readers must treat them (and
 ``cost_source``) as optional.
 
+``cost`` and the token keys cover the whole run, including spend by recursive
+sub-calls. A child RLM runs its own LM handler, so its usage reaches the parent
+only through the completion it returns; the runtime folds that in before the
+completion is persisted (``UsageSummary.merged_with``). Manifest lines written
+before that fix carry the root's own calls only -- on the live qwen round that
+was a median of 45% of a decomposing run's true cost, so a directory whose
+lines predate it must not be compared against one whose lines do not.
+
 Resource terminations are runs, not crashes. The four root-level limit
 exceptions (budget, timeout, tokens, error threshold) are caught per run and
 recorded as a failing ``Verdict`` with cause RESOURCE_TERMINATED -- the
@@ -89,6 +97,32 @@ HARNESS_FILE = "harness.json"
 INSTANCES_FILE = "instances.jsonl"
 MANIFEST_FILE = "runs.jsonl"
 TRACES_DIR = "runs"
+# Facts about how a round executed, as opposed to what it produced. A sidecar
+# rather than a per-line manifest field: stamping it on every line would break
+# the concurrent-equivalence check that a sequential and a fanned-out manifest
+# differ only in line order.
+EXECUTION_FILE = "execution.json"
+EXECUTION_FORMAT = "shrlm-round-execution/v1"
+
+# How a manifest line's usage figures were arrived at. Stamped on every line
+# written from here on, and absent on every line written before.
+#
+# v1 (implicit, absent key): a resource-terminated run persisted an empty usage
+# summary; only a budget termination salvaged a cost, from the exception's own
+# ``spent``. Every other termination read back as ``cost: null`` and was priced
+# at the per-run ceiling.
+# v2: the runtime publishes the total it recorded (``RLM.last_completion_usage``)
+# and a terminated run persists that verbatim, so it carries real calls, tokens
+# and cost. Recursive sub-call spend is folded into the root's total on every
+# run, terminated or not.
+#
+# The two are not comparable: the same run costs more under v2 than v1, which
+# moves ``total_cost``, ``mean_cost``, and the promotion rule's cost band. A
+# baseline and the candidates scored against it must be priced under one
+# version, so a directory that mixes them is refused rather than averaged.
+ACCOUNTING_VERSION = "shrlm-accounting/v2"
+ACCOUNTING_VERSION_KEY = "accounting_version"
+LEGACY_ACCOUNTING_VERSION = "shrlm-accounting/v1"
 DIGESTS_DIR = "digests"
 
 # Credentials must come from the environment, never from backend_kwargs: the
@@ -131,6 +165,12 @@ class RoundConfig:
     max_depth: int | None = None
     max_budget: float | None = None
     max_timeout: float | None = None
+    # How many of this round's runs may execute concurrently. 1 is the
+    # sequential path. Recorded in the execution sidecar so a reader of the
+    # aggregate can tell what conditions produced it -- a subject evaluated
+    # while siblings compete for one API key is not under the same conditions
+    # as one that ran alone, and that is a confound on measured cost.
+    run_workers: int = 1
 
 
 def run_id_for(instance_id: str, attempt: int) -> str:
@@ -229,6 +269,39 @@ def _require_backend_credential(config: RoundConfig) -> None:
         )
 
 
+def _write_execution_sidecar(path: Path, run_workers: int) -> None:
+    """Record the effective run-worker concurrency this round executed under.
+
+    Written on every round including the sequential one, where the value is 1,
+    so a reader never has to distinguish "ran alone" from "written before this
+    was recorded". A resume that raises the worker count rewrites it: the
+    sidecar describes execution conditions, which legitimately differ between
+    the invocation that ran the first half and the one that ran the rest, and
+    the aggregate reports the last count rather than pretending to a single
+    figure it does not have.
+    """
+    (path / EXECUTION_FILE).write_text(
+        json.dumps(
+            {"format": EXECUTION_FORMAT, "run_workers": int(run_workers)},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
+def read_run_workers(path: Path | str) -> int:
+    """The run-worker concurrency a round executed under; 1 when unrecorded.
+
+    Rounds persisted before the sidecar existed were strictly sequential, so
+    their absent value and a recorded 1 mean the same thing.
+    """
+    sidecar = Path(path) / EXECUTION_FILE
+    if not sidecar.exists():
+        return 1
+    return int(json.loads(sidecar.read_text())["run_workers"])
+
+
 def _prepare_round_dir(config: RoundConfig) -> Path:
     """Create (or verify) the round directory's identity artifacts.
 
@@ -240,6 +313,7 @@ def _prepare_round_dir(config: RoundConfig) -> Path:
     path = round_dir(config.out_dir, config.round_index)
     path.mkdir(parents=True, exist_ok=True)
     (path / TRACES_DIR).mkdir(exist_ok=True)
+    _write_execution_sidecar(path, config.run_workers)
 
     harness_path = path / HARNESS_FILE
     expected_hash = harness_hash(config.harness)
@@ -284,7 +358,37 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
             raise RoundPersistenceError(f"{manifest_path} lists run id {run_id!r} twice")
         seen.add(run_id)
         entries.append(entry)
+    _reject_mixed_accounting(manifest_path, entries)
     return entries
+
+
+def _accounting_version_of(entry: dict[str, Any]) -> str:
+    """The accounting rules one manifest line was written under.
+
+    Lines predating the marker carry no key; they are v1 by construction, and
+    saying so explicitly is what lets the mixed-version check compare them.
+    """
+    return str(entry.get(ACCOUNTING_VERSION_KEY, LEGACY_ACCOUNTING_VERSION))
+
+
+def _reject_mixed_accounting(manifest_path: Path, entries: list[dict[str, Any]]) -> None:
+    """Refuse a manifest whose lines were priced under different accounting rules.
+
+    Resuming an out-dir written before the accounting correction would leave
+    already-persisted runs at their old figures while new ones carry real
+    terminated costs, and the promotion rule would then compare a baseline and
+    a candidate priced differently. Deleting summaries does not fix it, because
+    the old manifest lines are the problem. Fail loudly here rather than let a
+    fresh-out-dir instruction be the only thing standing between the experiment
+    and a silently invalid comparison.
+    """
+    versions = {_accounting_version_of(entry) for entry in entries}
+    if len(versions) > 1:
+        raise RoundPersistenceError(
+            f"{manifest_path} mixes cost-accounting versions {sorted(versions)}. "
+            "Runs priced under different accounting rules are not comparable; "
+            "use a fresh out-dir rather than resuming this one."
+        )
 
 
 def _verify_trace(path: Path, entry: dict[str, Any]) -> Path:
@@ -316,20 +420,34 @@ def _partial_completion(
     model_name: str,
     error: Exception,
     elapsed_seconds: float,
+    published_usage: UsageSummary | None = None,
 ) -> RLMChatCompletion:
     """A trace for a run the runtime terminated at a resource limit.
 
     The trajectory is whatever the in-memory logger held when the root raised.
     Budget/token/error limits are checked before the terminating iteration is
-    logged, so that iteration is absent; see the module docstring. The
-    per-completion handler that held the run's usage is gone by the time the
-    exception surfaces, but ``BudgetExceededError`` carries the figure it
-    tripped on: that ``spent`` amount is persisted as the run's cost so
-    driver-level spend accounting (the validation stage's circuit breaker)
-    never undercounts a paid termination. The other limit exceptions carry no
-    cost, and their usage stays empty; token counts are genuinely unknown and
-    stay zero -- the manifest line's ``usage_lower_bound`` flag (see
-    ``_persist_run``) marks them as lower bounds, never as free runs.
+    logged, so that iteration is absent; see the module docstring.
+
+    ``published_usage`` is the total the runtime recorded for the run, handed
+    over by ``RLM.last_completion_usage`` before the handler holding it was
+    stopped. It is the accurate figure and covers every termination path,
+    including a limit raised inside a client, so it is persisted verbatim when
+    it records at least one call.
+
+    A published summary with no calls is not evidence of a free run -- a run
+    that hung before its request was recorded, or one that never reached the
+    runtime at all, produces exactly that -- so it is treated as nothing
+    published. In that case ``BudgetExceededError`` still carries the figure it
+    tripped on, and that ``spent`` amount is persisted so the validation
+    stage's circuit breaker never undercounts a paid termination. The other
+    limit exceptions carry no cost of their own, so usage stays empty, token
+    counts stay zero, and the breaker prices the run at its per-run ceiling.
+
+    ``usage_lower_bound`` (see ``_persist_run``) stays true for a terminated
+    run either way: a request killed in flight, a response with a deficient
+    body, and a route that reports no cost are all still genuinely unrecorded.
+    The published figure removes the large systematic loss; it does not make
+    the number exact, and the flag is what says so.
     ``elapsed_seconds`` is the driver-observed wall clock around the
     terminated completion call (zero when nothing was timed, as in
     ``persist_interrupted_run``). Some limit exceptions carry a partial
@@ -339,7 +457,9 @@ def _partial_completion(
     partial_answer = getattr(error, "partial_answer", None)
     spent = getattr(error, "spent", None)
     usage = UsageSummary(model_usage_summaries={})
-    if isinstance(spent, int | float) and not isinstance(spent, bool):
+    if published_usage is not None and published_usage.total_calls > 0:
+        usage = published_usage
+    elif isinstance(spent, int | float) and not isinstance(spent, bool):
         usage = UsageSummary(
             model_usage_summaries={
                 model_name: ModelUsageSummary(
@@ -399,6 +519,7 @@ def _persist_run(
         "output_tokens": completion.usage_summary.total_output_tokens,
         "execution_time": completion.execution_time,
         "usage_lower_bound": usage_lower_bound,
+        ACCOUNTING_VERSION_KEY: ACCOUNTING_VERSION,
         "timestamp": _utc_now(),
     }
     # Cost provenance (R7): additive-only. A client that reports where its cost
@@ -424,8 +545,10 @@ def load_manifest(out_dir: Path | str, round_index: int) -> list[dict[str, Any]]
     return _load_manifest(round_dir(out_dir, round_index))
 
 
-def persist_interrupted_run(config: RoundConfig, error: Exception) -> dict[str, Any] | None:
-    """Persist the round's first pending run as a RESOURCE_TERMINATED run.
+def persist_interrupted_run(
+    config: RoundConfig, error: Exception, *, run_id: str | None = None
+) -> dict[str, Any] | None:
+    """Persist an interrupted run as a RESOURCE_TERMINATED run.
 
     The recovery path for a limit exception that escaped ``run_round``'s
     per-run handler -- e.g. a hard wall-clock interrupt (see
@@ -436,9 +559,19 @@ def persist_interrupted_run(config: RoundConfig, error: Exception) -> dict[str, 
     exception persists, except with no trajectory (the in-memory logger was
     lost when the exception escaped).
 
+    Args:
+        run_id: The run to recover. With more than one run in flight, "the
+            first pending run" names a run that may never have executed, and
+            charging it would attribute one run's failure to another (R16), so
+            a concurrent caller always says which run it lost. Omitted, the
+            first pending run is recovered -- correct when only one run can be
+            in flight, which is the sequential path.
+
     Returns:
-        The newly appended manifest entry, or ``None`` when every configured
-        run is already persisted (nothing was in flight).
+        The newly appended manifest entry, or ``None`` when the named run (or,
+        by default, every configured run) is already persisted -- so recovering
+        a run that landed before the interrupt is a no-op, never a duplicate
+        line.
     """
     _validate_config(config)
     path = _prepare_round_dir(config)
@@ -447,8 +580,13 @@ def persist_interrupted_run(config: RoundConfig, error: Exception) -> dict[str, 
     for instance in config.instances:
         for attempt in range(1, config.attempts + 1):
             instance_id = str(instance["id"])
-            run_id = run_id_for(instance_id, attempt)
-            if run_id in done:
+            candidate_run_id = run_id_for(instance_id, attempt)
+            if run_id is not None:
+                if candidate_run_id != run_id:
+                    continue
+                if candidate_run_id in done:
+                    return None
+            elif candidate_run_id in done:
                 continue
             completion = _partial_completion(
                 prompt=instance["prompt"],
@@ -465,9 +603,140 @@ def persist_interrupted_run(config: RoundConfig, error: Exception) -> dict[str, 
                 detail=f"{type(error).__name__}: {error}",
             )
             return _persist_run(
-                path, run_id, instance_id, attempt, completion, verdict, usage_lower_bound=True
+                path,
+                candidate_run_id,
+                instance_id,
+                attempt,
+                completion,
+                verdict,
+                usage_lower_bound=True,
             )
+    if run_id is not None:
+        raise RoundPersistenceError(
+            f"cannot recover run {run_id!r}: it is not one of this round's configured runs"
+        )
     return None
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    """What executing one run produced, before anything is persisted.
+
+    ``verdict`` is None only when the caller supplied no verifier -- a run
+    child, which never verifies because the parent owns verdict construction
+    (KTD5). A terminated run always carries its own failing verdict, since that
+    one is derived from the exception rather than from the answer.
+    """
+
+    completion: RLMChatCompletion
+    verdict: Verdict | None
+    usage_lower_bound: bool
+
+
+def prepare_round(
+    config: RoundConfig,
+) -> tuple[Path, list[dict[str, Any]], list[tuple[dict[str, Any], int]]]:
+    """Validate the round, verify what is already persisted, and list what is left.
+
+    Extracted from ``run_round`` so the sequential loop and a concurrent
+    dispatcher derive their pending work identically -- the pending list is
+    instance-major, attempt-minor, and a round that stops early must stop on a
+    contiguous tail of it (R7).
+
+    Returns:
+        The round directory, every already-persisted manifest entry (each with
+        its trace re-verified against the recorded sha256), and the pending
+        ``(instance, attempt)`` pairs in dispatch order.
+    """
+    _validate_config(config)
+    path = _prepare_round_dir(config)
+
+    existing = _load_manifest(path)
+    for entry in existing:
+        _verify_trace(path, entry)
+    done = {str(entry["run_id"]) for entry in existing}
+
+    pending = [
+        (instance, attempt)
+        for instance in config.instances
+        for attempt in range(1, config.attempts + 1)
+        if run_id_for(str(instance["id"]), attempt) not in done
+    ]
+    return path, existing, pending
+
+
+def build_round_rlm(config: RoundConfig):
+    """The harnessed RLM one round's runs execute under.
+
+    The credential is demanded here rather than at validation, so a fully
+    persisted round stays resumable on a machine without the key: callers only
+    reach this once at least one run must actually execute.
+    """
+    _require_backend_credential(config)
+
+    rlm_kwargs: dict[str, Any] = {"max_iterations": config.max_iterations}
+    for name in ("max_depth", "max_budget", "max_timeout"):
+        value = getattr(config, name)
+        if value is not None:
+            rlm_kwargs[name] = value
+
+    harnessed = build_harnessed_rlm(
+        config.harness,
+        backend=config.backend,
+        backend_kwargs=dict(config.backend_kwargs),
+        **rlm_kwargs,
+    )
+    if harnessed.logger is None:  # pragma: no cover - build_harnessed_rlm always attaches one
+        raise RuntimeError("harnessed RLM carries no logger; partial traces would be lost")
+    return harnessed
+
+
+def execute_run(
+    harnessed: Any,
+    instance: dict[str, Any],
+    *,
+    model_name: str,
+    verifier: Verifier | None = None,
+) -> RunOutcome:
+    """Execute one run and describe its outcome, persisting nothing.
+
+    The single implementation of the timing window, the limit-exception
+    handling, the partial-completion path, and the lower-bound flag (KTD14):
+    the sequential loop and a run child both call this, so the two cannot drift
+    apart and the accounting correction lives in one place.
+
+    ``verifier`` is passed by the in-process caller so verification happens
+    *inside* the limit handler -- a hard deadline landing during verification
+    is then caught here and persisted as a terminated run, rather than escaping
+    the round. A run child omits it: the parent verifies (KTD5).
+    """
+    prompt = instance["prompt"]
+    run_started = time.perf_counter()
+    try:
+        run = harnessed.completion(prompt)
+        completion = run.completion
+        verdict = verifier(instance, completion.response) if verifier is not None else None
+        return RunOutcome(completion=completion, verdict=verdict, usage_lower_bound=False)
+    except ROOT_LIMIT_EXCEPTIONS as error:
+        completion = _partial_completion(
+            prompt=prompt,
+            trajectory=harnessed.logger.get_trajectory(),
+            model_name=model_name,
+            error=error,
+            elapsed_seconds=time.perf_counter() - run_started,
+            published_usage=harnessed.rlm.last_completion_usage,
+        )
+        return RunOutcome(
+            completion=completion,
+            verdict=Verdict(
+                passed=False,
+                cause=VerifierCause.RESOURCE_TERMINATED,
+                gold="",
+                produced=completion.response,
+                detail=f"{type(error).__name__}: {error}",
+            ),
+            usage_lower_bound=True,
+        )
 
 
 def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dict[str, Any]]:
@@ -497,42 +766,12 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
         RoundPersistenceError: When persisted state contradicts the
             configuration or a recorded trace no longer matches its sha256.
     """
-    _validate_config(config)
-    path = _prepare_round_dir(config)
-
-    existing = _load_manifest(path)
-    for entry in existing:
-        _verify_trace(path, entry)
-    done = {str(entry["run_id"]) for entry in existing}
-
-    pending = [
-        (instance, attempt)
-        for instance in config.instances
-        for attempt in range(1, config.attempts + 1)
-        if run_id_for(str(instance["id"]), attempt) not in done
-    ]
+    path, existing, pending = prepare_round(config)
     entries = list(existing)
     if not pending:
         return entries
 
-    # The credential is demanded only now that a run must actually execute,
-    # so a complete round stays resumable on a machine without the key.
-    _require_backend_credential(config)
-
-    rlm_kwargs: dict[str, Any] = {"max_iterations": config.max_iterations}
-    for name in ("max_depth", "max_budget", "max_timeout"):
-        value = getattr(config, name)
-        if value is not None:
-            rlm_kwargs[name] = value
-
-    harnessed = build_harnessed_rlm(
-        config.harness,
-        backend=config.backend,
-        backend_kwargs=dict(config.backend_kwargs),
-        **rlm_kwargs,
-    )
-    if harnessed.logger is None:  # pragma: no cover - build_harnessed_rlm always attaches one
-        raise RuntimeError("harnessed RLM carries no logger; partial traces would be lost")
+    harnessed = build_round_rlm(config)
     model_name = str(config.backend_kwargs.get("model_name", "unknown"))
 
     executed = 0
@@ -540,41 +779,21 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
         if stop_after is not None and executed >= stop_after:
             return entries
         instance_id = str(instance["id"])
-        run_id = run_id_for(instance_id, attempt)
-
-        prompt = instance["prompt"]
-        run_started = time.perf_counter()
-        usage_lower_bound = False
-        try:
-            run = harnessed.completion(prompt)
-            completion = run.completion
-            verdict = config.verifier(instance, completion.response)
-        except ROOT_LIMIT_EXCEPTIONS as error:
-            completion = _partial_completion(
-                prompt=prompt,
-                trajectory=harnessed.logger.get_trajectory(),
-                model_name=model_name,
-                error=error,
-                elapsed_seconds=time.perf_counter() - run_started,
-            )
-            verdict = Verdict(
-                passed=False,
-                cause=VerifierCause.RESOURCE_TERMINATED,
-                gold="",
-                produced=completion.response,
-                detail=f"{type(error).__name__}: {error}",
-            )
-            usage_lower_bound = True
-
+        outcome = execute_run(
+            harnessed,
+            instance,
+            model_name=model_name,
+            verifier=config.verifier,
+        )
         entries.append(
             _persist_run(
                 path,
-                run_id,
+                run_id_for(instance_id, attempt),
                 instance_id,
                 attempt,
-                completion,
-                verdict,
-                usage_lower_bound=usage_lower_bound,
+                outcome.completion,
+                outcome.verdict,
+                usage_lower_bound=outcome.usage_lower_bound,
             )
         )
         executed += 1

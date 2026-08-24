@@ -107,9 +107,12 @@ from shrlm.optimization.costs import (
     run_governed_round,
 )
 from shrlm.optimization.driver import (
+    ACCOUNTING_VERSION,
+    ACCOUNTING_VERSION_KEY,
     HARNESS_FILE,
     RoundConfig,
     load_round,
+    read_run_workers,
     reject_sensitive_backend_kwargs,
 )
 from shrlm.optimization.subject_worker import (
@@ -334,6 +337,10 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
     total_cost = float(sum(entry["cost"] for entry in entries if entry.get("cost") is not None))
     return {
         "harness_hash": str(envelope["hash"]),
+        # What conditions produced these numbers (R5). Concurrency is a
+        # confound on measured cost, so it is recorded beside the measurement
+        # rather than left for the reader to reconstruct.
+        "run_workers": read_run_workers(round_dir(split_path, EVAL_ROUND_INDEX)),
         "n_runs": n_runs,
         "pass_count": pass_count,
         "pass_rate": pass_count / n_runs if n_runs else None,
@@ -469,6 +476,10 @@ def evaluate_subject(
     # second full serialization here.
     summary = {
         "format": SUMMARY_FORMAT,
+        # Which cost-accounting rules produced every figure below. A summary
+        # written before the correction carries no such key, so a reader can
+        # tell the two apart without re-deriving them from the manifests.
+        ACCOUNTING_VERSION_KEY: ACCOUNTING_VERSION,
         "subject_id": subject_id,
         "harness_hash": next(iter(split_summaries.values()))["harness_hash"],
         "repetitions": config.repetitions,
