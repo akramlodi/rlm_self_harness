@@ -111,3 +111,16 @@ class TestTransportRetry:
         assert "provider down" in message
         # Nothing was recorded for the unknowable-cost calls.
         assert client.model_call_counts["test-model"] == 0
+
+
+class TestBackoffShape:
+    def test_full_jitter_exponential_with_cap(self) -> None:
+        from rlm.clients.openai import (
+            _TRANSPORT_BACKOFF_CAP_SECONDS,
+            _transport_backoff_seconds,
+        )
+
+        for attempt, ceiling in ((1, 1.0), (2, 2.0), (3, 4.0), (4, 8.0), (5, 16.0), (6, 30.0)):
+            for _ in range(20):
+                delay = _transport_backoff_seconds(attempt)
+                assert 0 <= delay <= ceiling <= _TRANSPORT_BACKOFF_CAP_SECONDS

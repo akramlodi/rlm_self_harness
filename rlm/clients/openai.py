@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 import sys
 import time
 from collections import defaultdict
@@ -37,11 +38,23 @@ def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
 # A provider can return HTTP 200 with a deficient body -- no usage block, no
 # choices, sometimes an embedded error payload (seen intermittently on
 # OpenRouter when an upstream provider fails). The OpenAI SDK retries only
-# HTTP-level failures, so the client retries these itself, bounded. A call
+# HTTP-level failures, so the client retries these itself with exponential
+# backoff and full jitter. Retries stay BOUNDED because each deficient
+# response may still be a paid call of unknown cost that the spend breaker
+# cannot see -- unbounded retries would be unbounded invisible spend. A call
 # whose cost is unknowable is never recorded; after the retries run out the
 # error is raised loudly with whatever the provider embedded.
-TRANSPORT_ATTEMPTS = 3
-_TRANSPORT_BACKOFF_SECONDS = 2.0
+TRANSPORT_ATTEMPTS = 6
+_TRANSPORT_BACKOFF_BASE_SECONDS = 1.0
+_TRANSPORT_BACKOFF_CAP_SECONDS = 30.0
+
+
+def _transport_backoff_seconds(attempt: int) -> float:
+    """Full-jitter exponential backoff: uniform in (0, min(cap, base * 2^(n-1)))."""
+    ceiling = min(
+        _TRANSPORT_BACKOFF_CAP_SECONDS, _TRANSPORT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
+    )
+    return random.uniform(0, ceiling)
 
 
 def _response_deficiency(response: Any) -> str | None:
@@ -177,7 +190,7 @@ class OpenAIClient(BaseLM):
                 f"retrying ({attempt}/{TRANSPORT_ATTEMPTS})...",
                 file=sys.stderr,
             )
-            time.sleep(_TRANSPORT_BACKOFF_SECONDS * attempt)
+            time.sleep(_transport_backoff_seconds(attempt))
         self._track_cost(response, model)
         return response.choices[0].message.content
 
@@ -220,7 +233,7 @@ class OpenAIClient(BaseLM):
                 f"retrying ({attempt}/{TRANSPORT_ATTEMPTS})...",
                 file=sys.stderr,
             )
-            await asyncio.sleep(_TRANSPORT_BACKOFF_SECONDS * attempt)
+            await asyncio.sleep(_transport_backoff_seconds(attempt))
         self._track_cost(response, model)
         return response.choices[0].message.content
 
