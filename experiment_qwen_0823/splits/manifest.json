@@ -1,0 +1,39 @@
+{
+  "environments": {
+    "graphwalks": {
+      "files": {
+        "graphwalks_long_test.jsonl": {
+          "count": 150,
+          "sha256": "f187717d7721c00390b81900af5a66548f22a8122110e70d2598eeb642dede5f"
+        },
+        "graphwalks_short_held_in.jsonl": {
+          "count": 24,
+          "sha256": "b9d4f878cf4033be29976a5f615d48759c8d713d60bc1c988312b07985e98812"
+        },
+        "graphwalks_short_held_out.jsonl": {
+          "count": 40,
+          "sha256": "4ae927b4cd54492f795be8b104cc782c0464e44d6444cc3a636cebf2c5a6c62f"
+        },
+        "graphwalks_short_test.jsonl": {
+          "count": 40,
+          "sha256": "acda769ea4f6585fb8b191ef600ab1c081dc45b4d78fd21e2dc9f2b35de40854"
+        }
+      },
+      "revision": "f338bb265735a56a79f4b0f5def722c9c3268ead"
+    },
+    "oolong_pairs": {
+      "files": {
+        "oolong_pairs_long_test.jsonl": {
+          "count": 40,
+          "sha256": "730efd0b12feb8f32f1b61b96fc469800a9f31383b30a18f1e14ceb7f4b8198d"
+        },
+        "oolong_pairs_short_test.jsonl": {
+          "count": 40,
+          "sha256": "eed311a15e05232c21bad0b6b9bd5783ba3519af5958f42340774f75d4eb07a7"
+        }
+      },
+      "revision": "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+    }
+  },
+  "sample_seed": 0
+}

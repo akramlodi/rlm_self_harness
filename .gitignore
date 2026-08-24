@@ -231,3 +231,6 @@ experiment_smoke/**/instances.jsonl
 experiment_smoke/**/digests/
 experiment_smoke/**/*.txt
 experiment_smoke/splits/*.jsonl
+# Long-context split files blow past GitHub's 100 MB limit (graphwalks_long_test
+# was 160 MB, oolong_pairs_long_test 149 MB). Short splits + manifest stay tracked.
+experiment_qwen_0823/splits/*_long_test.jsonl
