@@ -172,6 +172,10 @@ class GoldVerifier:
 # ---------------------------------------------------------------------------
 
 
+# Dotted path to ``GoldVerifier`` for child processes (KTD6).
+GOLD_VERIFIER_FACTORY = "tests.optimization.test_validation:GoldVerifier"
+
+
 def make_instances(prefix: str, n: int = 2) -> list[dict[str, Any]]:
     return [
         {"id": f"{prefix}-{i}", "prompt": f"{prefix} context {i}", "gold": "RIGHT"}
@@ -252,6 +256,24 @@ def run_full_evaluation(
 # ---------------------------------------------------------------------------
 # Layout and split validation
 # ---------------------------------------------------------------------------
+
+
+class TestEvaluationConfigWorkers:
+    def test_workers_default_to_one_without_factories(self, tmp_path):
+        config = make_config(tmp_path)
+        assert config.workers == 1
+        assert config.verifier_factory is None
+        assert config.client_factory is None
+
+    def test_workers_below_one_are_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="workers"):
+            make_config(tmp_path, workers=0)
+
+    def test_parallel_workers_demand_a_verifier_factory(self, tmp_path):
+        with pytest.raises(ValueError, match="verifier_factory"):
+            make_config(tmp_path, workers=2)
+        config = make_config(tmp_path, workers=2, verifier_factory=GOLD_VERIFIER_FACTORY)
+        assert config.workers == 2
 
 
 class TestLayoutAndSplits:

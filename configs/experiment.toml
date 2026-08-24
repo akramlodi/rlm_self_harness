@@ -199,6 +199,14 @@ loader_timeout_seconds = 120.0
 attribution_cache_path = ".cache/shrlm/attribution.jsonl"
 proposal_cache_path = ".cache/shrlm/proposals.jsonl"
 eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
+# How many validation subjects (baseline + candidates) evaluate concurrently,
+# each in its own child process (python -m shrlm.optimization.subject_worker).
+# 1 = the sequential in-process path. Wall clock and peak request rate only:
+# every subject keeps its own breaker, hard deadline, and resumable manifests,
+# and worst-case spend is unchanged (same run count, same caps), so this key is
+# identity-exempt and may change under an existing out-dir. The full profile's
+# 5 subjects (1 + k) make 5 the useful ceiling.
+validation_workers = 1
 
 # -----------------------------------------------------------------------------
 # Smoke profile: scale counts only. Any key here outside the loader's

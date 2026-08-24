@@ -172,6 +172,17 @@ class EvaluationConfig:
     ``repetitions`` becomes each round's ``attempts``; ``caps`` are the
     experiment-owned limits every subject runs under (merged tighten-only
     against its S6 policy by ``governed_limits``).
+
+    ``workers`` caps how many subjects ``evaluate_validation_round`` evaluates
+    concurrently. ``1`` is the sequential in-process path. Above ``1`` every
+    subject runs in its own child process (``shrlm.optimization.subject_worker``),
+    which rebuilds the verifier from ``verifier_factory`` -- a dotted path
+    (``pkg.mod:attr`` or ``pkg.mod.attr``) to a zero-argument callable
+    returning a ``Verifier`` -- so the factory is mandatory once ``workers > 1``.
+    ``client_factory`` is the test-only seam for those children: a dotted path
+    to a callable taking one JSON-safe ``dict`` and returning a ``get_client``
+    replacement, plus per-subject-id args; a child installs it on
+    ``rlm.core.rlm.get_client`` before evaluating (KTD9).
     """
 
     splits: ValidationSplits
@@ -182,10 +193,23 @@ class EvaluationConfig:
     repetitions: int = 1
     backend: str = "openrouter"
     backend_kwargs: dict[str, Any] = field(default_factory=dict)
+    workers: int = 1
+    verifier_factory: str | None = None
+    client_factory: tuple[str, dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if self.repetitions < 1:
             raise ValueError(f"repetitions must be >= 1, got {self.repetitions}")
+        if isinstance(self.workers, bool) or not isinstance(self.workers, int):
+            raise ValueError(f"workers must be an integer, got {self.workers!r}")
+        if self.workers < 1:
+            raise ValueError(f"workers must be >= 1, got {self.workers}")
+        if self.workers > 1 and not self.verifier_factory:
+            raise ValueError(
+                f"workers={self.workers} evaluates subjects in child processes, which rebuild "
+                "the verifier from verifier_factory; pass the dotted path of a zero-argument "
+                "verifier factory (or keep workers=1 for the in-process path)"
+            )
 
 
 def subject_dir(out_dir: Path | str, round_index: int, subject_id: str) -> Path:
