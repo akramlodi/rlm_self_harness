@@ -746,10 +746,15 @@ index bba5c26..761e926 100644
          return UsageSummary(model_usage_summaries=model_summaries)
  
 diff --git a/rlm/core/rlm.py b/rlm/core/rlm.py
-index 43a5819..84eaed1 100644
+index 43a5819..c358177 100644
 --- a/rlm/core/rlm.py
 +++ b/rlm/core/rlm.py
-@@ -6,16 +6,26 @@ from typing import Any
+@@ -1,3 +1,4 @@
++import threading
+ import time
+ from collections.abc import Callable
+ from contextlib import contextmanager
+@@ -6,16 +7,26 @@ from typing import Any
  from rlm.clients import BaseLM, get_client
  from rlm.core.lm_handler import LMHandler
  from rlm.core.types import (
@@ -777,7 +782,7 @@ index 43a5819..84eaed1 100644
  from rlm.logger import RLMLogger, VerbosePrinter
  from rlm.utils.exceptions import (
      BudgetExceededError,
-@@ -25,8 +35,11 @@ from rlm.utils.exceptions import (
+@@ -25,8 +36,11 @@ from rlm.utils.exceptions import (
      TokenLimitExceededError,
  )
  from rlm.utils.parsing import (
@@ -789,7 +794,7 @@ index 43a5819..84eaed1 100644
  )
  from rlm.utils.prompts import (
      RLM_SYSTEM_PROMPT,
-@@ -38,6 +51,43 @@ from rlm.utils.rlm_utils import filter_sensitive_keys
+@@ -38,6 +52,43 @@ from rlm.utils.rlm_utils import filter_sensitive_keys
  from rlm.utils.token_utils import count_tokens, get_context_limit
  
  
@@ -802,7 +807,7 @@ index 43a5819..84eaed1 100644
 +    return None
 +
 +
-+def _terminated_child_usage(child: Any, error: Exception, model: str) -> UsageSummary | None:
++def _terminated_child_usage(child: "RLM", error: Exception, model: str) -> UsageSummary | None:
 +    """What a child RLM spent before an exception ended it, or None.
 +
 +    A child that raised returns no completion, so its usage reaches the parent
@@ -833,7 +838,7 @@ index 43a5819..84eaed1 100644
  class RLM:
      """
      Recursive Language Model class that the user instantiates and runs on their tasks.
-@@ -78,6 +128,11 @@ class RLM:
+@@ -78,6 +129,11 @@ class RLM:
          sub_sampling_args: dict[str, Any] | None = None,
          orchestrator: bool = True,
          user_prologue: str | None = None,
@@ -845,7 +850,7 @@ index 43a5819..84eaed1 100644
      ):
          """
          Args:
-@@ -112,6 +167,24 @@ class RLM:
+@@ -112,6 +168,24 @@ class RLM:
              on_subcall_complete: Callback fired when a child RLM completes. Args: (depth, model, duration, error_or_none).
              on_iteration_start: Callback fired when an iteration starts. Args: (depth, iteration_num).
              on_iteration_complete: Callback fired when an iteration completes. Args: (depth, iteration_num, duration).
@@ -870,7 +875,7 @@ index 43a5819..84eaed1 100644
          """
          # Sampling args plumbed into backend_kwargs / other_backend_kwargs
          # before the clients are constructed, so they reach the chat-completions
-@@ -173,6 +246,11 @@ class RLM:
+@@ -173,6 +247,11 @@ class RLM:
          self.max_errors = max_errors
          self.system_prompt = custom_system_prompt if custom_system_prompt else RLM_SYSTEM_PROMPT
          self.orchestrator = orchestrator
@@ -882,7 +887,7 @@ index 43a5819..84eaed1 100644
          # Optional user-prologue message inserted between the metadata user
          # message and the iter-0 turn prompt. Mirrors RLMTrainEnv's
          # ``user_prologue`` so canonical inference can match envs that
-@@ -189,6 +267,13 @@ class RLM:
+@@ -189,6 +268,19 @@ class RLM:
  
          # Tracking (cumulative across all calls including children)
          self._cumulative_cost: float = 0.0
@@ -890,13 +895,19 @@ index 43a5819..84eaed1 100644
 +        # therefore invisible to this RLM's handler aggregate. Reset per
 +        # completion alongside ``_cumulative_cost``.
 +        self._subcall_usage: UsageSummary = UsageSummary(model_usage_summaries={})
++        # ``rlm_query_batched`` dispatches sub-calls across a thread pool, so the
++        # accumulators below are written from several threads at once. Every read
++        # and write of them takes this lock: an unguarded read-modify-write
++        # silently loses a child's spend, which is the exact failure this
++        # accounting exists to prevent.
++        self._subcall_usage_lock = threading.Lock()
 +        # What the last completion recorded, published by the completion context
 +        # on its way out (see ``last_completion_usage``). None until one runs.
 +        self._last_completion_usage: UsageSummary | None = None
          self._consecutive_errors: int = 0
          self._last_error: str | None = None
          self._best_partial_answer: str | None = None
-@@ -217,6 +302,9 @@ class RLM:
+@@ -217,6 +309,9 @@ class RLM:
                  if environment_kwargs
                  else {},
                  other_backends=other_backends,
@@ -906,7 +917,7 @@ index 43a5819..84eaed1 100644
              )
              if self.logger:
                  self.logger.log_metadata(metadata)
-@@ -285,6 +373,9 @@ class RLM:
+@@ -285,6 +380,9 @@ class RLM:
              if self.compaction and self.environment_type in ("local", "docker"):
                  env_kwargs["compaction"] = True
              env_kwargs["max_concurrent_subcalls"] = self.max_concurrent_subcalls
@@ -916,7 +927,7 @@ index 43a5819..84eaed1 100644
              environment: BaseEnv = get_environment(self.environment_type, env_kwargs)
  
              if self.persistent:
-@@ -293,6 +384,16 @@ class RLM:
+@@ -293,6 +391,16 @@ class RLM:
          try:
              yield lm_handler, environment
          finally:
@@ -928,12 +939,12 @@ index 43a5819..84eaed1 100644
 +            # checks. A terminated completion returns nothing, so without this
 +            # its usage would be unrecoverable and the run would read as free.
 +            self._last_completion_usage = lm_handler.get_usage_summary().merged_with(
-+                self._subcall_usage
++                self._subcall_usage_snapshot()
 +            )
              lm_handler.stop()
              if not self.persistent and hasattr(environment, "cleanup"):
                  environment.cleanup()
-@@ -313,6 +414,7 @@ class RLM:
+@@ -313,6 +421,7 @@ class RLM:
              custom_tools=self.custom_tools,
              root_prompt=root_prompt,
              orchestrator=self.orchestrator,
@@ -941,7 +952,7 @@ index 43a5819..84eaed1 100644
          )
          if self.user_prologue:
              message_history.append({"role": "user", "content": self.user_prologue})
-@@ -346,6 +448,7 @@ class RLM:
+@@ -346,6 +455,7 @@ class RLM:
          self._consecutive_errors = 0
          self._last_error = None
          self._best_partial_answer = None
@@ -949,7 +960,7 @@ index 43a5819..84eaed1 100644
          # If we're at max depth, the RLM is an LM, so we fallback to the regular LM.
          if self.depth >= self.max_depth:
              return self._fallback_answer(prompt)
-@@ -401,6 +504,8 @@ class RLM:
+@@ -401,6 +511,8 @@ class RLM:
                          )
                      )
  
@@ -958,7 +969,7 @@ index 43a5819..84eaed1 100644
                      iteration: RLMIteration = self._completion_turn(
                          prompt=message_history,
                          lm_handler=lm_handler,
-@@ -414,16 +519,48 @@ class RLM:
+@@ -414,16 +526,48 @@ class RLM:
                      # ``answer["content"]`` and setting ``answer["ready"] = True``.
                      # Each environment surfaces that on ``REPLResult.final_answer``.
                      final_answer = None
@@ -1007,16 +1018,18 @@ index 43a5819..84eaed1 100644
                      # If logger is used, log the iteration.
                      if self.logger:
                          self.logger.log(iteration)
-@@ -433,7 +570,7 @@ class RLM:
+@@ -433,7 +577,9 @@ class RLM:
  
                      if final_answer is not None:
                          time_end = time.perf_counter()
 -                        usage = lm_handler.get_usage_summary()
-+                        usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage)
++                        usage = lm_handler.get_usage_summary().merged_with(
++                            self._subcall_usage_snapshot()
++                        )
                          self.verbose.print_final_answer(final_answer)
                          self.verbose.print_summary(i + 1, time_end - time_start, usage.to_dict())
  
-@@ -452,11 +589,12 @@ class RLM:
+@@ -452,11 +598,12 @@ class RLM:
                              metadata=self.logger.get_trajectory() if self.logger else None,
                          )
  
@@ -1032,16 +1045,16 @@ index 43a5819..84eaed1 100644
                      if self.compaction and hasattr(environment, "append_compaction_entry"):
                          environment.append_compaction_entry(new_messages)
  
-@@ -470,7 +608,7 @@ class RLM:
+@@ -470,7 +617,7 @@ class RLM:
              # Default behavior: we run out of iterations, provide one final answer
              time_end = time.perf_counter()
              final_answer = self._default_answer(message_history, lm_handler)
 -            usage = lm_handler.get_usage_summary()
-+            usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage)
++            usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage_snapshot())
              self.verbose.print_final_answer(final_answer)
              self.verbose.print_summary(self.max_iterations, time_end - time_start, usage.to_dict())
  
-@@ -489,6 +627,68 @@ class RLM:
+@@ -489,6 +636,68 @@ class RLM:
                  metadata=self.logger.get_trajectory() if self.logger else None,
              )
  
@@ -1110,7 +1123,7 @@ index 43a5819..84eaed1 100644
      def _check_timeout(self, iteration: int, time_start: float) -> None:
          """Raise TimeoutExceededError if the timeout has been exceeded."""
          if self.max_timeout is None:
-@@ -548,9 +748,17 @@ class RLM:
+@@ -548,9 +757,17 @@ class RLM:
                  ),
              )
  
@@ -1121,7 +1134,7 @@ index 43a5819..84eaed1 100644
 +        # through their own handlers, so their total is folded in here or it
 +        # never counts against either cap at all. Both checks read this one
 +        # snapshot -- nothing between them can move it.
-+        current_usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage)
++        current_usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage_snapshot())
 +
          # Check budget
          if self.max_budget is not None:
@@ -1129,7 +1142,7 @@ index 43a5819..84eaed1 100644
              current_cost = current_usage.total_cost or 0.0
              self._cumulative_cost = current_cost
              if self._cumulative_cost > self.max_budget:
-@@ -565,9 +773,8 @@ class RLM:
+@@ -565,9 +782,8 @@ class RLM:
                      ),
                  )
  
@@ -1140,7 +1153,7 @@ index 43a5819..84eaed1 100644
              total_tokens = current_usage.total_input_tokens + current_usage.total_output_tokens
              if total_tokens > self.max_tokens:
                  self.verbose.print_limit_exceeded(
-@@ -584,6 +791,33 @@ class RLM:
+@@ -584,6 +800,48 @@ class RLM:
                      ),
                  )
  
@@ -1150,9 +1163,10 @@ index 43a5819..84eaed1 100644
 +        ``run_round`` reuses one RLM for every run in a round, so without this
 +        a run would inherit its predecessor's spend.
 +        """
-+        self._cumulative_cost = 0.0
-+        self._subcall_usage = UsageSummary(model_usage_summaries={})
-+        self._last_completion_usage = None
++        with self._subcall_usage_lock:
++            self._cumulative_cost = 0.0
++            self._subcall_usage = UsageSummary(model_usage_summaries={})
++            self._last_completion_usage = None
 +
 +    @property
 +    def last_completion_usage(self) -> UsageSummary | None:
@@ -1166,15 +1180,29 @@ index 43a5819..84eaed1 100644
 +        return self._last_completion_usage
 +
 +    def _record_subcall_usage(self, usage_summary: UsageSummary | None) -> None:
-+        """Fold one child completion's usage into this completion's total."""
++        """Fold one child completion's usage into this completion's total.
++
++        ``_cumulative_cost`` is advanced here as well as in the budget check.
++        The check only runs between iterations, but a single iteration can spawn
++        many children through ``rlm_query_batched``; without this each of them
++        would compute its own headroom from the same stale figure and the last
++        one could be handed a budget its siblings had already spent.
++        """
 +        if usage_summary is None:
 +            return
-+        self._subcall_usage = self._subcall_usage.merged_with(usage_summary)
++        with self._subcall_usage_lock:
++            self._subcall_usage = self._subcall_usage.merged_with(usage_summary)
++            self._cumulative_cost += usage_summary.total_cost or 0.0
++
++    def _subcall_usage_snapshot(self) -> UsageSummary:
++        """This completion's sub-call total, read consistently."""
++        with self._subcall_usage_lock:
++            return self._subcall_usage
 +
      def _get_compaction_status(self, message_history: list[dict[str, Any]]) -> tuple[int, int, int]:
          """Return (current_tokens, threshold_tokens, max_tokens) for compaction."""
          model_name = (
-@@ -744,6 +978,9 @@ class RLM:
+@@ -744,6 +1002,9 @@ class RLM:
                  end_time = time.perf_counter()
                  model_usage = client.get_last_usage()
                  usage_summary = UsageSummary(model_usage_summaries={root_model: model_usage})
@@ -1184,7 +1212,7 @@ index 43a5819..84eaed1 100644
                  return RLMChatCompletion(
                      root_model=root_model,
                      prompt=prompt,
-@@ -818,6 +1055,12 @@ class RLM:
+@@ -818,6 +1079,12 @@ class RLM:
              max_tokens=self.max_tokens,
              max_errors=self.max_errors,
              custom_system_prompt=self.system_prompt,
@@ -1197,7 +1225,7 @@ index 43a5819..84eaed1 100644
              other_backends=self.other_backends,
              other_backend_kwargs=self.other_backend_kwargs,
              # Give child its own logger so its trajectory is captured in metadata
-@@ -834,13 +1077,10 @@ class RLM:
+@@ -834,13 +1101,10 @@ class RLM:
          )
          try:
              result = child.completion(prompt, root_prompt=None)
@@ -1213,7 +1241,7 @@ index 43a5819..84eaed1 100644
              error_msg = f"Budget exceeded - {e}"
              return RLMChatCompletion(
                  root_model=resolved_model,
-@@ -850,6 +1090,10 @@ class RLM:
+@@ -850,6 +1114,10 @@ class RLM:
                  execution_time=time.perf_counter() - subcall_start,
              )
          except Exception as e:
