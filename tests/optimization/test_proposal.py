@@ -363,6 +363,25 @@ def test_render_prompt_passing_and_history_blocks():
     assert "cost too high" in rendered
 
 
+def test_render_prompt_truncates_huge_verifier_evidence_but_never_the_pattern():
+    """Verifier evidence quotes unbounded model output; the PROMPT bounds it
+    at render time (the $5 proof's ungoverned char cap depends on it) while
+    the pattern dict -- what a persisted bundle holds -- keeps the full text."""
+    import copy
+
+    huge = "x" * 50_000
+    pattern = copy.deepcopy(PATTERN_TEXT)
+    pattern["verifier_evidence"] = [f"a: produced {huge}"]
+
+    rendered, addressable = render_prompt([pattern], serialize_harness(H0), (), (), k=4)
+    assert [index for index, _ in addressable] == [0]
+    assert huge not in rendered
+    assert "[truncated" in rendered
+    assert "x" * 2001 not in rendered
+    # Persisted evidence stays complete: only the prompt string was bounded.
+    assert huge in pattern["verifier_evidence"][0]
+
+
 # ---------------------------------------------------------------------------
 # load_passing_behaviors
 # ---------------------------------------------------------------------------

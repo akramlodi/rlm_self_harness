@@ -29,9 +29,10 @@ Spend control (KTD7; hard ceiling $5, CUMULATIVE across every live tier)
     The $5.00 ceiling covers everything the provider-switch plan spends live,
     added together: the U4 pytest live tier (one client check plus a minimal
     driver round, reserved below as ``PYTEST_LIVE_RESERVE_USD``), this
-    script's probe (its two calls are counted inside the ungoverned class),
-    and the full ``--live`` run. ``check_budget_arithmetic`` proves the whole
-    sum before a cent is spent. Every paid call falls in exactly one of two
+    script's standalone ``--probe`` invocation (reserved below as the
+    standalone probe reserve; the ``--live`` run's own probe calls are
+    counted inside the ungoverned class), and the full ``--live`` run.
+    ``check_budget_arithmetic`` proves the whole sum before a cent is spent. Every paid call falls in exactly one of two
     classes; the ceiling adds both, then the reserve.
 
     Governed calls -- every run executed under a ``CandidateSpendBreaker``:
@@ -63,12 +64,15 @@ Spend control (KTD7; hard ceiling $5, CUMULATIVE across every live tier)
                                     $0.60/1M in + 4,096 x $3.00/1M out
         ungoverned ceiling  29 x $0.0417792 = $1.2116
 
-    Reserved for the U4 pytest live tier (client check ~$0.01 + minimal
-    driver round <$0.50, rounded up):
+    Reserved on top: one standalone ``--probe`` invocation (the usage block
+    says to run it FIRST, so its two calls are spent in ADDITION to the
+    ``--live`` invocation's own probe counted above), and the U4 pytest live
+    tier (client check ~$0.01 + minimal driver round <$0.50, rounded up):
 
+        standalone probe    2 x $0.0417792 = $0.0836
         U4 reserve          $0.60
 
-        cumulative ceiling  $3.08 + $1.2116 + $0.60 = $4.8916 < $5.00
+        cumulative ceiling  $3.08 + $1.2116 + $0.0836 + $0.60 = $4.9752 < $5.00
 
     Why ``UNGOVERNED_INPUT_TOKENS`` and not the full context window: at the
     Kimi list price a full 262,144-token input bound prices 29 calls at $4.92
@@ -77,12 +81,17 @@ Spend control (KTD7; hard ceiling $5, CUMULATIVE across every live tier)
     is a constant in this file (~30 chars); an attribution prompt is the
     attributor system prompt (~6.5k chars) plus a digest hard-capped at
     12,000 budget chars plus a sub-call table bounded at 40 rows of two
-    200-char previews (~18.4k chars) plus a ~2k header, ~39k chars total; a
-    proposal prompt is a fixed template plus char-capped skill surfaces
+    200-char previews (~18.4k chars) plus a ~2k header plus, on a re-ask,
+    the prior rejection truncated at prompt-render time to at most 2,000
+    chars (``attribution.PROMPT_RENDER_MAX_CHARS``; rejections embed
+    model-authored values, so the raw text is unbounded), ~41k chars total;
+    a proposal prompt is a fixed template plus char-capped skill surfaces
     (SKILL_TOTAL_MAX_CHARS = 16,000) plus at most n_in x m pattern blocks,
-    well under that. A BPE token never encodes less than one character, so
-    49,152 tokens (>25% above the largest constructed prompt's char cap) is a
-    true bound on the input side, and ``max_tokens`` bounds the output.
+    each block's quoted verifier evidence capped at 2,000 chars and its
+    current-surface value at 4,000 chars at render time, well under that. A
+    BPE token never encodes less than one character, so 49,152 tokens (~20%
+    above the largest constructed prompt's ~41k char cap) is a true bound on
+    the input side, and ``max_tokens`` bounds the output.
     ``caps.max_budget`` is deliberately NOT the per-call bound here: at $0.20
     x 29 calls it would claim $5.80 of the ceiling on its own.
 
@@ -241,9 +250,10 @@ PROBE_CALLS = 2
 
 # Input-token bound for one ungoverned completion. Every ungoverned prompt is
 # constructed mechanically and char-capped by this repo (see the module
-# docstring's accounting: the largest, an attribution prompt, tops out ~39k
-# chars), and one BPE token never encodes less than one character, so this is
-# a true bound with >25% margin -- unlike the model's full 262,144-token
+# docstring's accounting: the largest, an attribution re-ask prompt, tops out
+# ~41k chars including its <=2,000-char truncated rejection), and one BPE
+# token never encodes less than one character, so this is
+# a true bound with ~20% margin -- unlike the model's full 262,144-token
 # context window, which at Kimi list prices would price the ungoverned class
 # alone past the $5 ceiling. The output side is bounded by
 # decoding.max_output_tokens (sent as ``max_tokens``).
@@ -367,21 +377,32 @@ def spend_ceiling(config: ExperimentConfig, conditions: int = len(DEFAULT_CONDIT
     return governed + ungoverned
 
 
+def standalone_probe_reserve_usd(config: ExperimentConfig) -> float:
+    """Reserved for one standalone ``--probe`` invocation (run FIRST, per the
+    usage block): its ``PROBE_CALLS`` calls are a separate spend from the
+    ``--live`` invocation's own probe (already inside ``spend_ceiling``), so
+    the cumulative proof reserves them explicitly -- 2 x the per-call
+    ungoverned bound, ~$0.0836 at the shipped pricing."""
+    return PROBE_CALLS * ungoverned_call_ceiling(config)
+
+
 def check_budget_arithmetic(config: ExperimentConfig) -> float:
     """Refuse to spend anything unless the worst case stays under the ceiling.
 
     The proven figure is CUMULATIVE across the plan's live tiers: this
-    invocation's worst case (``spend_ceiling``) plus the U4 pytest live
-    tier's reserve, against the one $5 ceiling. Returns the cumulative
-    ceiling.
+    invocation's worst case (``spend_ceiling``) plus the standalone probe
+    reserve plus the U4 pytest live tier's reserve, against the one $5
+    ceiling. Returns the cumulative ceiling.
     """
-    cumulative = spend_ceiling(config) + PYTEST_LIVE_RESERVE_USD
+    probe_reserve = standalone_probe_reserve_usd(config)
+    cumulative = spend_ceiling(config) + probe_reserve + PYTEST_LIVE_RESERVE_USD
     if cumulative >= SPEND_CEILING_USD:
         raise SmokeError(
             f"the configured budgets admit up to ${cumulative:.2f} cumulatively "
             f"({breaker_count(config)} breakers x (${config.caps.candidate_budget} + "
             f"${config.caps.max_budget}) + {ungoverned_call_count(config)} ungoverned call(s) "
-            f"x ${ungoverned_call_ceiling(config):.4f} + the ${PYTEST_LIVE_RESERVE_USD:.2f} "
+            f"x ${ungoverned_call_ceiling(config):.4f} + the ${probe_reserve:.4f} standalone "
+            f"probe reserve + the ${PYTEST_LIVE_RESERVE_USD:.2f} "
             f"U4 pytest live reserve), which does not clear the ${SPEND_CEILING_USD} "
             "ceiling; lower caps.candidate_budget (raising caps.max_budget is what the KTD6 "
             "long runs need, so cut the cumulative budget first) before running live."
@@ -664,22 +685,32 @@ def check_stage_coverage(out_dir: Path) -> dict[str, int]:
     """All three model roles measurably ran: stages metered, artifacts present.
 
     A green smoke must prove "all three roles on the configured backend" with
-    artifacts, not config claims: every stage in ``REQUIRED_STAGES`` has at
-    least one ``stage_usage.jsonl`` record with positive input AND output
-    tokens (the attributor and proposer records are the attribution/proposal
-    roles' usage), the mining bundle exists with a non-empty pattern list (the
-    attribution stage's artifact), and the proposals marker exists (the
-    proposal stage's artifact). A live round whose mining runs all pass never
-    reaches attribution or proposal -- that fails here loudly, by stage name:
-    a smoke that exercised only one role certifies nothing about the others.
+    artifacts, not config claims: every stage in ``REQUIRED_STAGES`` appears
+    in ``stage_usage.jsonl`` AND has at least one work item with positive
+    input AND output tokens (the attributor and proposer records are the
+    attribution/proposal roles' usage), the mining bundle exists with a
+    non-empty pattern list (the attribution stage's artifact), and the
+    proposals marker exists (the proposal stage's artifact). A live round
+    whose mining runs all pass never reaches attribution or proposal -- that
+    fails here loudly, by stage name: a smoke that exercised only one role
+    certifies nothing about the others.
+
+    An INDIVIDUAL zero-token work item is tolerated: a 0/0 aggregate is
+    legitimately reachable (a test set skipped after a shared breaker
+    tripped, or a work id whose runs were all RESOURCE_TERMINATED rebuilds
+    zero counts). Only a stage with NO positive work item at all -- no
+    stage-level evidence of hitting the backend -- fails.
 
     Returns:
-        Stage name -> number of usage records, for the caller to print.
+        Stage name -> number of usage records (one per persisted
+        ``stage_usage.jsonl`` line, not distinct work items), for the caller
+        to print.
     """
     records = read_usage_records(out_dir / STAGE_USAGE_FILE).records
     stage_of = {record["stage_work_id"]: str(record["stage"]) for record in records}
     counts: dict[str, int] = {}
-    for stage in stage_of.values():
+    for record in records:
+        stage = str(record["stage"])
         counts[stage] = counts.get(stage, 0) + 1
     missing = sorted(set(REQUIRED_STAGES) - set(counts))
     if missing:
@@ -688,13 +719,18 @@ def check_stage_coverage(out_dir: Path) -> dict[str, int]:
             "must drive every stage (a round whose mining runs all pass never exercises "
             "the attributor or proposer -- re-run in a fresh --out-dir)."
         )
-    for work_id, usage in read_stage_usage(out_dir / STAGE_USAGE_FILE).items():
-        if usage.input_tokens <= 0 or usage.output_tokens <= 0:
-            raise SmokeError(
-                f"stage work {work_id!r} ({stage_of.get(work_id)}) metered no tokens "
-                f"({usage.input_tokens} in / {usage.output_tokens} out); its role never "
-                "measurably hit the backend."
-            )
+    stages_with_tokens = {
+        stage_of[work_id]
+        for work_id, usage in read_stage_usage(out_dir / STAGE_USAGE_FILE).items()
+        if usage.input_tokens > 0 and usage.output_tokens > 0
+    }
+    tokenless = sorted(set(counts) - stages_with_tokens)
+    if tokenless:
+        raise SmokeError(
+            f"stage(s) {tokenless} metered no work item with positive input AND output "
+            "tokens; the stage's role never measurably hit the backend (individual "
+            "zero-token work items are tolerated, a fully tokenless stage is not)."
+        )
     round_path = experiment_round_dir(out_dir, 1)
     bundle_path = round_path / "mining" / "round_01" / "bundle.json"
     if not bundle_path.exists():
@@ -826,7 +862,9 @@ def run_live(config: ExperimentConfig, out_dir: Path) -> int:
         f"cumulative worst case ${ceiling:.2f} = {breaker_count(config)} breaker(s) x "
         f"${config.caps.candidate_budget + config.caps.max_budget:.2f} + "
         f"{ungoverned_call_count(config)} ungoverned call(s) x "
-        f"${ungoverned_call_ceiling(config):.4f} + ${PYTEST_LIVE_RESERVE_USD:.2f} U4 reserve "
+        f"${ungoverned_call_ceiling(config):.4f} + "
+        f"${standalone_probe_reserve_usd(config):.4f} standalone probe reserve + "
+        f"${PYTEST_LIVE_RESERVE_USD:.2f} U4 reserve "
         f"(ceiling ${SPEND_CEILING_USD:.2f})."
     )
 
@@ -949,16 +987,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    from shrlm.experiment.live_gates import pricing_attestation_mismatch
+    # The pricing attestation guards the cost-SYNTHESIZING backend only: an
+    # azure_foundry role bills against the configured [pricing.list_price], so
+    # the attested portal rate must match it; openrouter roles report provider
+    # costs directly and demand no attestation (the R4/KTD9 fallback).
+    if any(getattr(config.backends, role).backend == "azure_foundry" for role in CLIENT_ROLES):
+        from shrlm.experiment.live_gates import pricing_attestation_mismatch
 
-    pricing_reason = pricing_attestation_mismatch(
-        os.getenv("SHRLM_VERIFIED_PRICING"),
-        config.pricing.list_price.input_per_million,
-        config.pricing.list_price.output_per_million,
-    )
-    if pricing_reason is not None:
-        print(f"Declining to run: {pricing_reason}. Nothing was spent.")
-        return 1
+        pricing_reason = pricing_attestation_mismatch(
+            os.getenv("SHRLM_VERIFIED_PRICING"),
+            config.pricing.list_price.input_per_million,
+            config.pricing.list_price.output_per_million,
+        )
+        if pricing_reason is not None:
+            print(f"Declining to run: {pricing_reason}. Nothing was spent.")
+            return 1
 
     if args.probe and not args.live:
         return run_probe(config)

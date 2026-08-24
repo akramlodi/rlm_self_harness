@@ -29,13 +29,13 @@ from typing import Any
 import pytest
 
 from shrlm.experiment.live_gates import (
-    LIVE_CREDENTIAL_KEYS,
     LIVE_FLAG,
     live_skip_reason,
     pricing_attestation_mismatch,
 )
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.driver import (
+    _BACKEND_ENV_KEYS,
     RoundConfig,
     instance_lines,
     round_dir,
@@ -46,6 +46,10 @@ from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
 from shrlm.rlm_harness import H0
 from tests.optimization.test_driver import read_manifest
+
+# The shipped smoke profile's runner backend is azure_foundry, so these are
+# the credentials the default (config-read) gate path demands.
+AZURE_CREDENTIAL_KEYS = _BACKEND_ENV_KEYS["azure_foundry"]
 
 _LIVE_SKIP = live_skip_reason()
 
@@ -278,7 +282,7 @@ class TestLiveGateOffline:
         assert live_skip_reason(env) is None
 
     def test_credentials_alone_never_spend(self):
-        env = {key: "sentinel" for key in LIVE_CREDENTIAL_KEYS}
+        env = {key: "sentinel" for key in AZURE_CREDENTIAL_KEYS}
         reason = live_skip_reason(env)
         assert reason is not None and LIVE_FLAG in reason
 
@@ -288,10 +292,33 @@ class TestLiveGateOffline:
         assert reason is not None and LIVE_FLAG in reason
 
     def test_each_missing_credential_is_named(self):
-        for missing in LIVE_CREDENTIAL_KEYS:
+        for missing in AZURE_CREDENTIAL_KEYS:
             env = {key: value for key, value in self.ALL_GATES_OPEN.items() if key != missing}
             reason = live_skip_reason(env)
             assert reason is not None and missing in reason
+
+    def test_openrouter_backend_requires_only_its_own_credential(self):
+        """Backend-conditionality (R4/KTD9 fallback): an openrouter runner is
+        gated on OPENROUTER_API_KEY and the flag, and NO pricing attestation
+        is demanded (openrouter reports provider costs directly)."""
+        reason = live_skip_reason({}, runner_backend="openrouter")
+        assert reason is not None and "OPENROUTER_API_KEY" in reason
+        assert "AZURE" not in reason
+
+        env = {"OPENROUTER_API_KEY": "sentinel"}
+        reason = live_skip_reason(env, runner_backend="openrouter")
+        assert reason is not None and LIVE_FLAG in reason
+
+        env[LIVE_FLAG] = "1"
+        assert live_skip_reason(env, runner_backend="openrouter") is None
+
+    def test_ci_wins_before_any_backend_is_considered(self):
+        reason = live_skip_reason({"CI": "true"}, runner_backend="openrouter")
+        assert reason is not None and "CI" in reason
+
+    def test_unknown_runner_backend_fails_loud(self):
+        with pytest.raises(ValueError, match="bogus_backend"):
+            live_skip_reason({}, runner_backend="bogus_backend")
 
     def test_reason_never_echoes_credential_values(self):
         env = {

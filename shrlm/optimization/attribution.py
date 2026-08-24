@@ -53,6 +53,23 @@ DEFAULT_TRANSPORT_BACKOFF_SECONDS = 0.5
 
 JSON_BLOCK_PATTERN = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
+# Ceiling on one model-authored value interpolated into a prompt at RENDER
+# time. Rejection texts (and, in proposal.py, verifier evidence) embed
+# unbounded model output, and the $5 budget proof in
+# examples/experiment_smoke.py assumes every ungoverned prompt stays under its
+# char cap -- so the raw value is bounded in the prompt STRING only, never in
+# persisted attempts, bundles, or evidence.
+PROMPT_RENDER_MAX_CHARS = 2_000
+
+
+def truncate_for_prompt(text: str, limit: int = PROMPT_RENDER_MAX_CHARS) -> str:
+    """Bound model-authored text at prompt-render time; persisted records
+    keep the full text."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"... [truncated {len(text) - limit} chars]"
+
+
 # Exceptions the transport retry loop must NOT swallow. These are
 # deterministic programming/contract errors -- a client called with the wrong
 # arguments, a missing attribute, a malformed message dict -- so retrying them
@@ -450,9 +467,11 @@ class LLMAttributor:
         for attempt in range(self.config.max_attempts):
             user = digest.text
             if rejection:
+                # Prompt-render-time bound only: the persisted attempt keeps
+                # the full violation text below.
                 user = (
                     f"{digest.text}\n\n"
-                    f"Your previous response was rejected: {rejection}\n"
+                    f"Your previous response was rejected: {truncate_for_prompt(rejection)}\n"
                     f"Respond again, correcting only that problem."
                 )
 

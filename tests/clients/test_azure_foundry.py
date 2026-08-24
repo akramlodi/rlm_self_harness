@@ -79,7 +79,6 @@ class TestConstructionValidation:
         import rlm.clients.azure_foundry as mod
 
         monkeypatch.delenv("AZURE_API_KEY", raising=False)
-        monkeypatch.setattr(mod, "DEFAULT_AZURE_API_KEY", None)
         monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
         with pytest.raises(ValueError, match="AZURE_API_KEY"):
             mod.AzureFoundryClient(model_name="m", pricing=dict(VALID_PRICING))
@@ -89,7 +88,6 @@ class TestConstructionValidation:
 
         monkeypatch.setenv("AZURE_API_KEY", "test-key")
         monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
-        monkeypatch.setattr(mod, "DEFAULT_AZURE_FOUNDRY_ENDPOINT", None)
         with pytest.raises(ValueError, match="AZURE_FOUNDRY_ENDPOINT"):
             mod.AzureFoundryClient(model_name="m", pricing=dict(VALID_PRICING))
 
@@ -130,7 +128,6 @@ class TestConstructionValidation:
         import rlm.clients.azure_foundry as mod
 
         monkeypatch.delenv("AZURE_API_KEY", raising=False)
-        monkeypatch.setattr(mod, "DEFAULT_AZURE_API_KEY", None)
         monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
         with pytest.raises(ValueError) as exc_info:
             mod.AzureFoundryClient(model_name="m", pricing=dict(VALID_PRICING))
@@ -276,23 +273,88 @@ class TestFailClosedUsage:
 
 
 class TestResponseValidation:
-    def test_content_filter_raises(self, monkeypatch):
-        response = _make_response(finish_reason="content_filter", content=None)
+    def test_content_filter_raises_and_still_records_the_spend(self, monkeypatch):
+        """A content-filtered response is still a billed response: it must
+        raise AND its tokens/synthesized cost must already be accumulated, so
+        the spend breaker sees the paid spend the sub-call path swallows."""
+        response = _make_response(
+            prompt_tokens=1000, completion_tokens=500, finish_reason="content_filter", content=None
+        )
         client = _make_client(monkeypatch, response=response)
         with pytest.raises(RuntimeError, match="content filter"):
             client.completion("hi")
 
-    def test_empty_content_raises(self, monkeypatch):
+        expected = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
+        summary = client.get_usage_summary()
+        assert summary.total_cost == pytest.approx(expected)
+        model_summary = summary.model_usage_summaries["kimi-k2.5"]
+        assert model_summary.total_input_tokens == 1000
+        assert model_summary.total_output_tokens == 500
+        assert model_summary.cost_source == "synthesized"
+
+    def test_empty_content_raises_and_still_records_the_spend(self, monkeypatch):
         response = _make_response(content="")
         client = _make_client(monkeypatch, response=response)
         with pytest.raises(RuntimeError, match="empty"):
             client.completion("hi")
+        summary = client.get_usage_summary()
+        assert summary.total_cost is not None and summary.total_cost > 0
 
     def test_none_content_raises(self, monkeypatch):
         response = _make_response(content=None)
         client = _make_client(monkeypatch, response=response)
         with pytest.raises(RuntimeError, match="empty"):
             client.completion("hi")
+
+
+class TestThreadSafety:
+    def test_concurrent_completions_accumulate_exactly_the_sum(self, monkeypatch):
+        """Two threads on ONE shared client (the lm_handler ThreadingTCPServer
+        shape) must accumulate exactly the sum of their own synthesized costs:
+        synthesis reads last_prompt_tokens/last_completion_tokens, so without
+        the cost lock an interleaving cross-bills one thread's tokens."""
+        import threading
+
+        responses = {
+            "thread-a": _make_response(prompt_tokens=1000, completion_tokens=500),
+            "thread-b": _make_response(prompt_tokens=7000, completion_tokens=900),
+        }
+
+        def create(**kwargs):
+            return responses[kwargs["messages"][0]["content"]]
+
+        client = _make_client(monkeypatch)
+        client.client.chat.completions.create = create
+
+        calls_per_thread = 50
+        errors: list[BaseException] = []
+
+        def run(prompt: str) -> None:
+            try:
+                for _ in range(calls_per_thread):
+                    client.completion(prompt)
+            except BaseException as exc:  # pragma: no cover - failure reporting
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=run, args=("thread-a",)),
+            threading.Thread(target=run, args=("thread-b",)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not errors
+
+        cost_a = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
+        cost_b = 7000 * 0.60 / 1e6 + 900 * 3.00 / 1e6
+        expected = calls_per_thread * (cost_a + cost_b)
+        assert client.model_costs["kimi-k2.5"] == pytest.approx(expected)
+        summary = client.get_usage_summary()
+        assert summary.total_cost == pytest.approx(expected)
+        assert summary.model_usage_summaries["kimi-k2.5"].total_input_tokens == (
+            calls_per_thread * (1000 + 7000)
+        )
 
 
 class TestSamplingArgsFidelity:

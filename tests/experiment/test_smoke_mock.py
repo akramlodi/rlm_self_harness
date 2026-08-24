@@ -501,6 +501,51 @@ class TestLiveSmokeStructuralChecks:
         with pytest.raises(experiment_smoke.SmokeError, match="proposal"):
             experiment_smoke.check_stage_coverage(out_dir)
 
+    def test_stage_coverage_tolerates_an_individual_zero_token_work_item(
+        self, smoke: SmokeRun, tmp_path
+    ):
+        """A 0/0 work id is legitimately reachable (a test set skipped after a
+        shared breaker tripped; an all-RESOURCE_TERMINATED work id rebuilds
+        zero counts) and must not fail a stage that also shows positive-token
+        evidence of hitting the backend."""
+        out_dir = tmp_path / "exp"
+        shutil.copytree(smoke.out_dir, out_dir)
+        usage_path = out_dir / STAGE_USAGE_FILE
+        zero_record = {
+            "stage": "eval",
+            "stage_work_id": "eval__breaker-skipped-set",
+            "attempt_index": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": 0.0,
+            "wall_seconds": 0.0,
+            "cache_hits": 0,
+            "lower_bound": False,
+        }
+        with usage_path.open("a") as handle:
+            handle.write(json.dumps(zero_record) + "\n")
+
+        counts = experiment_smoke.check_stage_coverage(out_dir)
+        assert counts["eval"] >= 2  # the real record(s) plus the 0/0 work id
+
+    def test_stage_coverage_fails_a_stage_with_only_zero_token_work(
+        self, smoke: SmokeRun, tmp_path
+    ):
+        """No work id with positive input AND output tokens means the stage's
+        role never measurably hit the backend."""
+        out_dir = tmp_path / "exp"
+        shutil.copytree(smoke.out_dir, out_dir)
+        usage_path = out_dir / STAGE_USAGE_FILE
+        records = [json.loads(line) for line in usage_path.read_text().splitlines() if line.strip()]
+        for record in records:
+            if record["stage"] == "proposal":
+                record["input_tokens"] = 0
+                record["output_tokens"] = 0
+        usage_path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+        with pytest.raises(experiment_smoke.SmokeError, match="proposal"):
+            experiment_smoke.check_stage_coverage(out_dir)
+
     def test_long_coverage_and_measured_spend_read_the_smoke_artifacts(self, smoke: SmokeRun):
         coverage = experiment_smoke.long_run_coverage(smoke.config, smoke.out_dir)
         assert set(coverage) == {"graphwalks", "oolong_pairs"}
@@ -631,13 +676,21 @@ class TestLiveSmokeGuards:
 
         assert experiment_smoke.spend_ceiling(config) == pytest.approx(governed + ungoverned)
         assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.2916, abs=1e-4)
-        # The proven figure is cumulative: this invocation plus the $0.60 U4
-        # pytest live reserve, under the one $5 ceiling.
+        # The standalone --probe invocation (run FIRST) spends two more
+        # ungoverned calls on top of the --live run's own probe.
+        probe_reserve = experiment_smoke.standalone_probe_reserve_usd(config)
+        assert probe_reserve == pytest.approx(2 * experiment_smoke.ungoverned_call_ceiling(config))
+        assert probe_reserve == pytest.approx(0.0836, abs=1e-4)
+        # The proven figure is cumulative: this invocation plus the standalone
+        # probe reserve plus the $0.60 U4 pytest live reserve, under the one
+        # $5 ceiling.
         cumulative = (
-            experiment_smoke.spend_ceiling(config) + experiment_smoke.PYTEST_LIVE_RESERVE_USD
+            experiment_smoke.spend_ceiling(config)
+            + probe_reserve
+            + experiment_smoke.PYTEST_LIVE_RESERVE_USD
         )
         assert cumulative < experiment_smoke.SPEND_CEILING_USD
-        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.8916, abs=1e-4)
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.9752, abs=1e-4)
 
     def test_the_ceiling_scales_with_the_round_count(self):
         """Every per-round breaker and per-round LM call is armed t times."""
@@ -665,7 +718,9 @@ class TestLiveSmokeGuards:
         )
         assert experiment_smoke.spend_ceiling(config) > governed_only
         assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(
-            experiment_smoke.spend_ceiling(config) + experiment_smoke.PYTEST_LIVE_RESERVE_USD
+            experiment_smoke.spend_ceiling(config)
+            + experiment_smoke.standalone_probe_reserve_usd(config)
+            + experiment_smoke.PYTEST_LIVE_RESERVE_USD
         )
 
     def test_live_profile_keeps_the_smoke_semantics_and_documents_its_shrinks(self):

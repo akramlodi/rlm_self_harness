@@ -2,27 +2,36 @@
 
 Live tests run ONLY when every one of these holds:
 
-* ``AZURE_API_KEY`` is set (non-empty),
-* ``AZURE_FOUNDRY_ENDPOINT`` is set (non-empty),
+* every credential environment variable the CONFIGURED runner backend reads
+  (``shrlm.optimization.driver._BACKEND_ENV_KEYS``; for ``azure_foundry``
+  that is ``AZURE_API_KEY`` and ``AZURE_FOUNDRY_ENDPOINT``, for
+  ``openrouter`` it is ``OPENROUTER_API_KEY``) is set (non-empty),
 * ``SHRLM_RUN_LIVE`` equals exactly ``"1"``,
-* ``SHRLM_VERIFIED_PRICING`` attests the deployment's verified rates and
-  matches the configured ``[pricing.list_price]`` (format
+* when -- and only when -- the runner backend is ``azure_foundry`` (the
+  cost-SYNTHESIZING backend), ``SHRLM_VERIFIED_PRICING`` attests the
+  deployment's verified rates and matches the configured
+  ``[pricing.list_price]`` (format
   ``"<input_per_million>/<output_per_million>"``, e.g. ``"0.60/3.00"``) --
   the plan's pricing-verification prerequisite: the $5 budget proof is
   meaningless when the configured rates differ from what Azure actually
-  bills, so the user checks the portal and exports the figure they saw,
+  bills, so the user checks the portal and exports the figure they saw. An
+  openrouter runner reports provider costs directly, so no attestation is
+  demanded of it (the promised R4/KTD9 fallback stays runnable),
 
 AND they are skipped whenever a ``CI`` environment variable is present with
 any non-empty value -- CI wins over everything, including a fully
-credentialed environment with the opt-in flag set. Credential presence alone
-must never spend: the explicit ``SHRLM_RUN_LIVE=1`` opt-in is what separates
-"this machine could pay" from "this invocation is allowed to pay".
+credentialed environment with the opt-in flag set, and is checked before the
+config is ever read. Credential presence alone must never spend: the
+explicit ``SHRLM_RUN_LIVE=1`` opt-in is what separates "this machine could
+pay" from "this invocation is allowed to pay".
 
 The helper takes the environment as an argument so the decision itself is
-unit-testable offline (see ``tests/experiment/test_smoke_live.py``); the
-live test modules evaluate it once at import time against ``os.environ`` and
-hang a ``pytest.mark.skipif`` off the result, so ``-rs`` output names the
-exact missing gate.
+unit-testable offline (see ``tests/experiment/test_smoke_live.py``), and an
+optional ``runner_backend`` override (None means "read the smoke profile's
+configured runner backend") so the backend-conditional branches are testable
+without rewriting the shipped config. The live test modules evaluate it once
+at import time against ``os.environ`` and hang a ``pytest.mark.skipif`` off
+the result, so ``-rs`` output names the exact missing gate.
 """
 
 import os
@@ -31,7 +40,6 @@ from collections.abc import Mapping
 from dotenv import load_dotenv
 
 LIVE_FLAG = "SHRLM_RUN_LIVE"
-LIVE_CREDENTIAL_KEYS = ("AZURE_API_KEY", "AZURE_FOUNDRY_ENDPOINT")
 VERIFIED_PRICING_KEY = "SHRLM_VERIFIED_PRICING"
 
 
@@ -73,13 +81,21 @@ def pricing_attestation_mismatch(
     return None
 
 
-def live_skip_reason(env: Mapping[str, str] | None = None) -> str | None:
+def live_skip_reason(
+    env: Mapping[str, str] | None = None, runner_backend: str | None = None
+) -> str | None:
     """The reason the live tier must be skipped, or ``None`` when it may run.
 
     Checks are ordered so the returned reason names the decisive gate: CI
-    first (it overrides everything else, KTD8), then the credentials (each
-    missing variable named, values never echoed), then the explicit opt-in
-    flag.
+    first (it overrides everything else, KTD8, and wins before any config
+    read), then the configured runner backend's credentials (each missing
+    variable named, values never echoed), then the explicit opt-in flag, then
+    -- for the cost-synthesizing ``azure_foundry`` backend only -- the pricing
+    attestation.
+
+    ``runner_backend`` of None means "read the smoke profile's configured
+    runner backend"; offline tests pass a backend name to exercise the
+    conditional branches directly.
 
     When reading the real environment, ``load_dotenv()`` runs first so the
     gate sees exactly what the clients see (every ``rlm.clients`` module
@@ -93,7 +109,21 @@ def live_skip_reason(env: Mapping[str, str] | None = None) -> str | None:
         env = os.environ
     if env.get("CI"):
         return "CI is set: live (paid) tests never run in CI, even fully credentialed (KTD8)"
-    missing = [key for key in LIVE_CREDENTIAL_KEYS if not env.get(key)]
+
+    from shrlm.experiment.config import load_config
+    from shrlm.optimization.driver import _BACKEND_ENV_KEYS
+
+    config = None
+    if runner_backend is None:
+        config = load_config(profile="smoke")
+        runner_backend = config.backends.runner.backend
+    if runner_backend not in _BACKEND_ENV_KEYS:
+        raise ValueError(
+            f"runner backend {runner_backend!r} has no credential mapping in "
+            f"_BACKEND_ENV_KEYS ({sorted(_BACKEND_ENV_KEYS)}); refusing to gate a "
+            "live spend against unknown credentials."
+        )
+    missing = [key for key in _BACKEND_ENV_KEYS[runner_backend] if not env.get(key)]
     if missing:
         return f"live gate not met: {', '.join(missing)} not set (KTD8)"
     if env.get(LIVE_FLAG) != "1":
@@ -101,9 +131,13 @@ def live_skip_reason(env: Mapping[str, str] | None = None) -> str | None:
             f"live gate not met: {LIVE_FLAG} != '1' -- credential presence alone "
             "must never spend (KTD8)"
         )
-    from shrlm.experiment.config import load_config
-
-    pricing = load_config(profile="smoke").pricing.list_price
+    if runner_backend != "azure_foundry":
+        # Only the cost-synthesizing backend needs the pricing attestation;
+        # openrouter reports provider costs directly.
+        return None
+    if config is None:
+        config = load_config(profile="smoke")
+    pricing = config.pricing.list_price
     return pricing_attestation_mismatch(
         env.get(VERIFIED_PRICING_KEY),
         pricing.input_per_million,

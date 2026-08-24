@@ -212,6 +212,37 @@ def test_absent_openrouter_table_loads_when_roles_use_azure_foundry(tmp_path: Pa
     assert config.backends.runner.backend == "azure_foundry"
 
 
+def all_openrouter_roles_text() -> str:
+    """Shipped text with every role switched to the openrouter backend."""
+    text = shipped_text()
+    for role in ("runner", "attributor", "proposer"):
+        text = text.replace(
+            f'[backends.{role}]\nbackend = "azure_foundry"\nmodel = "Kimi-K2.5"',
+            f'[backends.{role}]\nbackend = "openrouter"\n'
+            'model = "qwen/qwen3-30b-a3b-instruct-2507"',
+        )
+    return text
+
+
+def test_absent_azure_foundry_table_with_azure_roles_raises(tmp_path: Path) -> None:
+    """Thinking mode must be declared, never defaulted: an azure_foundry role
+    with no [backends.azure_foundry] table would silently send no
+    chat_template_kwargs and let Kimi default to thinking mode."""
+    path = write_config(tmp_path, drop_table(shipped_text(), "backends.azure_foundry"))
+    with pytest.raises(ValueError, match=r"backends\.azure_foundry") as excinfo:
+        load_config(path=path)
+    message = str(excinfo.value)
+    assert "thinking" in message
+    assert "runner" in message and "attributor" in message and "proposer" in message
+
+
+def test_absent_azure_foundry_table_with_all_openrouter_roles_loads(tmp_path: Path) -> None:
+    text = drop_table(all_openrouter_roles_text(), "backends.azure_foundry")
+    config = load_config(path=write_config(tmp_path, text))
+    assert config.backends.azure_foundry is None
+    assert config.backends.runner.backend == "openrouter"
+
+
 def openrouter_runner_text() -> str:
     """Shipped text with the runner role switched to the openrouter backend."""
     return shipped_text().replace(

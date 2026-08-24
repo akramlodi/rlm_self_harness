@@ -268,7 +268,10 @@ class AzureFoundryConfig:
 class BackendsConfig:
     """Role endpoints plus optional per-provider tables (KTD5): a provider
     table may be absent when no role uses that backend, and an openrouter role
-    with no ``[backends.openrouter]`` table simply sends no provider routing."""
+    with no ``[backends.openrouter]`` table simply sends no provider routing.
+    An azure_foundry role, by contrast, REQUIRES the
+    ``[backends.azure_foundry]`` table: thinking mode is declared, never
+    defaulted, so ``load_config`` refuses the absent table."""
 
     runner: EndpointConfig
     attributor: EndpointConfig
@@ -500,6 +503,17 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         azure_foundry = build_section(
             AzureFoundryConfig, backends_table["azure_foundry"], "backends.azure_foundry"
         )
+    else:
+        azure_roles = sorted(
+            role for role in CLIENT_ROLES if backends_table[role].get("backend") == "azure_foundry"
+        )
+        if azure_roles:
+            raise ValueError(
+                f"missing [backends.azure_foundry] table: role(s) {azure_roles} use the "
+                "azure_foundry backend, whose thinking mode must be declared explicitly "
+                "(an absent table would send no chat_template_kwargs, silently defaulting "
+                "Kimi to thinking mode -- ~10x output cost and <think> markup in outputs)."
+            )
 
     pricing_table = raw["pricing"]
     check_keys(pricing_table, ("promo", "list_price"), "pricing")
