@@ -204,6 +204,10 @@ ROLE_HELD_IN = "held_in"
 ROLE_HELD_OUT = "held_out"
 
 
+# The default verifier's dotted path, handed to validation subject workers.
+GRAPHWALKS_VERIFIER_FACTORY = "shrlm.environments.graphwalks:GraphWalksVerifier"
+
+
 class ExperimentPersistenceError(ExperimentError):
     """Persisted experiment state contradicts itself or the configuration."""
 
@@ -506,6 +510,8 @@ class _Experiment:
     attributor_lm: BaseLM | None
     proposer_lm: BaseLM | None
     loaders: dict[str, LoaderFn] | None
+    verifier_factory: str | None = None
+    client_factory: tuple[str, dict[str, Any]] | None = None
     caps: ValidationCaps = field(init=False)
     pconfig: PromotionConfig = field(init=False)
     splits: ValidationSplits = field(init=False)
@@ -517,6 +523,29 @@ class _Experiment:
         self.pconfig = promotion_config(self.config)
         self.usage_path = self.out_dir / STAGE_USAGE_FILE
         self.prior_history = []
+        self.verifier_factory = self._resolve_verifier_factory()
+
+    def _resolve_verifier_factory(self) -> str | None:
+        """The dotted path validation children rebuild the verifier from (KTD6).
+
+        Only a parallel validation stage (``operational.validation_workers > 1``)
+        needs one. The default ``GraphWalksVerifier`` maps to its own path; an
+        injected verifier must come with an explicit ``verifier_factory``, and
+        the mismatch is a configuration error raised here -- before any
+        directory is created or any run executes -- not deep inside stage 4.
+        """
+        if self.verifier_factory is not None:
+            return self.verifier_factory
+        if self.config.operational.validation_workers <= 1:
+            return None
+        if type(self.verifier) is GraphWalksVerifier:
+            return GRAPHWALKS_VERIFIER_FACTORY
+        raise ValueError(
+            f"operational.validation_workers={self.config.operational.validation_workers} "
+            "evaluates validation subjects in child processes, which rebuild the verifier "
+            f"from a dotted path; the injected verifier {type(self.verifier).__name__} has "
+            "none. Pass run_experiment(verifier_factory=...) or set validation_workers = 1."
+        )
 
     # -- lazily built caller-held clients (only when their stage must run) --
 
@@ -833,7 +862,13 @@ class _Experiment:
     def _validate(
         self, round_path: Path, round_index: int, incumbent: Harness, proposals_dir: Path
     ) -> ValidationRound:
-        """Stage 4: one whole ``validate_round``, idempotent over its directory."""
+        """Stage 4: one whole ``validate_round``, idempotent over its directory.
+
+        With ``operational.validation_workers > 1`` the subjects evaluate in
+        child processes; the meter still charges the delta of every persisted
+        validation manifest under the round (``_validation_usage`` re-reads the
+        disk), so child-persisted runs are metered exactly like in-process ones.
+        """
         validation_parent = round_path / VALIDATION_DIR
         validation_round_path = round_dir(validation_parent, round_index)
         eval_config = EvaluationConfig(
@@ -841,6 +876,8 @@ class _Experiment:
             verifier=self.verifier,
             out_dir=validation_parent,
             round_index=round_index,
+            verifier_factory=self.verifier_factory,
+            client_factory=self.client_factory,
             **evaluation_config_kwargs(self.config),
         )
         with StageMeter(
@@ -926,9 +963,11 @@ def _post_round_analyses(
     )
     from shrlm.experiment.incumbent_quality import TOOL_NAME as TOOL_NAME_INCUMBENT_QUALITY
     from shrlm.experiment.incumbent_quality import run_incumbent_quality
-    from shrlm.experiment.pattern_frequency_diff import MIN_DIFFABLE_BUNDLES
+    from shrlm.experiment.pattern_frequency_diff import (
+        MIN_DIFFABLE_BUNDLES,
+        run_pattern_frequency_diff,
+    )
     from shrlm.experiment.pattern_frequency_diff import TOOL_NAME as TOOL_NAME_DIFF
-    from shrlm.experiment.pattern_frequency_diff import run_pattern_frequency_diff
     from shrlm.experiment.rounds import discover_rounds
     from shrlm.experiment.surface_activity import TOOL_NAME as TOOL_NAME_SURFACE_ACTIVITY
     from shrlm.experiment.surface_activity import run_surface_activity
@@ -1106,6 +1145,8 @@ def run_experiment(
     attributor_lm: BaseLM | None = None,
     proposer_lm: BaseLM | None = None,
     loaders: dict[str, LoaderFn] | None = None,
+    verifier_factory: str | None = None,
+    client_factory: tuple[str, dict[str, Any]] | None = None,
 ) -> ExperimentResult:
     """Run (or resume) one whole optimization experiment and freeze the result (R7).
 
@@ -1135,6 +1176,14 @@ def run_experiment(
         proposer_lm: The proposer client; same default mechanism.
         loaders: Optional environment-loader overrides for
             ``materialize_splits`` (tests inject offline loaders here).
+        verifier_factory: Dotted path of a zero-argument callable returning
+            ``verifier``, for the child processes a parallel validation stage
+            (``operational.validation_workers > 1``) spawns. Defaults to the
+            ``GraphWalksVerifier`` path when ``verifier`` is the default; an
+            injected verifier needs it whenever workers exceed 1.
+        client_factory: Test-only seam for those children: a dotted path plus
+            per-subject-id args the child installs on ``rlm.core.rlm.get_client``
+            (see ``shrlm.optimization.subject_worker``).
 
     Returns:
         The ``ExperimentResult`` with every round's outcome and the frozen
@@ -1156,6 +1205,8 @@ def run_experiment(
         attributor_lm=attributor_lm,
         proposer_lm=proposer_lm,
         loaders=loaders,
+        verifier_factory=verifier_factory,
+        client_factory=client_factory,
     )
     return experiment.run()
 
