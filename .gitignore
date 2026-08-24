@@ -221,17 +221,6 @@ docs/internals/
 CLAUDE.md
 
 
-# Live experiment run artifacts (examples/experiment_smoke.py --live, and any
-# other --out-dir). A trace body embeds the full prompt it ran on, so one long
-# run is tens of MB; the 39-run smoke came to 362 MB. The summaries that anyone
-# actually reads -- report.json, report_full_profile.md, stage_usage.jsonl,
-# eval_summary.json, config.json -- are a few KB and stay tracked.
-experiment_smoke/**/runs/
-experiment_smoke/**/instances.jsonl
-experiment_smoke/**/digests/
-experiment_smoke/**/*.txt
-experiment_smoke/splits/*.jsonl
-# Long-context split files blow past GitHub's 100 MB limit (graphwalks_long_test
-# was 160 MB, oolong_pairs_long_test 149 MB). Short splits + manifest stay tracked.
-experiment_*/splits/*.jsonl
+# Experiment output directories stay local-only. Traces embed full prompts (one
+# long run is tens of MB) and split files can exceed GitHub's 100 MB limit.
 experiment_*/
