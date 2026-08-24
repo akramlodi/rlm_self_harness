@@ -207,7 +207,7 @@ eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (
 # identity-exempt and may change under an existing out-dir. Above 1 each subject
 # directory also carries worker_request.json, worker.log, and worker_result.json. The full profile's
 # 5 subjects (1 + k) make 5 the useful ceiling.
-validation_workers = 1
+validation_workers = 5
 
 # -----------------------------------------------------------------------------
 # Smoke profile: scale counts only. Any key here outside the loader's
