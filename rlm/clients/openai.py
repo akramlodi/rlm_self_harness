@@ -49,11 +49,39 @@ TRANSPORT_ATTEMPTS = 6
 _TRANSPORT_BACKOFF_BASE_SECONDS = 1.0
 _TRANSPORT_BACKOFF_CAP_SECONDS = 30.0
 
+# Transient refusals -- 429s, 5xx provider errors, connection drops -- are
+# different from a deficient 200: the provider did not complete the call, so
+# nothing was executed and (unlike a deficient body) nothing of unknown cost
+# was plausibly spent -- retrying is safe. The budget here is therefore more
+# generous than the transport retries above, sized for shared-pool upstream
+# throttling and flapping providers (observed on OpenRouter stealth models:
+# both 429 storms and intermittent 502s, where the SDK's own 2 internal
+# retries are nowhere near enough). Still bounded: a client embedded in a
+# host with no deadline of its own must not spin forever against a provider
+# that is down.
+RATE_LIMIT_ATTEMPTS = 20
+_RATE_LIMIT_BACKOFF_BASE_SECONDS = 2.0
+_RATE_LIMIT_BACKOFF_CAP_SECONDS = 60.0
+# openai.APIConnectionError also covers APITimeoutError (its subclass).
+_TRANSIENT_API_ERRORS = (
+    openai.RateLimitError,
+    openai.InternalServerError,
+    openai.APIConnectionError,
+)
+
 
 def _transport_backoff_seconds(attempt: int) -> float:
     """Full-jitter exponential backoff: uniform in (0, min(cap, base * 2^(n-1)))."""
     ceiling = min(
         _TRANSPORT_BACKOFF_CAP_SECONDS, _TRANSPORT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
+    )
+    return random.uniform(0, ceiling)
+
+
+def _rate_limit_backoff_seconds(attempt: int) -> float:
+    """Full-jitter exponential backoff for 429s, on the rate-limit constants."""
+    ceiling = min(
+        _RATE_LIMIT_BACKOFF_CAP_SECONDS, _RATE_LIMIT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
     )
     return random.uniform(0, ceiling)
 
@@ -205,7 +233,9 @@ class OpenAIClient(BaseLM):
             extra_body["usage"] = {"include": True}
         extra_body = _merge_extra_body(extra_body, self.sampling_args)
 
-        for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
+        transport_attempt = 0
+        rate_limit_attempt = 0
+        while True:
             try:
                 response = self.client.chat.completions.create(
                     model=model,
@@ -218,20 +248,32 @@ class OpenAIClient(BaseLM):
                 if overflow is not None:
                     raise overflow from exc
                 raise
+            except _TRANSIENT_API_ERRORS as exc:
+                rate_limit_attempt += 1
+                if rate_limit_attempt >= RATE_LIMIT_ATTEMPTS:
+                    raise
+                print(
+                    f"Transient API error ({type(exc).__name__}); "
+                    f"retrying ({rate_limit_attempt}/{RATE_LIMIT_ATTEMPTS})...",
+                    file=sys.stderr,
+                )
+                time.sleep(_rate_limit_backoff_seconds(rate_limit_attempt))
+                continue
             deficiency = _response_deficiency(response)
             if deficiency is None:
                 break
-            if attempt == TRANSPORT_ATTEMPTS:
+            transport_attempt += 1
+            if transport_attempt >= TRANSPORT_ATTEMPTS:
                 raise ValueError(
                     f"Deficient completion response after {TRANSPORT_ATTEMPTS} attempts "
                     f"({deficiency}). Tracking tokens not possible."
                 )
             print(
                 f"Deficient completion response ({deficiency}); "
-                f"retrying ({attempt}/{TRANSPORT_ATTEMPTS})...",
+                f"retrying ({transport_attempt}/{TRANSPORT_ATTEMPTS})...",
                 file=sys.stderr,
             )
-            time.sleep(_transport_backoff_seconds(attempt))
+            time.sleep(_transport_backoff_seconds(transport_attempt))
         self._track_cost(response, model)
         # content is None when the model emitted no visible text -- reasoning
         # models can spend the whole max_tokens budget on hidden reasoning
@@ -258,7 +300,9 @@ class OpenAIClient(BaseLM):
             extra_body["usage"] = {"include": True}
         extra_body = _merge_extra_body(extra_body, self.sampling_args)
 
-        for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
+        transport_attempt = 0
+        rate_limit_attempt = 0
+        while True:
             try:
                 response = await self.async_client.chat.completions.create(
                     model=model,
@@ -271,20 +315,32 @@ class OpenAIClient(BaseLM):
                 if overflow is not None:
                     raise overflow from exc
                 raise
+            except _TRANSIENT_API_ERRORS as exc:
+                rate_limit_attempt += 1
+                if rate_limit_attempt >= RATE_LIMIT_ATTEMPTS:
+                    raise
+                print(
+                    f"Transient API error ({type(exc).__name__}); "
+                    f"retrying ({rate_limit_attempt}/{RATE_LIMIT_ATTEMPTS})...",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(_rate_limit_backoff_seconds(rate_limit_attempt))
+                continue
             deficiency = _response_deficiency(response)
             if deficiency is None:
                 break
-            if attempt == TRANSPORT_ATTEMPTS:
+            transport_attempt += 1
+            if transport_attempt >= TRANSPORT_ATTEMPTS:
                 raise ValueError(
                     f"Deficient completion response after {TRANSPORT_ATTEMPTS} attempts "
                     f"({deficiency}). Tracking tokens not possible."
                 )
             print(
                 f"Deficient completion response ({deficiency}); "
-                f"retrying ({attempt}/{TRANSPORT_ATTEMPTS})...",
+                f"retrying ({transport_attempt}/{TRANSPORT_ATTEMPTS})...",
                 file=sys.stderr,
             )
-            await asyncio.sleep(_transport_backoff_seconds(attempt))
+            await asyncio.sleep(_transport_backoff_seconds(transport_attempt))
         self._track_cost(response, model)
         # Same None-content coercion as the sync path above.
         return response.choices[0].message.content or ""

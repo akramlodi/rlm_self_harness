@@ -124,10 +124,21 @@ PROMPT_VERSION = "1.4.0"
 # judged under different rules. 1.3.0: the S10 merge is dry-run against the
 # incumbent at validation (over-cap and unknown-removal edits are re-asked) and
 # the removal form is accepted. 1.2.0: S10 is one named skill, merged by name.
-VALIDATOR_VERSION = "1.3.0"
+# 1.3.1: strict-parse failures get a bounded unescaped-quote repair pass
+# (_repair_unescaped_quotes) before rejection -- responses judged invalid
+# under 1.3.0 may parse under it, so cached rejections must not replay.
+VALIDATOR_VERSION = "1.3.1"
 
 DEFAULT_K = 4
-DEFAULT_MAX_ATTEMPTS = 3
+# Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
+# one round (an out-of-surface pattern_index, then malformed JSON), and each
+# exhaustion aborts the whole experiment. Rejected attempts are cached, so a
+# resume replays them verbatim -- the attempt budget is the only re-sampling
+# a run ever gets. max_attempts is in the proposer's cache-key material, so
+# this change orphans rows cached under 3 rather than replaying them. A
+# compliant proposer rarely needs attempt 2; extra headroom only spends when
+# validation already failed.
+DEFAULT_MAX_ATTEMPTS = 8
 DEFAULT_TRANSPORT_RETRIES = 3
 DEFAULT_TRANSPORT_BACKOFF_SECONDS = 0.5
 
@@ -608,12 +619,53 @@ def prompt_sha256(rendered_prompt: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _repair_unescaped_quotes(candidate: str, first_error: json.JSONDecodeError) -> Any | None:
+    """Parse JSON whose string values hold unescaped quotes or raw control
+    characters (newlines/tabs), or None when no clean repair exists.
+
+    Observed on stealth/ox-alpha (2026-08-24): proposals quoting harness
+    identifiers verbatim (``answer["ready"] = True``) inside ``new_text``
+    break strict JSON at the same character on every sample, so re-asking
+    cannot converge. The decoder stops the string at the stray quote and then
+    fails expecting a delimiter; escaping the quote that prematurely closed
+    the string (the one just before the error position) and re-parsing fixes
+    exactly one such quote per pass. Bounded, monotic passes: each escape
+    must move the error position forward, anything else aborts. The repaired
+    text preserves every literal character the model wrote -- only the
+    escaping changes.
+    """
+    control_escapes = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+    error = first_error
+    for _ in range(200):
+        if error.msg.startswith("Invalid control character"):
+            escape = control_escapes.get(candidate[error.pos])
+            if escape is None:
+                return None
+            repaired = candidate[: error.pos] + escape + candidate[error.pos + 1 :]
+        elif error.msg.startswith("Expecting"):
+            close = candidate.rfind('"', 0, error.pos)
+            if close <= 0 or candidate[close - 1] == "\\":
+                return None
+            repaired = candidate[:close] + '\\"' + candidate[close + 1 :]
+        else:
+            return None
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as exc:
+            if exc.pos <= error.pos:
+                return None
+            candidate, error = repaired, exc
+    return None
+
+
 def extract_json_array(text: str) -> list[Any]:
     """Pull the single JSON array out of a model response.
 
     Falls back to the first balanced bracket span when the model omits the
     fence, exactly like ``attribution.extract_json_block`` falls back to a
-    brace span.
+    brace span. A strict-parse failure gets one bounded repair pass for
+    unescaped quotes inside string values (``_repair_unescaped_quotes``)
+    before the response is rejected and re-asked.
     """
     match = JSON_ARRAY_BLOCK_PATTERN.search(text)
     candidate = match.group(1) if match else None
@@ -626,7 +678,9 @@ def extract_json_array(text: str) -> list[Any]:
     try:
         parsed = json.loads(candidate)
     except json.JSONDecodeError as exc:
-        raise ProposalRejection(f"response was not valid JSON: {exc}") from None
+        parsed = _repair_unescaped_quotes(candidate, exc)
+        if parsed is None:
+            raise ProposalRejection(f"response was not valid JSON: {exc}") from None
     if not isinstance(parsed, list):
         raise ProposalRejection("expected a JSON array of candidate objects")
     return parsed
