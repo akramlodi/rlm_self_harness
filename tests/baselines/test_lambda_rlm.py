@@ -1,11 +1,13 @@
 import pytest
 
+import shrlm.baselines.upstream.lambda_rlm as upstream_lambda
 from shrlm.baselines.lambda_rlm import (
     LAMBDA_RLM_UPSTREAM_REVISION,
     LambdaBaselineConfig,
     lambda_input,
 )
 from shrlm.baselines.upstream.lambda_rlm import LambdaRLM
+from tests.optimization.test_driver import ClientFactory
 
 
 def test_pins_paper_release_revision() -> None:
@@ -82,3 +84,31 @@ def test_builds_upstream_method_without_calling_model() -> None:
     assert method.backend_kwargs is not backend_kwargs
     assert method.query == "Test question"
     assert method.context_window_chars == 100_000
+
+
+def test_runs_short_qa_through_upstream_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Call 1 selects QA in λ-RLM's task-detection prompt.
+    # Call 2 answers the single leaf because this short input needs no split.
+    factory = ClientFactory(["2", "RIGHT"])
+    monkeypatch.setattr(upstream_lambda, "get_client", factory)
+
+    method = LambdaBaselineConfig().build(
+        backend="openrouter",
+        backend_kwargs={
+            "model_name": "test-model",
+            "sampling_args": {"temperature": 0.0},
+        },
+        query="Which answer is correct?",
+    )
+
+    completion = method.completion("A short context containing the answer.")
+
+    assert completion.response == "RIGHT"
+    assert completion.root_model == "test-model"
+    assert completion.prompt == "A short context containing the answer."
+    assert completion.usage_summary.total_input_tokens == 20
+    assert completion.usage_summary.total_output_tokens == 20
+    assert factory.total_calls == 2
+    assert factory.script == []
