@@ -10,6 +10,7 @@ ClientBackend = Literal[
     "vllm",
     "anthropic",
     "azure_openai",
+    "azure_foundry",
     "gemini",
 ]
 EnvironmentType = Literal["local", "ipython", "docker", "modal", "prime", "daytona", "e2b"]
@@ -45,6 +46,9 @@ class ModelUsageSummary:
     total_input_tokens: int
     total_output_tokens: int
     total_cost: float | None = None  # Cost in USD, if available from provider
+    # Where total_cost came from: "provider" (reported by the API) or
+    # "synthesized" (computed client-side from token counts x configured pricing).
+    cost_source: str | None = None
 
     def to_dict(self):
         result = {
@@ -54,6 +58,8 @@ class ModelUsageSummary:
         }
         if self.total_cost is not None:
             result["total_cost"] = self.total_cost
+        if self.cost_source is not None:
+            result["cost_source"] = self.cost_source
         return result
 
     @classmethod
@@ -63,6 +69,7 @@ class ModelUsageSummary:
             total_input_tokens=data.get("total_input_tokens"),
             total_output_tokens=data.get("total_output_tokens"),
             total_cost=data.get("total_cost"),
+            cost_source=data.get("cost_source"),
         )
 
 
@@ -79,6 +86,24 @@ class UsageSummary:
             if summary.total_cost is not None
         ]
         return sum(costs) if costs else None
+
+    @property
+    def cost_source(self) -> str | None:
+        """Where the aggregate cost came from.
+
+        "synthesized" when any model's cost was synthesized client-side (the
+        aggregate then rests on configured pricing, not on provider figures),
+        "provider" when every model that reports a source reports "provider",
+        and None when no model reports a source at all.
+        """
+        sources = {
+            summary.cost_source
+            for summary in self.model_usage_summaries.values()
+            if summary.cost_source is not None
+        }
+        if not sources:
+            return None
+        return "synthesized" if "synthesized" in sources else "provider"
 
     @property
     def total_input_tokens(self) -> int:
@@ -99,6 +124,8 @@ class UsageSummary:
         }
         if self.total_cost is not None:
             result["total_cost"] = self.total_cost
+        if self.cost_source is not None:
+            result["cost_source"] = self.cost_source
         return result
 
     @classmethod

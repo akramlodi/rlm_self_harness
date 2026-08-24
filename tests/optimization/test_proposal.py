@@ -35,7 +35,7 @@ from shrlm.optimization.proposal import (
     validate_candidate_spec,
     write_proposal,
 )
-from shrlm.rlm_harness import H0, SKILL_LOADER_NAME, SkillEntry
+from shrlm.rlm_harness import H0, SKILL_LOADER_NAME, Harness, SkillEntry
 from shrlm.runner import build_skill_loader
 from tests.mock_lm import MockLM
 
@@ -99,10 +99,7 @@ S9_SOURCE = (
     "    return AnswerDecision.accept(answer)\n"
 )
 S8_SOURCE = (
-    "def safe_index(seq, i):\n"
-    "    if 0 <= i < len(seq):\n"
-    "        return seq[i]\n"
-    "    return None\n"
+    "def safe_index(seq, i):\n    if 0 <= i < len(seq):\n        return seq[i]\n    return None\n"
 )
 # One well-formed S10 record: identifier name, one-line brace-free description,
 # body of ordered steps (same fixture shape as tests/optimization/test_candidates.py).
@@ -133,17 +130,12 @@ REPL_HELPER_ITEM = edit_item(
 )
 
 
-def skill(**fields: Any) -> dict[str, Any]:
-    """SKILL_RECORD with some fields overridden."""
-    return {**SKILL_RECORD, **fields}
+def skills_item(**fields: Any) -> dict[str, Any]:
+    """An S10 edit over the S10 pattern (index 5): one skill, added or replaced by name."""
+    return edit_item(5, {"kind": "skills", **SKILL_RECORD, **fields})
 
 
-def skills_item(*records: Any, **overrides: Any) -> dict[str, Any]:
-    """An S10 edit over the S10 pattern (index 5) carrying ``records`` as its whole value."""
-    return edit_item(5, {"kind": "skills", "skills": list(records)}, **overrides)
-
-
-SKILLS_ITEM = skills_item(SKILL_RECORD)
+SKILLS_ITEM = skills_item()
 
 
 def canned_batch(*items: dict[str, Any]) -> str:
@@ -239,12 +231,15 @@ def test_validate_candidate_spec_rejects_decorated_def():
 
 def test_validate_candidate_spec_rejects_syntax_error():
     with pytest.raises(ProposalRejection, match="does not parse"):
-        validate_candidate_spec(edit_item(2, {"kind": "code", "source": "def build_metadata(:\n"}), ALL_PATTERNS)
+        validate_candidate_spec(
+            edit_item(2, {"kind": "code", "source": "def build_metadata(:\n"}), ALL_PATTERNS
+        )
 
 
 def test_validate_candidate_spec_rejects_repl_helper_name_mismatch():
     item = edit_item(
-        4, {"kind": "repl_helper", "dict": "repl_helpers", "name": "wrong_name", "source": S8_SOURCE}
+        4,
+        {"kind": "repl_helper", "dict": "repl_helpers", "name": "wrong_name", "source": S8_SOURCE},
     )
     with pytest.raises(ProposalRejection, match="must match the function name"):
         validate_candidate_spec(item, ALL_PATTERNS)
@@ -252,7 +247,9 @@ def test_validate_candidate_spec_rejects_repl_helper_name_mismatch():
 
 def test_validate_candidate_spec_rejects_reserved_repl_helper_name():
     source = "def llm_query(prompt):\n    return prompt\n"
-    item = edit_item(4, {"kind": "repl_helper", "dict": "repl_helpers", "name": "llm_query", "source": source})
+    item = edit_item(
+        4, {"kind": "repl_helper", "dict": "repl_helpers", "name": "llm_query", "source": source}
+    )
     with pytest.raises(ProposalRejection, match="reserved"):
         validate_candidate_spec(item, ALL_PATTERNS)
 
@@ -354,12 +351,35 @@ def test_render_prompt_includes_surfaces_patterns_and_fallbacks():
 def test_render_prompt_passing_and_history_blocks():
     incumbent_serialization = serialize_harness(H0)
     passing = [{"instance_id": "bfs-1", "passed": True}]
-    history = [([{"subject_id": "r00-c01-s4", "decision": "rejected", "reasons": ["cost too high"]}],
-                {"promoted": False, "promoted_harness_hash": None})]
+    history = [
+        (
+            [{"subject_id": "r00-c01-s4", "decision": "rejected", "reasons": ["cost too high"]}],
+            {"promoted": False, "promoted_harness_hash": None},
+        )
+    ]
     rendered, _ = render_prompt(ALL_PATTERNS, incumbent_serialization, passing, history, k=4)
     assert "bfs-1" in rendered
     assert "r00-c01-s4" in rendered
     assert "cost too high" in rendered
+
+
+def test_render_prompt_truncates_huge_verifier_evidence_but_never_the_pattern():
+    """Verifier evidence quotes unbounded model output; the PROMPT bounds it
+    at render time (the $5 proof's ungoverned char cap depends on it) while
+    the pattern dict -- what a persisted bundle holds -- keeps the full text."""
+    import copy
+
+    huge = "x" * 50_000
+    pattern = copy.deepcopy(PATTERN_TEXT)
+    pattern["verifier_evidence"] = [f"a: produced {huge}"]
+
+    rendered, addressable = render_prompt([pattern], serialize_harness(H0), (), (), k=4)
+    assert [index for index, _ in addressable] == [0]
+    assert huge not in rendered
+    assert "[truncated" in rendered
+    assert "x" * 2001 not in rendered
+    # Persisted evidence stays complete: only the prompt string was bounded.
+    assert huge in pattern["verifier_evidence"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -430,15 +450,11 @@ def test_propose_round_cache_replays_with_zero_additional_calls(tmp_path):
     response = canned_batch(TEXT_ITEM)
     lm = MockLM(model_name="mock-proposer", responses=[response])
     cache = ProposalCache()
-    propose_round(
-        BUNDLE, H0, lm, tmp_path / "proposals", cache=cache, workdir=tmp_path / "work"
-    )
+    propose_round(BUNDLE, H0, lm, tmp_path / "proposals", cache=cache, workdir=tmp_path / "work")
     assert lm._call_count == 1
     # Second round with an empty responses list: a cache miss would raise IndexError.
     lm2 = MockLM(model_name="mock-proposer", responses=[])
-    propose_round(
-        BUNDLE, H0, lm2, tmp_path / "proposals2", cache=cache, workdir=tmp_path / "work2"
-    )
+    propose_round(BUNDLE, H0, lm2, tmp_path / "proposals2", cache=cache, workdir=tmp_path / "work2")
     assert lm2._call_count == 0
 
 
@@ -446,9 +462,7 @@ def test_propose_round_materialization_failure_does_not_drop_the_rest(tmp_path):
     no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
     response = canned_batch(TEXT_ITEM, no_op_policy)
     lm = MockLM(model_name="mock-proposer", responses=[response])
-    result = propose_round(
-        BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work"
-    )
+    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
     assert len(result.written) == 1
     assert result.written[0].surface == "S4"
     assert len(result.materialization_failures) == 1
@@ -467,19 +481,30 @@ def test_propose_round_raises_after_exhausting_attempts(tmp_path):
     lm = MockLM(model_name="mock-proposer", responses=["garbage", "garbage", "garbage"])
     with pytest.raises(ProposalRejection):
         propose_round(
-            BUNDLE, H0, lm, tmp_path / "proposals",
-            config=ProposerConfig(max_attempts=3), workdir=tmp_path / "work",
+            BUNDLE,
+            H0,
+            lm,
+            tmp_path / "proposals",
+            config=ProposerConfig(max_attempts=3),
+            workdir=tmp_path / "work",
         )
 
 
 # ---------------------------------------------------------------------------
-# S10: the skills edit kind (R3, R5, R6, R7, R14, R15). Rejection cases first --
-# the value of this branch is what it refuses.
+# S10: the skills edit kind (R3, R5, R6, R7, R14, R15). One named skill,
+# added or replacing the same name (like S8). Rejection cases first.
 # ---------------------------------------------------------------------------
 
 
 def _ok_skill_names(count: int) -> list[str]:
     return [f"skill_{index}" for index in range(count)]
+
+
+def _incumbent_with_skills(*names: str, body: str = "1. a\n2. b") -> Harness:
+    return replace(
+        H0,
+        skills=[SkillEntry(name, "Consult for x.", body) for name in names],
+    )
 
 
 @pytest.mark.parametrize(
@@ -494,21 +519,21 @@ def _ok_skill_names(count: int) -> list[str]:
 )
 def test_s10_rejects_brace_in_description(description):
     with pytest.raises(ProposalRejection, match=r"S10.*brace"):
-        validate_candidate_spec(skills_item(skill(description=description)), ALL_PATTERNS)
+        validate_candidate_spec(skills_item(description=description), ALL_PATTERNS)
 
 
 def test_s10_rejects_custom_tools_slot_in_description():
-    item = skills_item(skill(description="See {custom_tools_section} before answering."))
+    item = skills_item(description="See {custom_tools_section} before answering.")
     with pytest.raises(ProposalRejection, match="S10"):
         validate_candidate_spec(item, ALL_PATTERNS)
 
 
 def test_s10_accepts_undoubled_braces_in_body_and_loader_returns_it_verbatim(tmp_path):
     body = (
-        "1. Build the batch as a dict: {\"ids\": ids}.\n"
+        '1. Build the batch as a dict: {"ids": ids}.\n'
         "2. Call llm_query_batched(prompts) and keep {k: v for k, v in zip(ids, outs)}.\n"
     )
-    spec = validate_candidate_spec(skills_item(skill(body=body)), ALL_PATTERNS)
+    spec = validate_candidate_spec(skills_item(body=body), ALL_PATTERNS)
     harness = materialize_candidate_harness(H0, spec, tmp_path)
     assert harness.skills == [SkillEntry(SKILL_RECORD["name"], SKILL_RECORD["description"], body)]
     assert build_skill_loader(harness.skills)(SKILL_RECORD["name"]) == body
@@ -525,7 +550,7 @@ def test_s10_accepts_undoubled_braces_in_body_and_loader_returns_it_verbatim(tmp
 )
 def test_s10_rejects_body_without_ordered_steps(body):
     with pytest.raises(ProposalRejection, match=r"S10.*ordered steps"):
-        validate_candidate_spec(skills_item(skill(body=body)), ALL_PATTERNS)
+        validate_candidate_spec(skills_item(body=body), ALL_PATTERNS)
 
 
 @pytest.mark.parametrize(
@@ -538,20 +563,16 @@ def test_s10_rejects_body_without_ordered_steps(body):
     ],
 )
 def test_s10_accepts_ordered_step_bodies(body):
-    spec = validate_candidate_spec(skills_item(skill(body=body)), ALL_PATTERNS)
-    assert spec.edit["skills"][0]["body"] == body
+    spec = validate_candidate_spec(skills_item(body=body), ALL_PATTERNS)
+    assert spec.edit["body"] == body
 
 
-@pytest.mark.parametrize("description", ["Line one.\nLine two.", "Line one.\r\nLine two.", "Trailing\n"])
+@pytest.mark.parametrize(
+    "description", ["Line one.\nLine two.", "Line one.\r\nLine two.", "Trailing\n"]
+)
 def test_s10_rejects_multiline_description(description):
     with pytest.raises(ProposalRejection, match=r"S10.*single line"):
-        validate_candidate_spec(skills_item(skill(description=description)), ALL_PATTERNS)
-
-
-def test_s10_rejects_duplicate_names():
-    item = skills_item(SKILL_RECORD, skill(description="A second entry with the same name."))
-    with pytest.raises(ProposalRejection, match=r"S10.*unique"):
-        validate_candidate_spec(item, ALL_PATTERNS)
+        validate_candidate_spec(skills_item(description=description), ALL_PATTERNS)
 
 
 @pytest.mark.parametrize(
@@ -560,19 +581,21 @@ def test_s10_rejects_duplicate_names():
 )
 def test_s10_rejects_non_identifier_name(name):
     with pytest.raises(ProposalRejection, match=r"S10.*identifier"):
-        validate_candidate_spec(skills_item(skill(name=name)), ALL_PATTERNS)
+        validate_candidate_spec(skills_item(name=name), ALL_PATTERNS)
 
 
 def test_s10_description_over_index_cap_rejected_but_same_length_body_accepted():
     long_text = "x" * (SKILL_DESCRIPTION_MAX_CHARS + 1)
-    with pytest.raises(ProposalRejection, match=rf"S10.*description.*{SKILL_DESCRIPTION_MAX_CHARS}"):
-        validate_candidate_spec(skills_item(skill(description=long_text)), ALL_PATTERNS)
+    with pytest.raises(
+        ProposalRejection, match=rf"S10.*description.*{SKILL_DESCRIPTION_MAX_CHARS}"
+    ):
+        validate_candidate_spec(skills_item(description=long_text), ALL_PATTERNS)
     # Same byte count in a body is fine: the body is paid only when loaded.
     body = "1. " + "x" * (SKILL_DESCRIPTION_MAX_CHARS - 7) + "\n2. y"
     assert len(body) == len(long_text)
     assert len(body) <= SKILL_BODY_MAX_CHARS
-    spec = validate_candidate_spec(skills_item(skill(body=body)), ALL_PATTERNS)
-    assert spec.edit["skills"][0]["body"] == body
+    spec = validate_candidate_spec(skills_item(body=body), ALL_PATTERNS)
+    assert spec.edit["body"] == body
 
 
 def test_s10_candidate_ids_distinct_from_s1():
@@ -592,7 +615,7 @@ def test_s10_candidate_ids_distinct_from_s1():
 def test_s10_rejects_body_stating_a_runtime_limit(stated_limit):
     body = f"1. Remember: {stated_limit}.\n2. Split the input accordingly."
     with pytest.raises(ProposalRejection, match=r"S10.*runtime limit"):
-        validate_candidate_spec(skills_item(skill(body=body)), ALL_PATTERNS)
+        validate_candidate_spec(skills_item(body=body), ALL_PATTERNS)
 
 
 @pytest.mark.parametrize(
@@ -606,83 +629,55 @@ def test_s10_rejects_body_stating_a_runtime_limit(stated_limit):
 def test_s10_rejects_description_stating_a_runtime_limit(stated_limit):
     description = f"Consult when {stated_limit}."
     with pytest.raises(ProposalRejection, match=r"S10.*runtime limit"):
-        validate_candidate_spec(skills_item(skill(description=description)), ALL_PATTERNS)
-
-
-def test_s10_rejects_entry_count_over_cap():
-    at_cap = [skill(name=name) for name in _ok_skill_names(SKILL_MAX_ENTRIES)]
-    validate_candidate_spec(skills_item(*at_cap), ALL_PATTERNS)
-    over = at_cap + [skill(name="one_too_many")]
-    with pytest.raises(ProposalRejection, match=rf"S10.*{SKILL_MAX_ENTRIES}"):
-        validate_candidate_spec(skills_item(*over), ALL_PATTERNS)
+        validate_candidate_spec(skills_item(description=description), ALL_PATTERNS)
 
 
 def test_s10_rejects_name_over_cap():
     name = "n" * (SKILL_NAME_MAX_CHARS + 1)
     assert name.isidentifier()
     with pytest.raises(ProposalRejection, match=rf"S10.*name.*{SKILL_NAME_MAX_CHARS}"):
-        validate_candidate_spec(skills_item(skill(name=name)), ALL_PATTERNS)
+        validate_candidate_spec(skills_item(name=name), ALL_PATTERNS)
 
 
 def test_s10_rejects_body_over_cap():
     body = "1. Re-read.\n2. " + "x" * SKILL_BODY_MAX_CHARS
     with pytest.raises(ProposalRejection, match=rf"S10.*body.*{SKILL_BODY_MAX_CHARS}"):
-        validate_candidate_spec(skills_item(skill(body=body)), ALL_PATTERNS)
+        validate_candidate_spec(skills_item(body=body), ALL_PATTERNS)
 
 
-def test_s10_rejects_total_length_over_cap():
-    # Every entry is individually within the per-field caps and the entry count
-    # is within its cap, yet the sum of all fields exceeds the total cap.
-    per_body = SKILL_BODY_MAX_CHARS - 100
-    count = SKILL_TOTAL_MAX_CHARS // per_body + 1
-    assert count <= SKILL_MAX_ENTRIES
-    body = "1. Re-read.\n2. " + "x" * (per_body - 15)
-    assert len(body) <= SKILL_BODY_MAX_CHARS
-    records = [skill(name=name, body=body) for name in _ok_skill_names(count)]
-    with pytest.raises(ProposalRejection, match=rf"S10.*total.*{SKILL_TOTAL_MAX_CHARS}"):
-        validate_candidate_spec(skills_item(*records), ALL_PATTERNS)
-
-
-@pytest.mark.parametrize(
-    "value", ["1. Re-read.\n2. Recompute.", {"name": "x", "description": "y", "body": "1. a\n2. b"}, None]
-)
-def test_s10_rejects_non_list_value(value):
-    with pytest.raises(ProposalRejection, match=r"S10.*list"):
-        validate_candidate_spec(edit_item(5, {"kind": "skills", "skills": value}), ALL_PATTERNS)
-
-
-@pytest.mark.parametrize("entry", ["", "verify_aggregate", 3, ["verify_aggregate"], None])
-def test_s10_rejects_non_record_entry(entry):
-    with pytest.raises(ProposalRejection, match=r"S10.*record"):
-        validate_candidate_spec(skills_item(entry), ALL_PATTERNS)
+def test_s10_rejects_whole_list_edit():
+    with pytest.raises(ProposalRejection, match=r"S10.*one skill"):
+        validate_candidate_spec(
+            edit_item(5, {"kind": "skills", "skills": [SKILL_RECORD]}), ALL_PATTERNS
+        )
 
 
 @pytest.mark.parametrize("field_name", ["name", "description", "body"])
 def test_s10_rejects_empty_string_field(field_name):
     with pytest.raises(ProposalRejection, match=rf"S10.*{field_name}"):
-        validate_candidate_spec(skills_item(skill(**{field_name: ""})), ALL_PATTERNS)
+        validate_candidate_spec(skills_item(**{field_name: ""}), ALL_PATTERNS)
     with pytest.raises(ProposalRejection, match=rf"S10.*{field_name}"):
-        validate_candidate_spec(skills_item(skill(**{field_name: "   "})), ALL_PATTERNS)
+        validate_candidate_spec(skills_item(**{field_name: "   "}), ALL_PATTERNS)
 
 
 @pytest.mark.parametrize(
-    "record",
+    "edit",
     [
-        {"name": "verify_aggregate", "description": "d"},  # missing body
-        {**SKILL_RECORD, "steps": "extra"},  # unknown key
-        skill(body=["1. a", "2. b"]),  # non-string field
+        {"kind": "skills", "name": "verify_aggregate", "description": "d"},  # missing body
+        {**SKILL_RECORD, "kind": "skills", "steps": "extra"},  # unknown key
+        {**SKILL_RECORD, "kind": "skills", "body": ["1. a", "2. b"]},  # non-string field
     ],
 )
-def test_s10_rejects_malformed_record(record):
+def test_s10_rejects_malformed_edit(edit):
     with pytest.raises(ProposalRejection, match="S10"):
-        validate_candidate_spec(skills_item(record), ALL_PATTERNS)
+        validate_candidate_spec(edit_item(5, edit), ALL_PATTERNS)
 
 
 def test_s10_rejects_wrong_edit_kind_for_the_surface():
     with pytest.raises(ProposalRejection, match="edit.kind='skills'"):
         validate_candidate_spec(edit_item(5, {"kind": "text", "new_text": "x"}), ALL_PATTERNS)
     with pytest.raises(ProposalRejection, match="edit.kind='text'"):
-        validate_candidate_spec(edit_item(0, {"kind": "skills", "skills": [SKILL_RECORD]}), ALL_PATTERNS)
+        validate_candidate_spec(edit_item(0, {"kind": "skills", **SKILL_RECORD}), ALL_PATTERNS)
 
 
 def test_s10_well_formed_edit_materializes_changing_only_s10(tmp_path):
@@ -694,12 +689,53 @@ def test_s10_well_formed_edit_materializes_changing_only_s10(tmp_path):
     assert serialization["surfaces"]["S10_skills"] == [SKILL_RECORD]
 
 
-def test_s10_edit_replaces_the_whole_list(tmp_path):
-    # KD2: S10 is edited whole -- the proposed list is the new value, not an append.
-    incumbent = replace(H0, skills=[SkillEntry("old_skill", "Old.", "1. a\n2. b")])
+def test_s10_edit_adds_one_skill_keeping_existing(tmp_path):
+    incumbent = _incumbent_with_skills("old_skill")
     spec = validate_candidate_spec(SKILLS_ITEM, ALL_PATTERNS)
     harness = materialize_candidate_harness(incumbent, spec, tmp_path)
-    assert [entry.name for entry in harness.skills] == [SKILL_RECORD["name"]]
+    assert [entry.name for entry in harness.skills] == ["old_skill", SKILL_RECORD["name"]]
+
+
+def test_s10_edit_replaces_existing_skill_of_the_same_name(tmp_path):
+    incumbent = replace(
+        H0,
+        skills=[SkillEntry(SKILL_RECORD["name"], "Old description.", "1. old\n2. steps")],
+    )
+    spec = validate_candidate_spec(SKILLS_ITEM, ALL_PATTERNS)
+    harness = materialize_candidate_harness(incumbent, spec, tmp_path)
+    assert harness.skills == [SkillEntry(**SKILL_RECORD)]
+
+
+def test_s10_ninth_distinct_name_fails_materialization(tmp_path):
+    incumbent = _incumbent_with_skills(*_ok_skill_names(SKILL_MAX_ENTRIES))
+    spec = validate_candidate_spec(SKILLS_ITEM, ALL_PATTERNS)
+    with pytest.raises(MaterializationFailure, match=rf"S10.*{SKILL_MAX_ENTRIES}"):
+        build_candidate(incumbent, serialize_harness(incumbent), spec, tmp_path)
+
+
+def test_s10_replace_at_entry_cap_succeeds(tmp_path):
+    names = _ok_skill_names(SKILL_MAX_ENTRIES)
+    incumbent = _incumbent_with_skills(*names)
+    spec = validate_candidate_spec(
+        skills_item(name=names[0], description="Consult before replacing at cap."),
+        ALL_PATTERNS,
+    )
+    harness = materialize_candidate_harness(incumbent, spec, tmp_path)
+    assert len(harness.skills) == SKILL_MAX_ENTRIES
+    assert harness.skills[0].description == "Consult before replacing at cap."
+    assert [entry.name for entry in harness.skills] == names
+
+
+def test_s10_merged_total_length_over_cap_fails_materialization(tmp_path):
+    per_body = SKILL_BODY_MAX_CHARS - 100
+    count = SKILL_TOTAL_MAX_CHARS // per_body
+    assert 1 < count <= SKILL_MAX_ENTRIES
+    large_body = "1. Re-read.\n2. " + "x" * (per_body - 15)
+    assert len(large_body) <= SKILL_BODY_MAX_CHARS
+    incumbent = _incumbent_with_skills(*_ok_skill_names(count), body=large_body)
+    spec = validate_candidate_spec(skills_item(body=large_body), ALL_PATTERNS)
+    with pytest.raises(MaterializationFailure, match=rf"S10.*total.*{SKILL_TOTAL_MAX_CHARS}"):
+        build_candidate(incumbent, serialize_harness(incumbent), spec, tmp_path)
 
 
 def test_rendered_prompt_names_s10_and_its_edit_format():
@@ -711,18 +747,195 @@ def test_rendered_prompt_names_s10_and_its_edit_format():
     # The brace rule is stated to the proposer: index fields brace-free, bodies raw.
     assert "brace" in rendered.lower()
     assert "unconsulted_procedure" in rendered
+    # One skill, merged by name -- not a whole-list rewrite.
+    assert "WHOLE list" not in rendered
+    assert "added or replacing" in rendered
+    # Skill-writing guidance: distill traces into a procedure, not a YAML dump
+    # or a kebab-case SKILL.md. The body template and the identifier rule are
+    # what stop the proposer inventing a format the validator will reject.
+    assert "procedural anchor" in rendered
+    assert "## Use When" in rendered
+    assert "## Don't Use When" in rendered
+    assert "## Pitfalls" in rendered
+    assert "## Verify" in rendered
+    assert "encode the process" in rendered
+    assert "kebab-case" not in rendered
+    assert "REPL-safe identifier" in rendered
 
 
 def test_s8_helper_binding_the_skill_loader_name_is_rejected_naming_s10():
     source = f"def {SKILL_LOADER_NAME}(name):\n    return name\n"
     item = edit_item(
-        4, {"kind": "repl_helper", "dict": "repl_helpers", "name": SKILL_LOADER_NAME, "source": source}
+        4,
+        {
+            "kind": "repl_helper",
+            "dict": "repl_helpers",
+            "name": SKILL_LOADER_NAME,
+            "source": source,
+        },
     )
     with pytest.raises(ProposalRejection, match=r"S10"):
         validate_candidate_spec(item, ALL_PATTERNS)
     item = edit_item(
         4,
-        {"kind": "repl_helper", "dict": "sub_repl_helpers", "name": SKILL_LOADER_NAME, "source": source},
+        {
+            "kind": "repl_helper",
+            "dict": "sub_repl_helpers",
+            "name": SKILL_LOADER_NAME,
+            "source": source,
+        },
     )
     with pytest.raises(ProposalRejection, match=rf"{SKILL_LOADER_NAME}.*S10"):
         validate_candidate_spec(item, ALL_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# S10: proposal-time merge dry-run (over-cap edits are re-asked, not silently
+# dropped at materialization), the removal form, the prompt inventory line,
+# missing-field rejections, and the conditional pedagogy block.
+# ---------------------------------------------------------------------------
+
+
+def test_s10_over_entry_cap_edit_is_reasked_with_coaching(tmp_path):
+    """A ninth distinct name is a re-askable ProposalRejection during candidate
+    validation, not a silent MaterializationFailure: the re-ask names the caps,
+    the current totals, and the existing entry names."""
+    incumbent = _incumbent_with_skills(*_ok_skill_names(SKILL_MAX_ENTRIES))
+    over_cap = canned_batch(SKILLS_ITEM)  # a new ninth name
+    corrected = canned_batch(skills_item(name="skill_0"))  # replaces an existing name
+    lm = MockLM(model_name="mock-proposer", responses=[over_cap, corrected])
+    result = propose_round(
+        BUNDLE,
+        incumbent,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=3),
+        workdir=tmp_path / "work",
+    )
+    assert result.materialization_failures == []
+    assert len(result.written) == 1
+    assert result.written[0].surface == "S10"
+    assert len(result.attempts) == 2
+    violation = result.attempts[0].violation
+    assert str(SKILL_MAX_ENTRIES) in violation
+    assert f"{SKILL_TOTAL_MAX_CHARS:,}" in violation
+    for name in _ok_skill_names(SKILL_MAX_ENTRIES):
+        assert name in violation
+
+
+def test_s10_over_total_cap_edit_is_reasked(tmp_path):
+    per_body = SKILL_BODY_MAX_CHARS - 100
+    count = SKILL_TOTAL_MAX_CHARS // per_body
+    large_body = "1. Re-read.\n2. " + "x" * (per_body - 15)
+    incumbent = _incumbent_with_skills(*_ok_skill_names(count), body=large_body)
+    over_cap = canned_batch(skills_item(body=large_body))
+    corrected = canned_batch(SKILLS_ITEM)
+    lm = MockLM(model_name="mock-proposer", responses=[over_cap, corrected])
+    result = propose_round(
+        BUNDLE,
+        incumbent,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=3),
+        workdir=tmp_path / "work",
+    )
+    assert result.materialization_failures == []
+    assert len(result.written) == 1
+    assert result.attempts[0].accepted is False
+    assert str(SKILL_TOTAL_MAX_CHARS) in result.attempts[0].violation
+
+
+def removal_item(name: str) -> dict[str, Any]:
+    """The S10 removal form: both description and body empty strings."""
+    return edit_item(5, {"kind": "skills", "name": name, "description": "", "body": ""})
+
+
+def test_s10_removal_deletes_the_named_entry(tmp_path):
+    incumbent = _incumbent_with_skills("keep_me", "drop_me")
+    spec = validate_candidate_spec(removal_item("drop_me"), ALL_PATTERNS)
+    incumbent_serialization = serialize_harness(incumbent)
+    harness, serialization = build_candidate(incumbent, incumbent_serialization, spec, tmp_path)
+    assert [entry.name for entry in harness.skills] == ["keep_me"]
+    assert changed_surfaces(incumbent_serialization, serialization) == ["S10"]
+
+
+def test_s10_removal_of_unknown_name_is_rejected_naming_existing_entries(tmp_path):
+    incumbent = _incumbent_with_skills("real_one", "real_two")
+    spec = validate_candidate_spec(removal_item("ghost"), ALL_PATTERNS)
+    with pytest.raises(MaterializationFailure, match=r"real_one.*real_two"):
+        build_candidate(incumbent, serialize_harness(incumbent), spec, tmp_path)
+
+
+def test_s10_removal_of_unknown_name_is_reasked_at_proposal_time(tmp_path):
+    incumbent = _incumbent_with_skills("real_one")
+    bad = canned_batch(removal_item("ghost"))
+    corrected = canned_batch(removal_item("real_one"))
+    lm = MockLM(model_name="mock-proposer", responses=[bad, corrected])
+    result = propose_round(
+        BUNDLE,
+        incumbent,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=3),
+        workdir=tmp_path / "work",
+    )
+    assert result.materialization_failures == []
+    assert len(result.written) == 1
+    assert "real_one" in result.attempts[0].violation
+
+
+def test_s10_removal_frees_cap_budget(tmp_path):
+    """An add at the entry cap succeeds once a removal has shrunk the library."""
+    incumbent = _incumbent_with_skills(*_ok_skill_names(SKILL_MAX_ENTRIES))
+    removal = validate_candidate_spec(removal_item("skill_0"), ALL_PATTERNS)
+    shrunk = materialize_candidate_harness(incumbent, removal, tmp_path)
+    assert len(shrunk.skills) == SKILL_MAX_ENTRIES - 1
+    add = validate_candidate_spec(SKILLS_ITEM, ALL_PATTERNS)
+    harness = materialize_candidate_harness(shrunk, add, tmp_path)
+    assert len(harness.skills) == SKILL_MAX_ENTRIES
+    assert harness.skills[-1].name == SKILL_RECORD["name"]
+
+
+def test_s10_removal_form_is_documented_in_the_prompt():
+    rendered, _ = render_prompt(ALL_PATTERNS, serialize_harness(H0), (), (), k=4)
+    assert "remove" in rendered.lower()
+
+
+def test_s10_missing_field_names_the_missing_field():
+    edit = {"kind": "skills", "name": "verify_aggregate", "description": "d"}
+    with pytest.raises(ProposalRejection, match=r"missing.*body"):
+        validate_candidate_spec(edit_item(5, edit), ALL_PATTERNS)
+    edit = {"kind": "skills", "name": "verify_aggregate"}
+    with pytest.raises(ProposalRejection, match=r"missing.*\['body', 'description'\]"):
+        validate_candidate_spec(edit_item(5, edit), ALL_PATTERNS)
+
+
+def test_s10_inventory_line_names_all_entries_past_the_truncation_point():
+    """A library whose serialized value exceeds the 4000-char display truncation
+    still gets a complete name inventory with per-entry char counts."""
+    body = "1. Re-read.\n2. " + "y" * 1500
+    incumbent = _incumbent_with_skills("alpha_skill", "beta_skill", "gamma_skill", body=body)
+    serialization = serialize_harness(incumbent)
+    value_text = json.dumps(
+        {"S10_skills": serialization["surfaces"]["S10_skills"]}, indent=2, sort_keys=True
+    )
+    assert len(value_text) > 4000  # the display value really is truncated
+    rendered, _ = render_prompt(ALL_PATTERNS, serialization, (), (), k=4)
+    assert "S10 inventory:" in rendered
+    assert f"3/{SKILL_MAX_ENTRIES} entries" in rendered
+    for name in ("alpha_skill", "beta_skill", "gamma_skill"):
+        assert f"{name} (" in rendered
+    per_entry = len(body) + len("gamma_skill") + len("Consult for x.")
+    assert f"{per_entry:,}" in rendered
+
+
+def test_skills_pedagogy_only_rendered_when_an_s10_pattern_is_addressable():
+    no_s10 = [PATTERN_TEXT, PATTERN_POLICY, PATTERN_OTHER]
+    rendered, _ = render_prompt(no_s10, serialize_harness(H0), (), (), k=4)
+    assert "procedural anchor" not in rendered
+    assert '"kind": "skills"' in rendered  # the compact format bullet stays
+
+    with_s10 = [PATTERN_TEXT, PATTERN_SKILLS]
+    rendered, _ = render_prompt(with_s10, serialize_harness(H0), (), (), k=4)
+    assert rendered.count("procedural anchor") == 1
+    assert rendered.count("## Use When") == 1

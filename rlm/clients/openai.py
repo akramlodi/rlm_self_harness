@@ -1,4 +1,8 @@
+import asyncio
 import os
+import random
+import sys
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -7,6 +11,7 @@ from dotenv import load_dotenv
 
 from rlm.clients.base_lm import BaseLM
 from rlm.core.types import ModelUsageSummary, UsageSummary
+from rlm.utils.exceptions import TokenLimitExceededError
 
 load_dotenv()
 
@@ -29,6 +34,98 @@ def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
         args["max_completion_tokens"] = args.pop("max_tokens")
     args.pop("extra_body", None)
     return {k: v for k, v in args.items() if v is not None}
+
+
+# A provider can return HTTP 200 with a deficient body -- no usage block, no
+# choices, sometimes an embedded error payload (seen intermittently on
+# OpenRouter when an upstream provider fails). The OpenAI SDK retries only
+# HTTP-level failures, so the client retries these itself with exponential
+# backoff and full jitter. Retries stay BOUNDED because each deficient
+# response may still be a paid call of unknown cost that the spend breaker
+# cannot see -- unbounded retries would be unbounded invisible spend. A call
+# whose cost is unknowable is never recorded; after the retries run out the
+# error is raised loudly with whatever the provider embedded.
+TRANSPORT_ATTEMPTS = 6
+_TRANSPORT_BACKOFF_BASE_SECONDS = 1.0
+_TRANSPORT_BACKOFF_CAP_SECONDS = 30.0
+
+
+def _transport_backoff_seconds(attempt: int) -> float:
+    """Full-jitter exponential backoff: uniform in (0, min(cap, base * 2^(n-1)))."""
+    ceiling = min(
+        _TRANSPORT_BACKOFF_CAP_SECONDS, _TRANSPORT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
+    )
+    return random.uniform(0, ceiling)
+
+
+# Provider phrasings for "this prompt does not fit the model's context
+# window" inside an HTTP 400 body (OpenRouter relays the upstream text
+# verbatim; observed from Nebius/CoreWeave, SiliconFlow, StreamLake, Alibaba).
+# A prompt that outgrew the window is a run-level resource condition, not a
+# transport fault: it is mapped to TokenLimitExceededError so the driver
+# records the run as RESOURCE_TERMINATED instead of crashing the experiment.
+_CONTEXT_OVERFLOW_MARKERS = (
+    "maximum context length",
+    "max input length",
+    "max_seq_len",
+    "range of input length",
+    "input tokens",
+    "context length",
+    "context_length_exceeded",
+)
+
+
+def _context_overflow_error(exc: openai.BadRequestError) -> TokenLimitExceededError | None:
+    """A TokenLimitExceededError when this 400 is a context-window overflow."""
+    text = str(exc).lower()
+    if not any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS):
+        return None
+    return TokenLimitExceededError(
+        tokens_used=0,
+        token_limit=0,
+        message=f"Prompt exceeded the model's context window (provider 400): {str(exc)[:600]}",
+    )
+
+
+def _response_deficiency(response: Any) -> str | None:
+    """Why this 200 response cannot be used, or None when it is usable."""
+    problems = []
+    if getattr(response, "usage", None) is None:
+        problems.append("no usage data received")
+    if not getattr(response, "choices", None):
+        problems.append("no choices")
+    if not problems:
+        return None
+    error = getattr(response, "error", None)
+    if error is None and getattr(response, "model_extra", None):
+        error = response.model_extra.get("error")
+    if error:
+        problems.append(f"provider error payload: {str(error)[:300]}")
+    return "; ".join(problems)
+
+
+def extract_provider_cost(usage: Any) -> Any:
+    """The provider-reported cost on a usage block, or None.
+
+    OpenRouter surfaces cost either as a direct ``usage.cost`` attribute or
+    inside ``usage.model_extra`` (``cost``, then
+    ``cost_details.upstream_inference_cost`` for BYOK routes). Shared with
+    subclasses that validate the value before recording it.
+
+    An explicit ``0`` is a report, not an absence: free-tier OpenRouter models
+    bill $0 per call, and a breaker fed ``None`` for those runs refuses to
+    count them at all (``costs.breaker_run_cost``). Only a missing field
+    returns None.
+    """
+    if getattr(usage, "cost", None) is not None:
+        return usage.cost
+    if hasattr(usage, "model_extra") and usage.model_extra:
+        extra = usage.model_extra
+        if extra.get("cost") is not None:
+            return extra["cost"]
+        if extra.get("cost_details", {}).get("upstream_inference_cost") is not None:
+            return extra["cost_details"]["upstream_inference_cost"]
+    return None
 
 
 def _merge_extra_body(
@@ -108,14 +205,39 @@ class OpenAIClient(BaseLM):
             extra_body["usage"] = {"include": True}
         extra_body = _merge_extra_body(extra_body, self.sampling_args)
 
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=messages,
-            extra_body=extra_body,
-            **_normalize_sampling_args(self.sampling_args),
-        )
+        for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
+            try:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    extra_body=extra_body,
+                    **_normalize_sampling_args(self.sampling_args),
+                )
+            except openai.BadRequestError as exc:
+                overflow = _context_overflow_error(exc)
+                if overflow is not None:
+                    raise overflow from exc
+                raise
+            deficiency = _response_deficiency(response)
+            if deficiency is None:
+                break
+            if attempt == TRANSPORT_ATTEMPTS:
+                raise ValueError(
+                    f"Deficient completion response after {TRANSPORT_ATTEMPTS} attempts "
+                    f"({deficiency}). Tracking tokens not possible."
+                )
+            print(
+                f"Deficient completion response ({deficiency}); "
+                f"retrying ({attempt}/{TRANSPORT_ATTEMPTS})...",
+                file=sys.stderr,
+            )
+            time.sleep(_transport_backoff_seconds(attempt))
         self._track_cost(response, model)
-        return response.choices[0].message.content
+        # content is None when the model emitted no visible text -- reasoning
+        # models can spend the whole max_tokens budget on hidden reasoning
+        # (observed on OpenRouter stealth/ox-alpha). The declared return type
+        # is str, and callers regex/parse it, so an absent text is "".
+        return response.choices[0].message.content or ""
 
     async def acompletion(
         self, prompt: str | list[dict[str, Any]], model: str | None = None
@@ -136,14 +258,36 @@ class OpenAIClient(BaseLM):
             extra_body["usage"] = {"include": True}
         extra_body = _merge_extra_body(extra_body, self.sampling_args)
 
-        response = await self.async_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            extra_body=extra_body,
-            **_normalize_sampling_args(self.sampling_args),
-        )
+        for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
+            try:
+                response = await self.async_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    extra_body=extra_body,
+                    **_normalize_sampling_args(self.sampling_args),
+                )
+            except openai.BadRequestError as exc:
+                overflow = _context_overflow_error(exc)
+                if overflow is not None:
+                    raise overflow from exc
+                raise
+            deficiency = _response_deficiency(response)
+            if deficiency is None:
+                break
+            if attempt == TRANSPORT_ATTEMPTS:
+                raise ValueError(
+                    f"Deficient completion response after {TRANSPORT_ATTEMPTS} attempts "
+                    f"({deficiency}). Tracking tokens not possible."
+                )
+            print(
+                f"Deficient completion response ({deficiency}); "
+                f"retrying ({attempt}/{TRANSPORT_ATTEMPTS})...",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(_transport_backoff_seconds(attempt))
         self._track_cost(response, model)
-        return response.choices[0].message.content
+        # Same None-content coercion as the sync path above.
+        return response.choices[0].message.content or ""
 
     def _track_cost(self, response: openai.ChatCompletion, model: str):
         self.model_call_counts[model] += 1
@@ -160,37 +304,28 @@ class OpenAIClient(BaseLM):
         self.last_prompt_tokens = usage.prompt_tokens
         self.last_completion_tokens = usage.completion_tokens
 
-        # Extract cost from OpenRouter responses (cost is in USD)
-        # OpenRouter returns cost in usage.model_extra for pydantic models
+        # Extract cost from OpenRouter responses (cost is in USD). A reported
+        # zero (free-tier model) is recorded as 0.0 so the spend breaker sees
+        # a cost-reporting backend; negative values are provider junk and are
+        # dropped like an absent field.
         self.last_cost: float | None = None
-        cost = None
+        cost = extract_provider_cost(usage)
 
-        # Try direct attribute first
-        if hasattr(usage, "cost") and usage.cost:
-            cost = usage.cost
-        # Then try model_extra (OpenRouter uses this)
-        elif hasattr(usage, "model_extra") and usage.model_extra:
-            extra = usage.model_extra
-            # Primary cost field (may be 0 for BYOK)
-            if extra.get("cost"):
-                cost = extra["cost"]
-            # Fallback to upstream cost details
-            elif extra.get("cost_details", {}).get("upstream_inference_cost"):
-                cost = extra["cost_details"]["upstream_inference_cost"]
-
-        if cost is not None and cost > 0:
+        if cost is not None and cost >= 0:
             self.last_cost = float(cost)
             self.model_costs[model] += self.last_cost
 
     def get_usage_summary(self) -> UsageSummary:
         model_summaries = {}
         for model in self.model_call_counts:
+            # .get() distinguishes "never reported" (absent key -> None) from
+            # an accumulated $0 total on a free-tier model (0.0 stays 0.0).
             cost = self.model_costs.get(model)
             model_summaries[model] = ModelUsageSummary(
                 total_calls=self.model_call_counts[model],
                 total_input_tokens=self.model_input_tokens[model],
                 total_output_tokens=self.model_output_tokens[model],
-                total_cost=cost if cost else None,
+                total_cost=cost,
             )
         return UsageSummary(model_usage_summaries=model_summaries)
 

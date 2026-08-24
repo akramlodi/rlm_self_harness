@@ -21,8 +21,9 @@ Identity hash (R3; KTD3)
     behavior-changing value: decoding/sampling args, split sizes and seeds,
     loop counts (m, v, k, t, patience), promotion thresholds and bands, caps
     (including per-round attempts), environment definitions with their dataset
-    revision pins, the runner/attributor/proposer backends including OpenRouter
-    provider routing, and the evaluation repetition count
+    revision pins, the runner/attributor/proposer backends including the
+    optional provider tables (OpenRouter routing, Azure Foundry thinking
+    mode), and the evaluation repetition count
     (``IDENTITY_OPERATIONAL_KEYS``; see below). The remaining operational keys
     -- cache paths, loader timeout, pricing and GPU tables, report settings --
     are excluded: they change what a run costs or how it is summarized, never
@@ -132,13 +133,19 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class DecodingConfig:
-    """Section 3.0 decoding invariant, identical for root and sub-calls."""
+    """Section 3.0 decoding invariant, identical for root and sub-calls.
+
+    ``top_k`` and ``min_p`` are optional: the Kimi-K2.5 instant-mode card
+    specifies neither, and an absent knob is omitted from ``extra_body``
+    entirely (the Foundry v1 route's handling of unknown body params is
+    unconfirmed), never sent as a default.
+    """
 
     temperature: float
     top_p: float
-    top_k: int
-    min_p: float
     max_output_tokens: int
+    top_k: int | None = None
+    min_p: float | None = None
 
 
 @dataclass(frozen=True)
@@ -249,11 +256,28 @@ class OpenRouterConfig:
 
 
 @dataclass(frozen=True)
+class AzureFoundryConfig:
+    """Azure AI Foundry provider settings. ``thinking = False`` selects
+    Kimi-K2.5 instant mode, forwarded as
+    ``extra_body["chat_template_kwargs"] = {"thinking": False}``."""
+
+    thinking: bool
+
+
+@dataclass(frozen=True)
 class BackendsConfig:
+    """Role endpoints plus optional per-provider tables (KTD5): a provider
+    table may be absent when no role uses that backend, and an openrouter role
+    with no ``[backends.openrouter]`` table simply sends no provider routing.
+    An azure_foundry role, by contrast, REQUIRES the
+    ``[backends.azure_foundry]`` table: thinking mode is declared, never
+    defaulted, so ``load_config`` refuses the absent table."""
+
     runner: EndpointConfig
     attributor: EndpointConfig
     proposer: EndpointConfig
-    openrouter: OpenRouterConfig
+    openrouter: OpenRouterConfig | None = None
+    azure_foundry: AzureFoundryConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -372,9 +396,19 @@ def build_section(cls: type[_S], table: dict[str, Any], context: str) -> _S:
     return cls(**table)
 
 
-def check_keys(table: dict[str, Any], expected: tuple[str, ...], context: str) -> None:
-    """Reject a table whose sub-tables differ from the expected exact set."""
-    unknown = sorted(set(table) - set(expected))
+def check_keys(
+    table: dict[str, Any],
+    expected: tuple[str, ...],
+    context: str,
+    optional: tuple[str, ...] = (),
+) -> None:
+    """Reject a table whose sub-tables differ from the expected exact set.
+
+    ``optional`` keys may be present or absent: the unknown-key check runs
+    against ``expected`` plus ``optional``; the missing-key check against
+    ``expected`` only.
+    """
+    unknown = sorted(set(table) - set(expected) - set(optional))
     if unknown:
         raise ValueError(f"unknown key(s) in [{context}]: {unknown}")
     missing = sorted(set(expected) - set(table))
@@ -453,9 +487,33 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     tuplify(oolong_table, "task_ids")
 
     backends_table = raw["backends"]
-    check_keys(backends_table, ("runner", "attributor", "proposer", "openrouter"), "backends")
-    openrouter_table = dict(backends_table["openrouter"])
-    tuplify(openrouter_table, "provider_order")
+    check_keys(
+        backends_table,
+        ("runner", "attributor", "proposer"),
+        "backends",
+        optional=("openrouter", "azure_foundry"),
+    )
+    openrouter: OpenRouterConfig | None = None
+    if "openrouter" in backends_table:
+        openrouter_table = dict(backends_table["openrouter"])
+        tuplify(openrouter_table, "provider_order")
+        openrouter = build_section(OpenRouterConfig, openrouter_table, "backends.openrouter")
+    azure_foundry: AzureFoundryConfig | None = None
+    if "azure_foundry" in backends_table:
+        azure_foundry = build_section(
+            AzureFoundryConfig, backends_table["azure_foundry"], "backends.azure_foundry"
+        )
+    else:
+        azure_roles = sorted(
+            role for role in CLIENT_ROLES if backends_table[role].get("backend") == "azure_foundry"
+        )
+        if azure_roles:
+            raise ValueError(
+                f"missing [backends.azure_foundry] table: role(s) {azure_roles} use the "
+                "azure_foundry backend, whose thinking mode must be declared explicitly "
+                "(an absent table would send no chat_template_kwargs, silently defaulting "
+                "Kimi to thinking mode -- ~10x output cost and <think> markup in outputs)."
+            )
 
     pricing_table = raw["pricing"]
     check_keys(pricing_table, ("promo", "list_price"), "pricing")
@@ -485,7 +543,8 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
                 EndpointConfig, backends_table["attributor"], "backends.attributor"
             ),
             proposer=build_section(EndpointConfig, backends_table["proposer"], "backends.proposer"),
-            openrouter=build_section(OpenRouterConfig, openrouter_table, "backends.openrouter"),
+            openrouter=openrouter,
+            azure_foundry=azure_foundry,
         ),
         pricing=PricingConfig(
             promo=build_section(PricingTier, pricing_table["promo"], "pricing.promo"),
@@ -523,21 +582,37 @@ def identity_hash(config: ExperimentConfig) -> str:
 # ---------------------------------------------------------------------------
 
 
-def sampling_args(config: ExperimentConfig) -> dict[str, Any]:
-    """The decoding config as a client ``sampling_args`` dict.
+def sampling_args(config: ExperimentConfig, role: str) -> dict[str, Any]:
+    """The decoding config as a client ``sampling_args`` dict for one role.
 
     ``top_k`` and ``min_p`` ride in ``extra_body`` (the OpenAI surface has no
-    top-level parameter for them); ``max_tokens`` stays ``max_tokens`` -- the
-    OpenAI client performs the ``max_completion_tokens`` rename itself.
+    top-level parameter for them) only when set -- a None knob is omitted
+    entirely. Provider-specific ``extra_body`` branches on the role's backend:
+    an openrouter role with a non-empty ``provider_order`` gets the routing
+    dict; an azure_foundry role with ``thinking = False`` gets the instant-mode
+    ``chat_template_kwargs``. ``max_tokens`` stays ``max_tokens`` -- the OpenAI
+    client performs the ``max_completion_tokens`` rename itself.
     """
+    if role not in CLIENT_ROLES:
+        raise ValueError(f"unknown client role {role!r}; expected one of {CLIENT_ROLES}")
     decoding = config.decoding
-    extra_body: dict[str, Any] = {"top_k": decoding.top_k, "min_p": decoding.min_p}
-    routing = config.backends.openrouter
-    if routing.provider_order:
-        extra_body["provider"] = {
-            "order": list(routing.provider_order),
-            "allow_fallbacks": routing.allow_fallbacks,
-        }
+    extra_body: dict[str, Any] = {}
+    if decoding.top_k is not None:
+        extra_body["top_k"] = decoding.top_k
+    if decoding.min_p is not None:
+        extra_body["min_p"] = decoding.min_p
+    endpoint: EndpointConfig = getattr(config.backends, role)
+    if endpoint.backend == "openrouter":
+        routing = config.backends.openrouter
+        if routing is not None and routing.provider_order:
+            extra_body["provider"] = {
+                "order": list(routing.provider_order),
+                "allow_fallbacks": routing.allow_fallbacks,
+            }
+    elif endpoint.backend == "azure_foundry":
+        foundry = config.backends.azure_foundry
+        if foundry is not None and foundry.thinking is False:
+            extra_body["chat_template_kwargs"] = {"thinking": False}
     return {
         "temperature": decoding.temperature,
         "top_p": decoding.top_p,
@@ -547,11 +622,28 @@ def sampling_args(config: ExperimentConfig) -> dict[str, Any]:
 
 
 def backend_kwargs_for(config: ExperimentConfig, role: str) -> dict[str, Any]:
-    """Client ``backend_kwargs`` for one role: runner, attributor, or proposer."""
+    """Client ``backend_kwargs`` for one role: runner, attributor, or proposer.
+
+    An azure_foundry role additionally carries the client's mandatory
+    ``pricing`` from ``pricing.list_price``, nested under the single top-level
+    key ``"pricing"`` -- deliberate: the driver's sensitive-kwarg scan matches
+    top-level names and ``token`` substrings, and pricing is non-secret and
+    trace-safe.
+    """
     if role not in CLIENT_ROLES:
         raise ValueError(f"unknown client role {role!r}; expected one of {CLIENT_ROLES}")
     endpoint: EndpointConfig = getattr(config.backends, role)
-    return {"model_name": endpoint.model, "sampling_args": sampling_args(config)}
+    kwargs: dict[str, Any] = {
+        "model_name": endpoint.model,
+        "sampling_args": sampling_args(config, role),
+    }
+    if endpoint.backend == "azure_foundry":
+        tier = config.pricing.list_price
+        kwargs["pricing"] = {
+            "input_per_million": tier.input_per_million,
+            "output_per_million": tier.output_per_million,
+        }
+    return kwargs
 
 
 # The ``round_config_kwargs`` keys that ``shrlm.optimization.costs.governed_limits``

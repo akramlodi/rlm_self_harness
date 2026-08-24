@@ -51,14 +51,24 @@ class ScriptedLM(MockLM):
     """A ``MockLM`` popping from a shared script, with a per-call cost.
 
     Exhausting the script raises rather than improvising: a test whose scripted
-    turns run out is a broken test, not a passing run.
+    turns run out is a broken test, not a passing run. ``cost_source`` mirrors
+    the azure_foundry client's provenance reporting; the default ``None``
+    models a client that reports no source (openrouter today), so pre-existing
+    tests' persisted bytes keep their exact shape.
     """
 
-    def __init__(self, script: list[str], calls: list[str], cost_per_call: float):
+    def __init__(
+        self,
+        script: list[str],
+        calls: list[str],
+        cost_per_call: float,
+        cost_source: str | None = None,
+    ):
         super().__init__(model_name="mock-model")
         self._script = script
         self._calls = calls
         self._cost_per_call = cost_per_call
+        self._cost_source = cost_source
 
     def completion(self, prompt: str | dict[str, Any]) -> str:
         self._call_count += 1
@@ -75,6 +85,7 @@ class ScriptedLM(MockLM):
                     total_input_tokens=self._call_count * 10,
                     total_output_tokens=self._call_count * 10,
                     total_cost=self._cost_per_call * self._call_count,
+                    cost_source=self._cost_source,
                 )
             }
         )
@@ -85,19 +96,26 @@ class ScriptedLM(MockLM):
             total_input_tokens=10,
             total_output_tokens=10,
             total_cost=self._cost_per_call,
+            cost_source=self._cost_source,
         )
 
 
 class ClientFactory:
     """Stands in for ``get_client``: fresh client per call, one shared script."""
 
-    def __init__(self, script: list[str], cost_per_call: float = COST_PER_CALL):
+    def __init__(
+        self,
+        script: list[str],
+        cost_per_call: float = COST_PER_CALL,
+        cost_source: str | None = None,
+    ):
         self.script = list(script)
         self.calls: list[str] = []
         self.cost_per_call = cost_per_call
+        self.cost_source = cost_source
 
     def __call__(self, backend: str, backend_kwargs: dict[str, Any] | None) -> ScriptedLM:
-        return ScriptedLM(self.script, self.calls, self.cost_per_call)
+        return ScriptedLM(self.script, self.calls, self.cost_per_call, self.cost_source)
 
     @property
     def total_calls(self) -> int:
@@ -393,6 +411,28 @@ class TestManifestUsageKeys:
         assert terminated["input_tokens"] == 0
         assert terminated["output_tokens"] == 0
 
+    def test_cost_source_is_persisted_when_the_client_reports_one(self, tmp_path, monkeypatch):
+        """R7 provenance: a client reporting cost_source (the azure_foundry
+        synthesis path) has it recorded on every completed run's manifest
+        line; the terminated run's usage is rebuilt from the exception, which
+        carries no source, so its line omits the key."""
+        factory = ClientFactory(full_script(), cost_source="synthesized")
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path)
+        run_round(config)
+
+        entries = read_manifest(round_dir(config.out_dir, config.round_index))
+        assert entries[0]["cost_source"] == "synthesized"
+        assert entries[1]["cost_source"] == "synthesized"
+        assert "cost_source" not in entries[2]  # terminated: source unknown
+
+    def test_cost_source_is_omitted_when_the_client_reports_none(self, tmp_path, monkeypatch):
+        """A client with no provenance (openrouter today) changes no persisted
+        byte: the additive key is simply absent, keeping prior line shapes."""
+        config = run_full_round(tmp_path, monkeypatch)
+        entries = read_manifest(round_dir(config.out_dir, config.round_index))
+        assert all("cost_source" not in entry for entry in entries)
+
     def test_old_format_manifest_lines_still_load_through_load_round(self, tmp_path, monkeypatch):
         """Manifest lines persisted before U4 carry no token/time keys; they
         must keep loading (backward compatibility, KTD4 additive-only)."""
@@ -554,6 +594,37 @@ class TestAttemptsAndPreconditions:
         assert factory.total_calls == 0
         assert not (round_dir(config.out_dir, config.round_index) / "runs.jsonl").exists()
 
+    def test_azure_backend_with_both_env_vars_missing_names_both(self, tmp_path, monkeypatch):
+        """azure_foundry requires two env vars; the fail-fast names each one."""
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        monkeypatch.delenv("AZURE_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+        config = make_round_config(tmp_path, backend="azure_foundry")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            run_round(config)
+        message = str(excinfo.value)
+        assert "AZURE_API_KEY" in message
+        assert "AZURE_FOUNDRY_ENDPOINT" in message
+        assert factory.total_calls == 0
+        assert not (round_dir(config.out_dir, config.round_index) / "runs.jsonl").exists()
+
+    def test_azure_backend_with_one_env_var_missing_names_only_it(self, tmp_path, monkeypatch):
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        monkeypatch.setenv("AZURE_API_KEY", "present-key")
+        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+        config = make_round_config(tmp_path, backend="azure_foundry")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            run_round(config)
+        message = str(excinfo.value)
+        assert "AZURE_FOUNDRY_ENDPOINT" in message
+        assert "AZURE_API_KEY" not in message
+        assert factory.total_calls == 0
+        assert not (round_dir(config.out_dir, config.round_index) / "runs.jsonl").exists()
+
     def test_api_key_material_in_backend_kwargs_is_rejected(self, tmp_path, monkeypatch):
         factory = ClientFactory(full_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
@@ -564,6 +635,33 @@ class TestAttemptsAndPreconditions:
             run_round(config)
         assert factory.total_calls == 0
 
+    def test_sensitive_top_level_kwarg_is_rejected_while_nested_pricing_passes(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression guard for the nested-pricing choice: the sensitive scan
+        matches top-level kwarg names only, so ``pricing`` (whose leaf key
+        contains no sensitive fragment anyway) must pass while any top-level
+        name carrying a sensitive fragment is still refused."""
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        refused = make_round_config(
+            tmp_path / "refused",
+            backend_kwargs={"model_name": "m", "access_token": "tok-nope"},
+        )
+        with pytest.raises(ValueError, match="access_token"):
+            run_round(refused)
+        assert factory.total_calls == 0
+
+        accepted = make_round_config(
+            tmp_path / "accepted",
+            backend_kwargs={
+                "model_name": "driver-test",
+                "pricing": {"input_per_million": 0.60, "output_per_million": 3.00},
+            },
+        )
+        entries = run_round(accepted)
+        assert len(entries) == 3
+
     def test_duplicate_instance_ids_are_rejected(self, tmp_path, monkeypatch):
         factory = ClientFactory(full_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
@@ -571,6 +669,56 @@ class TestAttemptsAndPreconditions:
         config = make_round_config(tmp_path, instances=[instance, dict(instance)])
         with pytest.raises(ValueError, match="duplicate"):
             run_round(config)
+        assert factory.total_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# Credential hygiene: env sentinel values never reach disk or error text
+# ---------------------------------------------------------------------------
+
+
+AZURE_KEY_SENTINEL = "sentinel-azure-key-8b1f2c"
+AZURE_ENDPOINT_SENTINEL = "https://sentinel-resource-9d4e.services.ai.azure.com"
+
+
+class TestCredentialHygiene:
+    def test_azure_sentinels_never_reach_persisted_round_bytes(self, tmp_path, monkeypatch):
+        """Credentials live in the environment only (R3): with sentinel values
+        in both Azure variables, a full round persists no file containing
+        either value, and the serialized backend_kwargs carry neither."""
+        monkeypatch.setenv("AZURE_API_KEY", AZURE_KEY_SENTINEL)
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", AZURE_ENDPOINT_SENTINEL)
+        factory = ClientFactory(full_script(), cost_source="synthesized")
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, backend="azure_foundry")
+        run_round(config)
+
+        assert AZURE_KEY_SENTINEL not in repr(config.backend_kwargs)
+        assert AZURE_ENDPOINT_SENTINEL not in repr(config.backend_kwargs)
+        scanned = 0
+        for path in round_dir(config.out_dir, config.round_index).rglob("*"):
+            if not path.is_file():
+                continue
+            scanned += 1
+            content = path.read_text(errors="replace")
+            assert AZURE_KEY_SENTINEL not in content, path
+            assert AZURE_ENDPOINT_SENTINEL not in content, path
+        assert scanned >= 5  # harness.json, instances.jsonl, runs.jsonl, 3 traces
+
+    def test_fail_fast_error_text_carries_no_sentinel_value(self, tmp_path, monkeypatch):
+        """The missing-endpoint error names the variable, never the value the
+        other (set) variable holds."""
+        monkeypatch.setenv("AZURE_API_KEY", AZURE_KEY_SENTINEL)
+        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, backend="azure_foundry")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            run_round(config)
+        message = str(excinfo.value)
+        assert "AZURE_FOUNDRY_ENDPOINT" in message
+        assert AZURE_KEY_SENTINEL not in message
         assert factory.total_calls == 0
 
 

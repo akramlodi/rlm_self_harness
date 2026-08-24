@@ -173,6 +173,37 @@ class TestReAskAudit:
         assert "causal_status" in re_ask
         assert [attempt.accepted for attempt in result.attempts] == [False, True]
 
+    def test_huge_rejection_is_truncated_in_the_retry_prompt_not_in_the_audit(self):
+        """Rejections embed unbounded model-authored values; the retry PROMPT
+        is bounded (the $5 proof's ungoverned char cap depends on it) while
+        the persisted attempt keeps the full violation text."""
+        huge = "z" * 50_000
+        off = (
+            "```json\n"
+            + json.dumps(
+                {
+                    "causal_status": huge,
+                    "agent_mechanism": "lossy_aggregation",
+                    "failing_level": "root",
+                    "evidence_node_ids": ["r"],
+                    "symptom_summary": "a huge made-up label",
+                }
+            )
+            + "\n```"
+        )
+        lm = RecordingLM([off, canned_attribution()])
+        attributor = LLMAttributor(lm, config=FAST_CONFIG)
+        digest, root, verdict = attribution_inputs()
+
+        result = attributor.attribute(digest, root, verdict, UNGROUNDED)
+        re_ask = lm.seen[1][1]["content"]
+        assert "Your previous response was rejected" in re_ask
+        assert "[truncated" in re_ask
+        assert huge not in re_ask
+        assert "z" * 2001 not in re_ask
+        # The audit record is never truncated.
+        assert huge in result.attempts[0].violation
+
     def test_three_strikes_keeps_every_attempt_with_its_violation(self):
         lm = RecordingLM([OFF_VOCABULARY] * 3)
         attributor = LLMAttributor(lm, config=FAST_CONFIG)

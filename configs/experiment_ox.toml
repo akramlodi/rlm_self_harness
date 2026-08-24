@@ -1,12 +1,21 @@
 # =============================================================================
-# configs/experiment.toml -- the single source of truth for every Self-Harness
-# experiment parameter (docs/plans/experiments_draft.md, section 3.10).
+# configs/experiment_ox.toml -- the stealth/ox-alpha comparison run
+# (2026-08-23), forked from configs/experiment.toml so the inflight Qwen
+# experiment's TOML (and its recorded identity hash) stays untouched.
 #
-# Edit values here; scaffold code never hardcodes an experiment parameter (R1).
-# Load with shrlm.experiment.config.load_config(profile="full" | "smoke").
-# The [smoke] table at the bottom overrides scale counts only (instance
-# counts, repetitions, candidate width, rounds, spend caps); every other
-# semantic is identical between profiles (R2).
+# Run with:
+#   uv run python examples/run_experiment.py \
+#       --config configs/experiment_ox.toml --out-dir ./experiment_ox_0823
+# Analysis tools that resolve the config from an out-dir default to
+# configs/experiment.toml; pass --config configs/experiment_ox.toml (report.py
+# supports it) or the identity check resolves to "unknown".
+#
+# Differences from experiment.toml: role models (stealth/ox-alpha, an
+# OpenRouter stealth model -- $0/token, anonymous downstream provider),
+# loop.t = 16, zeroed [pricing] tables, and _ox-suffixed operational cache
+# paths so two concurrent experiments never append to the same JSONL cache.
+# Decoding sampling params match the Qwen run (ox-alpha publishes no model
+# card); max_output_tokens differs -- see [decoding].
 # =============================================================================
 
 [decoding]
@@ -19,7 +28,12 @@ temperature = 0.7
 top_p = 0.8
 top_k = 20
 min_p = 0.0
-max_output_tokens = 4096 # pilot tuning range 2048-8192 (section 3.10 row 3)
+# 8192 (top of the section 3.10 row 3 tuning range), not the Qwen run's 4096:
+# a 2026-08-23 probe showed ox-alpha is a reasoning model whose hidden
+# reasoning tokens bill against max_tokens -- at 4096 a long-context call can
+# exhaust the budget before emitting any content, which the Qwen value would
+# turn into systematic empty completions rather than a fair comparison.
+max_output_tokens = 8192
 
 [splits]
 # Source-environment (GraphWalks) split definitions, section 3.1.
@@ -34,9 +48,10 @@ seed = 0 # seeded partition of the source-short pool
 m = 2 # mining repetitions per held-in instance
 v = 4 # validation repetitions per instance per subject
 k = 4 # candidate edits proposed per round
-# Set to 3 for the 2026-08-23 Qwen comparison run (was 15, section 3.2). t is
-# an identity key (R3), so extending the run later needs a fresh out-dir.
-t = 3 # maximum optimization rounds
+# 16 for the ox-alpha run: the model is free, so rounds are bounded by wall
+# clock and patience, not spend. t is an identity key (R3), so extending the
+# run later needs a fresh out-dir.
+t = 16 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
 
 [promotion]
@@ -107,21 +122,24 @@ n_long = 40 # target-long test size; the upstream ceiling, not a choice:
 # so 2 x 20 = 40 is every instance that exists at 262,144. A larger value fails
 # the coverage gate in load_oolong_pairs before any spend.
 
-# Shipped roles run OpenRouter Qwen3-30B-A3B-Instruct-2507 (the 2026-08-23
-# comparison run); azure_foundry / Kimi-K2.5 is the alternate backbone. To
-# switch back, edit these three role tables plus [decoding] and [pricing].
+# All roles run stealth/ox-alpha: an OpenRouter stealth (cloaked) model,
+# free at time of writing, downstream provider anonymous. Stealth caveats:
+# the account's OpenRouter privacy settings must permit prompt logging /
+# model training or calls 404; the model can be withdrawn without notice
+# (the run is resumable, but a withdrawn model strands the out-dir); context
+# window and rate limits are unpublished.
 
 [backends.runner]
 backend = "openrouter"
-model = "qwen/qwen3-30b-a3b-instruct-2507"
+model = "stealth/ox-alpha"
 
 [backends.attributor]
 backend = "openrouter"
-model = "qwen/qwen3-30b-a3b-instruct-2507"
+model = "stealth/ox-alpha"
 
 [backends.proposer]
 backend = "openrouter"
-model = "qwen/qwen3-30b-a3b-instruct-2507"
+model = "stealth/ox-alpha"
 
 [backends.openrouter]
 # Provider routing, sent as sampling_args["extra_body"]["provider"] for
@@ -140,15 +158,16 @@ allow_fallbacks = true
 thinking = false
 
 [pricing.promo]
-# OpenRouter promotional rate for qwen/qwen3-30b-a3b-instruct-2507, USD per
-# 1M tokens (read 2026-08-12; refresh before the main run).
-input_per_million = 0.08
-output_per_million = 0.29
+# stealth/ox-alpha is free on OpenRouter (read 2026-08-23). These tables feed
+# azure_foundry cost synthesis (no role uses it here) and the report's cost
+# projections; zero is the truthful rate.
+input_per_million = 0.0
+output_per_million = 0.0
 
 [pricing.list_price]
-# Non-promotional list rate, same units and provenance.
-input_per_million = 0.10
-output_per_million = 0.30
+# The model has no published list rate; the anonymous provider bills $0.
+input_per_million = 0.0
+output_per_million = 0.0
 
 [[gpu_scenarios]]
 name = "h100_sxm_rented"
@@ -192,12 +211,16 @@ long = 450.0
 
 [report]
 p_merge = 0.5 # assumed fraction of rounds ending in a promotion + merge re-evaluation
-eval_conditions = 4 # B1/H0, H0*, lambda-RLM, SH-RLM: full fixed-weight grid (section 3.5)
+eval_conditions = 3 # B1, H1, SH-RLM: the full-experiment evaluation grid (section 3.5)
 
 [operational]
 loader_timeout_seconds = 120.0
-attribution_cache_path = ".cache/shrlm/attribution.jsonl"
-proposal_cache_path = ".cache/shrlm/proposals.jsonl"
+# _ox suffix: the inflight Qwen experiment appends to the unsuffixed files
+# from the same working directory; cache keys embed the model name so entries
+# could never collide, but two processes appending to one JSONL can interleave
+# partial lines. Separate files remove the hazard.
+attribution_cache_path = ".cache/shrlm/attribution_ox.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_ox.jsonl"
 eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
 
 # -----------------------------------------------------------------------------
