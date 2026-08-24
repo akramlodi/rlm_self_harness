@@ -60,7 +60,7 @@ One full-profile round makes about 1,328 model runs, of which 1,280 are validati
 
 ### Success Criteria
 
-- Full-profile validation stage wall clock drops from ~25 h to ~5-6 h at `validation_workers = 5` (measured on the next real round via `stage_usage.jsonl` `wall_seconds`).
+- Full-profile validation stage wall clock for the baseline-plus-candidates leg drops from ~25 h to ~5-6 h at `validation_workers = 5` (measured on the next real round via `stage_usage.jsonl` `wall_seconds`). On a merge round the sequential merged re-evaluation (R3) adds ~256 runs (~5 h at 70 s/run) on top of that figure.
 - The scripted e2e round in `tests/optimization/test_validation_e2e.py` passes under both worker settings with identical ledger bytes.
 
 ### Scope Boundaries
@@ -89,7 +89,8 @@ One full-profile round makes about 1,328 model runs, of which 1,280 are validati
 
 - KTD1. **Child processes are spawned as `python -m shrlm.optimization.subject_worker <request.json>`, one per subject, managed with `subprocess.Popen` and a bounded slot count.** Mirrors `_run_gate_subprocess` in `shrlm/optimization/candidates.py`. No `multiprocessing` pool: no pickling, no fork-safety questions on macOS, and the child is the main thread so `SIGALRM` still binds. (session-settled: user-directed — chosen over a thread pool and over per-run fan-out: see Key Decisions.)
 - KTD2. **`validation_workers` defaults to 1 and selects the unchanged in-process loop; only values above 1 enter the process dispatcher.** Keeps every existing test on the in-process `get_client` monkeypatch seam and makes the parallel path opt-in.
-- KTD3. **The request file is self-contained JSON: subject id, harness envelope (`serialize_harness` output plus expected hash), split instances, caps, repetitions, backend name, backend kwargs, out dir, round index, verifier factory dotted path, and an optional test-only client factory dotted path with opaque JSON args.** The child rebuilds the harness with `materialize_harness` into a subject-local module file and refuses on hash mismatch (R7), following `rematerialize_harness_envelope`.
+- KTD3. **The request file is self-contained JSON: subject id, harness envelope (`serialize_harness` output plus expected hash), split instances, caps, repetitions, backend name, backend kwargs, out dir, round index, verifier factory dotted path, and an optional test-only client factory (dotted path plus per-subject JSON args).** The child rebuilds the harness with `materialize_harness` into a subject-local module file and refuses on hash mismatch (R7), following `rematerialize_harness_envelope`.
+- KTD9. **The scripted-client test seam crosses the process boundary through the request file, not a monkeypatch.** `EvaluationConfig` gains `client_factory: tuple[str, dict[str, Any]] | None` (dotted path plus args keyed by subject id); `run_experiment` gains a test-only `client_factory` kwarg threaded through `_validate`. The child installs the factory on the `rlm.core.rlm.get_client` seam before evaluation and writes `<subject_dir>/client_calls.json` (`{subject_id, calls}`) on exit, so parents and tests read call counts from disk. Tests split today's single concatenated scripts into per-subject lists. Because the in-process network block does not reach children, every parallel-path test must supply a `client_factory`; a child that receives none and has no backend credential fails at the driver's credential gate rather than reaching a provider.
 - KTD4. **The parent decides `CandidateRejection` before spawning.** `governed_limits` is pure, so the caps gate runs in the parent and only runnable subjects get a child; the child's result is therefore always a completed subject or a failure.
 - KTD5. **The parent rebuilds `SubjectEvaluation` from disk with `load_summary`, not from child stdout.** The child's stdout carries one JSON status line; the summary the ledger consumes is the persisted `summary.json`, the same bytes the sequential path returns.
 - KTD6. **Verifier and test client are passed as dotted import paths.** `EvaluationConfig` gains `verifier_factory` (dotted path to a zero-arg callable); the orchestrator supplies the `GraphWalksVerifier` path when no verifier was injected. A non-default injected verifier with `validation_workers > 1` and no factory is a configuration error raised before any spawn.
@@ -164,14 +165,15 @@ sequenceDiagram
 - **Files:** `shrlm/optimization/subject_worker.py` (new), `shrlm/optimization/validation.py` (request/result schema constants, `write_subject_request` helper), `tests/optimization/test_subject_worker.py` (new), `tests/optimization/fixtures.py` (scripted client factory usable from a child).
 - **Approach:**
   1. Define the request document per KTD3 and a one-line JSON result (`ok`, `subject_id`, `summary_path` or `error`).
-  2. Child: load request, import `verifier_factory`, optionally install `client_factory` on `rlm.core.rlm.get_client`, `materialize_harness` into `<subject_dir>/subject_module_<hash16>.py`, compare `harness_hash` to expected, build `EvaluationConfig`, call `evaluate_subject`, print result line, exit 0; any exception prints an error line and exits 1.
+  2. Child: load request, import `verifier_factory`, optionally install `client_factory` on `rlm.core.rlm.get_client` (KTD9), `materialize_harness` into `<subject_dir>/subject_module_<hash16>.py`, compare `harness_hash` to expected, build `EvaluationConfig`, call `evaluate_subject`, write `client_calls.json` when a factory was installed, print result line, exit 0; any exception prints an error line and exits 1.
   3. A `CandidateRejection` returned by `evaluate_subject` inside the child is an invariant violation (KTD4) and is reported as a failure.
 - **Patterns to follow:** `run_subprocess_gate` / `__main__` block in `shrlm/optimization/candidates.py`; `rematerialize_harness_envelope` in `shrlm/experiment/orchestrator.py`.
 - **Test scenarios:**
   - Happy path: request for `H0` with a scripted client factory over two instances × two splits produces `summary.json` with the scripted pass counts and exit 0.
   - Tampered envelope (edited instruction text, stale hash) exits 1 with a hash-mismatch message and creates no split directories.
   - Missing `verifier_factory` module exits 1 with an import error in the result line.
-  - Resume: running the same request twice makes zero new model calls on the second run (scripted client asserts call count).
+  - Resume: running the same request twice makes zero new model calls on the second run (`client_calls.json` reports zero calls after the second run).
+  - A request with no `client_factory` and no backend credential in the environment exits 1 at the credential gate without any network access.
 - **Verification:** worker tests pass; the generated module file lives under the subject directory.
 
 ### U3. Process dispatcher in `evaluate_validation_round`
@@ -204,11 +206,11 @@ sequenceDiagram
 - **Dependencies:** U3.
 - **Files:** `shrlm/experiment/orchestrator.py` (`_validate`, `_Experiment` verifier-factory resolution, module docstring resume contract), `shrlm/experiment/config.py` (`evaluation_config_kwargs`), `tests/experiment/test_orchestrator.py`, `tests/experiment/test_smoke_mock.py`.
 - **Approach:**
-  1. `_validate` builds `EvaluationConfig` with `workers` and `verifier_factory`; the default `GraphWalksVerifier` maps to its dotted path, an injected verifier with `workers > 1` and no `verifier_factory` raises a configuration error before the stage meter opens.
+  1. `_validate` builds `EvaluationConfig` with `workers`, `verifier_factory`, and the test-only `client_factory` from `run_experiment` (KTD9); the default `GraphWalksVerifier` maps to its dotted path, an injected verifier with `workers > 1` and no `verifier_factory` raises a configuration error before the stage meter opens.
   2. `_validation_usage` before/after delta is unchanged; confirm it captures child-persisted manifests.
 - **Patterns to follow:** existing `_validate` meter block.
 - **Test scenarios:**
-  - Mock-backed smoke experiment with `validation_workers = 2` completes a round; `stage_usage.jsonl` validation record's `input_tokens`/`cost` equal the sum over every `runs.jsonl` under the validation round.
+  - Mock-backed smoke experiment with `validation_workers = 2` and per-subject scripts passed via `client_factory` completes a round with no network access; `stage_usage.jsonl` validation record's `input_tokens`/`cost` equal the sum over every `runs.jsonl` under the validation round.
   - Injected non-default verifier plus `validation_workers = 2` raises before any directory is created.
   - Existing orchestrator tests pass with the default of 1.
 - **Verification:** experiment test suite passes.
@@ -234,7 +236,7 @@ sequenceDiagram
 | Lint/format | `uv run ruff check . && uv run ruff format --check .` | all |
 | Identity pin | `identity_hash(load_config("full"))` equals the value recorded before U1 | U1 |
 | Live smoke (opt-in, spends money) | `uv run python examples/run_experiment.py --profile smoke --out-dir ./experiment_smoke_parallel` with `[smoke.operational] validation_workers = 3` | U4 |
-| Speed exit criterion | next full round's validation `wall_seconds` in `stage_usage.jsonl` ≤ 0.25 × the sequential figure | Success Criteria |
+| Speed exit criterion | on a round whose plan is not a merge, next full round's validation `wall_seconds` in `stage_usage.jsonl` ≤ 0.25 × the sequential figure; on a merge round, apply the criterion to the wall clock before the merge leg (the sequential merged re-evaluation, R3, adds ~256 × per-run seconds) | Success Criteria |
 
 ---
 
