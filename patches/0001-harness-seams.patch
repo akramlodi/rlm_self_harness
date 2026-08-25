@@ -1,8 +1,760 @@
+diff --git a/rlm/Readme.md b/rlm/Readme.md
+new file mode 100644
+index 0000000..e4a8f33
+--- /dev/null
++++ b/rlm/Readme.md
+@@ -0,0 +1,186 @@
++
++---
++
++<h1 align="center" style="font-size:2.8em">
++<span>Recursive Language Models (<span style="color:orange">RLM</span>s)</span>
++</h1>
++
++<p align="center" style="font-size:1.3em">
++  <a href="https://arxiv.org/abs/2512.24601">Full Paper</a> •
++  <a href="https://alexzhang13.github.io/blog/2025/rlm/">Blogpost</a> •
++  <a href="https://alexzhang13.github.io/rlm/">Documentation</a> •
++  <a href="https://github.com/alexzhang13/rlm-minimal">RLM Minimal</a>
++</p>
++
++<p align="center">
++  <a href="https://github.com/alexzhang13/rlm/actions/workflows/style.yml">
++    <img src="https://github.com/alexzhang13/rlm/actions/workflows/style.yml/badge.svg" alt="Style" />
++  </a>
++  <a href="https://github.com/alexzhang13/rlm/actions/workflows/test.yml">
++    <img src="https://github.com/alexzhang13/rlm/actions/workflows/test.yml/badge.svg" alt="Test" />
++  </a>
++</p>
++
++<p align="center">
++  <a href="https://arxiv.org/abs/2512.24601">
++    <img src="media/paper_preview.png" alt="Paper Preview" width="300"/>
++  </a>
++</p>
++
++## Overview
++Recursive Language Models (RLMs) are a task-agnostic inference paradigm for language models (LMs) to handle near-infinite length contexts by enabling the LM to *programmatically* examine, decompose, and recursively call itself over its input. RLMs replace the canonical `llm.completion(prompt, model)` call with a `rlm.completion(prompt, model)` call, acting as a "language model". RLMs offload the context as a variable in a REPL environment that the LM can interact with and launch sub-LM calls inside of.
++
++RLMs are a bet on future "language model" design choices. We argue for a [CodeAct](https://arxiv.org/abs/2402.01030)-style harness (i.e. all language models should have access to a code environment) with sub-(R)LM calls as functions in code, and context / prompts as objects in code. RLMs explicitly defer code execution with sub-calls as functions to the language model itself, which is incredibly flexible and lends itself well to scale if trained correctly. We want to move away from the JSON tool-calling standard for both sub-agents and generic tool calls. The naming comes from the fact that such a system is itself a "language model" (a probabilistic mapping from text to text) that builds around and relies on recursive sub-LLM calls.
++
++This repository provides both an extensible inference engine and training environment for using RLMs around standard API-based and local LLMs. The initial experiments and idea were proposed in a [blogpost](https://alexzhang13.github.io/blog/2025/rlm/) in 2025, with expanded results in an [arXiv preprint](https://arxiv.org/abs/2512.24601).
++
++We now also include a [verifiers](https://github.com/PrimeIntellect-ai/verifiers) training environment based on Prime Intellect's [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) in the `training/` folder. Train your own RLMs, which directly can be plugged into our inference engine!
++
++> [!NOTE]
++> This repository contains inference code for RLMs with support for various sandbox environments. Open-source contributions are welcome. This repository is maintained by the authors of the paper from the MIT OASYS lab.
++
++## Quick Setup
++> [!NOTE]
++> `rlms` requires **Python 3.11 or later**.
++
++You can try out RLMs quickly by installing from PyPi:
++```bash
++pip install rlms
++```
++
++The default RLM client uses a REPL environment that runs on the host process through Python `exec` calls. It uses the same virtual environment as the host process (i.e. it will have access to the same dependencies), but with some limitations in its available global modules. As an example, we can call RLM completions using GPT-5-nano:
++```python
++from rlm import RLM
++
++rlm = RLM(
++    backend="openai",
++    backend_kwargs={"model_name": "gpt-5-nano"},
++    verbose=True,  # For printing to console with rich, disabled by default.
++)
++
++print(rlm.completion("Print me the first 100 powers of two, each on a newline.").response)
++```
++
++<details>
++<summary><b>Manual Setup</b></summary>
++
++Set up the dependencies with `uv` (or your virtual environment of choice):
++```bash
++curl -LsSf https://astral.sh/uv/install.sh | sh
++uv init && uv venv --python 3.12  # change version as needed
++uv pip install -e .
++```
++
++This project includes a `Makefile` to simplify common tasks.
++
++- `make install`: Install base dependencies.
++- `make check`: Run linter, formatter, and tests.
++
++To run a quick test, the following will run an RLM query with the OpenAI client using your environment variable `OPENAI_API_KEY` (feel free to change this). This will generate console output as well as a log which you can use with the visualizer to explore the trajectories.
++```bash
++make quickstart
++```
++
++</details>
++
++## REPL Environments
++We support two types of REPL environments -- isolated, and non-isolated. Non-isolated environments (default) run code execution on the same machine as the RLM (e.g. through `exec`), which is pretty reasonable for some local low-risk tasks, like simple benchmarking, but can be problematic if the prompts or tool calls can interact with malicious users. Fully isolated environments use cloud-based sandboxes (e.g. Prime Sandboxes, [Modal Sandboxes](https://modal.com/docs/guide/sandboxes)) to run code generated by the RLM, ensuring complete isolation from the host process. Environments can be added, but we natively support the following: `local` (default), `ipython`, `docker`, `modal`, `prime`, `daytona`, `e2b`.
++
++```python
++rlm = RLM(
++    environment="...", # "local", "ipython", "docker", "modal", "prime", "daytona", "e2b"
++    environment_kwargs={...},
++)
++```
++
++### Local Environments
++The default `local` environment `LocalREPL` runs in the same process as the RLM itself, with specified global and local namespaces for minimal security. Using this REPL is generally safe, but should not be used for production settings. It also shares the same virtual environment (e.g. Conda or uv) as the host process.
++
++#### IPython (*requires `pip install 'rlms[ipython]'`*)
++`IPythonREPL` runs cells inside a real IPython session — either in-process (default) or in a separate `ipykernel` subprocess. Subprocess mode adds hard `cell_timeout` enforcement and full namespace isolation from the RLM host. See the [IPythonREPL docs](https://alexzhang13.github.io/rlm/environments/ipython) for details.
++
++#### Docker <img src="https://github.com/docker.png" alt="Docker" height="20" style="vertical-align: middle;"/> (*requires [Docker installed](https://docs.docker.com/desktop/setup/install/)*)
++We also support a Docker-based environment called `DockerREPL` that launches the REPL environment as a Docker image. By default, we use the `python:3.11-slim` image, but the user can specify custom images as well. The container runs fully isolated from the host; a lightweight host-side proxy bridges LM access back into the container.
++
++`DockerREPL` supports the full feature set of the local environment: single LM calls (`llm_query` / `llm_query_batched`), recursive sub-RLM calls (`rlm_query` / `rlm_query_batched`, including parallel batched sub-calls bounded by `max_concurrent_subcalls`), `custom_tools` / `custom_sub_tools`, `persistent=True` multi-turn sessions (versioned `context_N` / `history_N` reused across `completion()` calls), and `compaction=True` auto-summarization of the running `history`. For isolated environments, custom tools should be passed as Python code strings or JSON-serializable values (host callables cannot cross the process boundary).
++
++### Isolated Environments
++We support several different REPL environments that run on separate, cloud-based machines. Whenever a recursive sub-call is made in these instances, it is requested from the host process.
++
++#### Modal Sandboxes <img src="https://github.com/modal-labs.png" alt="Modal" height="20" style="vertical-align: middle;"/>
++To use [Modal Sandboxes](https://modal.com/docs/guide/sandboxes) as the REPL environment, you need to install and authenticate your Modal account.
++```bash
++uv add modal  # add modal library
++modal setup   # authenticate account
++```
++
++#### Prime Intellect Sandboxes <img src="https://github.com/PrimeIntellect-ai.png" alt="Prime Intellect" height="20" style="vertical-align: middle;"/>
++> [!NOTE]
++> **Prime Intellect Sandboxes** are currently a beta feature. See the [documentation](https://docs.primeintellect.ai/sandboxes/overview) for more information. We noticed slow runtimes when using these sandboxes, which is currently an open issue.
++
++
++To use [Prime Sandboxes](https://docs.primeintellect.ai/sandboxes/sdk), install the SDK and set your API key:
++```bash
++uv pip install -e ".[prime]"
++export PRIME_API_KEY=...
++```
++
++
++### Model Providers
++We currently support most major clients (OpenAI, Anthropic), as well as the router platforms (OpenRouter, Portkey). For local models, we recommend using vLLM (which interfaces with the [OpenAI client](https://github.com/alexzhang13/rlm/blob/main/rlm/clients/openai.py)). To view or add support for more clients, start by looking at [`rlm/clients/`](https://github.com/alexzhang13/rlm/tree/main/rlm/clients).
++
++## Training
++We provide a simple RL training harness for training RLMs used in this repo (specifically the `local` REPL). The implementation uses no sandboxes for simplicity and slots easily your use case, but an ideal setup would use sandboxes for safety. Training logic is isolated to the [`training/`](https://github.com/alexzhang13/rlm/tree/main/training) folder, which exposes `rlm.RLM` as a [`verifiers`](https://github.com/willccbb/verifiers) `Environment` and plugs straight into [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl). See the [training README](https://github.com/alexzhang13/rlm/tree/main/training#readme) for the launch command. The harness uses subprocess-isolated local REPL execution (no cloud sandboxes), matching the `local` environment above.
++
++A worked example with an example `.toml` lives in [`training/environments/oolong/`](https://github.com/alexzhang13/rlm/tree/main/training/environments/oolong) (OOLONG long-context QA). New training environments can be added the same way — author a `verifiers` env that wraps your task (see the [verifiers docs](https://verifiers.readthedocs.io/)), then reference it from a config.
++
++## Relevant Reading
++* **[Dec '25]** [Recursive Language Models arXiv](https://arxiv.org/abs/2512.24601)
++* **[Oct '25]** [Recursive Language Models Blogpost](https://alexzhang13.github.io/blog/2025/rlm/)
++
++If you use this code or repository in your research, please cite:
++
++```bibtex
++@misc{zhang2026recursivelanguagemodels,
++      title={Recursive Language Models},
++      author={Alex L. Zhang and Tim Kraska and Omar Khattab},
++      year={2026},
++      eprint={2512.24601},
++      archivePrefix={arXiv},
++      primaryClass={cs.AI},
++      url={https://arxiv.org/abs/2512.24601},
++}
++```
++
++## RLMs in the Wild
++There are many amazing demos and production-ready use cases of RLMs. We provide a list of notable examples that explicitly use RLMs as a central piece of their design.
++* <img src="https://www.google.com/s2/favicons?domain=dspy.ai&sz=64" alt="DSPy" height="15" style="vertical-align: middle;"/> [DSPy.RLM](https://github.com/stanfordnlp/dspy) <a href="https://github.com/stanfordnlp/dspy/stargazers"><img src="https://badgen.net/github/stars/stanfordnlp/dspy?icon=github&label=Stars" height="15" alt="GitHub stars"></a>
++* <img src="https://github.com/ax-llm.png" alt="Ax" height="15" style="vertical-align: middle;"/> [Ax](https://github.com/ax-llm/ax) <a href="https://github.com/ax-llm/ax/stargazers"><img src="https://badgen.net/github/stars/ax-llm/ax?icon=github&label=Stars" height="15" alt="GitHub stars"></a>
++* <img src="https://github.com/context-labs.png" alt="context-labs" height="15" style="vertical-align: middle;"/> [context-labs/HALO: **RLM-based Automatic Agent Optimization Loop**](https://github.com/context-labs/halo) <a href="https://github.com/context-labs/halo/stargazers"><img src="https://badgen.net/github/stars/context-labs/halo?icon=github&label=Stars" height="15" alt="GitHub stars"></a>
++* [viplismism/rlm-cli: **CLI for Recursive Language Models**](https://github.com/viplismism/rlm-cli) <a href="https://github.com/viplismism/rlm-cli/stargazers"><img src="https://badgen.net/github/stars/viplismism/rlm-cli?icon=github&label=Stars" height="15" alt="GitHub stars"></a>
++* <img src="https://www.google.com/s2/favicons?domain=alphaxiv.org&sz=64" alt="alphaXiv" height="15" style="vertical-align: middle;"/> [alphaXiv Official Blog. **Reinforcing Recursive Language Models**](https://www.alphaxiv.org/blog/reinforcement-learning-for-rlms#training)
++* <img src="https://www.google.com/s2/favicons?domain=daytona.io&sz=64" alt="Daytona" height="15" style="vertical-align: middle;"/> [Daytona. **Building Deep Recursive Language Models**](https://www.daytona.io/docs/en/guides/rlm/recursive-language-models/)
++* <img src="https://www.google.com/s2/favicons?domain=symbolica.ai&sz=64" alt="Symbolica" height="15" style="vertical-align: middle;"/> [Symbolica. **SotA ARC-AGI-2 Results with REPL Agents**](https://www.symbolica.ai/blog/arcgentica)
++* <img src="https://www.google.com/s2/favicons?domain=cloud.google.com&sz=64" alt="Google Cloud" height="15" style="vertical-align: middle;"/> [Google Cloud Community Articles. **RLMs in ADK**](https://discuss.google.dev/t/recursive-language-models-in-adk/)
++* <img src="https://github.com/PrimeIntellect-ai.png" alt="Prime Intellect" height="15" style="vertical-align: middle;"/> [Prime Intellect Blog. **Recursive Language Models: *the* paradigm of 2026**](https://www.primeintellect.ai/blog/rlm)
++
++## Optional: Trajectory metadata, logging, and debugging
++`RLMChatCompletion` has an optional `metadata` field (default `None`) that holds the full trajectory (run config + all iterations and sub-calls) so you can reconstruct the run. Pass an `RLMLogger` to capture it:
++
++- **In-memory only** (trajectory on `completion.metadata`): `logger=RLMLogger()` (no `log_dir`).
++- **Also save to disk** (JSONL for the visualizer): `logger=RLMLogger(log_dir="./logs")`.
++
++**Visualizing logs.** We also provide a simple visualizer to inspect code, sub-LM, and root-LM calls. Use `RLMLogger(log_dir="./logs")` so each completion writes a `.jsonl` file:
++```python
++from rlm.logger import RLMLogger
++from rlm import RLM
++
++logger = RLMLogger(log_dir="./logs")
++rlm = RLM(..., logger=logger)
++```
++
++To run the visualizer locally, we use Node.js and shadcn/ui:
++```
++cd visualizer/
++npm run dev        # default localhost:3001
++```
+diff --git a/rlm/clients/__init__.py b/rlm/clients/__init__.py
+index a57c8e8..8675708 100644
+--- a/rlm/clients/__init__.py
++++ b/rlm/clients/__init__.py
+@@ -53,7 +53,11 @@ def get_client(
+         from rlm.clients.azure_openai import AzureOpenAIClient
+ 
+         return AzureOpenAIClient(**backend_kwargs)
++    elif backend == "azure_foundry":
++        from rlm.clients.azure_foundry import AzureFoundryClient
++
++        return AzureFoundryClient(**backend_kwargs)
+     else:
+         raise ValueError(
+-            f"Unknown backend: {backend}. Supported backends: ['openai', 'vllm', 'portkey', 'openrouter', 'anthropic', 'azure_openai', 'gemini', 'vercel']"
++            f"Unknown backend: {backend}. Supported backends: ['openai', 'vllm', 'portkey', 'openrouter', 'anthropic', 'azure_openai', 'azure_foundry', 'gemini', 'vercel']"
+         )
+diff --git a/rlm/clients/azure_foundry.py b/rlm/clients/azure_foundry.py
+new file mode 100644
+index 0000000..bf25fce
+--- /dev/null
++++ b/rlm/clients/azure_foundry.py
+@@ -0,0 +1,217 @@
++import math
++import os
++import threading
++from typing import Any
++from urllib.parse import urlparse
++
++import openai
++from dotenv import load_dotenv
++
++from rlm.clients.openai import OpenAIClient, extract_provider_cost
++from rlm.core.types import ModelUsageSummary, UsageSummary
++
++load_dotenv()
++
++# Hosts the Foundry endpoint is allowed to resolve to. Anything else is
++# rejected before an API client is ever constructed.
++_ALLOWED_HOST_SUFFIXES = (".services.ai.azure.com", ".openai.azure.com")
++
++_PRICING_KEYS = ("input_per_million", "output_per_million")
++
++
++def _validate_pricing(pricing: Any) -> dict[str, float]:
++    """Validate the required pricing dict; a zero or missing rate would let a
++    call synthesize a $0 cost and silently disarm the spend breaker."""
++    if not isinstance(pricing, dict):
++        raise ValueError(
++            "Azure Foundry client requires a 'pricing' dict with keys "
++            "'input_per_million' and 'output_per_million' (USD per million tokens)."
++        )
++    if set(pricing.keys()) != set(_PRICING_KEYS):
++        raise ValueError(
++            "Azure Foundry 'pricing' must contain exactly the keys "
++            f"{list(_PRICING_KEYS)}; got {sorted(pricing.keys())}."
++        )
++    validated: dict[str, float] = {}
++    for key in _PRICING_KEYS:
++        value = pricing[key]
++        if isinstance(value, bool) or not isinstance(value, (int, float)):
++            raise ValueError(f"Azure Foundry pricing['{key}'] must be a number; got {value!r}.")
++        rate = float(value)
++        if not math.isfinite(rate) or rate <= 0:
++            raise ValueError(
++                f"Azure Foundry pricing['{key}'] must be strictly positive; got {value!r}. "
++                "A zero or negative rate would silently disarm the spend breaker."
++            )
++        validated[key] = rate
++    return validated
++
++
++def _validate_endpoint(endpoint: str) -> None:
++    """Reject non-https or non-Azure endpoints. Error messages deliberately
++    name the env variable rather than echoing the endpoint value."""
++    parsed = urlparse(endpoint)
++    if parsed.scheme != "https":
++        raise ValueError(
++            "AZURE_FOUNDRY_ENDPOINT must be an https:// URL; refusing to construct a client."
++        )
++    hostname = parsed.hostname or ""
++    if not hostname.endswith(_ALLOWED_HOST_SUFFIXES):
++        raise ValueError(
++            "AZURE_FOUNDRY_ENDPOINT host must end with '.services.ai.azure.com' or "
++            "'.openai.azure.com'; refusing to construct a client."
++        )
++
++
++class AzureFoundryClient(OpenAIClient):
++    """
++    LM Client for models served from Azure AI Foundry over the
++    OpenAI-compatible ``/openai/v1`` route.
++
++    Inherits ``completion``/``acompletion`` from :class:`OpenAIClient` so the
++    full ``sampling_args`` fidelity is preserved (identical sampling args at
++    root and sub-calls). Every call reports a cost: provider-reported when
++    present, otherwise synthesized client-side from token counts multiplied by
++    the required ``pricing`` (USD per million tokens).
++
++    Cost tracking is ordered so paid spend is never lost: usage integrity is
++    validated first (malformed token counts mean there is nothing valid to
++    record), then tokens and cost are accumulated, and only THEN is the
++    response content validated -- a billed response that was content-filtered
++    or came back empty still raises, but its spend has already been recorded,
++    so the spend breaker sees it. The whole sequence runs under a lock because
++    one client instance is shared across sub-call handler threads.
++    """
++
++    def __init__(
++        self,
++        api_key: str | None = None,
++        model_name: str | None = None,
++        endpoint: str | None = None,
++        sampling_args: dict[str, Any] | None = None,
++        pricing: dict[str, float] | None = None,
++        **kwargs,
++    ):
++        api_key = api_key or os.getenv("AZURE_API_KEY")
++        if api_key is None:
++            raise ValueError(
++                "AZURE_API_KEY is not set. The azure_foundry backend requires it "
++                "(or pass api_key explicitly)."
++            )
++
++        endpoint = endpoint or os.getenv("AZURE_FOUNDRY_ENDPOINT")
++        if endpoint is None:
++            raise ValueError(
++                "AZURE_FOUNDRY_ENDPOINT is not set. The azure_foundry backend requires it "
++                "(or pass endpoint explicitly)."
++            )
++
++        # Validate before any API client is constructed.
++        _validate_endpoint(endpoint)
++        self.pricing: dict[str, float] = _validate_pricing(pricing)
++
++        base_url = endpoint.rstrip("/") + "/openai/v1/"
++        super().__init__(
++            api_key=api_key,
++            model_name=model_name,
++            base_url=base_url,
++            sampling_args=sampling_args,
++            **kwargs,
++        )
++
++        # Where the last call's cost came from ("provider" or "synthesized"),
++        # and each model's accumulated source ("synthesized" wins once any of
++        # that model's calls was synthesized, matching UsageSummary.cost_source).
++        self.last_cost_source: str | None = None
++        self.model_cost_sources: dict[str, str] = {}
++
++        # One client instance is shared across sub-call handler threads (the
++        # ThreadingTCPServer in rlm/core/lm_handler.py); synthesis reads the
++        # last_* fields the parent just set, so the whole track-cost sequence
++        # must be atomic per call.
++        self._cost_lock = threading.Lock()
++
++    def _validate_response(self, response: openai.ChatCompletion) -> None:
++        """Fail loud on filtered or empty responses instead of returning junk."""
++        choices = getattr(response, "choices", None)
++        if not choices:
++            raise RuntimeError("Azure Foundry returned a response with no choices.")
++        choice = choices[0]
++        if getattr(choice, "finish_reason", None) == "content_filter":
++            raise RuntimeError(
++                "Azure Foundry blocked this response via content filter "
++                "(finish_reason='content_filter')."
++            )
++        content = getattr(getattr(choice, "message", None), "content", None)
++        if content is None or content == "":
++            raise RuntimeError("Azure Foundry returned empty content for this response.")
++
++    def _validate_usage(self, usage: Any) -> None:
++        """A paid call must never count as free: token counts must be present,
++        integral, and non-negative; any provider-reported cost must be a
++        finite, non-negative number."""
++        for field in ("prompt_tokens", "completion_tokens"):
++            value = getattr(usage, field, None)
++            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
++                raise ValueError(
++                    f"Azure Foundry usage is missing a valid '{field}' token count "
++                    f"(got {value!r}). Refusing to record this call as free."
++                )
++        cost = extract_provider_cost(usage)
++        if cost is not None:
++            if isinstance(cost, bool) or not isinstance(cost, (int, float)):
++                raise ValueError(
++                    f"Azure Foundry provider-reported cost is not a number (got {cost!r})."
++                )
++            if not math.isfinite(float(cost)) or float(cost) < 0:
++                raise ValueError(
++                    f"Azure Foundry provider-reported cost is non-finite or negative "
++                    f"(got {cost!r}). Refusing to record this call."
++                )
++
++    def _track_cost(self, response: openai.ChatCompletion, model: str):
++        with self._cost_lock:
++            usage = getattr(response, "usage", None)
++            if usage is not None:
++                # Malformed or missing token counts leave nothing valid to
++                # record, so this raises before any accumulation.
++                self._validate_usage(usage)
++
++            # Parent raises when usage is None, accumulates token counts, and
++            # sets last_cost whenever the provider reported a non-negative
++            # cost (including an explicit zero, for free-tier backends).
++            super()._track_cost(response, model)
++
++            # Azure Foundry is a paid backend: a provider-reported zero here
++            # is not credible, so anything non-positive falls through to the
++            # synthesized [pricing.list_price] cost -- a paid call must never
++            # count as free. The parent accumulated the bogus zero into
++            # model_costs, which adds nothing to the total.
++            if self.last_cost is not None and self.last_cost > 0:
++                self.last_cost_source = "provider"
++                self.model_cost_sources.setdefault(model, "provider")
++            else:
++                synthesized = (
++                    self.last_prompt_tokens * self.pricing["input_per_million"]
++                    + self.last_completion_tokens * self.pricing["output_per_million"]
++                ) / 1e6
++                self.last_cost = synthesized
++                self.model_costs[model] += synthesized
++                self.last_cost_source = "synthesized"
++                self.model_cost_sources[model] = "synthesized"
++
++            # LAST, after the spend is on the books: a billed response that was
++            # content-filtered or empty still raises, but the spend breaker has
++            # already seen its cost.
++            self._validate_response(response)
++
++    def get_usage_summary(self) -> UsageSummary:
++        summary = super().get_usage_summary()
++        for model, model_summary in summary.model_usage_summaries.items():
++            model_summary.cost_source = self.model_cost_sources.get(model)
++        return summary
++
++    def get_last_usage(self) -> ModelUsageSummary:
++        usage = super().get_last_usage()
++        usage.cost_source = self.last_cost_source
++        return usage
+diff --git a/rlm/clients/openai.py b/rlm/clients/openai.py
+index bba5c26..761e926 100644
+--- a/rlm/clients/openai.py
++++ b/rlm/clients/openai.py
+@@ -1,4 +1,8 @@
++import asyncio
+ import os
++import random
++import sys
++import time
+ from collections import defaultdict
+ from typing import Any
+ 
+@@ -7,6 +11,7 @@ from dotenv import load_dotenv
+ 
+ from rlm.clients.base_lm import BaseLM
+ from rlm.core.types import ModelUsageSummary, UsageSummary
++from rlm.utils.exceptions import TokenLimitExceededError
+ 
+ load_dotenv()
+ 
+@@ -31,6 +36,126 @@ def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
+     return {k: v for k, v in args.items() if v is not None}
+ 
+ 
++# A provider can return HTTP 200 with a deficient body -- no usage block, no
++# choices, sometimes an embedded error payload (seen intermittently on
++# OpenRouter when an upstream provider fails). The OpenAI SDK retries only
++# HTTP-level failures, so the client retries these itself with exponential
++# backoff and full jitter. Retries stay BOUNDED because each deficient
++# response may still be a paid call of unknown cost that the spend breaker
++# cannot see -- unbounded retries would be unbounded invisible spend. A call
++# whose cost is unknowable is never recorded; after the retries run out the
++# error is raised loudly with whatever the provider embedded.
++TRANSPORT_ATTEMPTS = 6
++_TRANSPORT_BACKOFF_BASE_SECONDS = 1.0
++_TRANSPORT_BACKOFF_CAP_SECONDS = 30.0
++
++# Transient refusals -- 429s, 5xx provider errors, connection drops -- are
++# different from a deficient 200: the provider did not complete the call, so
++# nothing was executed and (unlike a deficient body) nothing of unknown cost
++# was plausibly spent -- retrying is safe. The budget here is therefore more
++# generous than the transport retries above, sized for shared-pool upstream
++# throttling and flapping providers (observed on OpenRouter stealth models:
++# both 429 storms and intermittent 502s, where the SDK's own 2 internal
++# retries are nowhere near enough). Still bounded: a client embedded in a
++# host with no deadline of its own must not spin forever against a provider
++# that is down.
++RATE_LIMIT_ATTEMPTS = 20
++_RATE_LIMIT_BACKOFF_BASE_SECONDS = 2.0
++_RATE_LIMIT_BACKOFF_CAP_SECONDS = 60.0
++# openai.APIConnectionError also covers APITimeoutError (its subclass).
++_TRANSIENT_API_ERRORS = (
++    openai.RateLimitError,
++    openai.InternalServerError,
++    openai.APIConnectionError,
++)
++
++
++def _transport_backoff_seconds(attempt: int) -> float:
++    """Full-jitter exponential backoff: uniform in (0, min(cap, base * 2^(n-1)))."""
++    ceiling = min(
++        _TRANSPORT_BACKOFF_CAP_SECONDS, _TRANSPORT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
++    )
++    return random.uniform(0, ceiling)
++
++
++def _rate_limit_backoff_seconds(attempt: int) -> float:
++    """Full-jitter exponential backoff for 429s, on the rate-limit constants."""
++    ceiling = min(
++        _RATE_LIMIT_BACKOFF_CAP_SECONDS, _RATE_LIMIT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
++    )
++    return random.uniform(0, ceiling)
++
++
++# Provider phrasings for "this prompt does not fit the model's context
++# window" inside an HTTP 400 body (OpenRouter relays the upstream text
++# verbatim; observed from Nebius/CoreWeave, SiliconFlow, StreamLake, Alibaba).
++# A prompt that outgrew the window is a run-level resource condition, not a
++# transport fault: it is mapped to TokenLimitExceededError so the driver
++# records the run as RESOURCE_TERMINATED instead of crashing the experiment.
++_CONTEXT_OVERFLOW_MARKERS = (
++    "maximum context length",
++    "max input length",
++    "max_seq_len",
++    "range of input length",
++    "input tokens",
++    "context length",
++    "context_length_exceeded",
++)
++
++
++def _context_overflow_error(exc: openai.BadRequestError) -> TokenLimitExceededError | None:
++    """A TokenLimitExceededError when this 400 is a context-window overflow."""
++    text = str(exc).lower()
++    if not any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS):
++        return None
++    return TokenLimitExceededError(
++        tokens_used=0,
++        token_limit=0,
++        message=f"Prompt exceeded the model's context window (provider 400): {str(exc)[:600]}",
++    )
++
++
++def _response_deficiency(response: Any) -> str | None:
++    """Why this 200 response cannot be used, or None when it is usable."""
++    problems = []
++    if getattr(response, "usage", None) is None:
++        problems.append("no usage data received")
++    if not getattr(response, "choices", None):
++        problems.append("no choices")
++    if not problems:
++        return None
++    error = getattr(response, "error", None)
++    if error is None and getattr(response, "model_extra", None):
++        error = response.model_extra.get("error")
++    if error:
++        problems.append(f"provider error payload: {str(error)[:300]}")
++    return "; ".join(problems)
++
++
++def extract_provider_cost(usage: Any) -> Any:
++    """The provider-reported cost on a usage block, or None.
++
++    OpenRouter surfaces cost either as a direct ``usage.cost`` attribute or
++    inside ``usage.model_extra`` (``cost``, then
++    ``cost_details.upstream_inference_cost`` for BYOK routes). Shared with
++    subclasses that validate the value before recording it.
++
++    An explicit ``0`` is a report, not an absence: free-tier OpenRouter models
++    bill $0 per call, and a breaker fed ``None`` for those runs refuses to
++    count them at all (``costs.breaker_run_cost``). Only a missing field
++    returns None.
++    """
++    if getattr(usage, "cost", None) is not None:
++        return usage.cost
++    if hasattr(usage, "model_extra") and usage.model_extra:
++        extra = usage.model_extra
++        if extra.get("cost") is not None:
++            return extra["cost"]
++        if extra.get("cost_details", {}).get("upstream_inference_cost") is not None:
++            return extra["cost_details"]["upstream_inference_cost"]
++    return None
++
++
+ def _merge_extra_body(
+     hardcoded: dict[str, Any], sampling_args: dict[str, Any] | None
+ ) -> dict[str, Any]:
+@@ -108,14 +233,53 @@ class OpenAIClient(BaseLM):
+             extra_body["usage"] = {"include": True}
+         extra_body = _merge_extra_body(extra_body, self.sampling_args)
+ 
+-        response = self.client.chat.completions.create(
+-            model=model,
+-            messages=messages,
+-            extra_body=extra_body,
+-            **_normalize_sampling_args(self.sampling_args),
+-        )
++        transport_attempt = 0
++        rate_limit_attempt = 0
++        while True:
++            try:
++                response = self.client.chat.completions.create(
++                    model=model,
++                    messages=messages,
++                    extra_body=extra_body,
++                    **_normalize_sampling_args(self.sampling_args),
++                )
++            except openai.BadRequestError as exc:
++                overflow = _context_overflow_error(exc)
++                if overflow is not None:
++                    raise overflow from exc
++                raise
++            except _TRANSIENT_API_ERRORS as exc:
++                rate_limit_attempt += 1
++                if rate_limit_attempt >= RATE_LIMIT_ATTEMPTS:
++                    raise
++                print(
++                    f"Transient API error ({type(exc).__name__}); "
++                    f"retrying ({rate_limit_attempt}/{RATE_LIMIT_ATTEMPTS})...",
++                    file=sys.stderr,
++                )
++                time.sleep(_rate_limit_backoff_seconds(rate_limit_attempt))
++                continue
++            deficiency = _response_deficiency(response)
++            if deficiency is None:
++                break
++            transport_attempt += 1
++            if transport_attempt >= TRANSPORT_ATTEMPTS:
++                raise ValueError(
++                    f"Deficient completion response after {TRANSPORT_ATTEMPTS} attempts "
++                    f"({deficiency}). Tracking tokens not possible."
++                )
++            print(
++                f"Deficient completion response ({deficiency}); "
++                f"retrying ({transport_attempt}/{TRANSPORT_ATTEMPTS})...",
++                file=sys.stderr,
++            )
++            time.sleep(_transport_backoff_seconds(transport_attempt))
+         self._track_cost(response, model)
+-        return response.choices[0].message.content
++        # content is None when the model emitted no visible text -- reasoning
++        # models can spend the whole max_tokens budget on hidden reasoning
++        # (observed on OpenRouter stealth/ox-alpha). The declared return type
++        # is str, and callers regex/parse it, so an absent text is "".
++        return response.choices[0].message.content or ""
+ 
+     async def acompletion(
+         self, prompt: str | list[dict[str, Any]], model: str | None = None
+@@ -136,14 +300,50 @@ class OpenAIClient(BaseLM):
+             extra_body["usage"] = {"include": True}
+         extra_body = _merge_extra_body(extra_body, self.sampling_args)
+ 
+-        response = await self.async_client.chat.completions.create(
+-            model=model,
+-            messages=messages,
+-            extra_body=extra_body,
+-            **_normalize_sampling_args(self.sampling_args),
+-        )
++        transport_attempt = 0
++        rate_limit_attempt = 0
++        while True:
++            try:
++                response = await self.async_client.chat.completions.create(
++                    model=model,
++                    messages=messages,
++                    extra_body=extra_body,
++                    **_normalize_sampling_args(self.sampling_args),
++                )
++            except openai.BadRequestError as exc:
++                overflow = _context_overflow_error(exc)
++                if overflow is not None:
++                    raise overflow from exc
++                raise
++            except _TRANSIENT_API_ERRORS as exc:
++                rate_limit_attempt += 1
++                if rate_limit_attempt >= RATE_LIMIT_ATTEMPTS:
++                    raise
++                print(
++                    f"Transient API error ({type(exc).__name__}); "
++                    f"retrying ({rate_limit_attempt}/{RATE_LIMIT_ATTEMPTS})...",
++                    file=sys.stderr,
++                )
++                await asyncio.sleep(_rate_limit_backoff_seconds(rate_limit_attempt))
++                continue
++            deficiency = _response_deficiency(response)
++            if deficiency is None:
++                break
++            transport_attempt += 1
++            if transport_attempt >= TRANSPORT_ATTEMPTS:
++                raise ValueError(
++                    f"Deficient completion response after {TRANSPORT_ATTEMPTS} attempts "
++                    f"({deficiency}). Tracking tokens not possible."
++                )
++            print(
++                f"Deficient completion response ({deficiency}); "
++                f"retrying ({transport_attempt}/{TRANSPORT_ATTEMPTS})...",
++                file=sys.stderr,
++            )
++            await asyncio.sleep(_transport_backoff_seconds(transport_attempt))
+         self._track_cost(response, model)
+-        return response.choices[0].message.content
++        # Same None-content coercion as the sync path above.
++        return response.choices[0].message.content or ""
+ 
+     def _track_cost(self, response: openai.ChatCompletion, model: str):
+         self.model_call_counts[model] += 1
+@@ -160,37 +360,28 @@ class OpenAIClient(BaseLM):
+         self.last_prompt_tokens = usage.prompt_tokens
+         self.last_completion_tokens = usage.completion_tokens
+ 
+-        # Extract cost from OpenRouter responses (cost is in USD)
+-        # OpenRouter returns cost in usage.model_extra for pydantic models
++        # Extract cost from OpenRouter responses (cost is in USD). A reported
++        # zero (free-tier model) is recorded as 0.0 so the spend breaker sees
++        # a cost-reporting backend; negative values are provider junk and are
++        # dropped like an absent field.
+         self.last_cost: float | None = None
+-        cost = None
+-
+-        # Try direct attribute first
+-        if hasattr(usage, "cost") and usage.cost:
+-            cost = usage.cost
+-        # Then try model_extra (OpenRouter uses this)
+-        elif hasattr(usage, "model_extra") and usage.model_extra:
+-            extra = usage.model_extra
+-            # Primary cost field (may be 0 for BYOK)
+-            if extra.get("cost"):
+-                cost = extra["cost"]
+-            # Fallback to upstream cost details
+-            elif extra.get("cost_details", {}).get("upstream_inference_cost"):
+-                cost = extra["cost_details"]["upstream_inference_cost"]
+-
+-        if cost is not None and cost > 0:
++        cost = extract_provider_cost(usage)
++
++        if cost is not None and cost >= 0:
+             self.last_cost = float(cost)
+             self.model_costs[model] += self.last_cost
+ 
+     def get_usage_summary(self) -> UsageSummary:
+         model_summaries = {}
+         for model in self.model_call_counts:
++            # .get() distinguishes "never reported" (absent key -> None) from
++            # an accumulated $0 total on a free-tier model (0.0 stays 0.0).
+             cost = self.model_costs.get(model)
+             model_summaries[model] = ModelUsageSummary(
+                 total_calls=self.model_call_counts[model],
+                 total_input_tokens=self.model_input_tokens[model],
+                 total_output_tokens=self.model_output_tokens[model],
+-                total_cost=cost if cost else None,
++                total_cost=cost,
+             )
+         return UsageSummary(model_usage_summaries=model_summaries)
+ 
 diff --git a/rlm/core/rlm.py b/rlm/core/rlm.py
-index 43a5819..d8f39f7 100644
+index 43a5819..c358177 100644
 --- a/rlm/core/rlm.py
 +++ b/rlm/core/rlm.py
-@@ -6,6 +6,9 @@ from typing import Any
+@@ -1,3 +1,4 @@
++import threading
+ import time
+ from collections.abc import Callable
+ from contextlib import contextmanager
+@@ -6,16 +7,26 @@ from typing import Any
  from rlm.clients import BaseLM, get_client
  from rlm.core.lm_handler import LMHandler
  from rlm.core.types import (
@@ -12,7 +764,25 @@ index 43a5819..d8f39f7 100644
      ClientBackend,
      CodeBlock,
      EnvironmentType,
-@@ -25,8 +28,11 @@ from rlm.utils.exceptions import (
++    ModelUsageSummary,
+     REPLResult,
+     RLMChatCompletion,
+     RLMIteration,
+     RLMMetadata,
+     UsageSummary,
+ )
+-from rlm.environments import BaseEnv, SupportsPersistence, get_environment
++from rlm.environments import (
++    BaseEnv,
++    SkillLoader,
++    SupportsPersistence,
++    extract_tool_value,
++    get_environment,
++)
+ from rlm.logger import RLMLogger, VerbosePrinter
+ from rlm.utils.exceptions import (
+     BudgetExceededError,
+@@ -25,8 +36,11 @@ from rlm.utils.exceptions import (
      TokenLimitExceededError,
  )
  from rlm.utils.parsing import (
@@ -24,7 +794,51 @@ index 43a5819..d8f39f7 100644
  )
  from rlm.utils.prompts import (
      RLM_SYSTEM_PROMPT,
-@@ -78,6 +84,11 @@ class RLM:
+@@ -38,6 +52,43 @@ from rlm.utils.rlm_utils import filter_sensitive_keys
+ from rlm.utils.token_utils import count_tokens, get_context_limit
+ 
+ 
++def _skill_index_of(custom_tools: dict[str, Any] | None) -> list[dict[str, str]] | None:
++    """The skill index carried by an installed ``SkillLoader`` tool, or None if there is none."""
++    for entry in (custom_tools or {}).values():
++        value = extract_tool_value(entry)
++        if isinstance(value, SkillLoader):
++            return [dict(item) for item in value.index]
++    return None
++
++
++def _terminated_child_usage(child: "RLM", error: Exception, model: str) -> UsageSummary | None:
++    """What a child RLM spent before an exception ended it, or None.
++
++    A child that raised returns no completion, so its usage reaches the parent
++    only through the total its completion context published on the way out.
++    That figure is the accurate one and covers every termination path, so it is
++    preferred. ``BudgetExceededError.spent`` is the fallback for a child that
++    died before publishing -- a cost with no token breakdown, recorded as a
++    zero-call cost-only record rather than dropped.
++    """
++    published = getattr(child, "last_completion_usage", None)
++    if isinstance(published, UsageSummary):
++        return published
++    spent = getattr(error, "spent", None)
++    if isinstance(spent, int | float) and not isinstance(spent, bool):
++        return UsageSummary(
++            model_usage_summaries={
++                model: ModelUsageSummary(
++                    total_calls=0,
++                    total_input_tokens=0,
++                    total_output_tokens=0,
++                    total_cost=float(spent),
++                )
++            }
++        )
++    return None
++
++
+ class RLM:
+     """
+     Recursive Language Model class that the user instantiates and runs on their tasks.
+@@ -78,6 +129,11 @@ class RLM:
          sub_sampling_args: dict[str, Any] | None = None,
          orchestrator: bool = True,
          user_prologue: str | None = None,
@@ -36,7 +850,7 @@ index 43a5819..d8f39f7 100644
      ):
          """
          Args:
-@@ -112,6 +123,24 @@ class RLM:
+@@ -112,6 +168,24 @@ class RLM:
              on_subcall_complete: Callback fired when a child RLM completes. Args: (depth, model, duration, error_or_none).
              on_iteration_start: Callback fired when an iteration starts. Args: (depth, iteration_num).
              on_iteration_complete: Callback fired when an iteration completes. Args: (depth, iteration_num, duration).
@@ -61,7 +875,7 @@ index 43a5819..d8f39f7 100644
          """
          # Sampling args plumbed into backend_kwargs / other_backend_kwargs
          # before the clients are constructed, so they reach the chat-completions
-@@ -173,6 +202,11 @@ class RLM:
+@@ -173,6 +247,11 @@ class RLM:
          self.max_errors = max_errors
          self.system_prompt = custom_system_prompt if custom_system_prompt else RLM_SYSTEM_PROMPT
          self.orchestrator = orchestrator
@@ -73,7 +887,37 @@ index 43a5819..d8f39f7 100644
          # Optional user-prologue message inserted between the metadata user
          # message and the iter-0 turn prompt. Mirrors RLMTrainEnv's
          # ``user_prologue`` so canonical inference can match envs that
-@@ -285,6 +319,9 @@ class RLM:
+@@ -189,6 +268,19 @@ class RLM:
+ 
+         # Tracking (cumulative across all calls including children)
+         self._cumulative_cost: float = 0.0
++        # Spend by recursive children, which run their own handlers and are
++        # therefore invisible to this RLM's handler aggregate. Reset per
++        # completion alongside ``_cumulative_cost``.
++        self._subcall_usage: UsageSummary = UsageSummary(model_usage_summaries={})
++        # ``rlm_query_batched`` dispatches sub-calls across a thread pool, so the
++        # accumulators below are written from several threads at once. Every read
++        # and write of them takes this lock: an unguarded read-modify-write
++        # silently loses a child's spend, which is the exact failure this
++        # accounting exists to prevent.
++        self._subcall_usage_lock = threading.Lock()
++        # What the last completion recorded, published by the completion context
++        # on its way out (see ``last_completion_usage``). None until one runs.
++        self._last_completion_usage: UsageSummary | None = None
+         self._consecutive_errors: int = 0
+         self._last_error: str | None = None
+         self._best_partial_answer: str | None = None
+@@ -217,6 +309,9 @@ class RLM:
+                 if environment_kwargs
+                 else {},
+                 other_backends=other_backends,
++                # The run-start record of what skills were available: read off
++                # the installed loader, so it is present exactly when one is.
++                skill_index=_skill_index_of(self.custom_tools),
+             )
+             if self.logger:
+                 self.logger.log_metadata(metadata)
+@@ -285,6 +380,9 @@ class RLM:
              if self.compaction and self.environment_type in ("local", "docker"):
                  env_kwargs["compaction"] = True
              env_kwargs["max_concurrent_subcalls"] = self.max_concurrent_subcalls
@@ -83,7 +927,24 @@ index 43a5819..d8f39f7 100644
              environment: BaseEnv = get_environment(self.environment_type, env_kwargs)
  
              if self.persistent:
-@@ -313,6 +350,7 @@ class RLM:
+@@ -293,6 +391,16 @@ class RLM:
+         try:
+             yield lm_handler, environment
+         finally:
++            # Publish the run's total before the only object holding it dies.
++            # This block runs during exception propagation too, after every
++            # completed call has been recorded, which makes it the one point
++            # where "the run is over" is true however it ended -- including a
++            # limit raised inside a client, which never reaches the iteration
++            # checks. A terminated completion returns nothing, so without this
++            # its usage would be unrecoverable and the run would read as free.
++            self._last_completion_usage = lm_handler.get_usage_summary().merged_with(
++                self._subcall_usage_snapshot()
++            )
+             lm_handler.stop()
+             if not self.persistent and hasattr(environment, "cleanup"):
+                 environment.cleanup()
+@@ -313,6 +421,7 @@ class RLM:
              custom_tools=self.custom_tools,
              root_prompt=root_prompt,
              orchestrator=self.orchestrator,
@@ -91,7 +952,15 @@ index 43a5819..d8f39f7 100644
          )
          if self.user_prologue:
              message_history.append({"role": "user", "content": self.user_prologue})
-@@ -401,6 +439,8 @@ class RLM:
+@@ -346,6 +455,7 @@ class RLM:
+         self._consecutive_errors = 0
+         self._last_error = None
+         self._best_partial_answer = None
++        self._reset_completion_accounting()
+         # If we're at max depth, the RLM is an LM, so we fallback to the regular LM.
+         if self.depth >= self.max_depth:
+             return self._fallback_answer(prompt)
+@@ -401,6 +511,8 @@ class RLM:
                          )
                      )
  
@@ -100,7 +969,7 @@ index 43a5819..d8f39f7 100644
                      iteration: RLMIteration = self._completion_turn(
                          prompt=message_history,
                          lm_handler=lm_handler,
-@@ -414,16 +454,48 @@ class RLM:
+@@ -414,16 +526,48 @@ class RLM:
                      # ``answer["content"]`` and setting ``answer["ready"] = True``.
                      # Each environment surfaces that on ``REPLResult.final_answer``.
                      final_answer = None
@@ -149,7 +1018,18 @@ index 43a5819..d8f39f7 100644
                      # If logger is used, log the iteration.
                      if self.logger:
                          self.logger.log(iteration)
-@@ -452,11 +524,12 @@ class RLM:
+@@ -433,7 +577,9 @@ class RLM:
+ 
+                     if final_answer is not None:
+                         time_end = time.perf_counter()
+-                        usage = lm_handler.get_usage_summary()
++                        usage = lm_handler.get_usage_summary().merged_with(
++                            self._subcall_usage_snapshot()
++                        )
+                         self.verbose.print_final_answer(final_answer)
+                         self.verbose.print_summary(i + 1, time_end - time_start, usage.to_dict())
+ 
+@@ -452,11 +598,12 @@ class RLM:
                              metadata=self.logger.get_trajectory() if self.logger else None,
                          )
  
@@ -165,7 +1045,16 @@ index 43a5819..d8f39f7 100644
                      if self.compaction and hasattr(environment, "append_compaction_entry"):
                          environment.append_compaction_entry(new_messages)
  
-@@ -489,6 +562,65 @@ class RLM:
+@@ -470,7 +617,7 @@ class RLM:
+             # Default behavior: we run out of iterations, provide one final answer
+             time_end = time.perf_counter()
+             final_answer = self._default_answer(message_history, lm_handler)
+-            usage = lm_handler.get_usage_summary()
++            usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage_snapshot())
+             self.verbose.print_final_answer(final_answer)
+             self.verbose.print_summary(self.max_iterations, time_end - time_start, usage.to_dict())
+ 
+@@ -489,6 +636,68 @@ class RLM:
                  metadata=self.logger.get_trajectory() if self.logger else None,
              )
  
@@ -220,6 +1109,9 @@ index 43a5819..d8f39f7 100644
 +
 +        return {
 +            "sub_call_count": sum(len(block.result.rlm_calls) for block in iteration.code_blocks),
++            "skill_load_count": sum(
++                len(block.result.skill_loads) for block in iteration.code_blocks
++            ),
 +            "syntax_error": any(
 +                has_syntax_error(block.result.stderr) for block in iteration.code_blocks
 +            ),
@@ -231,7 +1123,96 @@ index 43a5819..d8f39f7 100644
      def _check_timeout(self, iteration: int, time_start: float) -> None:
          """Raise TimeoutExceededError if the timeout has been exceeded."""
          if self.max_timeout is None:
-@@ -818,6 +950,12 @@ class RLM:
+@@ -548,9 +757,17 @@ class RLM:
+                 ),
+             )
+ 
++        if self.max_budget is None and self.max_tokens is None:
++            return
++
++        # The handler sees only this RLM's own calls; recursive children spend
++        # through their own handlers, so their total is folded in here or it
++        # never counts against either cap at all. Both checks read this one
++        # snapshot -- nothing between them can move it.
++        current_usage = lm_handler.get_usage_summary().merged_with(self._subcall_usage_snapshot())
++
+         # Check budget
+         if self.max_budget is not None:
+-            current_usage = lm_handler.get_usage_summary()
+             current_cost = current_usage.total_cost or 0.0
+             self._cumulative_cost = current_cost
+             if self._cumulative_cost > self.max_budget:
+@@ -565,9 +782,8 @@ class RLM:
+                     ),
+                 )
+ 
+-        # Check token limit
++        # Check token limit, over the same combined view as the budget.
+         if self.max_tokens is not None:
+-            current_usage = lm_handler.get_usage_summary()
+             total_tokens = current_usage.total_input_tokens + current_usage.total_output_tokens
+             if total_tokens > self.max_tokens:
+                 self.verbose.print_limit_exceeded(
+@@ -584,6 +800,48 @@ class RLM:
+                     ),
+                 )
+ 
++    def _reset_completion_accounting(self) -> None:
++        """Clear per-completion spend state.
++
++        ``run_round`` reuses one RLM for every run in a round, so without this
++        a run would inherit its predecessor's spend.
++        """
++        with self._subcall_usage_lock:
++            self._cumulative_cost = 0.0
++            self._subcall_usage = UsageSummary(model_usage_summaries={})
++            self._last_completion_usage = None
++
++    @property
++    def last_completion_usage(self) -> UsageSummary | None:
++        """What the most recent completion on this instance recorded, or None.
++
++        Read-only, and the only way a caller can price a completion that raised
++        instead of returning: a terminated run has no ``RLMChatCompletion`` to
++        carry its usage. Reset per completion, so it never reports the
++        predecessor's figure on a reused instance.
++        """
++        return self._last_completion_usage
++
++    def _record_subcall_usage(self, usage_summary: UsageSummary | None) -> None:
++        """Fold one child completion's usage into this completion's total.
++
++        ``_cumulative_cost`` is advanced here as well as in the budget check.
++        The check only runs between iterations, but a single iteration can spawn
++        many children through ``rlm_query_batched``; without this each of them
++        would compute its own headroom from the same stale figure and the last
++        one could be handed a budget its siblings had already spent.
++        """
++        if usage_summary is None:
++            return
++        with self._subcall_usage_lock:
++            self._subcall_usage = self._subcall_usage.merged_with(usage_summary)
++            self._cumulative_cost += usage_summary.total_cost or 0.0
++
++    def _subcall_usage_snapshot(self) -> UsageSummary:
++        """This completion's sub-call total, read consistently."""
++        with self._subcall_usage_lock:
++            return self._subcall_usage
++
+     def _get_compaction_status(self, message_history: list[dict[str, Any]]) -> tuple[int, int, int]:
+         """Return (current_tokens, threshold_tokens, max_tokens) for compaction."""
+         model_name = (
+@@ -744,6 +1002,9 @@ class RLM:
+                 end_time = time.perf_counter()
+                 model_usage = client.get_last_usage()
+                 usage_summary = UsageSummary(model_usage_summaries={root_model: model_usage})
++                # This branch returns before the recursive path's accounting, so
++                # a depth-capped sub-call would otherwise spend invisibly.
++                self._record_subcall_usage(usage_summary)
+                 return RLMChatCompletion(
+                     root_model=root_model,
+                     prompt=prompt,
+@@ -818,6 +1079,12 @@ class RLM:
              max_tokens=self.max_tokens,
              max_errors=self.max_errors,
              custom_system_prompt=self.system_prompt,
@@ -244,11 +1225,177 @@ index 43a5819..d8f39f7 100644
              other_backends=self.other_backends,
              other_backend_kwargs=self.other_backend_kwargs,
              # Give child its own logger so its trajectory is captured in metadata
+@@ -834,13 +1101,10 @@ class RLM:
+         )
+         try:
+             result = child.completion(prompt, root_prompt=None)
+-            # Track child's cost in parent's cumulative cost
+-            if result.usage_summary and result.usage_summary.total_cost:
+-                self._cumulative_cost += result.usage_summary.total_cost
++            self._record_subcall_usage(result.usage_summary)
+             return result
+         except BudgetExceededError as e:
+-            # Propagate child's spending to parent
+-            self._cumulative_cost += e.spent
++            self._record_subcall_usage(_terminated_child_usage(child, e, resolved_model))
+             error_msg = f"Budget exceeded - {e}"
+             return RLMChatCompletion(
+                 root_model=resolved_model,
+@@ -850,6 +1114,10 @@ class RLM:
+                 execution_time=time.perf_counter() - subcall_start,
+             )
+         except Exception as e:
++            # Token, timeout and error-threshold terminations land here. They
++            # carry no spend figure of their own, so the usage the root attached
++            # on its way out is the only record of what the child burned.
++            self._record_subcall_usage(_terminated_child_usage(child, e, resolved_model))
+             error_msg = str(e)
+             return RLMChatCompletion(
+                 root_model=resolved_model,
 diff --git a/rlm/core/types.py b/rlm/core/types.py
-index 2a5c076..4839862 100644
+index 2a5c076..f29bc8c 100644
 --- a/rlm/core/types.py
 +++ b/rlm/core/types.py
-@@ -111,6 +111,46 @@ class UsageSummary:
+@@ -1,3 +1,4 @@
++from collections.abc import Iterable
+ from dataclasses import dataclass
+ from types import ModuleType
+ from typing import Any, Literal
+@@ -10,6 +11,7 @@ ClientBackend = Literal[
+     "vllm",
+     "anthropic",
+     "azure_openai",
++    "azure_foundry",
+     "gemini",
+ ]
+ EnvironmentType = Literal["local", "ipython", "docker", "modal", "prime", "daytona", "e2b"]
+@@ -39,12 +41,47 @@ def _serialize_value(value: Any) -> Any:
+ ########################################################
+ 
+ 
++def _aggregate_cost_source(sources: Iterable[str | None]) -> str | None:
++    """Where a combined cost figure came from.
++
++    "synthesized" as soon as any part of the total was computed client-side --
++    the aggregate then rests on configured pricing rather than on provider
++    figures, and one synthesized part is enough to make that true of the whole.
++    "provider" when every part that reports a source reports one that is not
++    synthesized, and None when no part reports a source at all.
++    """
++    reported = {source for source in sources if source is not None}
++    if not reported:
++        return None
++    return "synthesized" if "synthesized" in reported else "provider"
++
++
+ @dataclass
+ class ModelUsageSummary:
+     total_calls: int
+     total_input_tokens: int
+     total_output_tokens: int
+     total_cost: float | None = None  # Cost in USD, if available from provider
++    # Where total_cost came from: "provider" (reported by the API) or
++    # "synthesized" (computed client-side from token counts x configured pricing).
++    cost_source: str | None = None
++
++    def merged_with(self, other: "ModelUsageSummary") -> "ModelUsageSummary":
++        """Sum two records for the same model.
++
++        A cost of ``None`` means "not reported", not "free", so it never drags
++        a reported figure down to zero; the pair collapses to ``None`` only
++        when neither side reported. ``cost_source`` follows the aggregate rule:
++        one synthesized figure makes the sum synthesized.
++        """
++        costs = [cost for cost in (self.total_cost, other.total_cost) if cost is not None]
++        return ModelUsageSummary(
++            total_calls=self.total_calls + other.total_calls,
++            total_input_tokens=self.total_input_tokens + other.total_input_tokens,
++            total_output_tokens=self.total_output_tokens + other.total_output_tokens,
++            total_cost=sum(costs) if costs else None,
++            cost_source=_aggregate_cost_source((self.cost_source, other.cost_source)),
++        )
+ 
+     def to_dict(self):
+         result = {
+@@ -54,6 +91,8 @@ class ModelUsageSummary:
+         }
+         if self.total_cost is not None:
+             result["total_cost"] = self.total_cost
++        if self.cost_source is not None:
++            result["cost_source"] = self.cost_source
+         return result
+ 
+     @classmethod
+@@ -63,6 +102,7 @@ class ModelUsageSummary:
+             total_input_tokens=data.get("total_input_tokens"),
+             total_output_tokens=data.get("total_output_tokens"),
+             total_cost=data.get("total_cost"),
++            cost_source=data.get("cost_source"),
+         )
+ 
+ 
+@@ -80,6 +120,28 @@ class UsageSummary:
+         ]
+         return sum(costs) if costs else None
+ 
++    @property
++    def cost_source(self) -> str | None:
++        """Where the aggregate cost came from.
++
++        "synthesized" when any model's cost was synthesized client-side (the
++        aggregate then rests on configured pricing, not on provider figures),
++        "provider" when every model that reports a source reports "provider",
++        and None when no model reports a source at all.
++        """
++        return _aggregate_cost_source(
++            summary.cost_source for summary in self.model_usage_summaries.values()
++        )
++
++    @property
++    def total_calls(self) -> int:
++        """Aggregate call count across all models.
++
++        Zero distinguishes "the run recorded nothing" from "the run recorded
++        calls that carried no price", which are priced differently downstream.
++        """
++        return sum(summary.total_calls for summary in self.model_usage_summaries.values())
++
+     @property
+     def total_input_tokens(self) -> int:
+         """Aggregate input tokens across all models."""
+@@ -90,6 +152,22 @@ class UsageSummary:
+         """Aggregate output tokens across all models."""
+         return sum(summary.total_output_tokens for summary in self.model_usage_summaries.values())
+ 
++    def merged_with(self, other: "UsageSummary") -> "UsageSummary":
++        """Sum this summary with ``other``, per model.
++
++        Used to fold a recursive sub-call's spend into its parent's total. A
++        child RLM runs its own handler and clients, so its usage reaches the
++        parent only as the summary on the completion it returns; adding it here
++        is what keeps a decomposing run's reported cost equal to what it spent.
++        Summing rather than replacing is the whole point: both operands
++        routinely carry the same model name.
++        """
++        merged = dict(self.model_usage_summaries)
++        for model, usage in other.model_usage_summaries.items():
++            existing = merged.get(model)
++            merged[model] = usage if existing is None else existing.merged_with(usage)
++        return UsageSummary(model_usage_summaries=merged)
++
+     def to_dict(self):
+         result = {
+             "model_usage_summaries": {
+@@ -99,6 +177,8 @@ class UsageSummary:
+         }
+         if self.total_cost is not None:
+             result["total_cost"] = self.total_cost
++        if self.cost_source is not None:
++            result["cost_source"] = self.cost_source
+         return result
+ 
+     @classmethod
+@@ -111,6 +191,46 @@ class UsageSummary:
          )
  
  
@@ -295,7 +1442,7 @@ index 2a5c076..4839862 100644
  ########################################################
  ########   Types for REPL and RLM Iterations   #########
  ########################################################
-@@ -129,6 +169,9 @@ class RLMChatCompletion:
+@@ -129,6 +249,9 @@ class RLMChatCompletion:
      error: str | None = (
          None  # Set when this single call failed (e.g. in a batch); response is empty.
      )
@@ -305,7 +1452,7 @@ index 2a5c076..4839862 100644
  
      def to_dict(self):
          out = {
-@@ -142,6 +185,8 @@ class RLMChatCompletion:
+@@ -142,6 +265,8 @@ class RLMChatCompletion:
              out["metadata"] = self.metadata
          if self.error is not None:
              out["error"] = self.error
@@ -314,7 +1461,7 @@ index 2a5c076..4839862 100644
          return out
  
      @classmethod
-@@ -154,6 +199,7 @@ class RLMChatCompletion:
+@@ -154,6 +279,7 @@ class RLMChatCompletion:
              execution_time=data.get("execution_time"),
              metadata=data.get("metadata"),
              error=data.get("error"),
@@ -322,7 +1469,33 @@ index 2a5c076..4839862 100644
          )
  
  
-@@ -212,15 +258,21 @@ class RLMIteration:
+@@ -174,6 +300,7 @@ class REPLResult:
+         execution_time: float = None,
+         rlm_calls: list["RLMChatCompletion"] = None,
+         final_answer: str | None = None,
++        skill_loads: list[dict[str, Any]] | None = None,
+     ):
+         self.stdout = stdout
+         self.stderr = stderr
+@@ -181,6 +308,9 @@ class REPLResult:
+         self.execution_time = execution_time
+         self.rlm_calls = rlm_calls or []
+         self.final_answer = final_answer
++        # Skill-load events the environment recorded while this block ran
++        # (``{"skill": name, "depth": env_depth}`` each), beside ``rlm_calls``.
++        self.skill_loads = skill_loads or []
+ 
+     def __str__(self):
+         return f"REPLResult(stdout={self.stdout}, stderr={self.stderr}, locals={self.locals}, execution_time={self.execution_time}, rlm_calls={len(self.rlm_calls)})"
+@@ -193,6 +323,7 @@ class REPLResult:
+             "execution_time": self.execution_time,
+             "rlm_calls": [call.to_dict() for call in self.rlm_calls],
+             "final_answer": self.final_answer,
++            "skill_loads": [dict(event) for event in self.skill_loads],
+         }
+ 
+ 
+@@ -212,15 +343,21 @@ class RLMIteration:
      code_blocks: list[CodeBlock]
      final_answer: str | None = None
      iteration_time: float | None = None
@@ -345,11 +1518,109 @@ index 2a5c076..4839862 100644
  
  
  ########################################################
+@@ -240,9 +377,13 @@ class RLMMetadata:
+     environment_type: str
+     environment_kwargs: dict[str, Any]
+     other_backends: list[str] | None = None
++    # The skill index a ``SkillLoader`` custom tool carried, recorded once at
++    # run start so a trace names what was available; None when no loader was
++    # installed, and then absent from the serialized record.
++    skill_index: list[dict[str, str]] | None = None
+ 
+     def to_dict(self):
+-        return {
++        out = {
+             "root_model": self.root_model,
+             "max_depth": self.max_depth,
+             "max_iterations": self.max_iterations,
+@@ -254,6 +395,9 @@ class RLMMetadata:
+             },
+             "other_backends": self.other_backends,
+         }
++        if self.skill_index is not None:
++            out["skill_index"] = [dict(entry) for entry in self.skill_index]
++        return out
+ 
+ 
+ ########################################################
+diff --git a/rlm/environments/__init__.py b/rlm/environments/__init__.py
+index 5a7ba8f..46bc270 100644
+--- a/rlm/environments/__init__.py
++++ b/rlm/environments/__init__.py
+@@ -3,6 +3,7 @@ from typing import Any, Literal
+ from rlm.environments.base_env import (
+     RESERVED_TOOL_NAMES,
+     BaseEnv,
++    SkillLoader,
+     SupportsCustomTools,
+     SupportsPersistence,
+     ToolInfo,
+@@ -30,6 +31,7 @@ __all__ = [
+     "IPythonREPL",
+     "LocalREPL",
+     "RESERVED_TOOL_NAMES",
++    "SkillLoader",
+     "SupportsCustomTools",
+     "SupportsPersistence",
+     "ToolInfo",
+diff --git a/rlm/environments/base_env.py b/rlm/environments/base_env.py
+index c7e85a1..21f7b43 100644
+--- a/rlm/environments/base_env.py
++++ b/rlm/environments/base_env.py
+@@ -1,4 +1,5 @@
+ from abc import ABC, abstractmethod
++from collections.abc import Callable
+ from dataclasses import dataclass
+ from typing import Any, Protocol, runtime_checkable
+ 
+@@ -24,6 +25,32 @@ RESERVED_TOOL_NAMES: frozenset[str] = frozenset(
+ )
+ 
+ 
++@dataclass(frozen=True)
++class SkillLoader:
++    """A custom tool whose every successful call is a skill-load trace fact.
++
++    The harness layer builds one over its skill library and installs it under
++    its reserved REPL name in ``custom_tools`` / ``custom_sub_tools`` like any
++    other callable tool; ``load`` is the ``name -> body`` function the model
++    calls, and ``index`` is the ``[{"name", "description"}, ...]`` list of what
++    was available. An environment that records trace events (the local REPL)
++    recognises the type, wraps ``load`` so each call that returns a body is
++    queued on the turn's result beside the sub-call events -- with the
++    environment's own ``depth`` -- and the RLM records ``index`` once in the
++    run's metadata. Environments that do not know the type (IPython, or the
++    isolated ones that skip host callables) simply see a callable.
++
++    Identifying the loader by type rather than by name keeps the runtime free
++    of the harness's naming: the name is harness-reserved, not runtime-reserved.
++    """
++
++    load: Callable[[str], str]
++    index: list[dict[str, str]]
++
++    def __call__(self, name: str) -> str:
++        return self.load(name)
++
++
+ @dataclass
+ class ToolInfo:
+     """Parsed information about a custom tool."""
 diff --git a/rlm/environments/local_repl.py b/rlm/environments/local_repl.py
-index bed3e6e..c33552f 100644
+index bed3e6e..443cade 100644
 --- a/rlm/environments/local_repl.py
 +++ b/rlm/environments/local_repl.py
-@@ -21,6 +21,17 @@ from rlm.environments.base_env import (
+@@ -1,4 +1,5 @@
+ import copy
++import functools
+ import io
+ import json
+ import os
+@@ -18,9 +19,21 @@ from rlm.core.types import REPLResult, RLMChatCompletion
+ from rlm.environments.base_env import (
+     RESERVED_TOOL_NAMES,
+     NonIsolatedEnv,
++    SkillLoader,
      extract_tool_value,
      validate_custom_tools,
  )
@@ -367,7 +1638,7 @@ index bed3e6e..c33552f 100644
  
  
  class _AnswerDict(dict):
-@@ -162,6 +173,7 @@ class LocalREPL(NonIsolatedEnv):
+@@ -162,6 +175,7 @@ class LocalREPL(NonIsolatedEnv):
          custom_sub_tools: dict[str, Any] | None = None,
          compaction: bool = False,
          max_concurrent_subcalls: int = 4,
@@ -375,7 +1646,7 @@ index bed3e6e..c33552f 100644
          **kwargs,
      ):
          super().__init__(
-@@ -171,6 +183,9 @@ class LocalREPL(NonIsolatedEnv):
+@@ -171,6 +185,9 @@ class LocalREPL(NonIsolatedEnv):
              **kwargs,
          )
  
@@ -385,7 +1656,52 @@ index bed3e6e..c33552f 100644
          self.lm_handler_address = lm_handler_address
          self.subcall_fn = subcall_fn  # Callback for recursive RLM calls (depth > 1 support)
          self.original_cwd = os.getcwd()
-@@ -244,6 +259,18 @@ class LocalREPL(NonIsolatedEnv):
+@@ -216,6 +233,8 @@ class LocalREPL(NonIsolatedEnv):
+ 
+         # Track LLM calls made during code execution
+         self._pending_llm_calls: list[RLMChatCompletion] = []
++        # Track skill loads made during code execution (beside the sub-calls).
++        self._pending_skill_loads: list[dict[str, Any]] = []
+         # Captured the first time the model sets ``answer["ready"] = True``.
+         self._last_final_answer: str | None = None
+ 
+@@ -235,15 +254,53 @@ class LocalREPL(NonIsolatedEnv):
+         # Tools can be either plain values or (value, description) tuples
+         for name, entry in self.custom_tools.items():
+             value = extract_tool_value(entry)
+-            if callable(value):
++            if isinstance(value, SkillLoader):
++                # A skill loader is installed as its recording wrapper, so each
++                # successful load is queued for the turn record (see below).
++                self.globals[name] = self._recorded_skill_loader(value)
++            elif callable(value):
+                 self.globals[name] = value
+             else:
+                 # For non-callable values (constants, data), add to locals
+                 self.locals[name] = value
+ 
++    def _recorded_skill_loader(self, loader: SkillLoader) -> Callable[[str], str]:
++        """Wrap ``loader`` so each call that returns a body is recorded as a trace fact.
++
++        The mirror of ``_record_call`` for sub-calls: a load that raises (an
++        unknown name) records nothing, exactly as a sub-call that fails before a
++        completion exists records nothing -- its error reaches the model through
++        the block's stderr. The wrapper keeps the loader's name and docstring so
++        the REPL-visible callable reads as the harness defined it.
++        """
++
++        @functools.wraps(loader.load)
++        def recorded(name: str) -> str:
++            body = loader(name)
++            self._record_skill_load(name)
++            return body
++
++        return recorded
++
++    def _record_skill_load(self, name: str) -> None:
++        """Queue one successful skill load (name, this environment's depth) for the turn."""
++        self._pending_skill_loads.append({"skill": name, "depth": self.depth})
++
      def _capture_answer(self, content: Any) -> None:
          self._last_final_answer = str(content)
  
@@ -404,7 +1720,7 @@ index bed3e6e..c33552f 100644
      def _show_vars(self) -> str:
          """Show all available variables in the REPL environment."""
          available = {
-@@ -255,34 +282,168 @@ class LocalREPL(NonIsolatedEnv):
+@@ -255,34 +312,168 @@ class LocalREPL(NonIsolatedEnv):
              return "No variables created yet. Use ```repl``` blocks to create variables."
          return f"Available variables: {available}"
  
@@ -585,7 +1901,7 @@ index bed3e6e..c33552f 100644
  
          Args:
              prompts: List of prompts to send to the LM.
-@@ -291,24 +452,58 @@ class LocalREPL(NonIsolatedEnv):
+@@ -291,24 +482,58 @@ class LocalREPL(NonIsolatedEnv):
          Returns:
              List of responses in the same order as input prompts.
          """
@@ -653,7 +1969,7 @@ index bed3e6e..c33552f 100644
  
      def _rlm_query(self, prompt: str, model: str | None = None) -> str:
          """Spawn a recursive RLM sub-call for deeper thinking on a subtask.
-@@ -322,16 +517,26 @@ class LocalREPL(NonIsolatedEnv):
+@@ -322,16 +547,26 @@ class LocalREPL(NonIsolatedEnv):
              model: Optional model name override for the child.
          """
          if self.subcall_fn is not None:
@@ -686,7 +2002,7 @@ index bed3e6e..c33552f 100644
      def _rlm_query_batched(self, prompts: list[str], model: str | None = None) -> list[str]:
          """Spawn recursive RLM sub-calls for multiple prompts in parallel.
  
-@@ -349,38 +554,37 @@ class LocalREPL(NonIsolatedEnv):
+@@ -349,38 +584,37 @@ class LocalREPL(NonIsolatedEnv):
          Returns:
              List of responses in the same order as input prompts.
          """
@@ -744,7 +2060,7 @@ index bed3e6e..c33552f 100644
                  ]
                  # Wait for all futures to complete; exceptions are captured inside _run_subcall
                  for future in as_completed(futures):
-@@ -389,9 +593,9 @@ class LocalREPL(NonIsolatedEnv):
+@@ -389,9 +623,9 @@ class LocalREPL(NonIsolatedEnv):
              # Append completions in original prompt order for deterministic metadata
              completions.sort(key=lambda x: x[0])
              for _, completion in completions:
@@ -756,6 +2072,25 @@ index bed3e6e..c33552f 100644
  
          # Fall back to plain batched LM call if no recursive capability
          return self._llm_query_batched(prompts, model)
+@@ -548,8 +782,9 @@ class LocalREPL(NonIsolatedEnv):
+         """Execute code in the persistent namespace and return result."""
+         start_time = time.perf_counter()
+ 
+-        # Clear pending LLM calls from previous execution
++        # Clear pending LLM calls and skill loads from previous execution
+         self._pending_llm_calls = []
++        self._pending_skill_loads = []
+ 
+         with self._capture_output() as (stdout_buf, stderr_buf), self._temp_cwd():
+             try:
+@@ -580,6 +815,7 @@ class LocalREPL(NonIsolatedEnv):
+             execution_time=time.perf_counter() - start_time,
+             rlm_calls=self._pending_llm_calls.copy(),
+             final_answer=final_answer,
++            skill_loads=self._pending_skill_loads.copy(),
+         )
+ 
+     def __enter__(self):
 diff --git a/rlm/utils/parsing.py b/rlm/utils/parsing.py
 index 2a9aa09..f86107f 100644
 --- a/rlm/utils/parsing.py

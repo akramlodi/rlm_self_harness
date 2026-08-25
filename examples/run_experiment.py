@@ -19,13 +19,35 @@ per-candidate ``candidate_budget`` breakers binding far earlier in practice
 (prior smoke measurements put the mean run at $0.0024-$0.0134).
 
 Wall clock: validation is ~95% of a round's runs (1 baseline + k candidates,
-each v*(n_in+n_ho) runs). ``[operational] validation_workers`` in the TOML
-evaluates that many subjects concurrently, one child process each
-(``python -m shrlm.optimization.subject_worker``); 5 covers the full profile's
-1 + k subjects. It is identity-exempt (safe to change under an existing
---out-dir), leaves worst-case spend unchanged, and only raises the peak
-request rate against the provider. A failed worker never discards its
-siblings' persisted runs: re-run the same command to resume it.
+each v*(n_in+n_ho) runs). Two TOML knobs fan that out, and they MULTIPLY --
+total in-flight runs is their product, and provider rate limiting is the real
+ceiling.
+
+``[operational] validation_workers`` evaluates that many *subjects*
+concurrently, one child process each (``python -m
+shrlm.optimization.subject_worker``). It only helps when a round produces
+several candidates; round 1 of both live experiments produced exactly one, so
+most slots sat idle. The shipped value is 1.
+
+``[operational] validation_run_workers`` fans out the runs *inside* one
+subject (``python -m shrlm.optimization.run_worker``). That is where the time
+actually is: 256 runs at a mean of 83 s, about 5.9 h, executed one at a time.
+The parent owns every shared file and appends every manifest line itself, so a
+round produces the same runs at any worker count. The shipped value is 1 --
+a placeholder, not a measured recommendation; choosing it needs a live
+measurement that has not been run.
+
+Both are identity-exempt (safe to change under an existing --out-dir) and
+leave worst-case spend unchanged; they raise the peak request rate. A failed
+worker never discards its siblings' persisted runs: re-run the same command to
+resume it.
+
+Cost accounting note: a resource-terminated run now persists what the runtime
+actually recorded for it, and a recursive sub-call's spend reaches its parent's
+total. Both change what a run costs relative to any directory written before
+this, so figures across that boundary are not comparable -- the manifest
+carries an ``accounting_version`` and a round whose runs predate the change is
+refused before anything new executes. Use a fresh --out-dir.
 
 The experiment is resumable (persist-first): re-invoking with the same
 ``--out-dir`` verifies the config identity, replays completed rounds from

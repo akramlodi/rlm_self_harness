@@ -594,6 +594,24 @@ def materialize_harness(serialization: dict[str, Any], module_path: Path) -> Har
             (``rematerialize_harness_envelope``) fails here by name, never as a
             bare ``KeyError`` — or if a surface cannot be rebuilt.
     """
+    write_surface_module(serialization, module_path)
+    return assemble_harness(serialization, module_path)
+
+
+def write_surface_module(serialization: dict[str, Any], module_path: Path) -> None:
+    """Validate the serialization's surface key set and write its module file.
+
+    Separated from assembly so a parent can write the module once and several
+    children can import that same file. Two processes rendering to one path
+    would race on the bytes another is importing; whoever owns the directory
+    owns this half.
+
+    Raises:
+        CandidateMaterializationError: If the serialization's surface key set is
+            not ``HARNESS_FORMAT``'s -- a persisted pre-S10 document reaching the
+            resume or frozen-evaluation path fails here by name, never as a bare
+            ``KeyError``.
+    """
     expected = {key for keys in SURFACE_SERIALIZATION_KEYS.values() for key in keys}
     present = serialization.get("surfaces")
     actual = set(present) if isinstance(present, dict) else set()
@@ -606,6 +624,15 @@ def materialize_harness(serialization: dict[str, Any], module_path: Path) -> Har
             "envelope version must be regenerated, not materialized"
         )
     module_path.write_text(render_surface_module(serialization))
+
+
+def assemble_harness(serialization: dict[str, Any], module_path: Path) -> Harness:
+    """Import an already-written surface module and build the live harness from it.
+
+    The read-only half of materialization: it never writes ``module_path``, so a
+    child process can call it against a module the parent wrote and is free of
+    the write race ``write_surface_module`` documents.
+    """
     module = import_surface_module(module_path)
     fields: dict[str, Any] = {}
     for surface_id in SURFACE_SERIALIZATION_KEYS:

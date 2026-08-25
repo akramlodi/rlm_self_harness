@@ -165,6 +165,61 @@ def test_smoke_may_override_validation_workers(tmp_path: Path) -> None:
     assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
 
 
+def test_validation_run_workers_defaults_to_one_and_is_identity_exempt() -> None:
+    """Run-level fan-out changes wall clock and request rate, never behavior.
+
+    The parent still owns every shared file, appends every manifest line, and
+    charges every run through one breaker, so a round produces the same runs at
+    any worker count -- which is why this may change under an existing out-dir.
+    """
+    config = load_config()
+    assert config.operational.validation_run_workers == 1
+    assert load_config("smoke").operational.validation_run_workers == 1
+    base = identity_hash(config)
+    wider = dataclasses.replace(config.operational, validation_run_workers=4)
+    assert identity_hash(dataclasses.replace(config, operational=wider)) == base
+
+
+def test_validation_run_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
+    operational = load_config().operational
+    with pytest.raises(ValueError, match="validation_run_workers"):
+        dataclasses.replace(operational, validation_run_workers=0)
+    with pytest.raises(ValueError, match="validation_run_workers"):
+        dataclasses.replace(operational, validation_run_workers=cast(int, True))
+    text = shipped_text().replace("validation_run_workers = 1", "validation_run_workers = 0")
+    with pytest.raises(ValueError, match="validation_run_workers"):
+        load_config(path=write_config(tmp_path, text))
+
+
+def test_smoke_may_override_validation_run_workers(tmp_path: Path) -> None:
+    text = shipped_text().replace(
+        "[smoke.operational]\neval_repetitions = 1",
+        "[smoke.operational]\neval_repetitions = 1\nvalidation_run_workers = 2",
+    )
+    path = write_config(tmp_path, text)
+    assert load_config("smoke", path=path).operational.validation_run_workers == 2
+    assert load_config("full", path=path).operational.validation_run_workers == 1
+    assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
+
+
+def test_the_shipped_profile_keeps_subject_workers_at_one() -> None:
+    """The two knobs multiply, so the shipped profile must not raise both.
+
+    Run-level fan-out is the one that shortens a round; leaving subject workers
+    above 1 alongside it would multiply the in-flight request rate against a
+    provider that already logs retries at three concurrent runs.
+    """
+    assert load_config().operational.validation_workers == 1
+
+
+def test_the_run_worker_count_reaches_the_evaluation_config() -> None:
+    """A knob that stops at the config object changes nothing."""
+    config = load_config()
+    wider = dataclasses.replace(config.operational, validation_run_workers=3)
+    kwargs = evaluation_config_kwargs(dataclasses.replace(config, operational=wider))
+    assert kwargs["run_workers"] == 3
+
+
 def test_unknown_profile_raises() -> None:
     with pytest.raises(ValueError, match="unknown profile"):
         load_config("dev")

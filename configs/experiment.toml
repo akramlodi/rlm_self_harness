@@ -207,7 +207,33 @@ eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (
 # identity-exempt and may change under an existing out-dir. Above 1 each subject
 # directory also carries worker_request.json, worker.log, and worker_result.json. The full profile's
 # 5 subjects (1 + k) make 5 the useful ceiling.
-validation_workers = 5
+validation_workers = 1
+
+# How many of ONE subject's runs execute concurrently, each in its own child
+# process (python -m shrlm.optimization.run_worker). 1 = the sequential
+# in-process path, byte-identical to before this knob existed.
+#
+# This is the knob that actually shortens a round. Subject-level fan-out only
+# helps when a round produces several candidates, and round 1 of both live
+# experiments produced exactly one -- so two subjects ran and most worker slots
+# sat idle. The remaining time is all inside a subject: 256 runs at a mean of
+# 83 s, about 5.9 h, executed one at a time.
+#
+# The parent owns every shared file: it prepares the round, writes the one
+# surface module children import, appends every manifest line itself on reap,
+# and charges every run through the single breaker. A child writes only its own
+# trace and result. Identity-exempt for the same reason as validation_workers.
+#
+# THE TWO KNOBS MULTIPLY. Total in-flight runs is validation_workers x
+# validation_run_workers, and provider rate limiting is the real ceiling (the
+# live experiments already log retries at three concurrent runs). Prefer
+# run-level fan-out and keep subject workers at 1.
+#
+# NOTE: 1 is a placeholder, not a measured recommendation. The plan's U8
+# measurement -- which spends real money -- chooses the shipped value and
+# supplies the pass-rate evidence that concurrency did not move the results.
+validation_run_workers = 1
+
 
 # -----------------------------------------------------------------------------
 # Smoke profile: scale counts only. Any key here outside the loader's

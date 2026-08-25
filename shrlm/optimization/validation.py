@@ -107,9 +107,13 @@ from shrlm.optimization.costs import (
     run_governed_round,
 )
 from shrlm.optimization.driver import (
+    ACCOUNTING_VERSION,
+    ACCOUNTING_VERSION_KEY,
     HARNESS_FILE,
     RoundConfig,
     load_round,
+    manifest_accounting_version,
+    read_run_workers,
     reject_sensitive_backend_kwargs,
 )
 from shrlm.optimization.subject_worker import (
@@ -216,6 +220,10 @@ class EvaluationConfig:
     backend: str = "openrouter"
     backend_kwargs: dict[str, Any] = field(default_factory=dict)
     workers: int = 1
+    # How many of one subject's runs execute concurrently. Multiplies with
+    # ``workers``: the two knobs are independent process tiers, so total
+    # in-flight runs is ``workers x run_workers`` (KTD15).
+    run_workers: int = 1
     verifier_factory: str | None = None
     client_factory: tuple[str, dict[str, Any]] | None = None
 
@@ -226,6 +234,10 @@ class EvaluationConfig:
             raise ValueError(f"workers must be an integer, got {self.workers!r}")
         if self.workers < 1:
             raise ValueError(f"workers must be >= 1, got {self.workers}")
+        if isinstance(self.run_workers, bool) or not isinstance(self.run_workers, int):
+            raise ValueError(f"run_workers must be an integer, got {self.run_workers!r}")
+        if self.run_workers < 1:
+            raise ValueError(f"run_workers must be >= 1, got {self.run_workers}")
         if self.workers > 1 and not self.verifier_factory:
             raise ValueError(
                 f"workers={self.workers} evaluates subjects in child processes, which rebuild "
@@ -334,6 +346,15 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
     total_cost = float(sum(entry["cost"] for entry in entries if entry.get("cost") is not None))
     return {
         "harness_hash": str(envelope["hash"]),
+        # The accounting rules these figures were produced under, read from the
+        # lines themselves rather than assumed to be this build's. A split
+        # aggregated after the correction but whose runs predate it must say so,
+        # or promotion would compare it against a differently-priced arm.
+        ACCOUNTING_VERSION_KEY: manifest_accounting_version(entries),
+        # What conditions produced these numbers (R5). Concurrency is a
+        # confound on measured cost, so it is recorded beside the measurement
+        # rather than left for the reader to reconstruct.
+        "run_workers": read_run_workers(round_dir(split_path, EVAL_ROUND_INDEX)),
         "n_runs": n_runs,
         "pass_count": pass_count,
         "pass_rate": pass_count / n_runs if n_runs else None,
@@ -374,6 +395,16 @@ def _persist_once(path: Path, text: str, diverging: str) -> None:
     tmp_path = path.with_name(path.name + ".tmp")
     tmp_path.write_text(text)
     os.replace(tmp_path, path)
+
+
+def _any_split_skipped(split_summaries: dict[str, dict[str, Any]]) -> bool:
+    """Whether any split left a run unexecuted.
+
+    A skipped run means the evaluated sample is smaller than the configured
+    one, whatever the reason -- and that is a property of the subject, not of
+    one split, because the promotion rule scores the subject.
+    """
+    return any(split.get("skipped_run_ids") for split in split_summaries.values())
 
 
 def _write_summary(path: Path, payload: dict[str, Any]) -> None:
@@ -446,6 +477,8 @@ def evaluate_subject(
         split_path = split_dir(config.out_dir, config.round_index, subject_id, split_id)
         round_config = RoundConfig(
             round_index=EVAL_ROUND_INDEX,
+            run_workers=config.run_workers,
+            client_factory=config.client_factory,
             harness=harness,
             instances=instances,
             verifier=config.verifier,
@@ -467,12 +500,40 @@ def evaluate_subject(
     # Both splits' aggregates carry the hash their persisted harness.json
     # recorded for this same harness, so reuse it rather than paying for a
     # second full serialization here.
+    split_versions = {
+        str(split[ACCOUNTING_VERSION_KEY])
+        for split in split_summaries.values()
+        if ACCOUNTING_VERSION_KEY in split
+    }
+    if len(split_versions) > 1:
+        raise ValueError(
+            f"subject {subject_id!r} mixes cost-accounting versions "
+            f"{sorted(split_versions)} across its splits; its held-in and held-out "
+            "figures are not comparable with each other, let alone with another "
+            "subject's."
+        )
     summary = {
         "format": SUMMARY_FORMAT,
+        # Which cost-accounting rules produced every figure below -- taken from
+        # the runs, never assumed to be this build's. Stamping the current
+        # version unconditionally would let a legacy round re-aggregated after
+        # the correction claim an accounting it was not priced under.
+        ACCOUNTING_VERSION_KEY: next(iter(split_versions), ACCOUNTING_VERSION),
         "subject_id": subject_id,
         "harness_hash": next(iter(split_summaries.values()))["harness_hash"],
         "repetitions": config.repetitions,
-        "outcome": OUTCOME_OVER_BUDGET if breaker.tripped else OUTCOME_COMPLETED,
+        # Derived from the splits' skipped sets as well as the breaker. The
+        # promotion rule reads THIS outcome, and dispatch can stop while spend
+        # is still inside the budget -- the reservation gate holds back a
+        # slot's worth of headroom per in-flight run, so a subject can end with
+        # runs never executed and the breaker never tripped. Deriving from the
+        # breaker alone would mark such a subject `completed` and let the
+        # preregistered rule score a sample that never ran.
+        "outcome": (
+            OUTCOME_OVER_BUDGET
+            if (breaker.tripped or _any_split_skipped(split_summaries))
+            else OUTCOME_COMPLETED
+        ),
         "spent": breaker.spent,
         "splits": split_summaries,
     }

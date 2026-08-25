@@ -115,14 +115,27 @@ class TestRlmQueryBatchedWithSubcallFn:
         repl.cleanup()
 
     def test_batched_partial_failure(self):
-        """If one subcall_fn call fails, others should still succeed."""
-        subcall_fn = MagicMock(
-            side_effect=[
-                _make_completion("ok 1"),
-                RuntimeError("boom"),
-                _make_completion("ok 3"),
-            ]
-        )
+        """If one subcall_fn call fails, others should still succeed.
+
+        Keyed on the prompt, not on call order: the batched path runs its
+        sub-calls on a thread pool, so a positional ``side_effect`` list is
+        consumed in whatever order the threads happen to reach the mock. That
+        makes "the second call is the failing one" a race, while "prompt 'b' is
+        the failing one" is exactly what this test means.
+        """
+        outcomes = {
+            "a": _make_completion("ok 1"),
+            "b": RuntimeError("boom"),
+            "c": _make_completion("ok 3"),
+        }
+
+        def dispatch(prompt, model=None):
+            outcome = outcomes[prompt]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        subcall_fn = MagicMock(side_effect=dispatch)
         repl = LocalREPL(subcall_fn=subcall_fn)
         result = repl.execute_code("answers = rlm_query_batched(['a', 'b', 'c'])")
         assert result.stderr == ""

@@ -53,6 +53,7 @@ def request_for(
     expected_hash: str | None = None,
     verifier_factory: str = GOLD_VERIFIER_FACTORY,
     client_factory: str = SCRIPTED_FACTORY,
+    run_workers: int = 1,
 ) -> Path:
     out_dir = tmp_path / "validation"
     subject_path = subject_dir(out_dir, 1, subject_id)
@@ -67,6 +68,7 @@ def request_for(
         repetitions=2,
         backend="openai",
         backend_kwargs={"model_name": "validation-test"},
+        run_workers=run_workers,
         out_dir=out_dir,
         round_index=1,
         verifier_factory=verifier_factory,
@@ -181,3 +183,34 @@ class TestRefusals:
         assert read_result(tmp_path) is None
         (tmp_path / RESULT_FILENAME).write_text("{not json")
         assert read_result(tmp_path) is None
+
+
+class TestRunWorkerCountReachesTheChild:
+    """A subject child rebuilds its evaluation config field by field.
+
+    A knob missing from the request document does not fail loudly -- it
+    silently defaults, so the subject would fan out at the parent's setting
+    while running its own runs one at a time, and nothing would say so.
+    """
+
+    def test_the_request_carries_the_configured_run_worker_count(self, tmp_path):
+        request_path = request_for(tmp_path, "cand-a", [final("RIGHT")] * 8, run_workers=3)
+
+        payload = json.loads(request_path.read_text())
+
+        assert payload["run_workers"] == 3
+
+    def test_the_child_rebuilds_its_config_with_that_count(self, tmp_path, monkeypatch):
+        import shrlm.optimization.subject_worker as worker_module
+
+        request_path = request_for(tmp_path, "cand-a", [final("RIGHT")] * 8, run_workers=3)
+        seen: dict[str, int] = {}
+
+        def capture(subject_id, harness, config):
+            seen["run_workers"] = config.run_workers
+            raise RuntimeError("stop after capturing the rebuilt config")
+
+        monkeypatch.setattr("shrlm.optimization.validation.evaluate_subject", capture, raising=True)
+        worker_module.run_subject_worker(request_path)
+
+        assert seen["run_workers"] == 3

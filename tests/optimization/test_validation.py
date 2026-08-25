@@ -507,6 +507,47 @@ class TestBudget:
             assert entries[0]["cause"] == VerifierCause.RESOURCE_TERMINATED.value
             assert split_aggregate(split_path)["n_resource_terminated"] == 1
 
+    def test_a_sequential_split_records_run_worker_concurrency_of_one(self, tmp_path, monkeypatch):
+        """R5: the conditions a measurement was taken under travel with it.
+
+        A subject evaluated while siblings compete for one API key is not under
+        the same conditions as one that ran alone, so the aggregate says which
+        it was. The sequential path records 1 rather than omitting the key --
+        a reader should never have to distinguish "ran alone" from "written
+        before anyone recorded this".
+        """
+        factory = ClientFactory([final("RIGHT")] * 4)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+
+        evaluation = evaluate_subject("cand-solo", candidate_harness("solo"), config)
+
+        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            assert evaluation.summary["splits"][split_id]["run_workers"] == 1
+            split_path = split_dir(config.out_dir, config.round_index, "cand-solo", split_id)
+            assert split_aggregate(split_path)["run_workers"] == 1
+
+    def test_a_terminated_run_contributes_its_real_cost_to_the_split_total(
+        self, tmp_path, monkeypatch
+    ):
+        """The accounting correction is visible in the aggregate, not just the line.
+
+        Before it, a run terminated by anything other than the budget persisted
+        no cost and contributed nothing here, so a split full of terminations
+        read as nearly free. The published runtime total ends that.
+        """
+        factory = ClientFactory(["Scanning part one.", "Scanning part two."] * 2)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+
+        evaluate_subject("cand-priced", candidate_harness("priced"), config)
+
+        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            split_path = split_dir(config.out_dir, config.round_index, "cand-priced", split_id)
+            aggregate = split_aggregate(split_path)
+            assert aggregate["n_resource_terminated"] == 1
+            assert aggregate["total_cost"] == pytest.approx(2 * COST_PER_CALL)
+
     def test_breaker_is_cumulative_across_both_splits(self, tmp_path, monkeypatch):
         caps = replace(CAPS, candidate_budget=0.0015)
         factory = ClientFactory([final("RIGHT")] * 4)
@@ -1460,3 +1501,44 @@ class TestPromotionLedger:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestSubjectOutcomeReflectsSkippedRuns:
+    """R8/KTD10: a subject that skipped any run never reports `completed`.
+
+    The promotion rule reads the *subject* outcome. Dispatch can stop while
+    spend is still inside the budget -- the reservation gate holds back a
+    slot's worth of headroom per in-flight run -- so deriving the outcome from
+    the breaker alone would mark a truncated subject complete and let the
+    preregistered rule score a sample that never ran.
+    """
+
+    def test_a_split_with_a_skipped_run_makes_the_subject_over_budget(self):
+        from shrlm.optimization.validation import _any_split_skipped
+
+        assert _any_split_skipped({"heldin": {"skipped_run_ids": []}}) is False
+        assert _any_split_skipped({"heldin": {"skipped_run_ids": ["inst-1__a01"]}}) is True
+        assert (
+            _any_split_skipped(
+                {"heldin": {"skipped_run_ids": []}, "heldout": {"skipped_run_ids": ["x__a01"]}}
+            )
+            is True
+        )
+
+    def test_a_truncated_subject_is_not_scored_as_completed(self, tmp_path, monkeypatch):
+        """End to end: a breaker that stops mid-subject must not read complete."""
+        caps = replace(CAPS, candidate_budget=COST_PER_CALL * 1.5)
+        factory = ClientFactory([final("RIGHT")] * 8)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, caps=caps, splits=make_splits(2), repetitions=1)
+
+        evaluation = evaluate_subject("cand-trunc", candidate_harness("trunc"), config)
+
+        assert isinstance(evaluation, SubjectEvaluation)
+        skipped = [
+            run_id
+            for split in evaluation.summary["splits"].values()
+            for run_id in split["skipped_run_ids"]
+        ]
+        assert skipped
+        assert evaluation.summary["outcome"] == OUTCOME_OVER_BUDGET
