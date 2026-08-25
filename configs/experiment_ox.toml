@@ -222,7 +222,7 @@ loader_timeout_seconds = 120.0
 attribution_cache_path = ".cache/shrlm/attribution_ox.jsonl"
 proposal_cache_path = ".cache/shrlm/proposals_ox.jsonl"
 eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
-validation_workers = 1
+validation_workers = 5
 
 # How many of ONE subject's runs execute concurrently, each in its own child
 # process (python -m shrlm.optimization.run_worker). 1 = the sequential
@@ -247,7 +247,7 @@ validation_workers = 1
 # NOTE: 1 is a placeholder, not a measured recommendation. The plan's U8
 # measurement -- which spends real money -- chooses the shipped value and
 # supplies the pass-rate evidence that concurrency did not move the results.
-validation_run_workers = 1
+validation_run_workers = 4
 
 
 # -----------------------------------------------------------------------------
