@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Literal
@@ -10,6 +11,7 @@ ClientBackend = Literal[
     "vllm",
     "anthropic",
     "azure_openai",
+    "azure_foundry",
     "gemini",
 ]
 EnvironmentType = Literal["local", "ipython", "docker", "modal", "prime", "daytona", "e2b"]
@@ -39,12 +41,47 @@ def _serialize_value(value: Any) -> Any:
 ########################################################
 
 
+def _aggregate_cost_source(sources: Iterable[str | None]) -> str | None:
+    """Where a combined cost figure came from.
+
+    "synthesized" as soon as any part of the total was computed client-side --
+    the aggregate then rests on configured pricing rather than on provider
+    figures, and one synthesized part is enough to make that true of the whole.
+    "provider" when every part that reports a source reports one that is not
+    synthesized, and None when no part reports a source at all.
+    """
+    reported = {source for source in sources if source is not None}
+    if not reported:
+        return None
+    return "synthesized" if "synthesized" in reported else "provider"
+
+
 @dataclass
 class ModelUsageSummary:
     total_calls: int
     total_input_tokens: int
     total_output_tokens: int
     total_cost: float | None = None  # Cost in USD, if available from provider
+    # Where total_cost came from: "provider" (reported by the API) or
+    # "synthesized" (computed client-side from token counts x configured pricing).
+    cost_source: str | None = None
+
+    def merged_with(self, other: "ModelUsageSummary") -> "ModelUsageSummary":
+        """Sum two records for the same model.
+
+        A cost of ``None`` means "not reported", not "free", so it never drags
+        a reported figure down to zero; the pair collapses to ``None`` only
+        when neither side reported. ``cost_source`` follows the aggregate rule:
+        one synthesized figure makes the sum synthesized.
+        """
+        costs = [cost for cost in (self.total_cost, other.total_cost) if cost is not None]
+        return ModelUsageSummary(
+            total_calls=self.total_calls + other.total_calls,
+            total_input_tokens=self.total_input_tokens + other.total_input_tokens,
+            total_output_tokens=self.total_output_tokens + other.total_output_tokens,
+            total_cost=sum(costs) if costs else None,
+            cost_source=_aggregate_cost_source((self.cost_source, other.cost_source)),
+        )
 
     def to_dict(self):
         result = {
@@ -54,6 +91,8 @@ class ModelUsageSummary:
         }
         if self.total_cost is not None:
             result["total_cost"] = self.total_cost
+        if self.cost_source is not None:
+            result["cost_source"] = self.cost_source
         return result
 
     @classmethod
@@ -63,6 +102,7 @@ class ModelUsageSummary:
             total_input_tokens=data.get("total_input_tokens"),
             total_output_tokens=data.get("total_output_tokens"),
             total_cost=data.get("total_cost"),
+            cost_source=data.get("cost_source"),
         )
 
 
@@ -81,6 +121,28 @@ class UsageSummary:
         return sum(costs) if costs else None
 
     @property
+    def cost_source(self) -> str | None:
+        """Where the aggregate cost came from.
+
+        "synthesized" when any model's cost was synthesized client-side (the
+        aggregate then rests on configured pricing, not on provider figures),
+        "provider" when every model that reports a source reports "provider",
+        and None when no model reports a source at all.
+        """
+        return _aggregate_cost_source(
+            summary.cost_source for summary in self.model_usage_summaries.values()
+        )
+
+    @property
+    def total_calls(self) -> int:
+        """Aggregate call count across all models.
+
+        Zero distinguishes "the run recorded nothing" from "the run recorded
+        calls that carried no price", which are priced differently downstream.
+        """
+        return sum(summary.total_calls for summary in self.model_usage_summaries.values())
+
+    @property
     def total_input_tokens(self) -> int:
         """Aggregate input tokens across all models."""
         return sum(summary.total_input_tokens for summary in self.model_usage_summaries.values())
@@ -89,6 +151,22 @@ class UsageSummary:
     def total_output_tokens(self) -> int:
         """Aggregate output tokens across all models."""
         return sum(summary.total_output_tokens for summary in self.model_usage_summaries.values())
+
+    def merged_with(self, other: "UsageSummary") -> "UsageSummary":
+        """Sum this summary with ``other``, per model.
+
+        Used to fold a recursive sub-call's spend into its parent's total. A
+        child RLM runs its own handler and clients, so its usage reaches the
+        parent only as the summary on the completion it returns; adding it here
+        is what keeps a decomposing run's reported cost equal to what it spent.
+        Summing rather than replacing is the whole point: both operands
+        routinely carry the same model name.
+        """
+        merged = dict(self.model_usage_summaries)
+        for model, usage in other.model_usage_summaries.items():
+            existing = merged.get(model)
+            merged[model] = usage if existing is None else existing.merged_with(usage)
+        return UsageSummary(model_usage_summaries=merged)
 
     def to_dict(self):
         result = {
@@ -99,6 +177,8 @@ class UsageSummary:
         }
         if self.total_cost is not None:
             result["total_cost"] = self.total_cost
+        if self.cost_source is not None:
+            result["cost_source"] = self.cost_source
         return result
 
     @classmethod

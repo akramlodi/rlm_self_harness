@@ -53,7 +53,11 @@ def get_client(
         from rlm.clients.azure_openai import AzureOpenAIClient
 
         return AzureOpenAIClient(**backend_kwargs)
+    elif backend == "azure_foundry":
+        from rlm.clients.azure_foundry import AzureFoundryClient
+
+        return AzureFoundryClient(**backend_kwargs)
     else:
         raise ValueError(
-            f"Unknown backend: {backend}. Supported backends: ['openai', 'vllm', 'portkey', 'openrouter', 'anthropic', 'azure_openai', 'gemini', 'vercel']"
+            f"Unknown backend: {backend}. Supported backends: ['openai', 'vllm', 'portkey', 'openrouter', 'anthropic', 'azure_openai', 'azure_foundry', 'gemini', 'vercel']"
         )

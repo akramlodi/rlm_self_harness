@@ -89,6 +89,35 @@ class TestUsageSummary:
         assert "gpt-4" in summary.model_usage_summaries
         assert summary.model_usage_summaries["gpt-4"].total_calls == 2
 
+    def _summary(self, *sources: str | None) -> UsageSummary:
+        return UsageSummary(
+            model_usage_summaries={
+                f"model-{index}": ModelUsageSummary(
+                    total_calls=1,
+                    total_input_tokens=10,
+                    total_output_tokens=5,
+                    total_cost=0.01,
+                    cost_source=source,
+                )
+                for index, source in enumerate(sources)
+            }
+        )
+
+    def test_cost_source_is_none_when_no_model_reports_one(self):
+        summary = self._summary(None, None)
+        assert summary.cost_source is None
+        assert "cost_source" not in summary.to_dict()
+
+    def test_cost_source_is_provider_when_all_reporting_models_say_provider(self):
+        summary = self._summary("provider", None, "provider")
+        assert summary.cost_source == "provider"
+        assert summary.to_dict()["cost_source"] == "provider"
+
+    def test_cost_source_is_synthesized_when_any_model_synthesized(self):
+        summary = self._summary("provider", "synthesized")
+        assert summary.cost_source == "synthesized"
+        assert summary.to_dict()["cost_source"] == "synthesized"
+
 
 class TestREPLResult:
     """Tests for REPLResult."""

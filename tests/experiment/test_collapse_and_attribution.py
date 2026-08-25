@@ -26,7 +26,7 @@ build them with the loop's own layout functions), plus one class grounded on
 the mock-LM end-to-end run's real output, where the metric numbers are real
 rather than stubbed.
 
-``load_round`` is stubbed for the fabricated trees on purpose: rehydrating a
+``load_round`` / ``load_round_runs`` are stubbed for the fabricated trees on purpose: rehydrating a
 round needs sha-verified traces and real completions, and none of that is what
 this unit changed. The completeness numbers stay real throughout -- they come
 from the persisted manifest and ``instances.jsonl`` through discovery, not from
@@ -118,7 +118,7 @@ def no_traces(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Every fabricated tree here persists a manifest and an instance list -- the
     two files the expected/present run counts are computed from -- but not the
-    sha-verified traces ``load_round`` insists on. The stub keeps the metric
+    sha-verified traces the round loaders insist on. The stubs keep the metric
     columns empty and leaves the completeness columns entirely real, which is
     the split this unit is about.
     """
@@ -126,7 +126,11 @@ def no_traces(monkeypatch: pytest.MonkeyPatch) -> None:
     def load_nothing(parent: Path | str, round_index: int) -> tuple[list, list, dict, list]:
         return [], [], {}, []
 
+    def load_no_runs(parent: Path | str, round_index: int) -> tuple[list, list, list]:
+        return [], [], []
+
     monkeypatch.setattr("shrlm.experiment.collapse_and_attribution.load_round", load_nothing)
+    monkeypatch.setattr("shrlm.experiment.collapse_and_attribution.load_round_runs", load_no_runs)
 
 
 def written_optimization(snapshot: Snapshot, out_dir: Path) -> list[dict[str, str]]:

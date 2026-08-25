@@ -14,7 +14,7 @@ three stages (§3.3 of the proposal):
 |---|---|---|
 | **1. Weakness Mining** | Run the current harness on short held-in instances. Record verifier outcomes and recursive traces. Score each sub-call with the environment's synthesized sub-verifier. Convert failures to structured records and cluster them by signature → an **evidence bundle** `B_t`. | **implemented** (`shrlm/optimization/`) |
 | **2. Harness Proposal** | Give the model the mined patterns, behaviors to preserve, and prior edit history; get back several minimal candidate edits, each targeting one pattern on one declared surface. | not implemented |
-| **3. Proposal Validation** | Evaluate candidates on held-in plus a disjoint held-out split never shown to the proposer. Promote only on no meaningful accuracy regression with sub-call/cost in a preregistered band. Merged compatible edits are re-evaluated before promotion. | not implemented |
+| **3. Proposal Validation** | Evaluate candidates on held-in plus a disjoint held-out split never shown to the proposer. Promote only on no meaningful accuracy regression with sub-call/cost in a preregistered band. Merged compatible edits are re-evaluated before promotion. | `validation.py`, `subject_worker.py`, `run_worker.py` |
 
 The ten editable surfaces declared by the harness (`shrlm/rlm_harness.py`, `SURFACES`) are
 enumerated in code as `EditableSurface` ([taxonomy.py:51](optimization/taxonomy.py#L51)), keyed by
@@ -187,6 +187,113 @@ The miner **does not execute the harness**. It consumes runs that already happen
 experiment driver's concerns (splits, repetitions, budgets) out of mining and makes mining testable
 without a live model. It also holds the package's only `try` — one bad attribution must not abort a
 round.
+
+### `validation.py` + `subject_worker.py` — stage-3 evaluation, optionally in parallel
+`validate_round` is the whole validation stage (loader → evaluation → promotion → merged
+re-evaluation → ledger). `evaluate_validation_round` evaluates the baseline and every loaded
+candidate; with `operational.validation_workers > 1` (`configs/experiment.toml`) it does so
+concurrently, one **child process per subject**, at most that many alive at once:
+
+```
+python -m shrlm.optimization.subject_worker <round>/<subject_id>/worker_request.json
+```
+
+Subjects share nothing — directory, spend breaker, SIGALRM hard deadline, and persist-first
+manifests are all per subject — so for any subject that does not stop early the persisted
+artifacts (`summary.json`, `promotions.jsonl`, `decision.json`) match the sequential path's; only
+the wall clock changes. (An earlier version of this note claimed byte-identity unconditionally.
+That is too strong: a subject the breaker or the reservation gate stops early stops on a
+contiguous *tail* whose boundary depends on realised costs, so where it stops can differ between
+two runs of the same configuration.) The
+worker count is identity-exempt (it may change under an existing out-dir) and worst-case spend is
+unchanged (same run count, same caps); peak request rate scales with it. Child processes are the
+chosen mechanism because threads would lose the hard deadline (SIGALRM binds on the main thread
+only) and share the runtime logger.
+
+Per subject the parent writes `worker_request.json` (harness envelope + expected hash, splits,
+caps, backend, verifier factory dotted path), redirects the child's stdout/stderr to `worker.log`,
+and reads back `worker_result.json` plus the persisted `summary.json`. The child refuses a harness
+that does not rematerialize to the expected hash. A crashed subject never aborts its siblings:
+the parent waits for every child, then raises `SubjectWorkerError` naming each failed subject and
+its log; re-running the same command resumes only the missing runs. Each subject directory also
+carries `worker.pid` while its child is alive: a resume that finds a live pid refuses to spawn
+(`SubjectWorkerBusyError`) rather than pay for the same runs twice, and every child exits on its
+own when its parent disappears (a SIGKILLed parent cannot terminate anyone). The caps gate runs in the
+parent, so a rejected candidate never gets a child, and the merged re-evaluation stays sequential
+in-process. Tests script the children through the request's test-only `client_factory` seam
+(`tests/optimization/subject_worker_support.py`).
+
+### `run_worker.py` — one run per child process, inside a subject
+
+Subject-level fan-out only helps when a round produces several candidates, and round 1 of both
+live experiments produced exactly one — so two subjects ran and most worker slots sat idle. The
+time that remains is all *inside* a subject: 256 runs at a mean of 83 s, about 5.9 h, executed one
+at a time. `operational.validation_run_workers > 1` fans those out:
+
+```
+python -m shrlm.optimization.run_worker <round>/run_workers/<run_id>/request.json
+```
+
+**The parent owns every shared file.** It prepares the round, writes the one surface module every
+child imports, verifies persisted traces once, appends every manifest line itself on reap, runs
+the verifier, and charges the single breaker. A child's entire footprint is its own per-run
+directory (`request.json`, `run.log`, `result.json`). This is not tidiness: a validation manifest
+line reaches 48 KB and is appended through a buffered handle, so one line becomes several
+`write()` calls and two concurrent appenders interleave into a torn line that `_load_manifest`
+then refuses outright.
+
+A child executes its run through the same `driver.execute_run` the sequential loop uses, so the
+timing window, limit handling, and lower-bound flag cannot drift between the two paths. It
+publishes its trace by atomic rename — the parent hashes those exact bytes and never rewrites
+them — arms its own SIGALRM deadline, watches for its parent disappearing, and reports every
+failure as data rather than an uncaught exception.
+
+Failure handling is about paying exactly once. A complete trace whose manifest line never landed
+(a parent killed mid-flight) is **adopted** — verified and recorded — rather than re-executed. A
+child that left no usable trace is recorded as terminated under its own run id and charged, never
+re-dispatched: retrying would leave the lost attempt's spend uncharged and punch a hole in the
+contiguous tail. Overdue children are signalled **individually**, never by process group: run
+children are deliberately not session leaders, so their pid is not a process-group id.
+
+Dispatch is reservation-gated. A run is not capped at `max_budget` — the runtime checks the budget
+only between iterations, and a budget termination is charged its exception's figure verbatim; the
+live data has a run charged $0.866 against a $0.50 cap. The gate therefore reserves a multiple of
+the cap per in-flight run, so it can stop dispatch while spend is still inside the budget. When it
+does, the subject reports `over_budget` rather than `completed`: the promotion rule reads that
+outcome, and a truncated sample scored as complete would be worse than a slow one.
+
+**One dispatcher per split, enforced.** A governed round claims its round directory before it
+dispatches anything, at *every* worker count — a second sequential invocation of one split does the
+same damage as a concurrent one. The claim is a `.claim` directory published by a single atomic
+rename, already containing its owner's pid, so it is never observable without an owner; eviction of
+a dead owner is also a rename, so exactly one of several racing processes can perform it. A claim
+held by a live process refuses the round by name (`SplitClaimedError`), and release only tears down
+a claim this process still owns.
+
+The claim names the *parent*, which is not sufficient on its own: a crashed parent's run children
+outlive it by up to one watchdog interval. Each live child therefore records its pid beside its
+request, and a new dispatcher refuses to start while any of them is still alive rather than
+re-dispatching runs somebody else is still paying for.
+
+**The two knobs multiply.** Total in-flight runs is `validation_workers × validation_run_workers`,
+and provider rate limiting is the real ceiling (the live experiments already log retries at three
+concurrent runs). The shipped profile keeps subject workers at 1 and prefers run-level fan-out: it
+yields a two-level process tree and keeps each subject's breaker charging in a strict order.
+
+### Cost accounting: a fresh out-dir is required
+
+A run terminated by a resource limit used to persist an empty usage summary, so it read as free
+and was priced at the per-run ceiling; recursive sub-call spend never reached the parent's total
+at all (a median of 45% of a decomposing run's true cost, up to 96%). Both are now recorded at the
+source. **This changes what a run costs**, which moves `total_cost`, `mean_cost`, and the
+promotion rule's cost band for any split containing a terminated or decomposing run.
+
+Figures produced before and after are therefore not comparable, and a baseline and the candidates
+scored against it must always be priced the same way. Every manifest line and `summary.json`
+carries an `accounting_version`; a round whose persisted runs predate the correction is refused
+before any new run executes, `score_candidate` refuses two arms priced under different versions,
+and an unrecognized version is refused by name. **Use a fresh out-dir** — deleting summaries is not
+enough, because the old manifest lines are the problem.
 
 ## Dependency graph
 

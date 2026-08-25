@@ -99,6 +99,11 @@ MERGE_TEXT = "Cover every input chunk and verify before answering. [smoke]"
 
 WRONG_ANSWER = "Final Answer: [not-a-node]"
 
+# Sentinel credential for the openrouter backend the shipped config selects.
+# The driver's fail-fast demands the variable before any run, and the hygiene
+# test below asserts the VALUE never reaches a persisted byte.
+OPENROUTER_KEY_SENTINEL = "mock-openrouter-key-sentinel-51c9"
+
 
 # ---------------------------------------------------------------------------
 # Offline scaffolding: fixture splits, refusing loaders, network guard
@@ -270,7 +275,7 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
     out_dir = tmp_path_factory.mktemp("smoke") / "exp"
     config = load_config("smoke")
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "mock-key-never-used")
+        monkeypatch.setenv("OPENROUTER_API_KEY", OPENROUTER_KEY_SENTINEL)
         block_network(monkeypatch)
         factory = ClientFactory(optimization_script() + harness_evaluation_script())
         lambda_factory = ClientFactory(lambda_evaluation_script())
@@ -355,6 +360,19 @@ class TestSmokePipeline:
             assert usage.output_tokens > 0, work_id
             assert usage.wall_seconds > 0.0, work_id
             assert not usage.lower_bound, work_id
+
+    def test_no_credential_sentinel_reaches_any_persisted_byte(self, smoke: SmokeRun):
+        """R3: credentials come from the environment only. The whole pipeline
+        ran with a sentinel value in OPENROUTER_API_KEY; no file the
+        experiment persisted may contain it."""
+        scanned = 0
+        for path in sorted(smoke.out_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            scanned += 1
+            content = path.read_text(errors="replace")
+            assert OPENROUTER_KEY_SENTINEL not in content, path
+        assert scanned > 10  # config, splits, manifests, traces, usage, eval
 
 
 # ---------------------------------------------------------------------------
@@ -452,9 +470,10 @@ def stub_live_stages(monkeypatch: pytest.MonkeyPatch) -> None:
         experiment_smoke,
         "probe",
         lambda config: {
-            "provider": "mock-provider",
-            "usage_cost": 0.000001,
+            "provider": None,
+            "usage_cost": None,
             "client_cost": 0.000001,
+            "cost_source": "synthesized",
             "input_tokens": 1,
             "output_tokens": 1,
             "sampling_args": {},
@@ -490,7 +509,75 @@ class TestLiveSmokeStructuralChecks:
         )
         persisted = experiment_smoke.check_sampling_args(smoke.out_dir, smoke.config)
         assert persisted["temperature"] == smoke.config.decoding.temperature
+        assert persisted["top_p"] == smoke.config.decoding.top_p
+        # The Qwen knobs ride in extra_body; no azure-only chat_template_kwargs
+        # ride an openrouter role.
         assert persisted["extra_body"]["top_k"] == smoke.config.decoding.top_k
+        assert persisted["extra_body"]["min_p"] == smoke.config.decoding.min_p
+        assert "chat_template_kwargs" not in persisted["extra_body"]
+
+    def test_stage_coverage_check_reads_the_smoke_artifacts(self, smoke: SmokeRun):
+        counts = experiment_smoke.check_stage_coverage(smoke.out_dir)
+        assert set(counts) == set(experiment_smoke.REQUIRED_STAGES)
+        assert all(count > 0 for count in counts.values())
+
+    def test_stage_coverage_names_a_missing_stage(self, smoke: SmokeRun, tmp_path):
+        out_dir = tmp_path / "exp"
+        shutil.copytree(smoke.out_dir, out_dir)
+        usage_path = out_dir / STAGE_USAGE_FILE
+        kept = [
+            line
+            for line in usage_path.read_text().splitlines()
+            if line.strip() and json.loads(line)["stage"] != "proposal"
+        ]
+        usage_path.write_text("".join(line + "\n" for line in kept))
+        with pytest.raises(experiment_smoke.SmokeError, match="proposal"):
+            experiment_smoke.check_stage_coverage(out_dir)
+
+    def test_stage_coverage_tolerates_an_individual_zero_token_work_item(
+        self, smoke: SmokeRun, tmp_path
+    ):
+        """A 0/0 work id is legitimately reachable (a test set skipped after a
+        shared breaker tripped; an all-RESOURCE_TERMINATED work id rebuilds
+        zero counts) and must not fail a stage that also shows positive-token
+        evidence of hitting the backend."""
+        out_dir = tmp_path / "exp"
+        shutil.copytree(smoke.out_dir, out_dir)
+        usage_path = out_dir / STAGE_USAGE_FILE
+        zero_record = {
+            "stage": "eval",
+            "stage_work_id": "eval__breaker-skipped-set",
+            "attempt_index": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": 0.0,
+            "wall_seconds": 0.0,
+            "cache_hits": 0,
+            "lower_bound": False,
+        }
+        with usage_path.open("a") as handle:
+            handle.write(json.dumps(zero_record) + "\n")
+
+        counts = experiment_smoke.check_stage_coverage(out_dir)
+        assert counts["eval"] >= 2  # the real record(s) plus the 0/0 work id
+
+    def test_stage_coverage_fails_a_stage_with_only_zero_token_work(
+        self, smoke: SmokeRun, tmp_path
+    ):
+        """No work id with positive input AND output tokens means the stage's
+        role never measurably hit the backend."""
+        out_dir = tmp_path / "exp"
+        shutil.copytree(smoke.out_dir, out_dir)
+        usage_path = out_dir / STAGE_USAGE_FILE
+        records = [json.loads(line) for line in usage_path.read_text().splitlines() if line.strip()]
+        for record in records:
+            if record["stage"] == "proposal":
+                record["input_tokens"] = 0
+                record["output_tokens"] = 0
+        usage_path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+        with pytest.raises(experiment_smoke.SmokeError, match="proposal"):
+            experiment_smoke.check_stage_coverage(out_dir)
 
     def test_long_coverage_and_measured_spend_read_the_smoke_artifacts(self, smoke: SmokeRun):
         coverage = experiment_smoke.long_run_coverage(smoke.config, smoke.out_dir)
@@ -603,26 +690,48 @@ class TestLiveSmokeGuards:
     def test_configured_live_budgets_stay_under_the_five_dollar_ceiling(self):
         config = experiment_smoke.live_config()
 
-        # Governed: t=1 x (1 mining + 2 fixed + k=2) + 4 conditions = 9 breakers,
-        # each admitting $0.23 cumulative + one $0.20 per-run overshoot = $3.87.
+        # Governed: t=1 x (1 mining + 2 fixed + k=2) + 4 conditions = 9 breakers.
         assert experiment_smoke.breaker_count(config) == 9
-        governed = 9 * (config.caps.candidate_budget + config.caps.max_budget)
-        assert governed == pytest.approx(3.87)
 
-        # Ungoverned: 2 probe + (1 x 3 instances x 1 attempt x 3 x 3) attribution
-        # + (1 x 3 x 3) proposal = 38 calls, each priced at a full context window
-        # in plus max_output_tokens out, at the list tier.
-        assert experiment_smoke.ungoverned_call_count(config) == 38
-        assert experiment_smoke.ungoverned_call_ceiling(config) == pytest.approx(
-            (262_144 * 0.10 + 4096 * 0.30) / 1_000_000
-        )
-        ungoverned = 38 * experiment_smoke.ungoverned_call_ceiling(config)
-        assert ungoverned == pytest.approx(1.0428, abs=1e-4)
+        governed = 9 * (config.caps.candidate_budget + config.caps.max_budget)
+        assert governed == pytest.approx(3.96)
+
+        # Ungoverned: 2 probe + (1 x 2 live instances x 1 attempt x 3 x 3)
+        # attribution + (1 x 8 x 3) proposal = 44 calls, each priced at the
+        # char-cap-derived input bound plus max_output_tokens out, at the
+        # configured LIST tier -- computed from the config so a pricing flip
+        # moves the assertions with it.
+        price = config.pricing.list_price
+        per_call = (
+            experiment_smoke.UNGOVERNED_INPUT_TOKENS * price.input_per_million
+            + config.decoding.max_output_tokens * price.output_per_million
+        ) / 1_000_000
+        assert experiment_smoke.ungoverned_call_count(config) == 44
+        assert experiment_smoke.ungoverned_call_ceiling(config) == pytest.approx(per_call)
+        # Literal sanity pin at the shipped Qwen list rate ($0.10 / $0.30 per
+        # 1M): (49,152 x 0.10 + 4,096 x 0.30) / 1e6 = $0.0061440 per call.
+        assert per_call == pytest.approx(0.0061440)
+        ungoverned = 44 * experiment_smoke.ungoverned_call_ceiling(config)
+        assert ungoverned == pytest.approx(0.270336)
 
         assert experiment_smoke.spend_ceiling(config) == pytest.approx(governed + ungoverned)
-        assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.9128, abs=1e-4)
-        assert experiment_smoke.spend_ceiling(config) < experiment_smoke.SPEND_CEILING_USD
-        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(4.9128, abs=1e-4)
+        assert experiment_smoke.spend_ceiling(config) == pytest.approx(4.230336)
+
+        # The standalone --probe invocation spends two calls in addition to the
+        # probe already included in the full --live invocation.
+        probe_reserve = experiment_smoke.standalone_probe_reserve_usd(config)
+        assert probe_reserve == pytest.approx(2 * experiment_smoke.ungoverned_call_ceiling(config))
+        assert probe_reserve == pytest.approx(0.012288)
+
+        cumulative = (
+            experiment_smoke.spend_ceiling(config)
+            + probe_reserve
+            + experiment_smoke.PYTEST_LIVE_RESERVE_USD
+        )
+
+        assert cumulative == pytest.approx(4.842624)
+        assert cumulative < experiment_smoke.SPEND_CEILING_USD
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(cumulative)
 
     def test_the_ceiling_scales_with_the_round_count(self):
         """Every per-round breaker and per-round LM call is armed t times."""
@@ -631,35 +740,61 @@ class TestLiveSmokeGuards:
         config = experiment_smoke.live_config()
         three_rounds = replace(config, loop=replace(config.loop, t=3))
 
-        # 3 x (1 mining + 2 fixed + k=2) + 4 conditions.
+        # 3 x 5 optimization breakers + 4 evaluation conditions.
         assert experiment_smoke.breaker_count(three_rounds) == 19
-        # 2 probe + 3 x (9 attribution + 3 proposal) x 3 transport retries.
-        assert experiment_smoke.ungoverned_call_count(three_rounds) == 2 + 3 * 36
+
+        # Two probes plus three rounds of 18 attribution + 24 proposal calls.
+        assert experiment_smoke.ungoverned_call_count(three_rounds) == 2 + 3 * 42
+
         assert experiment_smoke.spend_ceiling(three_rounds) > experiment_smoke.spend_ceiling(config)
         # A three-round smoke is not affordable under the $5 ceiling, and the
         # arithmetic says so rather than discovering it while spending.
         with pytest.raises(experiment_smoke.SmokeError, match="ceiling"):
             experiment_smoke.check_budget_arithmetic(three_rounds)
 
-    def test_the_ceiling_covers_the_ungoverned_calls(self):
-        """The proof is not a proof if the probe and the LM stages are free."""
+    def test_the_ceiling_covers_the_ungoverned_calls_and_the_reserve(self):
+        """The proof is not a proof if the probe, the LM stages, or the U4
+        pytest tier are treated as free."""
         config = experiment_smoke.live_config()
         governed_only = experiment_smoke.breaker_count(config) * (
             config.caps.candidate_budget + config.caps.max_budget
         )
         assert experiment_smoke.spend_ceiling(config) > governed_only
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(
+            experiment_smoke.spend_ceiling(config)
+            + experiment_smoke.standalone_probe_reserve_usd(config)
+            + experiment_smoke.PYTEST_LIVE_RESERVE_USD
+        )
 
-    def test_live_profile_keeps_the_smoke_scale_and_semantics(self):
+    def test_live_profile_keeps_the_smoke_semantics_and_documents_its_shrinks(self):
+        """Semantics -- decoding, promotion, loop shape, environments' datasets
+        -- are byte-identical to the smoke profile; only the documented caps
+        and instance counts move (identity keys, so a fresh out-dir)."""
         config = experiment_smoke.live_config()
         smoke_profile = load_config("smoke")
 
         assert config.profile == "smoke"
         assert config.loop == smoke_profile.loop
-        assert config.splits == smoke_profile.splits
         assert config.decoding == smoke_profile.decoding
         assert config.promotion == smoke_profile.promotion
+        assert config.backends == smoke_profile.backends
         assert config.caps.max_budget == experiment_smoke.LIVE_MAX_BUDGET_USD
         assert config.caps.candidate_budget == experiment_smoke.LIVE_CANDIDATE_BUDGET_USD
+        assert config.caps.max_timeout == experiment_smoke.LIVE_MAX_TIMEOUT_SECONDS
+        # The live instance-count shrinks, and nothing else about the splits.
+        assert config.splits.n_in == experiment_smoke.LIVE_HELD_IN == 2
+        assert config.splits.test_short == experiment_smoke.LIVE_TEST_SHORT == 2
+        assert config.splits.test_long == experiment_smoke.LIVE_TEST_LONG == 1
+        assert config.splits.n_ho == smoke_profile.splits.n_ho
+        assert config.splits.seed == smoke_profile.splits.seed
+        oolong = config.environments.oolong_pairs
+        assert oolong.n_short == experiment_smoke.LIVE_OOLONG_SHORT == 2
+        assert oolong.n_long == experiment_smoke.LIVE_OOLONG_LONG == 1
+        smoke_oolong = smoke_profile.environments.oolong_pairs
+        assert oolong.dataset_repo == smoke_oolong.dataset_repo
+        assert oolong.dataset_revision == smoke_oolong.dataset_revision
+        assert oolong.task_ids == smoke_oolong.task_ids
+        assert config.environments.graphwalks == smoke_profile.environments.graphwalks
 
     def test_a_budget_over_the_ceiling_is_refused(self):
         from dataclasses import replace
@@ -676,11 +811,22 @@ class TestLiveSmokeGuards:
         assert experiment_smoke.main([]) == 1
         assert "Nothing was spent" in capsys.readouterr().out
 
-    def test_declines_without_the_api_key(self, capsys, monkeypatch):
+    def test_declines_without_the_openrouter_key_and_names_it(self, capsys, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         block_network(monkeypatch)
 
         assert experiment_smoke.main(["--live"]) == 1
         out = capsys.readouterr().out
         assert "OPENROUTER_API_KEY" in out
+        assert "Nothing was spent" in out
+
+    def test_probe_declines_without_the_openrouter_key(self, capsys, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        block_network(monkeypatch)
+
+        assert experiment_smoke.main(["--probe"]) == 1
+        out = capsys.readouterr().out
+        assert "OPENROUTER_API_KEY" in out
+        # Only the configured backend's credentials are demanded.
+        assert "AZURE_API_KEY" not in out
         assert "Nothing was spent" in out

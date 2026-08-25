@@ -47,11 +47,13 @@ from shrlm.optimization.validation import (
 from shrlm.rlm_harness import H0
 from tests.optimization.test_candidates import proposal_payload, write_payload
 from tests.optimization.test_validation import (
+    GOLD_VERIFIER_FACTORY,
     ClientFactory,
     GoldVerifier,
     assert_subject_links_resolve,
     final,
     make_splits,
+    parallel_client_factory,
 )
 
 # Per-run budget 0.0015 terminates a two-call burn run at cost 0.002; a
@@ -421,3 +423,67 @@ class TestIdempotency:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+# ---------------------------------------------------------------------------
+# Subject parallelism: the whole stage, byte-identical to the sequential run
+# ---------------------------------------------------------------------------
+
+
+class TestParallelStageEquivalence:
+    def test_parallel_round_writes_the_same_ledger_bytes_as_sequential(self, tmp_path, monkeypatch):
+        """R9: promotions.jsonl, decision.json, and every summary.json compare equal."""
+        seq_root = tmp_path / "sequential"
+        seq_root.mkdir()
+        _config, sequential, factory = run_merge_round(seq_root, monkeypatch, MERGED_PASSES)
+        assert factory.total_calls == 26
+
+        par_root = tmp_path / "parallel"
+        proposals_dir = par_root / "proposals"
+        seed_merge_proposals(proposals_dir)
+        # The merged re-evaluation stays in-process (R3): the parent's seam
+        # scripts only it; the five subjects read per-subject scripts.
+        merged_only = ClientFactory(MERGED_PASSES)
+        monkeypatch.setattr(rlm_module, "get_client", merged_only)
+        scripts = {
+            BASELINE_ID: BASELINE_SCRIPT,
+            "cand-burn": [BURN] * 6,
+            "cand-regress": REGRESS_SCRIPT,
+            "cand-s2": S2_SCRIPT,
+            "cand-s3": S3_SCRIPT,
+        }
+        config = make_config(
+            par_root,
+            workers=3,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(par_root, scripts),
+        )
+        parallel = validate_round(H0, proposals_dir, config)
+
+        assert merged_only.total_calls == 4
+        assert parallel.plan.kind == PLAN_MERGE
+        assert parallel.promoted_harness_hash == sequential.promoted_harness_hash
+        assert parallel.ledger is not None and sequential.ledger is not None
+
+        # The loader-rejected candidate's record carries its absolute proposal
+        # path, which differs only by the two tmp roots -- normalize those.
+        def rooted(path: Path, root: Path) -> bytes:
+            return path.read_bytes().replace(str(root).encode(), b"<root>")
+
+        assert rooted(parallel.ledger.ledger_path, par_root) == rooted(
+            sequential.ledger.ledger_path, seq_root
+        )
+        assert (
+            parallel.ledger.decision_path.read_bytes()
+            == sequential.ledger.decision_path.read_bytes()
+        )
+        for subject_id in (BASELINE_ID, "cand-burn", "cand-regress", "cand-s2", "cand-s3"):
+            seq_summary = sequential.round_path / subject_id / "summary.json"
+            par_summary = parallel.round_path / subject_id / "summary.json"
+            assert par_summary.read_bytes() == seq_summary.read_bytes(), subject_id
+        records, _decision = load_promotion_ledger(parallel.round_path)
+        for record in records:
+            if record["links"] is not None:
+                assert_subject_links_resolve(
+                    parallel.round_path, record["links"], record["harness_hash"]
+                )

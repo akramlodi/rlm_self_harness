@@ -26,11 +26,26 @@ import pytest
 
 import rlm.core.rlm as rlm_module
 from rlm.core.types import ModelUsageSummary, RLMChatCompletion, UsageSummary
+from rlm.utils.exceptions import TimeoutExceededError
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.attribution import VALIDATOR_VERSION, AttributionCache, LLMAttributor
 from shrlm.optimization.audit import AuditReport, run_audited_round
 from shrlm.optimization.bundle import write_bundle
-from shrlm.optimization.driver import RoundConfig, load_round, mine_round, round_dir, run_round
+from shrlm.optimization.driver import (
+    ACCOUNTING_VERSION,
+    ACCOUNTING_VERSION_KEY,
+    RoundConfig,
+    RoundPersistenceError,
+    build_round_rlm,
+    execute_run,
+    load_round,
+    mine_round,
+    persist_interrupted_run,
+    prepare_round,
+    round_dir,
+    run_id_for,
+    run_round,
+)
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
@@ -51,14 +66,24 @@ class ScriptedLM(MockLM):
     """A ``MockLM`` popping from a shared script, with a per-call cost.
 
     Exhausting the script raises rather than improvising: a test whose scripted
-    turns run out is a broken test, not a passing run.
+    turns run out is a broken test, not a passing run. ``cost_source`` mirrors
+    the azure_foundry client's provenance reporting; the default ``None``
+    models a client that reports no source (openrouter today), so pre-existing
+    tests' persisted bytes keep their exact shape.
     """
 
-    def __init__(self, script: list[str], calls: list[str], cost_per_call: float):
+    def __init__(
+        self,
+        script: list[str],
+        calls: list[str],
+        cost_per_call: float,
+        cost_source: str | None = None,
+    ):
         super().__init__(model_name="mock-model")
         self._script = script
         self._calls = calls
         self._cost_per_call = cost_per_call
+        self._cost_source = cost_source
 
     def completion(self, prompt: str | dict[str, Any]) -> str:
         self._call_count += 1
@@ -75,6 +100,7 @@ class ScriptedLM(MockLM):
                     total_input_tokens=self._call_count * 10,
                     total_output_tokens=self._call_count * 10,
                     total_cost=self._cost_per_call * self._call_count,
+                    cost_source=self._cost_source,
                 )
             }
         )
@@ -85,19 +111,26 @@ class ScriptedLM(MockLM):
             total_input_tokens=10,
             total_output_tokens=10,
             total_cost=self._cost_per_call,
+            cost_source=self._cost_source,
         )
 
 
 class ClientFactory:
     """Stands in for ``get_client``: fresh client per call, one shared script."""
 
-    def __init__(self, script: list[str], cost_per_call: float = COST_PER_CALL):
+    def __init__(
+        self,
+        script: list[str],
+        cost_per_call: float = COST_PER_CALL,
+        cost_source: str | None = None,
+    ):
         self.script = list(script)
         self.calls: list[str] = []
         self.cost_per_call = cost_per_call
+        self.cost_source = cost_source
 
     def __call__(self, backend: str, backend_kwargs: dict[str, Any] | None) -> ScriptedLM:
-        return ScriptedLM(self.script, self.calls, self.cost_per_call)
+        return ScriptedLM(self.script, self.calls, self.cost_per_call, self.cost_source)
 
     @property
     def total_calls(self) -> int:
@@ -382,17 +415,316 @@ class TestManifestUsageKeys:
         config = run_full_round(tmp_path, monkeypatch)
         entries = read_manifest(round_dir(config.out_dir, config.round_index))
         terminated = entries[2]
-        # The per-completion usage handle is gone when the root raises, so the
-        # token counts are genuinely unknown -- persisted as zero but flagged,
-        # never mistaken for a free run. The observed cost (the figure the
-        # budget breaker tripped on) and the driver-observed wall time are
-        # real measurements and must survive.
+        # The completion context publishes the run's total before the handler
+        # holding it is stopped, so a terminated run carries the calls, tokens
+        # and cost the runtime actually recorded -- two scripted calls at 10
+        # tokens each way. The flag stays true regardless: a request killed in
+        # flight or a route that reports no cost is still unrecorded, so the
+        # figure is a lower bound even though it is no longer empty.
         assert terminated["usage_lower_bound"] is True
         assert terminated["cost"] == pytest.approx(2 * COST_PER_CALL)
         assert terminated["execution_time"] > 0.0
-        assert terminated["input_tokens"] == 0
-        assert terminated["output_tokens"] == 0
+        assert terminated["input_tokens"] == 20
+        assert terminated["output_tokens"] == 20
 
+    def test_cost_source_is_persisted_when_the_client_reports_one(self, tmp_path, monkeypatch):
+        """R7 provenance: a client reporting cost_source (the azure_foundry
+        synthesis path) has it recorded on every completed run's manifest
+        line -- the terminated run included, since its usage is now the
+        runtime's own published total rather than a figure rebuilt from an
+        exception that carried no provenance."""
+        factory = ClientFactory(full_script(), cost_source="synthesized")
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path)
+        run_round(config)
+
+        entries = read_manifest(round_dir(config.out_dir, config.round_index))
+        assert entries[0]["cost_source"] == "synthesized"
+        assert entries[1]["cost_source"] == "synthesized"
+        assert entries[2]["cost_source"] == "synthesized"  # terminated: published with provenance
+
+    def test_cost_source_is_omitted_when_the_client_reports_none(self, tmp_path, monkeypatch):
+        """A client with no provenance (openrouter today) changes no persisted
+        byte: the additive key is simply absent, keeping prior line shapes."""
+        config = run_full_round(tmp_path, monkeypatch)
+        entries = read_manifest(round_dir(config.out_dir, config.round_index))
+        assert all("cost_source" not in entry for entry in entries)
+
+
+class TestSharedRunExecutionBody:
+    """KTD14: one implementation of "execute one run and describe its outcome".
+
+    A run child cannot call ``run_round`` -- that writes the shared files the
+    parent owns -- so without extraction it would re-implement the timing
+    window, the limit handling, and the lower-bound flag, and the two copies
+    would drift apart silently. These pin that the extracted helpers produce
+    exactly what the loop produces.
+    """
+
+    def test_the_preamble_returns_the_pending_list_in_dispatch_order(self, tmp_path, monkeypatch):
+        """R7: instance-major, attempt-minor -- the order an early stop truncates."""
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path, attempts=2)
+
+        path, existing, pending = prepare_round(config)
+
+        assert existing == []
+        assert path == round_dir(config.out_dir, config.round_index)
+        assert [(str(instance["id"]), attempt) for instance, attempt in pending] == [
+            (str(instance["id"]), attempt) for instance in config.instances for attempt in (1, 2)
+        ]
+
+    def test_the_preamble_omits_runs_already_persisted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        run_round(config, stop_after=1)
+
+        _path, existing, pending = prepare_round(config)
+
+        assert len(existing) == 1
+        assert str(config.instances[0]["id"]) not in {str(i["id"]) for i, _a in pending}
+
+    def test_the_helper_produces_what_the_loop_persists(self, tmp_path, monkeypatch):
+        """Same scripted turn through the helper and through run_round."""
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        run_round(config, stop_after=1)
+        looped = read_manifest(round_dir(config.out_dir, config.round_index))[0]
+
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        direct_config = make_round_config(tmp_path / "direct")
+        harnessed = build_round_rlm(direct_config)
+        outcome = execute_run(
+            harnessed,
+            direct_config.instances[0],
+            model_name="driver-test",
+            verifier=direct_config.verifier,
+        )
+
+        assert outcome.usage_lower_bound is looped["usage_lower_bound"]
+        assert outcome.verdict.passed is looped["passed"]
+        assert outcome.completion.usage_summary.total_cost == pytest.approx(looped["cost"])
+
+    def test_a_verifier_that_raises_a_limit_is_caught_as_a_terminated_run(
+        self, tmp_path, monkeypatch
+    ):
+        """A deadline landing during verification must not escape the round.
+
+        Verification runs inside the per-run limit handler precisely so this
+        case persists a terminated line rather than tearing down the round with
+        the in-flight run unaccounted for.
+        """
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        harnessed = build_round_rlm(config)
+
+        def verifier_that_times_out(instance, response):
+            raise TimeoutExceededError(elapsed=9.0, timeout=1.0)
+
+        outcome = execute_run(
+            harnessed,
+            config.instances[0],
+            model_name="driver-test",
+            verifier=verifier_that_times_out,
+        )
+
+        assert outcome.usage_lower_bound is True
+        assert outcome.verdict.cause is VerifierCause.RESOURCE_TERMINATED
+        assert "TimeoutExceededError" in outcome.verdict.detail
+
+    def test_omitting_the_verifier_leaves_the_verdict_for_the_parent(self, tmp_path, monkeypatch):
+        """A run child never verifies -- the parent owns verdict construction (KTD5)."""
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        harnessed = build_round_rlm(config)
+
+        outcome = execute_run(harnessed, config.instances[0], model_name="driver-test")
+
+        assert outcome.verdict is None
+        assert outcome.completion.response
+
+
+class TestInterruptedRunAttribution:
+    """R16: a lost run is recovered under its own id, never another run's.
+
+    "The first pending run" is only the run that failed while exactly one can
+    be in flight. Under concurrency it names a run that may not have started,
+    and charging it would attribute one run's spend and failure to another.
+    """
+
+    def _config(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        return make_round_config(tmp_path)
+
+    def test_the_default_recovers_the_first_pending_run(self, tmp_path, monkeypatch):
+        """The sequential path is unchanged: no run id means first-pending."""
+        config = self._config(tmp_path, monkeypatch)
+
+        entry = persist_interrupted_run(config, TimeoutError("hung"))
+
+        assert entry is not None
+        assert entry["run_id"] == run_id_for(str(config.instances[0]["id"]), 1)
+        assert entry["cause"] == VerifierCause.RESOURCE_TERMINATED.value
+        assert entry["usage_lower_bound"] is True
+
+    def test_a_named_run_is_recovered_rather_than_the_first_pending(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path, monkeypatch)
+        target = run_id_for(str(config.instances[2]["id"]), 1)
+
+        entry = persist_interrupted_run(config, TimeoutError("hung"), run_id=target)
+
+        assert entry is not None
+        assert entry["run_id"] == target
+        # The runs before it are untouched -- still pending, not charged.
+        persisted = [e["run_id"] for e in read_manifest(round_dir(config.out_dir, 1))]
+        assert persisted == [target]
+
+    def test_recovering_an_already_persisted_run_is_a_no_op(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path, monkeypatch)
+        target = run_id_for(str(config.instances[0]["id"]), 1)
+        persist_interrupted_run(config, TimeoutError("hung"), run_id=target)
+
+        again = persist_interrupted_run(config, TimeoutError("hung again"), run_id=target)
+
+        assert again is None
+        persisted = [e["run_id"] for e in read_manifest(round_dir(config.out_dir, 1))]
+        assert persisted == [target]  # no duplicate line
+
+    def test_recovering_a_run_the_round_never_configured_is_refused(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path, monkeypatch)
+
+        with pytest.raises(RoundPersistenceError) as excinfo:
+            persist_interrupted_run(config, TimeoutError("hung"), run_id="no-such-run__a01")
+
+        assert "no-such-run__a01" in str(excinfo.value)
+
+
+class TestAccountingVersionMarker:
+    """A directory may not mix runs priced under different accounting rules.
+
+    The correction gives a terminated run a real cost where it previously had
+    none, which moves every aggregate built over it and the promotion rule's
+    cost band with them. A resumed out-dir would keep its old lines and add new
+    ones, and nothing downstream could tell the two apart -- so the mixture is
+    refused at load, where every reader goes through.
+    """
+
+    def test_every_line_records_the_accounting_version(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        entries = read_manifest(round_dir(config.out_dir, config.round_index))
+
+        assert [entry[ACCOUNTING_VERSION_KEY] for entry in entries] == [ACCOUNTING_VERSION] * 3
+
+    def test_a_manifest_mixing_versions_is_refused(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        round_path = round_dir(config.out_dir, config.round_index)
+        entries = read_manifest(round_path)
+        # Simulate resuming a directory written before the correction.
+        entries[0].pop(ACCOUNTING_VERSION_KEY)
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries)
+        )
+
+        with pytest.raises(RoundPersistenceError) as excinfo:
+            load_round(config.out_dir, config.round_index)
+
+        assert "accounting" in str(excinfo.value)
+        assert "fresh out-dir" in str(excinfo.value)
+
+    def test_a_wholly_pre_correction_manifest_still_loads(self, tmp_path, monkeypatch):
+        """Uniformly old is self-consistent: readable, just not mixable."""
+        config = run_full_round(tmp_path, monkeypatch)
+        round_path = round_dir(config.out_dir, config.round_index)
+        stripped = [
+            {key: value for key, value in entry.items() if key != ACCOUNTING_VERSION_KEY}
+            for entry in read_manifest(round_path)
+        ]
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in stripped)
+        )
+
+        runs, verdicts, _envelope, entries = load_round(config.out_dir, config.round_index)
+
+        assert len(runs) == 3
+        assert all(ACCOUNTING_VERSION_KEY not in entry for entry in entries)
+
+
+class TestAccountingPreflight:
+    """The guard has to fire before money is spent, not after.
+
+    A directory written under older accounting reads back perfectly well on its
+    own -- every line agrees with every other. The mixed-version backstop
+    therefore cannot see the problem until a new line has already landed beside
+    the old ones, by which point a real run has been paid for and the directory
+    is unreadable for good. The refusal belongs at the moment work is about to
+    execute.
+    """
+
+    def _legacy_manifest(self, config) -> Path:
+        round_path = round_dir(config.out_dir, config.round_index)
+        entries = read_manifest(round_path)
+        stripped = [
+            {key: value for key, value in entry.items() if key != ACCOUNTING_VERSION_KEY}
+            for entry in entries
+        ]
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in stripped)
+        )
+        return round_path
+
+    def test_resuming_a_legacy_round_is_refused_before_any_run_executes(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        run_round(config, stop_after=1)
+        round_path = self._legacy_manifest(config)
+        before = (round_path / "runs.jsonl").read_text()
+
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        with pytest.raises(RoundPersistenceError) as excinfo:
+            run_round(config)
+
+        assert "accounting" in str(excinfo.value)
+        assert "fresh out-dir" in str(excinfo.value)
+        # Nothing was executed and nothing was appended: the directory is
+        # exactly as readable as it was before the attempt.
+        assert (round_path / "runs.jsonl").read_text() == before
+        assert len(read_manifest(round_path)) == 1
+
+    def test_a_fully_persisted_legacy_round_still_resumes_as_a_no_op(self, tmp_path, monkeypatch):
+        """Nothing pending means nothing to mix; the round is complete as it is."""
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        run_round(config)
+        self._legacy_manifest(config)
+
+        entries = run_round(config)
+
+        assert len(entries) == 3
+        assert all(ACCOUNTING_VERSION_KEY not in entry for entry in entries)
+
+    def test_a_manifest_priced_under_an_unknown_version_is_refused(self, tmp_path, monkeypatch):
+        """A build from the future priced these lines; how they differ is unknown."""
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        run_round(config)
+        round_path = round_dir(config.out_dir, config.round_index)
+        entries = read_manifest(round_path)
+        for entry in entries:
+            entry[ACCOUNTING_VERSION_KEY] = "shrlm-accounting/v9"
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries)
+        )
+
+        with pytest.raises(RoundPersistenceError) as excinfo:
+            load_round(config.out_dir, config.round_index)
+
+        assert "unrecognized" in str(excinfo.value)
+        assert "shrlm-accounting/v9" in str(excinfo.value)
+
+
+class TestManifestBackwardCompatibility:
     def test_old_format_manifest_lines_still_load_through_load_round(self, tmp_path, monkeypatch):
         """Manifest lines persisted before U4 carry no token/time keys; they
         must keep loading (backward compatibility, KTD4 additive-only)."""
@@ -554,6 +886,37 @@ class TestAttemptsAndPreconditions:
         assert factory.total_calls == 0
         assert not (round_dir(config.out_dir, config.round_index) / "runs.jsonl").exists()
 
+    def test_azure_backend_with_both_env_vars_missing_names_both(self, tmp_path, monkeypatch):
+        """azure_foundry requires two env vars; the fail-fast names each one."""
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        monkeypatch.delenv("AZURE_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+        config = make_round_config(tmp_path, backend="azure_foundry")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            run_round(config)
+        message = str(excinfo.value)
+        assert "AZURE_API_KEY" in message
+        assert "AZURE_FOUNDRY_ENDPOINT" in message
+        assert factory.total_calls == 0
+        assert not (round_dir(config.out_dir, config.round_index) / "runs.jsonl").exists()
+
+    def test_azure_backend_with_one_env_var_missing_names_only_it(self, tmp_path, monkeypatch):
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        monkeypatch.setenv("AZURE_API_KEY", "present-key")
+        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+        config = make_round_config(tmp_path, backend="azure_foundry")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            run_round(config)
+        message = str(excinfo.value)
+        assert "AZURE_FOUNDRY_ENDPOINT" in message
+        assert "AZURE_API_KEY" not in message
+        assert factory.total_calls == 0
+        assert not (round_dir(config.out_dir, config.round_index) / "runs.jsonl").exists()
+
     def test_api_key_material_in_backend_kwargs_is_rejected(self, tmp_path, monkeypatch):
         factory = ClientFactory(full_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
@@ -564,6 +927,33 @@ class TestAttemptsAndPreconditions:
             run_round(config)
         assert factory.total_calls == 0
 
+    def test_sensitive_top_level_kwarg_is_rejected_while_nested_pricing_passes(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression guard for the nested-pricing choice: the sensitive scan
+        matches top-level kwarg names only, so ``pricing`` (whose leaf key
+        contains no sensitive fragment anyway) must pass while any top-level
+        name carrying a sensitive fragment is still refused."""
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        refused = make_round_config(
+            tmp_path / "refused",
+            backend_kwargs={"model_name": "m", "access_token": "tok-nope"},
+        )
+        with pytest.raises(ValueError, match="access_token"):
+            run_round(refused)
+        assert factory.total_calls == 0
+
+        accepted = make_round_config(
+            tmp_path / "accepted",
+            backend_kwargs={
+                "model_name": "driver-test",
+                "pricing": {"input_per_million": 0.60, "output_per_million": 3.00},
+            },
+        )
+        entries = run_round(accepted)
+        assert len(entries) == 3
+
     def test_duplicate_instance_ids_are_rejected(self, tmp_path, monkeypatch):
         factory = ClientFactory(full_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
@@ -571,6 +961,56 @@ class TestAttemptsAndPreconditions:
         config = make_round_config(tmp_path, instances=[instance, dict(instance)])
         with pytest.raises(ValueError, match="duplicate"):
             run_round(config)
+        assert factory.total_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# Credential hygiene: env sentinel values never reach disk or error text
+# ---------------------------------------------------------------------------
+
+
+AZURE_KEY_SENTINEL = "sentinel-azure-key-8b1f2c"
+AZURE_ENDPOINT_SENTINEL = "https://sentinel-resource-9d4e.services.ai.azure.com"
+
+
+class TestCredentialHygiene:
+    def test_azure_sentinels_never_reach_persisted_round_bytes(self, tmp_path, monkeypatch):
+        """Credentials live in the environment only (R3): with sentinel values
+        in both Azure variables, a full round persists no file containing
+        either value, and the serialized backend_kwargs carry neither."""
+        monkeypatch.setenv("AZURE_API_KEY", AZURE_KEY_SENTINEL)
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", AZURE_ENDPOINT_SENTINEL)
+        factory = ClientFactory(full_script(), cost_source="synthesized")
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, backend="azure_foundry")
+        run_round(config)
+
+        assert AZURE_KEY_SENTINEL not in repr(config.backend_kwargs)
+        assert AZURE_ENDPOINT_SENTINEL not in repr(config.backend_kwargs)
+        scanned = 0
+        for path in round_dir(config.out_dir, config.round_index).rglob("*"):
+            if not path.is_file():
+                continue
+            scanned += 1
+            content = path.read_text(errors="replace")
+            assert AZURE_KEY_SENTINEL not in content, path
+            assert AZURE_ENDPOINT_SENTINEL not in content, path
+        assert scanned >= 5  # harness.json, instances.jsonl, runs.jsonl, 3 traces
+
+    def test_fail_fast_error_text_carries_no_sentinel_value(self, tmp_path, monkeypatch):
+        """The missing-endpoint error names the variable, never the value the
+        other (set) variable holds."""
+        monkeypatch.setenv("AZURE_API_KEY", AZURE_KEY_SENTINEL)
+        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+        factory = ClientFactory(full_script())
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, backend="azure_foundry")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            run_round(config)
+        message = str(excinfo.value)
+        assert "AZURE_FOUNDRY_ENDPOINT" in message
+        assert AZURE_KEY_SENTINEL not in message
         assert factory.total_calls == 0
 
 

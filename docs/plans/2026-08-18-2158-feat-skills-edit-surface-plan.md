@@ -35,7 +35,7 @@ Declare `build_skills() -> list[SkillEntry]` as a tenth editable harness surface
 ### Key Decisions
 
 - KD1. **Skills are an on-demand library: a name-plus-description index in the system prompt, with bodies loaded at run time through a fixed loader the runner installs.** (session-settled: user-directed — revised 2026-08-22 from "prompt-side procedure texts, not REPL callables"; chosen over verbatim bodies in the prompt and over a proposer-editable loader: the loader is scaffold, not surface content, so S10 (skill content) stays disjoint from S8 (proposer-written helpers), and S8's governs text excludes it.) Governs R1, R2, R5, R15.
-- KD2. **S10 is edited whole, the same way every other surface is.** (session-settled: user-directed — chosen over an accumulating skill library that grows across rounds: one edit shape, one bounds story, and one diff semantics across all ten surfaces.) Governs R3, R7.
+- KD2. **An S10 edit is one named skill, merged by name into the incumbent library, like an S8 helper: a record whose name matches an existing entry replaces it, a new name is appended, and a record carrying an existing name with `description` and `body` both empty strings removes that entry. The merged library must still satisfy the entry-count and total-length caps.** (session-settled: user-approved — superseded whole-list editing in commit 12ef076: re-emitting the entire library to change one skill was not a minimal one-skill edit, so S10 now merges by name the way S8 merges one helper.) Governs R3, R7.
 - KD3. **Analyses back-fill prior rounds rather than starting a new experiment identity.** (session-settled: user-directed — chosen over a fresh experiment identity and over a per-experiment feature flag: existing snapshots stay readable.) Governs R11, R13.
 - KD4. **The analysis hookup is parity-only.** (session-settled: user-directed — chosen over adding skill-specific measures such as library size over rounds or per-skill survival: the tenth surface should read exactly like the other nine.) Governs R11, R12.
 
@@ -87,7 +87,7 @@ The tenth surface end to end: declaration, serialization, taxonomy, proposal, ca
 
 - `build_subagents`, and any further surface. The declared surface set is closed at ten for this study. Self-Harness declares the subagent builder beside `build_skills`, so it has identical provenance and would otherwise be a standing candidate — but each addition costs a taxonomy bump, a repo-wide hash move, a preregistration edit, and one more boundary the frequency comparison cannot diff across. Pricing this change as one-time is only honest if it is one-time.
 - Skill-specific metrics. KD4 settles this: the tenth surface reads like the other nine.
-- Any mechanism by which the root model writes its own skills at runtime. Skills change between rounds, through a validated proposal, like every other surface (KD2).
+- Any mechanism by which the root model writes its own skills at runtime. Skills change between rounds, through a validated proposal, under KD2's edit contract.
 
 ### Success Criteria
 

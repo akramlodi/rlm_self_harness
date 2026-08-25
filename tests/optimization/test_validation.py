@@ -13,6 +13,9 @@ with a factory of scripted clients that stub per-call costs.
 """
 
 import json
+import os
+import signal
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -50,6 +53,12 @@ from shrlm.optimization.promotion import (
     decide_subject,
     plan_promotion,
     promote_decision,
+)
+from shrlm.optimization.subject_worker import (
+    CLIENT_CALLS_FILENAME,
+    LOG_FILENAME,
+    REQUEST_FILENAME,
+    SubjectWorkerError,
 )
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
@@ -172,6 +181,10 @@ class GoldVerifier:
 # ---------------------------------------------------------------------------
 
 
+# Dotted path to ``GoldVerifier`` for child processes (KTD6).
+GOLD_VERIFIER_FACTORY = "tests.optimization.test_validation:GoldVerifier"
+
+
 def make_instances(prefix: str, n: int = 2) -> list[dict[str, Any]]:
     return [
         {"id": f"{prefix}-{i}", "prompt": f"{prefix} context {i}", "gold": "RIGHT"}
@@ -252,6 +265,24 @@ def run_full_evaluation(
 # ---------------------------------------------------------------------------
 # Layout and split validation
 # ---------------------------------------------------------------------------
+
+
+class TestEvaluationConfigWorkers:
+    def test_workers_default_to_one_without_factories(self, tmp_path):
+        config = make_config(tmp_path)
+        assert config.workers == 1
+        assert config.verifier_factory is None
+        assert config.client_factory is None
+
+    def test_workers_below_one_are_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="workers"):
+            make_config(tmp_path, workers=0)
+
+    def test_parallel_workers_demand_a_verifier_factory(self, tmp_path):
+        with pytest.raises(ValueError, match="verifier_factory"):
+            make_config(tmp_path, workers=2)
+        config = make_config(tmp_path, workers=2, verifier_factory=GOLD_VERIFIER_FACTORY)
+        assert config.workers == 2
 
 
 class TestLayoutAndSplits:
@@ -476,6 +507,47 @@ class TestBudget:
             assert entries[0]["cause"] == VerifierCause.RESOURCE_TERMINATED.value
             assert split_aggregate(split_path)["n_resource_terminated"] == 1
 
+    def test_a_sequential_split_records_run_worker_concurrency_of_one(self, tmp_path, monkeypatch):
+        """R5: the conditions a measurement was taken under travel with it.
+
+        A subject evaluated while siblings compete for one API key is not under
+        the same conditions as one that ran alone, so the aggregate says which
+        it was. The sequential path records 1 rather than omitting the key --
+        a reader should never have to distinguish "ran alone" from "written
+        before anyone recorded this".
+        """
+        factory = ClientFactory([final("RIGHT")] * 4)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+
+        evaluation = evaluate_subject("cand-solo", candidate_harness("solo"), config)
+
+        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            assert evaluation.summary["splits"][split_id]["run_workers"] == 1
+            split_path = split_dir(config.out_dir, config.round_index, "cand-solo", split_id)
+            assert split_aggregate(split_path)["run_workers"] == 1
+
+    def test_a_terminated_run_contributes_its_real_cost_to_the_split_total(
+        self, tmp_path, monkeypatch
+    ):
+        """The accounting correction is visible in the aggregate, not just the line.
+
+        Before it, a run terminated by anything other than the budget persisted
+        no cost and contributed nothing here, so a split full of terminations
+        read as nearly free. The published runtime total ends that.
+        """
+        factory = ClientFactory(["Scanning part one.", "Scanning part two."] * 2)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+
+        evaluate_subject("cand-priced", candidate_harness("priced"), config)
+
+        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            split_path = split_dir(config.out_dir, config.round_index, "cand-priced", split_id)
+            aggregate = split_aggregate(split_path)
+            assert aggregate["n_resource_terminated"] == 1
+            assert aggregate["total_cost"] == pytest.approx(2 * COST_PER_CALL)
+
     def test_breaker_is_cumulative_across_both_splits(self, tmp_path, monkeypatch):
         caps = replace(CAPS, candidate_budget=0.0015)
         factory = ClientFactory([final("RIGHT")] * 4)
@@ -511,6 +583,432 @@ class TestBudget:
         assert result.gate == GATE_CAPS
         assert idle.total_calls == 0
         assert not subject_dir(config.out_dir, config.round_index, "cand-deep").exists()
+
+
+# ---------------------------------------------------------------------------
+# Subject parallelism: one child process per subject (U3)
+# ---------------------------------------------------------------------------
+
+
+def parallel_client_factory(
+    tmp_path: Path, scripts: dict[str, list[str]], **extra: Any
+) -> tuple[str, dict[str, Any]]:
+    """Per-subject scripts on disk, addressed by the child-side seam (KTD9)."""
+    from tests.optimization.subject_worker_support import SCRIPTED_FACTORY, write_script
+
+    args: dict[str, Any] = {}
+    for subject_id, script in scripts.items():
+        path = write_script(tmp_path / "scripts" / f"{subject_id}.json", script)
+        args[subject_id] = {"script_path": str(path), **extra}
+    return (SCRIPTED_FACTORY, args)
+
+
+def subject_calls(config: EvaluationConfig, subject_id: str) -> int:
+    path = subject_dir(config.out_dir, config.round_index, subject_id) / CLIENT_CALLS_FILENAME
+    return int(json.loads(path.read_text())["calls"])
+
+
+PARALLEL_SCRIPTS: dict[str, list[str]] = {
+    BASELINE_ID: [final("RIGHT")] * 8,
+    "cand-a": [final("RIGHT"), final("RIGHT"), final("WRONG"), final("RIGHT")]
+    + [final("WRONG"), final("WRONG"), final("RIGHT"), final("RIGHT")],
+    "cand-b": [final("RIGHT")] * 8,
+    "cand-c": [final("WRONG")] * 8,
+    "cand-d": [final("RIGHT")] * 8,
+}
+
+
+def parallel_candidates() -> list[LoadedCandidate]:
+    return [
+        fake_candidate(candidate_id, candidate_harness(candidate_id))
+        for candidate_id in ("cand-a", "cand-b", "cand-c", "cand-d")
+    ]
+
+
+class TestParallelSubjects:
+    def test_subjects_run_in_bounded_concurrent_children_in_loader_order(
+        self, tmp_path, monkeypatch
+    ):
+        from tests.optimization.subject_worker_support import max_concurrency
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)  # the parent makes no calls
+        concurrency_dir = tmp_path / "alive"
+        concurrency_dir.mkdir()
+        config = make_config(
+            tmp_path,
+            workers=3,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(
+                tmp_path, PARALLEL_SCRIPTS, concurrency_dir=str(concurrency_dir), hold=1.0
+            ),
+        )
+
+        result = evaluate_validation_round(H0, parallel_candidates(), config)
+
+        assert idle.total_calls == 0
+        assert result.baseline.subject_id == BASELINE_ID
+        assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b", "cand-c", "cand-d"]
+        assert result.baseline.summary["splits"][SPLIT_HELDIN]["pass_count"] == 4
+        cand_a = result.candidates[0]
+        assert isinstance(cand_a, SubjectEvaluation)
+        assert cand_a.summary["splits"][SPLIT_HELDIN]["pass_count"] == 3
+        assert cand_a.summary["splits"][SPLIT_HELDOUT]["pass_count"] == 2
+        cand_c = result.candidates[2]
+        assert isinstance(cand_c, SubjectEvaluation)
+        assert cand_c.summary["splits"][SPLIT_HELDOUT]["pass_count"] == 0
+        for subject_id in PARALLEL_SCRIPTS:
+            subject_path = subject_dir(config.out_dir, config.round_index, subject_id)
+            assert load_summary(subject_path)["subject_id"] == subject_id
+            assert (subject_path / REQUEST_FILENAME).exists()
+            assert (subject_path / LOG_FILENAME).exists()
+            assert subject_calls(config, subject_id) == 8
+        observed = max_concurrency(concurrency_dir)
+        assert 2 <= observed <= 3, observed
+
+    def test_parallel_summaries_match_the_sequential_bytes(self, tmp_path, monkeypatch):
+        # Sequential: the in-process seam, one shared script in evaluation order.
+        sequential = ClientFactory(
+            PARALLEL_SCRIPTS[BASELINE_ID]
+            + PARALLEL_SCRIPTS["cand-a"]
+            + PARALLEL_SCRIPTS["cand-b"]
+            + PARALLEL_SCRIPTS["cand-c"]
+            + PARALLEL_SCRIPTS["cand-d"]
+        )
+        monkeypatch.setattr(rlm_module, "get_client", sequential)
+        seq_config = make_config(tmp_path, out_dir=tmp_path / "sequential")
+        seq = evaluate_validation_round(H0, parallel_candidates(), seq_config)
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        par_config = make_config(
+            tmp_path,
+            out_dir=tmp_path / "parallel",
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        par = evaluate_validation_round(H0, parallel_candidates(), par_config)
+
+        assert idle.total_calls == 0
+        assert seq.baseline.summary_path.read_bytes() == par.baseline.summary_path.read_bytes()
+        for left, right in zip(seq.candidates, par.candidates, strict=True):
+            assert isinstance(left, SubjectEvaluation) and isinstance(right, SubjectEvaluation)
+            assert left.summary_path.read_bytes() == right.summary_path.read_bytes()
+            for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+                seq_manifest = read_manifest(
+                    split_dir(seq_config.out_dir, 1, left.subject_id, split_id) / "round_00"
+                )
+                par_manifest = read_manifest(
+                    split_dir(par_config.out_dir, 1, right.subject_id, split_id) / "round_00"
+                )
+                keys = ("run_id", "passed", "cost", "cause", "harness_hash")
+                assert [{k: e.get(k) for k in keys} for e in seq_manifest] == [
+                    {k: e.get(k) for k in keys} for e in par_manifest
+                ]
+
+    def test_a_crashed_subject_lets_siblings_finish_then_raises_and_resumes(
+        self, tmp_path, monkeypatch
+    ):
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        factory_path, args = parallel_client_factory(tmp_path, PARALLEL_SCRIPTS)
+        # cand-c's child crashes on its first completion; its siblings must still land.
+        crashing_args = dict(args)
+        crashing_args["cand-c"] = {"crash": True}
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=(factory_path, crashing_args),
+        )
+        with pytest.raises(SubjectWorkerError) as excinfo:
+            evaluate_validation_round(H0, parallel_candidates(), config)
+
+        failure = excinfo.value.failures
+        assert [f["subject_id"] for f in failure] == ["cand-c"]
+        log_path = subject_dir(config.out_dir, config.round_index, "cand-c") / LOG_FILENAME
+        assert failure[0]["log_path"] == str(log_path)
+        assert "scripted crash" in log_path.read_text()
+        assert str(log_path) in str(excinfo.value)
+        for subject_id in (BASELINE_ID, "cand-a", "cand-b", "cand-d"):
+            assert load_summary(subject_dir(config.out_dir, config.round_index, subject_id))
+        assert not (
+            subject_dir(config.out_dir, config.round_index, "cand-c") / SUMMARY_FILENAME
+        ).exists()
+
+        # Resume with a working script for cand-c: only its runs are paid for.
+        fixed = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        result = evaluate_validation_round(H0, parallel_candidates(), fixed)
+        assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b", "cand-c", "cand-d"]
+        assert subject_calls(fixed, "cand-c") == 8
+        for subject_id in (BASELINE_ID, "cand-a", "cand-b", "cand-d"):
+            assert subject_calls(fixed, subject_id) == 0
+        assert idle.total_calls == 0
+
+    def test_caps_gate_rejects_in_the_parent_without_spawning(self, tmp_path, monkeypatch):
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        scripts = {BASELINE_ID: [final("RIGHT")] * 8, "cand-ok": [final("RIGHT")] * 8}
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, scripts),
+        )
+        policy = build_runtime_policy() | {"enabled": True, "max_depth": 3}
+        deep = fake_candidate("cand-deep", replace(H0, runtime_policy=policy))
+        ok = fake_candidate("cand-ok", candidate_harness("cand-ok"))
+
+        result = evaluate_validation_round(H0, [deep, ok], config)
+
+        rejection, evaluated = result.candidates
+        assert isinstance(rejection, CandidateRejection)
+        assert rejection.candidate_id == "cand-deep" and rejection.gate == GATE_CAPS
+        assert not subject_dir(config.out_dir, config.round_index, "cand-deep").exists()
+        assert isinstance(evaluated, SubjectEvaluation) and evaluated.subject_id == "cand-ok"
+
+    def test_a_rejected_baseline_raises_before_any_spawn(self, tmp_path, monkeypatch):
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        policy = build_runtime_policy() | {"enabled": True, "max_depth": 3}
+        with pytest.raises(ValueError, match="incumbent violates"):
+            evaluate_validation_round(
+                replace(H0, runtime_policy=policy), parallel_candidates(), config
+            )
+        assert not Path(config.out_dir).exists()
+
+    def test_workers_one_spawns_no_child(self, tmp_path, monkeypatch):
+        import subprocess
+
+        def refuse(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("workers=1 must never spawn a child process")
+
+        monkeypatch.setattr(subprocess, "Popen", refuse)
+        _config, result, factory = run_full_evaluation(tmp_path, monkeypatch)
+        assert factory.total_calls == 24
+        assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b"]
+
+    def test_an_interrupt_terminates_live_children_and_propagates(self, tmp_path, monkeypatch):
+        import time
+
+        import shrlm.optimization.subject_worker as worker_module
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS, hold=30.0),
+        )
+        signalled: list[tuple[int, int]] = []
+        real_signal_group = worker_module._signal_group
+
+        def tracking_signal_group(process: Any, signum: int) -> None:
+            signalled.append((process.pid, signum))
+            real_signal_group(process, signum)
+
+        monkeypatch.setattr(worker_module, "_signal_group", tracking_signal_group)
+
+        # Patch the poll loop's own seam, never the stdlib ``time.sleep`` that
+        # ``Popen.wait(timeout=...)`` uses inside the cleanup path.
+        polls = {"n": 0}
+
+        def interrupt(_seconds: float) -> None:
+            polls["n"] += 1
+            if polls["n"] >= 3:
+                raise KeyboardInterrupt
+            time.sleep(0.2)
+
+        monkeypatch.setattr(worker_module, "_sleep", interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            evaluate_validation_round(H0, parallel_candidates(), config)
+        assert polls["n"] == 3
+        assert sorted(signum for _pid, signum in signalled) == [signal.SIGTERM, signal.SIGTERM]
+        for subject_id in PARALLEL_SCRIPTS:
+            assert not (
+                subject_dir(config.out_dir, config.round_index, subject_id) / SUMMARY_FILENAME
+            ).exists()
+
+    def test_a_child_ignoring_sigterm_is_killed_after_the_grace_period(self, tmp_path, monkeypatch):
+        import time
+
+        import shrlm.optimization.subject_worker as worker_module
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        monkeypatch.setattr(worker_module, "TERMINATE_GRACE_SECONDS", 1.0)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(
+                tmp_path, PARALLEL_SCRIPTS, hold=60.0, ignore_sigterm=True
+            ),
+        )
+        signalled: list[tuple[int, int]] = []
+        real_signal_group = worker_module._signal_group
+
+        def tracking_signal_group(process: Any, signum: int) -> None:
+            signalled.append((process.pid, signum))
+            real_signal_group(process, signum)
+
+        monkeypatch.setattr(worker_module, "_signal_group", tracking_signal_group)
+        polls = {"n": 0}
+
+        def interrupt(_seconds: float) -> None:
+            polls["n"] += 1
+            if polls["n"] >= 5:
+                raise KeyboardInterrupt
+            time.sleep(0.2)
+
+        monkeypatch.setattr(worker_module, "_sleep", interrupt)
+        started = time.perf_counter()
+        with pytest.raises(KeyboardInterrupt):
+            evaluate_validation_round(H0, parallel_candidates(), config)
+        elapsed = time.perf_counter() - started
+        assert sorted(signum for _pid, signum in signalled if signum == signal.SIGKILL) == [
+            signal.SIGKILL,
+            signal.SIGKILL,
+        ]
+        assert elapsed < 30.0
+
+    def test_a_live_worker_pid_refuses_to_spawn_anything(self, tmp_path, monkeypatch):
+        from shrlm.optimization.subject_worker import PID_FILENAME, SubjectWorkerBusyError
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        cand_a = subject_dir(config.out_dir, config.round_index, "cand-a")
+        cand_a.mkdir(parents=True)
+        (cand_a / PID_FILENAME).write_text(f"{os.getpid()}\n")  # this very process: alive
+
+        with pytest.raises(SubjectWorkerBusyError, match="cand-a"):
+            evaluate_validation_round(H0, parallel_candidates(), config)
+        assert not subject_dir(config.out_dir, config.round_index, BASELINE_ID).exists()
+        assert not (cand_a / REQUEST_FILENAME).exists()
+
+    def test_a_stale_worker_pid_is_cleared_and_pid_files_never_outlive_children(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+
+        from shrlm.optimization.subject_worker import PID_FILENAME
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        config = make_config(
+            tmp_path,
+            workers=2,
+            verifier_factory=GOLD_VERIFIER_FACTORY,
+            client_factory=parallel_client_factory(tmp_path, PARALLEL_SCRIPTS),
+        )
+        cand_b = subject_dir(config.out_dir, config.round_index, "cand-b")
+        cand_b.mkdir(parents=True)
+        # A pid that no longer exists: one from a process that already exited.
+        probe = subprocess.Popen([sys.executable, "-c", "pass"])
+        probe.wait()
+        (cand_b / PID_FILENAME).write_text(f"{probe.pid}\n")
+
+        result = evaluate_validation_round(H0, parallel_candidates(), config)
+        assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b", "cand-c", "cand-d"]
+        for subject_id in PARALLEL_SCRIPTS:
+            assert not (
+                subject_dir(config.out_dir, config.round_index, subject_id) / PID_FILENAME
+            ).exists()
+
+    def test_children_exit_on_their_own_when_the_parent_is_killed(self, tmp_path):
+        import signal
+        import subprocess
+        import textwrap
+        import time
+
+        from shrlm.optimization.subject_worker import PID_FILENAME
+
+        factory_path, args = parallel_client_factory(tmp_path, PARALLEL_SCRIPTS, hold=120.0)
+        spec = tmp_path / "spec.json"
+        spec.write_text(json.dumps({"factory": factory_path, "args": args}))
+        script = tmp_path / "parent.py"
+        script.write_text(
+            textwrap.dedent(
+                f"""
+                import json
+                from pathlib import Path
+                from shrlm.optimization.validation import evaluate_validation_round
+                from shrlm.rlm_harness import H0
+                from tests.optimization.test_validation import (
+                    GOLD_VERIFIER_FACTORY, make_config, parallel_candidates,
+                )
+                spec = json.loads(Path({str(spec)!r}).read_text())
+                config = make_config(
+                    Path({str(tmp_path)!r}),
+                    workers=2,
+                    verifier_factory=GOLD_VERIFIER_FACTORY,
+                    client_factory=(spec["factory"], spec["args"]),
+                )
+                evaluate_validation_round(H0, parallel_candidates(), config)
+                """
+            )
+        )
+        # A script run by path puts its own directory first on sys.path, so the
+        # repo root must reach the child through PYTHONPATH for ``tests`` to import.
+        repo_root = Path(__file__).resolve().parents[2]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
+        parent = subprocess.Popen([sys.executable, str(script)], cwd=repo_root, env=env)
+        out_dir = tmp_path / "validation"
+        deadline = time.monotonic() + 60
+        pids: list[int] = []
+        while time.monotonic() < deadline and len(pids) < 2:
+            pids = [
+                int(path.read_text())
+                for path in out_dir.glob(f"round_*/*/{PID_FILENAME}")
+                if path.read_text().strip()
+            ]
+            time.sleep(0.2)
+        assert len(pids) == 2, "two children never registered their pids"
+
+        parent.send_signal(signal.SIGKILL)
+        parent.wait()
+
+        def alive(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            return True
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and any(alive(pid) for pid in pids):
+            time.sleep(0.2)
+        assert not any(alive(pid) for pid in pids), "orphaned children kept running"
+
+    def test_credential_kwargs_are_refused_before_any_request_is_written(self, tmp_path):
+        with pytest.raises(ValueError, match="credential material"):
+            make_config(
+                tmp_path,
+                workers=2,
+                verifier_factory=GOLD_VERIFIER_FACTORY,
+                backend_kwargs={"model_name": "m", "api_key": "sk-should-never-persist"},
+            )
+        assert not (tmp_path / "validation").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1003,3 +1501,44 @@ class TestPromotionLedger:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestSubjectOutcomeReflectsSkippedRuns:
+    """R8/KTD10: a subject that skipped any run never reports `completed`.
+
+    The promotion rule reads the *subject* outcome. Dispatch can stop while
+    spend is still inside the budget -- the reservation gate holds back a
+    slot's worth of headroom per in-flight run -- so deriving the outcome from
+    the breaker alone would mark a truncated subject complete and let the
+    preregistered rule score a sample that never ran.
+    """
+
+    def test_a_split_with_a_skipped_run_makes_the_subject_over_budget(self):
+        from shrlm.optimization.validation import _any_split_skipped
+
+        assert _any_split_skipped({"heldin": {"skipped_run_ids": []}}) is False
+        assert _any_split_skipped({"heldin": {"skipped_run_ids": ["inst-1__a01"]}}) is True
+        assert (
+            _any_split_skipped(
+                {"heldin": {"skipped_run_ids": []}, "heldout": {"skipped_run_ids": ["x__a01"]}}
+            )
+            is True
+        )
+
+    def test_a_truncated_subject_is_not_scored_as_completed(self, tmp_path, monkeypatch):
+        """End to end: a breaker that stops mid-subject must not read complete."""
+        caps = replace(CAPS, candidate_budget=COST_PER_CALL * 1.5)
+        factory = ClientFactory([final("RIGHT")] * 8)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, caps=caps, splits=make_splits(2), repetitions=1)
+
+        evaluation = evaluate_subject("cand-trunc", candidate_harness("trunc"), config)
+
+        assert isinstance(evaluation, SubjectEvaluation)
+        skipped = [
+            run_id
+            for split in evaluation.summary["splits"].values()
+            for run_id in split["skipped_run_ids"]
+        ]
+        assert skipped
+        assert evaluation.summary["outcome"] == OUTCOME_OVER_BUDGET
