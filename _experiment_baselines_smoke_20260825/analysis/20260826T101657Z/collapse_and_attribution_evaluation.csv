@@ -1,0 +1,17 @@
+condition_id,test_set_id,environment,length,n_runs,n_walked,n_unwalkable,n_failures,collapse_rate,root_failure_share,child_failure_share,no_recursion_failure_share,ungrounded_share,sub_verifier_available,outcome,n_skipped,n_expected_runs,n_missing_runs,runs_complete,complete
+b1,graphwalks_long,graphwalks,long,1,1,0,1,0.0,0.0,0.0,1.0,0.0,true,completed,0,,,unknown,unknown
+b1,graphwalks_short,graphwalks,short,2,2,0,1,0.0,0.0,0.0,1.0,0.0,true,completed,0,,,unknown,unknown
+b1,oolong_pairs_long,oolong_pairs,long,1,1,0,1,0.0,0.0,0.0,0.0,1.0,false,completed,0,,,unknown,unknown
+b1,oolong_pairs_short,oolong_pairs,short,2,2,0,2,0.0,0.0,0.0,0.0,1.0,false,completed,0,,,unknown,unknown
+h0_star,graphwalks_long,graphwalks,long,1,1,0,1,0.0,0.0,0.0,1.0,0.0,true,completed,0,,,unknown,unknown
+h0_star,graphwalks_short,graphwalks,short,2,2,0,0,0.0,,,,,true,completed,0,,,unknown,unknown
+h0_star,oolong_pairs_long,oolong_pairs,long,1,1,0,1,0.0,0.0,0.0,0.0,1.0,false,completed,0,,,unknown,unknown
+h0_star,oolong_pairs_short,oolong_pairs,short,2,2,0,2,0.0,0.0,0.0,0.0,1.0,false,completed,0,,,unknown,unknown
+lambda_rlm,graphwalks_long,graphwalks,long,1,0,1,0,,,,,,true,completed,0,,,unknown,unknown
+lambda_rlm,graphwalks_short,graphwalks,short,2,0,2,0,,,,,,true,completed,0,,,unknown,unknown
+lambda_rlm,oolong_pairs_long,oolong_pairs,long,1,0,1,0,,,,,,false,completed,0,,,unknown,unknown
+lambda_rlm,oolong_pairs_short,oolong_pairs,short,2,0,2,0,,,,,,false,completed,0,,,unknown,unknown
+sh_rlm,graphwalks_long,graphwalks,long,1,1,0,1,0.0,0.0,0.0,1.0,0.0,true,completed,0,,,unknown,unknown
+sh_rlm,graphwalks_short,graphwalks,short,2,2,0,1,0.0,0.0,0.0,1.0,0.0,true,completed,0,,,unknown,unknown
+sh_rlm,oolong_pairs_long,oolong_pairs,long,1,1,0,1,0.0,0.0,0.0,0.0,1.0,false,completed,0,,,unknown,unknown
+sh_rlm,oolong_pairs_short,oolong_pairs,short,2,2,0,2,0.0,0.0,0.0,0.0,1.0,false,completed,0,,,unknown,unknown
