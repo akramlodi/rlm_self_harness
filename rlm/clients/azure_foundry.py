@@ -169,7 +169,7 @@ class AzureFoundryClient(OpenAIClient):
                     f"(got {cost!r}). Refusing to record this call."
                 )
 
-    def _track_cost(self, response: openai.ChatCompletion, model: str):
+    def _record_spend(self, response: openai.ChatCompletion, model: str) -> None:
         with self._cost_lock:
             usage = getattr(response, "usage", None)
             if usage is not None:
@@ -200,10 +200,36 @@ class AzureFoundryClient(OpenAIClient):
                 self.last_cost_source = "synthesized"
                 self.model_cost_sources[model] = "synthesized"
 
-            # LAST, after the spend is on the books: a billed response that was
-            # content-filtered or empty still raises, but the spend breaker has
-            # already seen its cost.
-            self._validate_response(response)
+    def _track_cost(self, response: openai.ChatCompletion, model: str):
+        # Spend first, validation LAST: a billed response that was
+        # content-filtered or empty still raises, but the spend breaker has
+        # already seen its cost.
+        self._record_spend(response, model)
+        self._validate_response(response)
+
+    def _empty_content_retry_reason(self, response: Any) -> str | None:
+        """Azure Foundry intermittently returns a 200 with an empty body.
+
+        Measured 2026-08-25 against the live Kimi-K2.5 deployment: 9 of ~1,100
+        runs died here, and replaying the smallest failing prompt returned
+        content on three consecutive attempts (finish_reason='stop',
+        1,679-2,914 completion tokens against an 8,192 budget). So the empty
+        body is transient, and raising on the first one turns a provider glitch
+        into a dead run -- while an ordinary 429 gets 20 attempts.
+
+        A content filter is a verdict rather than a glitch, so it is left to
+        _validate_response to raise.
+        """
+        choices = getattr(response, "choices", None)
+        if not choices:
+            return None  # _response_deficiency already owns this case
+        choice = choices[0]
+        if getattr(choice, "finish_reason", None) == "content_filter":
+            return None  # a deliberate refusal; retrying would only re-spend
+        content = getattr(getattr(choice, "message", None), "content", None)
+        if content is None or content == "":
+            return f"finish_reason={getattr(choice, 'finish_reason', None)!r}"
+        return None
 
     def get_usage_summary(self) -> UsageSummary:
         summary = super().get_usage_summary()

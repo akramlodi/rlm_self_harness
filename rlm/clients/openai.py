@@ -69,6 +69,15 @@ _TRANSIENT_API_ERRORS = (
     openai.APIConnectionError,
 )
 
+# An intermittent empty completion body is a provider glitch, not a model
+# answer. Verified against Azure Foundry / Kimi-K2.5 on 2026-08-25: replaying a
+# prompt that had failed this way returned content on three consecutive
+# attempts with finish_reason='stop', using 1,679-2,914 of 8,192 available
+# tokens -- so the empty body was neither truncation nor a property of the
+# prompt. Subclasses whose _track_cost treats an empty body as fatal opt in by
+# overriding _empty_content_retry_reason.
+EMPTY_CONTENT_ATTEMPTS = 6
+
 
 def _transport_backoff_seconds(attempt: int) -> float:
     """Full-jitter exponential backoff: uniform in (0, min(cap, base * 2^(n-1)))."""
@@ -235,6 +244,7 @@ class OpenAIClient(BaseLM):
 
         transport_attempt = 0
         rate_limit_attempt = 0
+        empty_content_attempt = 0
         while True:
             try:
                 response = self.client.chat.completions.create(
@@ -261,7 +271,24 @@ class OpenAIClient(BaseLM):
                 continue
             deficiency = _response_deficiency(response)
             if deficiency is None:
-                break
+                empty_reason = self._empty_content_retry_reason(response)
+                if empty_reason is None:
+                    break
+                empty_content_attempt += 1
+                if empty_content_attempt >= EMPTY_CONTENT_ATTEMPTS:
+                    # Exhausted: fall through WITHOUT banking here, so the
+                    # post-loop _track_cost records this attempt exactly once
+                    # and raises, preserving the pre-retry behavior.
+                    break
+                # A discarded attempt was still billed: bank it before retrying.
+                self._record_spend(response, model)
+                print(
+                    f"Empty completion content ({empty_reason}); "
+                    f"retrying ({empty_content_attempt}/{EMPTY_CONTENT_ATTEMPTS})...",
+                    file=sys.stderr,
+                )
+                time.sleep(_transport_backoff_seconds(empty_content_attempt))
+                continue
             transport_attempt += 1
             if transport_attempt >= TRANSPORT_ATTEMPTS:
                 raise ValueError(
@@ -302,6 +329,7 @@ class OpenAIClient(BaseLM):
 
         transport_attempt = 0
         rate_limit_attempt = 0
+        empty_content_attempt = 0
         while True:
             try:
                 response = await self.async_client.chat.completions.create(
@@ -328,7 +356,24 @@ class OpenAIClient(BaseLM):
                 continue
             deficiency = _response_deficiency(response)
             if deficiency is None:
-                break
+                empty_reason = self._empty_content_retry_reason(response)
+                if empty_reason is None:
+                    break
+                empty_content_attempt += 1
+                if empty_content_attempt >= EMPTY_CONTENT_ATTEMPTS:
+                    # Exhausted: fall through WITHOUT banking here, so the
+                    # post-loop _track_cost records this attempt exactly once
+                    # and raises, preserving the pre-retry behavior.
+                    break
+                # A discarded attempt was still billed: bank it before retrying.
+                self._record_spend(response, model)
+                print(
+                    f"Empty completion content ({empty_reason}); "
+                    f"retrying ({empty_content_attempt}/{EMPTY_CONTENT_ATTEMPTS})...",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(_transport_backoff_seconds(empty_content_attempt))
+                continue
             transport_attempt += 1
             if transport_attempt >= TRANSPORT_ATTEMPTS:
                 raise ValueError(
@@ -344,6 +389,25 @@ class OpenAIClient(BaseLM):
         self._track_cost(response, model)
         # Same None-content coercion as the sync path above.
         return response.choices[0].message.content or ""
+
+    def _empty_content_retry_reason(self, response: Any) -> str | None:
+        """Why this 200 response should be retried for an empty body, or None.
+
+        The base client coerces an absent text to "" -- a reasoning model may
+        legitimately spend its whole budget on hidden reasoning -- so nothing is
+        retried here. Subclasses whose _track_cost RAISES on an empty body
+        override this, which moves the retry inside the loop where the discarded
+        attempt's spend can still be recorded.
+        """
+        return None
+
+    def _record_spend(self, response: openai.ChatCompletion, model: str) -> None:
+        """Bank one attempt's spend without validating its content.
+
+        Called for a billed attempt that is about to be discarded and retried:
+        the money left the account, so the breaker must see it.
+        """
+        self._track_cost(response, model)
 
     def _track_cost(self, response: openai.ChatCompletion, model: str):
         self.model_call_counts[model] += 1

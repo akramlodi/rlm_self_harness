@@ -47,10 +47,19 @@ MAX_FAST_FAILURES=3
 
 cd "$PROJECT_DIR" || exit 1
 
-# Matches ONLY this experiment. The config filename is the discriminator --
-# never match on "run_experiment" alone, which would also catch a concurrent
-# experiment running from a different TOML.
-PATTERN="run_experiment.py --config $CONFIG"
+# Matches ONLY this experiment's python process.
+#
+# The config filename discriminates against a concurrent experiment running
+# from a different TOML. The "python3 examples/" prefix is what keeps the
+# watcher from matching ITSELF: a monitoring shell whose command line merely
+# CONTAINS this pattern string is also matched by pgrep -f, and because such a
+# watcher never exits, run_pid() would return it forever and this supervisor
+# would report a dead experiment as alive and never restart it. Observed
+# 2026-08-25 -- the first pattern here did exactly that.
+#
+# Match the python process, not the `uv run` wrapper: python is the process
+# that actually owns the experiment.
+PATTERN="python3 examples/run_experiment.py --config $CONFIG"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$SUP_LOG"; }
 
