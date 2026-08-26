@@ -1,0 +1,4 @@
+round_index,subject_id,decision,surface,surface_source,heldin_pass_rate,heldout_pass_rate
+1,r01-c01-s2,rejected,S2,ledger,0.3125,0.45
+1,r01-c02-s8,rejected,S8,ledger,0.3541666666666667,0.44375
+1,r01-c03-s1,rejected,S1,ledger,0.21875,0.2875
