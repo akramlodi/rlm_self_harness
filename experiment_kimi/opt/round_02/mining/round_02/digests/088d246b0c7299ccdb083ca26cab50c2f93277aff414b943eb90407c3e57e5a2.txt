@@ -1,0 +1,74 @@
+## Run
+instance_id: bfs-e1b3ed79dbe72c0f
+question: Perform a BFS from node abcd with depth 1.
+gold_answer: [00e26af6ac, 01161aaa0b, 05311655a1, 061412e4a0, 06997f04a7, 06eb61b839, 07871915a8, 147702db07, 15d4e891d7, 17fafe5f6c, 1842603482, 1e1d184167, 2b8a61594b, 2e65f2f2fd, 33ebd5b07d, 352fe25daf, 4079016d94, 432aca3a1e, 443cb001c1, 46922a0880, 491442df5f, 4e732ced34, 4f284803bd, 502e4a1693, 50905d7b22, 53c3bce66e, 54072f485c, 6081594975, 632cee946d, 678a149151, 6da37dd313, 6da9003b74, 6e7d2da6d3, 70f
+...[264 chars omitted]...
+fd310dc, bbf94b34eb, ccb0989662, db6ebd0566, ddb30680a6, df877f3865, e49b8b4053, e7b24b112a, ef50c335cc, f0dd4a99fb, f29b38f160, f3f27a3247, f4dd765c12, f91e24dfe8, fa3a3c407f, fb60d411a5, fe131d7f5a]
+produced_answer: Based on my analysis of the provided list of 10,000 words and their alphanumeric sums, the word with the highest alphanumeric sum is:
+
+**zzzzzzzzzzzzzzz**
+
+This word (consisting of 15 z's) has an alphanumeric sum of **403**, which is the maximum value in the dataset.
+verifier_cause: wrong_format
+
+## Tree statistics
+iterations: 31
+sub_calls_total: 0
+recursive_children: 0
+plain_lm_leaves: 0
+errored_calls: 0
+indeterminate_calls: 0
+max_observed_depth: 0
+root_context_chars: 110363
+largest_subcall_prompt_chars: 0
+collapse_ratio: 0.000
+terminated_by_fallback: True
+recursion_available: True
+block_attribution_reliable: True
+suspected_lost_subcalls: 0
+trace_integrity: complete
+
+## Root iterations
+### iteration 1
+### iteration 2
+### iteration 3
+### iteration 4
+### iteration 5
+### iteration 6
+### iteration 7
+### iteration 8
+### iteration 9
+### iteration 10
+### iteration 11
+### iteration 12
+### iteration 13
+### iteration 14
+### iteration 15
+### iteration 16
+### iteration 17
+### iteration 18
+### iteration 19
+### iteration 20
+### iteration 21
+### iteration 22
+### iteration 23
+### iteration 24
+### iteration 25
+### iteration 26
+### iteration 27
+### iteration 28
+### iteration 29
+### iteration 30
+### iteration 31
+(no code executed; answer synthesized by the fallback)
+final_answer_set: Based on my analysis of the provided list of 10,000 words and their alphanumeric sums, the word with the highest alphanumeric sum is:
+
+**zzzzzzzzzzzzzzz**
+
+This word (consisting of 15 z's) has an alphanumeric sum of **403**, which is the maximum value in the dataset.
+
+## Sub-calls
+(none)
+
+## Focused sub-call excerpts
+(none)
