@@ -23,6 +23,7 @@ from rlm.environments.base_env import (
     extract_tool_value,
     validate_custom_tools,
 )
+from rlm.utils.exceptions import TimeoutExceededError
 from rlm.utils.parsing import has_syntax_error
 
 # =============================================================================
@@ -446,6 +447,10 @@ class LocalREPL(NonIsolatedEnv):
                 return f"Error: {response.error}", None
 
             return response.chat_completion.response, response.chat_completion
+        except TimeoutExceededError:
+            # Preserve the enclosing run's one-shot hard deadline instead of
+            # turning it into an in-band LM error and continuing execution.
+            raise
         except Exception as e:
             return f"Error: LM query failed - {e}", None
 
@@ -504,6 +509,8 @@ class LocalREPL(NonIsolatedEnv):
                 else:
                     self._record_call(response.chat_completion)
                     results[index] = response.chat_completion.response
+        except TimeoutExceededError:
+            raise
         except Exception as e:
             for index in allowed:
                 results[index] = f"Error: LM query failed - {e}"
@@ -564,6 +571,8 @@ class LocalREPL(NonIsolatedEnv):
         try:
             completion = self.subcall_fn(prompt, model)
             return completion.response, completion
+        except TimeoutExceededError:
+            raise
         except Exception as e:
             return f"Error: RLM query failed - {e}", None
 
@@ -801,6 +810,10 @@ class LocalREPL(NonIsolatedEnv):
 
                 stdout = stdout_buf.getvalue()
                 stderr = stderr_buf.getvalue()
+            except TimeoutExceededError:
+                # A hard-deadline SIGALRM may interrupt generated code at any
+                # point. Let the governed runner persist the termination.
+                raise
             except Exception as e:
                 stdout = stdout_buf.getvalue()
                 stderr = stderr_buf.getvalue() + f"\n{type(e).__name__}: {e}"

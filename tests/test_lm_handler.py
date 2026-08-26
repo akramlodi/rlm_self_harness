@@ -1,7 +1,11 @@
 """Tests for LMHandler using MockLM (no real LM required)."""
 
+import pytest
+
+import rlm.core.comms_utils as comms_utils_module
 from rlm.core.comms_utils import LMRequest, send_lm_request, send_lm_request_batched
 from rlm.core.lm_handler import LMHandler
+from rlm.utils.exceptions import TimeoutExceededError
 from tests.mock_lm import MockLM
 
 
@@ -65,3 +69,49 @@ def test_lm_handler_batched_many_prompts_semaphore_cap():
     for i, resp in enumerate(result):
         assert resp.success, (i, resp.error)
         assert resp.chat_completion.response == f"resp-{i}"
+
+
+def test_send_lm_request_propagates_timeout_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hard-deadline SIGALRM firing inside socket_request (the client's
+    blocking recv) must reach the caller as a real exception, not get folded
+    into an ordinary LMResponse.error_response() the way a genuine transport
+    failure does -- otherwise a hung run's own termination signal is silently
+    absorbed and the caller has no way to know it was interrupted."""
+
+    def raiser(*args, **kwargs):
+        raise TimeoutExceededError(elapsed=33.0, timeout=33.0)
+
+    monkeypatch.setattr(comms_utils_module, "socket_request", raiser)
+
+    with pytest.raises(TimeoutExceededError):
+        send_lm_request(("127.0.0.1", 1), LMRequest(prompt="hello"))
+
+
+def test_send_lm_request_batched_propagates_timeout_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raiser(*args, **kwargs):
+        raise TimeoutExceededError(elapsed=33.0, timeout=33.0)
+
+    monkeypatch.setattr(comms_utils_module, "socket_request", raiser)
+
+    with pytest.raises(TimeoutExceededError):
+        send_lm_request_batched(("127.0.0.1", 1), ["a", "b"])
+
+
+def test_send_lm_request_still_wraps_a_genuine_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ordinary connection failure (nothing listening) stays a normal
+    error response, matching the existing partial-failure contract."""
+
+    def raiser(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(comms_utils_module, "socket_request", raiser)
+
+    response = send_lm_request(("127.0.0.1", 1), LMRequest(prompt="hello"), timeout=1)
+    assert not response.success
+    assert response.error == "Request failed: connection refused"

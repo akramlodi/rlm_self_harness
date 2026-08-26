@@ -1,3 +1,4 @@
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -6,6 +7,7 @@ import pytest
 
 import shrlm.baselines.lambda_runner as lambda_runner_module
 import shrlm.baselines.upstream.lambda_rlm as upstream_lambda
+import shrlm.optimization.costs as lambda_costs_module
 from rlm.utils.exceptions import TimeoutExceededError
 from shrlm.baselines.lambda_runner import (
     LambdaRoundConfig,
@@ -242,3 +244,38 @@ def test_costless_success_is_persisted_but_refused_by_breaker(
     assert len(entries) == 1
     assert entries[0]["cost"] is None
     assert entries[0]["passed"] is True
+
+
+def test_a_genuinely_hung_leaf_call_is_terminated_by_the_real_hard_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real SIGALRM crosses LMHandler and LocalREPL and is persisted."""
+    monkeypatch.setattr(lambda_costs_module, "HARD_DEADLINE_GRACE_SECONDS", 0.2)
+    monkeypatch.setattr(lambda_costs_module, "HARD_DEADLINE_FACTOR", 1.0)
+    caps = replace(CAPS, max_timeout=0.2)  # hard deadline = 0.2*1.0 + 0.2 = 0.4s
+
+    calls = 0
+
+    def response_fn(prompt: str) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return "2"  # task-detection digit, proceeds to the leaf call
+        time.sleep(300)  # the leaf call that never returns
+        return "never"
+
+    client = MockLM(response_fn=response_fn)
+    monkeypatch.setattr(upstream_lambda, "get_client", lambda backend, kwargs: client)
+
+    config = config_for(tmp_path, caps=caps, instances=instances(1))
+    result = run_governed_lambda_round(config, CandidateSpendBreaker(caps))
+
+    assert result.outcome == OUTCOME_COMPLETED
+    assert len(result.entries) == 1
+    entry = result.entries[0]
+    assert entry["cause"] == VerifierCause.RESOURCE_TERMINATED.value
+    assert "HardDeadlineExceeded" in entry["verdict"]["detail"]
+    assert entry["usage_lower_bound"] is True
+    assert load_manifest(tmp_path, 1) == result.entries
+    assert calls == 2

@@ -2,7 +2,11 @@
 
 import os
 
+import pytest
+
+import rlm.environments.local_repl as local_repl_module
 from rlm.environments.local_repl import LocalREPL
+from rlm.utils.exceptions import TimeoutExceededError
 
 
 class TestLocalREPLBasic:
@@ -291,3 +295,64 @@ class TestLocalREPLSimulatingRLMNoPersistence:
         assert "NameError" in result.stderr
         assert "my_helper" in result.stderr
         completion_2_env.cleanup()
+
+
+class TestLocalREPLTimeoutPropagation:
+    """A hard deadline must cross every LocalREPL exception boundary."""
+
+    def test_execute_code_propagates_timeout_exceeded_raised_by_generated_code(self):
+        repl = LocalREPL()
+        with pytest.raises(TimeoutExceededError):
+            repl.execute_code(
+                "from rlm.utils.exceptions import TimeoutExceededError\n"
+                "raise TimeoutExceededError(elapsed=1.0, timeout=1.0)"
+            )
+        repl.cleanup()
+
+    def test_execute_code_still_captures_a_generic_exception(self):
+        """Only timeout termination propagates; an ordinary error a
+        candidate might raise stays captured, matching the existing
+        ``test_error_handling`` contract."""
+        repl = LocalREPL()
+        result = repl.execute_code("raise RuntimeError('oops')")
+        assert "RuntimeError" in result.stderr
+        assert "oops" in result.stderr
+        repl.cleanup()
+
+    def test_llm_query_propagates_timeout_exceeded_instead_of_returning_error_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A deadline firing inside send_lm_request must reach the caller of
+        execute_code(), not become an in-band error after its alarm is consumed."""
+
+        def raiser(*args, **kwargs):
+            raise TimeoutExceededError(elapsed=33.0, timeout=33.0)
+
+        monkeypatch.setattr(local_repl_module, "send_lm_request", raiser)
+
+        repl = LocalREPL(lm_handler_address=("127.0.0.1", 1))
+        with pytest.raises(TimeoutExceededError):
+            repl.execute_code("llm_query('hello')")
+        repl.cleanup()
+
+    def test_llm_query_batched_propagates_timeout_exceeded_instead_of_returning_error_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def raiser(*args, **kwargs):
+            raise TimeoutExceededError(elapsed=33.0, timeout=33.0)
+
+        monkeypatch.setattr(local_repl_module, "send_lm_request_batched", raiser)
+
+        repl = LocalREPL(lm_handler_address=("127.0.0.1", 1))
+        with pytest.raises(TimeoutExceededError):
+            repl.execute_code("llm_query_batched(['a', 'b'])")
+        repl.cleanup()
+
+    def test_rlm_query_propagates_timeout_exceeded_instead_of_returning_error_text(self):
+        def raiser(prompt, model):
+            raise TimeoutExceededError(elapsed=33.0, timeout=33.0)
+
+        repl = LocalREPL(subcall_fn=raiser)
+        with pytest.raises(TimeoutExceededError):
+            repl.execute_code("rlm_query('hello')")
+        repl.cleanup()
