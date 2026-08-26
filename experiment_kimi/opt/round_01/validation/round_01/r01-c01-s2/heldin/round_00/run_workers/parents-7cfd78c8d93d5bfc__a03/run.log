@@ -1,0 +1,40 @@
+Transient API error (RateLimitError); retrying (1/20)...
+Transient API error (RateLimitError); retrying (2/20)...
+Transient API error (RateLimitError); retrying (3/20)...
+Transient API error (RateLimitError); retrying (1/20)...
+Traceback (most recent call last):
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/run_worker.py", line 269, in run_run_worker
+    outcome = execute_run(harnessed, instance, model_name=model_name)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/driver.py", line 863, in execute_run
+    run = harnessed.completion(prompt)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/runner.py", line 769, in completion
+    completion = self.rlm.completion(prompt, root_prompt=root_prompt)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/rlm/core/rlm.py", line 516, in completion
+    iteration: RLMIteration = self._completion_turn(
+                              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/rlm/core/rlm.py", line 915, in _completion_turn
+    response = lm_handler.completion(prompt)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/rlm/core/lm_handler.py", line 227, in completion
+    return self.get_client(model).completion(prompt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/rlm/clients/openai.py", line 240, in completion
+    response = self.client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/lib/python3.11/site-packages/openai/_utils/_utils.py", line 286, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/lib/python3.11/site-packages/openai/resources/chat/completions/completions.py", line 1192, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/lib/python3.11/site-packages/openai/_base_client.py", line 1259, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/lib/python3.11/site-packages/openai/_base_client.py", line 1047, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'id': 'chatcmpl-9ad583229d2a4db6a6f5914dbb960', 'model': '', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': ''}, 'finish_reason': 'content_filter', 'content_filter_results': {'error': {'code': 'content_filter', 'message': "Response content blocked by label 'Jailbreak'."}}}], 'usage': {'prompt_tokens': 971, 'total_tokens': 971}, 'created': 1787706015, 'object': 'chat.completion', 'prompt_filter_results': None}
+
+{"format": "shrlm-run-worker-result/v1", "ok": false, "run_id": "parents-7cfd78c8d93d5bfc__a03", "error": "BadRequestError: Error code: 400 - {'id': 'chatcmpl-9ad583229d2a4db6a6f5914dbb960', 'model': '', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': ''}, 'finish_reason': 'content_filter', 'content_filter_results': {'error': {'code': 'content_filter', 'message': \"Response content blocked by label 'Jailbreak'.\"}}}], 'usage': {'prompt_tokens': 971, 'total_tokens': 971}, 'created': 1787706015, 'object': 'chat.completion', 'prompt_filter_results': None}"}

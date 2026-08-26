@@ -1,0 +1,36 @@
+Traceback (most recent call last):
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/subject_worker.py", line 316, in run_subject_worker
+    outcome = evaluate_subject(subject_id, harness, config)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/validation.py", line 491, in evaluate_subject
+    result = run_governed_round(round_config, breaker)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/costs.py", line 928, in run_governed_round
+    return _run_governed_round_claimed(config, breaker, round_path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/costs.py", line 936, in _run_governed_round_claimed
+    return _dispatch_runs_concurrently(config, breaker, round_path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/costs.py", line 762, in _dispatch_runs_concurrently
+    entry = _reap_run(
+            ^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/costs.py", line 841, in _reap_run
+    entry = persist_interrupted_run(config, error, run_id=run_id)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/driver.py", line 706, in persist_interrupted_run
+    path = _prepare_round_dir(config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/driver.py", line 351, in _prepare_round_dir
+    _write_execution_sidecar(path, config.run_workers)
+  File "/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/driver.py", line 305, in _write_execution_sidecar
+    staged.write_text(payload)
+  File "/Users/williamstanford/.local/share/uv/python/cpython-3.11.12-macos-aarch64-none/lib/python3.11/pathlib.py", line 1078, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamstanford/.local/share/uv/python/cpython-3.11.12-macos-aarch64-none/lib/python3.11/pathlib.py", line 1044, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 28] No space left on device: 'experiment_kimi/opt/round_01/validation/round_01/r01-c02-s8/heldin/round_00/execution.json.tmp-69651'
+
+{"format": "shrlm-subject-worker-result/v1", "ok": false, "subject_id": "r01-c02-s8", "error": "OSError: [Errno 28] No space left on device: 'experiment_kimi/opt/round_01/validation/round_01/r01-c02-s8/heldin/round_00/execution.json.tmp-69651'"}
+{"format": "shrlm-subject-worker-result/v1", "ok": true, "subject_id": "r01-c02-s8", "summary_path": "experiment_kimi/opt/round_01/validation/round_01/r01-c02-s8/summary.json"}

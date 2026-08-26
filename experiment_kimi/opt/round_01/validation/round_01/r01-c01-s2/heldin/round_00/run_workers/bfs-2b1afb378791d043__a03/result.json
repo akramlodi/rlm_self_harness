@@ -1,0 +1,8 @@
+{
+  "detail": "TimeoutExceededError: Timeout exceeded after iteration 25: 1844.1s of 1800.0s limit",
+  "format": "shrlm-run-worker-result/v1",
+  "ok": true,
+  "run_id": "bfs-2b1afb378791d043__a03",
+  "terminated": true,
+  "usage_lower_bound": true
+}

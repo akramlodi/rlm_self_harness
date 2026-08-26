@@ -1,0 +1,7 @@
+{
+  "error": "OSError: [Errno 28] No space left on device",
+  "format": "shrlm-run-worker-result/v1",
+  "ok": false,
+  "run_id": "bfs-2b1afb378791d043__a02",
+  "traceback": "Traceback (most recent call last):\n  File \"/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/run_worker.py\", line 273, in run_run_worker\n    _write_trace_atomically(\n  File \"/Users/williamstanford/RESEARCH/rlm_self_harness/shrlm/optimization/run_worker.py\", line 211, in _write_trace_atomically\n    staged.write_text(payload)\n  File \"/Users/williamstanford/.local/share/uv/python/cpython-3.11.12-macos-aarch64-none/lib/python3.11/pathlib.py\", line 1079, in write_text\n    return f.write(data)\n           ^^^^^^^^^^^^^\nOSError: [Errno 28] No space left on device\n"
+}
