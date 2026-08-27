@@ -86,7 +86,7 @@ from shrlm.optimization.candidates import materialize_harness
 from shrlm.optimization.driver import TRACES_DIR, load_manifest
 from shrlm.optimization.proposal import _import_candidate_function
 from shrlm.optimization.validation import SPLIT_HELDIN, load_promotion_ledger
-from shrlm.rlm_harness import H0
+from shrlm.rlm_harness import H0, H0_STAR
 from tests.mock_lm import MockLM
 from tests.optimization.test_driver import ClientFactory, GoldVerifier, final
 
@@ -257,6 +257,7 @@ def make_config(
     graphwalks_revision: str = "rev-gw",
     proposer_model: str = "proposer-test",
     validation_workers: int = 1,
+    initial_harness: str | None = None,
 ) -> ExperimentConfig:
     text = TOML_TEMPLATE.format(
         temperature=temperature,
@@ -271,6 +272,8 @@ def make_config(
         f"eval_repetitions = 1\nvalidation_workers = {validation_workers}\n",
         1,
     )
+    if initial_harness is not None:
+        text = text.replace("[loop]\n", f'[loop]\ninitial_harness = "{initial_harness}"\n', 1)
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "experiment.toml"
     path.write_text(text)
@@ -509,6 +512,24 @@ class TestPatience:
         assert factory.total_calls == 20  # two rounds ran, the third never started
         assert not experiment_round_dir(out, 3).exists()
         assert frozen_envelope(out)["hash"] == harness_hash(H0)
+
+
+class TestInitialHarness:
+    def test_loop_starts_from_the_configured_registry_harness(self, tmp_path, monkeypatch):
+        # Same shape as the patience test, but the config names H0*: with no
+        # promotion the frozen harness must be H0*, not the module's H0 floor.
+        config = make_config(tmp_path, t=2, patience=1, initial_harness="H0*")
+        assert config.loop.initial_harness == "H0*"
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_FAIL)
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
+        result = run(config, out, attributor, proposer)
+
+        assert result.stopped == STOP_PATIENCE
+        assert [outcome.promoted for outcome in result.rounds] == [False]
+        assert frozen_envelope(out)["hash"] == harness_hash(H0_STAR)
+        assert frozen_envelope(out)["hash"] != harness_hash(H0)
 
 
 # ---------------------------------------------------------------------------

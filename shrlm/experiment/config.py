@@ -19,7 +19,8 @@ Profiles (R2)
 Identity hash (R3; KTD3)
     ``identity_hash`` is a sha256 over a canonical JSON rendering of every
     behavior-changing value: decoding/sampling args, split sizes and seeds,
-    loop counts (m, v, k, t, patience), promotion thresholds and bands, caps
+    loop counts (m, v, k, t, patience) and the starting harness
+    (``loop.initial_harness``), promotion thresholds and bands, caps
     (including per-round attempts), environment definitions with their dataset
     revision pins, the runner/attributor/proposer backends including the
     optional provider tables (OpenRouter routing, Azure Foundry thinking
@@ -167,13 +168,25 @@ class SplitsConfig:
 @dataclass(frozen=True)
 class LoopConfig:
     """Optimization-loop counts (section 3.2): m mining repetitions, v
-    validation repetitions, k candidates per round, t max rounds, patience."""
+    validation repetitions, k candidates per round, t max rounds, patience.
+
+    ``initial_harness`` names the registry harness (``shrlm.rlm_harness.
+    HARNESSES``) the loop starts from. The default is the mechanism floor
+    ``H0``; ``H0*`` starts from the shipped reference prompt with the
+    orchestrator addendum appended at runtime. It is an identity key like the
+    counts: which harness round 1 mines decides every run that lands on disk.
+    ``load_config`` validates it against the registry, so a typo fails before
+    any spend. Adding this field moved ``identity_hash`` for every config
+    (the section is serialized with ``asdict``); out-dirs created before
+    2026-08-27 refuse to resume, which is the intended R3 behavior.
+    """
 
     m: int
     v: int
     k: int
     t: int
     patience: int
+    initial_harness: str = "H0"
 
 
 @dataclass(frozen=True)
@@ -428,6 +441,23 @@ def build_section(cls: type[_S], table: dict[str, Any], context: str) -> _S:
     return cls(**table)
 
 
+def _validate_initial_harness(loop: LoopConfig) -> LoopConfig:
+    """Reject a ``[loop] initial_harness`` that names no registry harness.
+
+    Imported lazily: ``shrlm.rlm_harness`` pulls in the reference prompts and
+    the surface builders, none of which the rest of this module needs, and it
+    imports nothing from ``shrlm.experiment`` so there is no cycle either way.
+    """
+    from shrlm.rlm_harness import HARNESSES
+
+    if loop.initial_harness not in HARNESSES:
+        raise ValueError(
+            f"[loop] initial_harness must name a registry harness, one of "
+            f"{sorted(HARNESSES)}; got {loop.initial_harness!r}"
+        )
+    return loop
+
+
 def check_keys(
     table: dict[str, Any],
     expected: tuple[str, ...],
@@ -560,7 +590,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         profile=profile,
         decoding=build_section(DecodingConfig, raw["decoding"], "decoding"),
         splits=build_section(SplitsConfig, raw["splits"], "splits"),
-        loop=build_section(LoopConfig, raw["loop"], "loop"),
+        loop=_validate_initial_harness(build_section(LoopConfig, raw["loop"], "loop")),
         promotion=build_section(PromotionSettings, promotion_table, "promotion"),
         caps=build_section(CapsConfig, raw["caps"], "caps"),
         environments=EnvironmentsConfig(

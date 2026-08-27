@@ -194,7 +194,9 @@ STAGE_VALIDATION = "validation"
 STOP_MAX_ROUNDS = "max_rounds"
 STOP_PATIENCE = "patience"
 
-# The incumbent every experiment starts from (registry entry, not a copy).
+# The registry floor. ``config.loop.initial_harness`` decides which registry
+# harness the loop actually starts from (default: this); evaluation's B1
+# condition stays bound to this constant so B1 always means the H0 floor.
 INITIAL_INCUMBENT = "H0"
 
 # The optimization loop mines and validates the source-short splits.
@@ -575,7 +577,7 @@ class _Experiment:
             heldout=_read_split(splits_dir, ROLE_HELD_OUT),
         )
 
-        incumbent: Harness = HARNESSES[INITIAL_INCUMBENT]
+        incumbent: Harness = HARNESSES[self.config.loop.initial_harness]
         rounds: list[RoundOutcome] = []
         without_promotion = 0
         stopped = STOP_MAX_ROUNDS
