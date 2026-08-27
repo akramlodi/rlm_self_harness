@@ -244,7 +244,12 @@ validation_workers = 5
 # NOTE: 1 is a placeholder, not a measured recommendation. The plan's U8
 # measurement -- which spends real money -- chooses the shipped value and
 # supplies the pass-rate evidence that concurrency did not move the results.
-validation_run_workers = 4
+# Lowered 4 -> 3 on 2026-08-26. At 4, a round with k=4 candidates runs 5
+# subjects x 4 = 20-25 concurrent requests against one Azure deployment, and
+# the 20-attempt rate-limit backoff saturated: retry depth sat pinned at 19/20
+# and 15 runs died of exhausted 429s (0.6% of 2,553). At 3 the ceiling is 15
+# in flight. Identity-exempt, so this changes under an existing --out-dir.
+validation_run_workers = 3
 
 
 # -----------------------------------------------------------------------------

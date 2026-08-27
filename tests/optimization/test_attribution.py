@@ -7,7 +7,9 @@ re-ask loop -- accepted or rejected -- is kept with its raw response and named
 violation, so an unattributed record still carries a full audit trail. In
 per-depth aggregate digest mode the prompt stops demanding node ids the table
 cannot show. And a transient LM failure is retried, then checkpointed by the
-miner rather than raised through a round.
+miner rather than raised through a round -- while a content-filter block, which
+is deterministic and so never clears on a retry, is recorded and stepped over
+instead.
 """
 
 import json
@@ -17,6 +19,7 @@ import pytest
 
 import shrlm.optimization.attribution as attribution_module
 from shrlm.optimization.attribution import (
+    AttributionContentFiltered,
     AttributionRejection,
     AttributionTransportError,
     AttributorConfig,
@@ -78,6 +81,23 @@ GROUNDED = GroundingResult(
 
 # No backoff sleeps in tests; retry counts are what is under test.
 FAST_CONFIG = AttributorConfig(transport_backoff_seconds=0.0)
+
+
+def _content_filter_error() -> Exception:
+    """The 400 Azure raises once its content filter blocks a response, as the
+    client re-raises it after exhausting its own content-filter ladder."""
+    import httpx
+    import openai as openai_sdk
+
+    response = httpx.Response(
+        400, request=httpx.Request("POST", "https://example.openai.azure.com/openai/v1/chat")
+    )
+    return openai_sdk.BadRequestError(
+        "The response was filtered due to the prompt triggering Azure OpenAI's "
+        "content management policy. Error code: content_filter",
+        response=response,
+        body=None,
+    )
 
 
 class RecordingLM(MockLM):
@@ -399,6 +419,47 @@ class TestTransportResilience:
         ]
         assert "ConnectionError" in result.errors[0]["error"]
         assert result.bundle.totals.n_unattributed == 1
+
+
+class TestContentFilterContainment:
+    """A content-filter block is deterministic in the digest's bytes, so unlike
+    a transport failure it never clears on a re-invocation. It must be recorded
+    and stepped over, never routed through the checkpoint path -- doing so
+    stalls the round forever (observed 2026-08-27: 100+ restarts, no progress).
+    """
+
+    def test_content_filter_propagates_immediately_without_retrying(self):
+        lm = RecordingLM([_content_filter_error()] * 3)
+        attributor = LLMAttributor(lm, config=FAST_CONFIG)
+        digest, root, verdict = attribution_inputs()
+
+        with pytest.raises(AttributionContentFiltered, match="content filter blocked"):
+            attributor.attribute(digest, root, verdict, UNGROUNDED)
+        # One call, not transport_retries: the client already exhausted its own
+        # content-filter ladder, and the same bytes draw the same refusal.
+        assert lm._call_count == 1
+
+    def test_mine_records_the_block_and_keeps_the_round_clean(self):
+        lm = RecordingLM([canned_attribution(), _content_filter_error()])
+        miner = WeaknessMiner(
+            verifier=_failing_verifier, attributor=LLMAttributor(lm, config=FAST_CONFIG)
+        )
+        runs = [
+            ({"id": "inst-1", "question": "q"}, as_completion(shallow_run())),
+            ({"id": "inst-2", "question": "q"}, as_completion(shallow_run())),
+        ]
+
+        result = miner.mine(runs, round_index=1, harness_version="H0", split_id="held_in_v1")
+
+        attributed, filtered = result.records
+        assert attributed.signature is not None
+        assert filtered.instance_id == "inst-2" and filtered.attribution_failed
+        assert filtered.attribution_error.startswith("content filtered:")
+        assert filtered.attribution_error_kind is AttributionErrorKind.CONTENT_FILTERED
+        assert filtered.signature is None  # no label the model never produced
+        # Visible in the totals, absent from errors: the round closes.
+        assert result.bundle.totals.n_unattributed == 1
+        assert result.errors == []
 
 
 class TestAttributorConfigValidation:

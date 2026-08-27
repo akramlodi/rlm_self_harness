@@ -46,10 +46,10 @@ The links, in walk order:
   a legacy round persisted; either way the file's bytes must hash to the
   entry's ``prompt_sha256``), and every unattributed entry carries a non-empty
   per-attempt audit trail whose rejected attempts name their violations.
-  Transport-failed entries (``attribution_error_kind`` of ``transport``, or
-  for legacy entries an ``error`` prefixed ``transport failure:``) are exempt
-  from the non-empty demand: the model may never have produced a response to
-  record.
+  Entries whose ``attribution_error_kind`` is ``transport`` or
+  ``content_filtered`` (or, for legacy entries, an ``error`` prefixed
+  ``transport failure:``) are exempt from the non-empty demand: neither
+  produced a response to record.
 
 Grounding coverage, reported in the summary stats, is derived from
 ``records.jsonl`` alone: the fraction of failure records whose
@@ -533,18 +533,23 @@ def _audit_attributions(path: Path, entries: list[dict[str, Any]], walk: _Walk) 
             )
 
         # Unattributed entries must carry the per-attempt audit trail, each
-        # rejected attempt naming its violation. Transport failures are exempt
-        # from the non-empty demand: the model may never have responded.
+        # rejected attempt naming its violation. Transport failures and
+        # content-filter blocks are exempt from the non-empty demand: in
+        # neither case did the model produce a response to record.
         if entry.get("attributed") is False:
             walk.check("attribution_attempts")
             attempts = entry.get("attempts") or []
             kind = entry.get("attribution_error_kind")
-            transport = (
-                kind == AttributionErrorKind.TRANSPORT.value
+            no_response = (
+                kind
+                in (
+                    AttributionErrorKind.TRANSPORT.value,
+                    AttributionErrorKind.CONTENT_FILTERED.value,
+                )
                 if kind is not None
                 else str(entry.get("error", "")).startswith(_TRANSPORT_ERROR_PREFIX)
             )
-            if not attempts and not transport:
+            if not attempts and not no_response:
                 walk.fail(
                     "attribution_attempts",
                     subject,

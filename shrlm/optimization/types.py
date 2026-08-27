@@ -46,13 +46,20 @@ class TraceIntegrity(str, Enum):
 
 
 class AttributionErrorKind(str, Enum):
-    """Why an attribution failed: the model's response was unusable, or the
-    model was never reached at all. The distinction matters downstream --
-    transport failures are exempt from the attempts-audit demand and are
-    counted separately in the integrity report."""
+    """Why an attribution failed: the model's response was unusable, the model
+    was never reached at all, or the provider refused to return one. The
+    distinction matters downstream -- transport and content-filter failures are
+    exempt from the attempts-audit demand (neither produces a response to
+    record), and transport failures are counted separately in the integrity
+    report."""
 
     REJECTION = "rejection"
     TRANSPORT = "transport"
+    # The provider's content filter blocked the response after the client
+    # exhausted its own retry ladder. Deterministic for a given digest, so
+    # unlike TRANSPORT it will not clear on a re-invocation: the round must
+    # record it and move on rather than checkpoint and wait for a retry.
+    CONTENT_FILTERED = "content_filtered"
 
 
 @dataclass

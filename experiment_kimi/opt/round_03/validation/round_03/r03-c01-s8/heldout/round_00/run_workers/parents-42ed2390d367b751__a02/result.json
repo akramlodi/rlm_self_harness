@@ -1,0 +1,8 @@
+{
+  "detail": "BadRequestError: Error code: 400 - {'id': 'chatcmpl-b2c2f819b76841a296e0569b3e8a6', 'model': '', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': ''}, 'finish_reason': 'content_filter', 'content_filter_results': {'error': {'code': 'content_filter', 'message': \"Response content blocked by label 'Jailbreak'.\"}}}], 'usage': {'prompt_tokens': 4436, 'total_tokens': 4436}, 'created': 1787775622, 'object': 'chat.completion', 'prompt_filter_results': None}",
+  "format": "shrlm-run-worker-result/v1",
+  "ok": true,
+  "run_id": "parents-42ed2390d367b751__a02",
+  "terminated": true,
+  "usage_lower_bound": true
+}
