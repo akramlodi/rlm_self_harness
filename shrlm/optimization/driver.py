@@ -884,6 +884,45 @@ def execute_run(
             ),
             usage_lower_bound=True,
         )
+    except Exception as error:
+        # A content filter that survived the client's CONTENT_FILTER_ATTEMPTS
+        # retries is deterministic for this prompt, so re-running it will never
+        # succeed. Containing it here makes mining behave like validation, where
+        # the same provider refusal has always been a recorded run failure
+        # rather than a fatal error: a mining run in the ORCHESTRATOR's own
+        # process previously took the whole experiment down with it (observed
+        # 2026-08-26, round 3, 47/48 runs in). Any other 400 is a real bug and
+        # still propagates.
+        # Imported HERE, not at module scope: run_worker children import this
+        # module on every spawn, and pulling the OpenAI SDK into that path cost
+        # 0.06s -> 0.23s per child (measured 2026-08-26) -- enough to make a
+        # child miss a tight deadline. By the time this handler runs the SDK is
+        # already imported by the client that raised, so the cost here is nil.
+        import openai
+
+        from rlm.clients.openai import is_content_filter_error
+
+        if not isinstance(error, openai.BadRequestError) or not is_content_filter_error(error):
+            raise
+        completion = _partial_completion(
+            prompt=prompt,
+            trajectory=harnessed.logger.get_trajectory(),
+            model_name=model_name,
+            error=error,
+            elapsed_seconds=time.perf_counter() - run_started,
+            published_usage=harnessed.rlm.last_completion_usage,
+        )
+        return RunOutcome(
+            completion=completion,
+            verdict=Verdict(
+                passed=False,
+                cause=VerifierCause.CONTENT_FILTERED,
+                gold="",
+                produced=completion.response,
+                detail=f"{type(error).__name__}: {error}",
+            ),
+            usage_lower_bound=True,
+        )
 
 
 def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dict[str, Any]]:

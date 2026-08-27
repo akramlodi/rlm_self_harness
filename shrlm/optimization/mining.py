@@ -23,6 +23,7 @@ from rlm.core.types import RLMChatCompletion
 from shrlm.optimization.attribution import (
     ATTRIBUTOR_SYSTEM_PROMPT,
     VALIDATOR_VERSION,
+    AttributionContentFiltered,
     AttributionRejection,
     AttributionTransportError,
     LLMAttributor,
@@ -189,7 +190,9 @@ class WeaknessMiner:
         # attribution must not abort a mining round, but it must remain visible
         # in the totals rather than being coerced into a label the model did
         # not produce; a transport failure must checkpoint, not raise away the
-        # round's completed records.
+        # round's completed records. A content-filter block is recorded like a
+        # rejection instead -- it is deterministic in the digest's bytes, so
+        # checkpointing it asks for a retry that can never succeed.
         try:
             result = self.attributor.attribute(digest, root, verdict, grounding)
         except AttributionRejection as exc:
@@ -218,6 +221,27 @@ class WeaknessMiner:
                 attempts=[attempt.to_dict() for attempt in exc.attempts],
             )
             outcome.transport_error = str(exc)
+            return outcome
+        except AttributionContentFiltered as exc:
+            # Recorded, not checkpointed. A transport failure is transient, so
+            # it lands in MiningResult.errors and the round-close gate holds
+            # the bundle back until a re-invocation clears it. A content-filter
+            # block is deterministic in the digest's bytes: no re-invocation
+            # can clear it, so routing it through that gate is an unbounded
+            # restart loop. The record stays visible -- attribution_failed, its
+            # own error kind, counted in n_unattributed -- rather than being
+            # coerced into a label the model never produced.
+            record.attribution_failed = True
+            record.attribution_error = f"content filtered: {exc}"
+            record.attribution_error_kind = AttributionErrorKind.CONTENT_FILTERED
+            raw.update(
+                signature=None,
+                detail=None,
+                attributed=False,
+                error=record.attribution_error,
+                attribution_error_kind=record.attribution_error_kind.value,
+                attempts=[attempt.to_dict() for attempt in exc.attempts],
+            )
             return outcome
 
         record.signature = result.signature

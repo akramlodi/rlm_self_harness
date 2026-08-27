@@ -80,6 +80,24 @@ def truncate_for_prompt(text: str, limit: int = PROMPT_RENDER_MAX_CHARS) -> str:
 # treated as plausibly transient and retried.
 NON_TRANSPORT_ERRORS = (TypeError, AttributeError, KeyError, ValueError)
 
+
+def _is_content_filter_error(exc: Exception) -> bool:
+    """Whether the client raised because a content filter blocked the response.
+
+    ``openai`` is imported here rather than at module scope to keep the
+    optimization package importable without the OpenAI SDK on the path, and to
+    keep it off the import path of anything that only needs the rest of this
+    module. A non-OpenAI backend simply never matches.
+    """
+    try:
+        import openai
+
+        from rlm.clients.openai import is_content_filter_error
+    except ImportError:  # pragma: no cover - backend without the OpenAI SDK
+        return False
+    return isinstance(exc, openai.BadRequestError) and is_content_filter_error(exc)
+
+
 ATTRIBUTOR_SYSTEM_PROMPT = """\
 You are analyzing one failed run of a recursive language model, in order to \
 describe *why* it failed in terms that generalize across runs.
@@ -154,6 +172,27 @@ class AttributionTransportError(Exception):
     bounded retries. Distinct from AttributionRejection: the model never
     produced a judgable response, so the caller should checkpoint the round
     rather than record a rejected attribution."""
+
+    def __init__(self, message: str, attempts: list["AttributionAttempt"] | None = None):
+        super().__init__(message)
+        self.attempts: list[AttributionAttempt] = attempts or []
+
+
+class AttributionContentFiltered(Exception):
+    """The provider's content filter blocked the response, and the client had
+    already exhausted its own content-filter retry ladder.
+
+    Distinct from AttributionTransportError on one axis that decides what the
+    caller does: a transport failure is transient and clears on a re-invocation,
+    so checkpointing the round and retrying is the right move. A content-filter
+    block is deterministic for a given digest -- the same bytes are refused on
+    every attempt -- so checkpointing produces an unbounded restart loop that
+    makes no progress. The caller records the failure and continues the round.
+
+    Observed 2026-08-27 on Azure AI Foundry: one round-5 digest was refused on
+    every attempt, and the round-close integrity gate turned that into 100+
+    restarts with zero forward progress.
+    """
 
     def __init__(self, message: str, attempts: list["AttributionAttempt"] | None = None):
         super().__init__(message)
@@ -388,6 +427,12 @@ class LLMAttributor:
         retries the failure is converted to AttributionTransportError carrying
         the audit trail so far, so the caller can checkpoint instead of losing
         the round.
+
+        A content-filter block also propagates immediately, as
+        AttributionContentFiltered. The client has already exhausted its own
+        content-filter ladder by the time it raises, and the verdict is a
+        function of the bytes sent, so the retries here can only re-send the
+        same refused prompt and re-collect the same refusal.
         """
         last_error: Exception | None = None
         for retry in range(self.config.transport_retries):
@@ -396,6 +441,12 @@ class LLMAttributor:
             except NON_TRANSPORT_ERRORS:
                 raise
             except Exception as exc:
+                if _is_content_filter_error(exc):
+                    raise AttributionContentFiltered(
+                        f"content filter blocked the attributor response: "
+                        f"{type(exc).__name__}: {exc}",
+                        attempts=list(attempts),
+                    ) from exc
                 last_error = exc
                 if retry + 1 < self.config.transport_retries:
                     time.sleep(self.config.transport_backoff_seconds * (2**retry))

@@ -78,6 +78,17 @@ _TRANSIENT_API_ERRORS = (
 # overriding _empty_content_retry_reason.
 EMPTY_CONTENT_ATTEMPTS = 6
 
+# A content filter fires on the SAMPLED RESPONSE, so it is probabilistic, not a
+# property of the prompt. Verified against Azure Foundry / Kimi-K2.5 on
+# 2026-08-26: one mining instance was blocked by label 'Jailbreak' on two
+# consecutive attempts (different request ids, 930 and 954 prompt tokens) and
+# then completed normally on the third. Treating the first block as fatal cost
+# the whole experiment a crash and two restart cycles for a run that was always
+# going to succeed. A prompt that trips the filter DETERMINISTICALLY still
+# exhausts these attempts and raises, and the caller decides what that means.
+CONTENT_FILTER_ATTEMPTS = 6
+_CONTENT_FILTER_MARKERS = ("content_filter", "responsibleai", "content management policy")
+
 
 def _transport_backoff_seconds(attempt: int) -> float:
     """Full-jitter exponential backoff: uniform in (0, min(cap, base * 2^(n-1)))."""
@@ -122,6 +133,11 @@ def _context_overflow_error(exc: openai.BadRequestError) -> TokenLimitExceededEr
         token_limit=0,
         message=f"Prompt exceeded the model's context window (provider 400): {str(exc)[:600]}",
     )
+
+
+def is_content_filter_error(exc: openai.BadRequestError) -> bool:
+    """Whether this 400 is a provider content-filter block rather than a bad request."""
+    return any(marker in str(exc).lower() for marker in _CONTENT_FILTER_MARKERS)
 
 
 def _response_deficiency(response: Any) -> str | None:
@@ -245,6 +261,7 @@ class OpenAIClient(BaseLM):
         transport_attempt = 0
         rate_limit_attempt = 0
         empty_content_attempt = 0
+        content_filter_attempt = 0
         while True:
             try:
                 response = self.client.chat.completions.create(
@@ -257,6 +274,17 @@ class OpenAIClient(BaseLM):
                 overflow = _context_overflow_error(exc)
                 if overflow is not None:
                     raise overflow from exc
+                if is_content_filter_error(exc):
+                    content_filter_attempt += 1
+                    if content_filter_attempt >= CONTENT_FILTER_ATTEMPTS:
+                        raise
+                    print(
+                        f"Content filter blocked the response; "
+                        f"retrying ({content_filter_attempt}/{CONTENT_FILTER_ATTEMPTS})...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(_transport_backoff_seconds(content_filter_attempt))
+                    continue
                 raise
             except _TRANSIENT_API_ERRORS as exc:
                 rate_limit_attempt += 1
@@ -330,6 +358,7 @@ class OpenAIClient(BaseLM):
         transport_attempt = 0
         rate_limit_attempt = 0
         empty_content_attempt = 0
+        content_filter_attempt = 0
         while True:
             try:
                 response = await self.async_client.chat.completions.create(
@@ -342,6 +371,17 @@ class OpenAIClient(BaseLM):
                 overflow = _context_overflow_error(exc)
                 if overflow is not None:
                     raise overflow from exc
+                if is_content_filter_error(exc):
+                    content_filter_attempt += 1
+                    if content_filter_attempt >= CONTENT_FILTER_ATTEMPTS:
+                        raise
+                    print(
+                        f"Content filter blocked the response; "
+                        f"retrying ({content_filter_attempt}/{CONTENT_FILTER_ATTEMPTS})...",
+                        file=sys.stderr,
+                    )
+                    await asyncio.sleep(_transport_backoff_seconds(content_filter_attempt))
+                    continue
                 raise
             except _TRANSIENT_API_ERRORS as exc:
                 rate_limit_attempt += 1

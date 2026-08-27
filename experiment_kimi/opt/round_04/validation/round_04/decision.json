@@ -1,0 +1,28 @@
+{
+  "baseline": {
+    "harness_hash": "f50714ced3a06982175cc91ddf8c698d4222515b76a11920aef735160f53bd92",
+    "links": {
+      "splits": {
+        "heldin": {
+          "harness": "baseline/heldin/round_00/harness.json",
+          "round_dir": "baseline/heldin/round_00"
+        },
+        "heldout": {
+          "harness": "baseline/heldout/round_00/harness.json",
+          "round_dir": "baseline/heldout/round_00"
+        }
+      },
+      "summary": "baseline/summary.json"
+    },
+    "subject_id": "baseline"
+  },
+  "constituent_ids": [],
+  "excluded": {},
+  "format": "shrlm-promotion-decision/v1",
+  "ledger": "promotions.jsonl",
+  "n_candidates": 2,
+  "plan": "none",
+  "promoted": false,
+  "promoted_harness_hash": null,
+  "promoted_subject_id": null
+}

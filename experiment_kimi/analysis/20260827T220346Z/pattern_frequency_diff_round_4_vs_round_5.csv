@@ -1,0 +1,16 @@
+signature,status,support_rate_before,support_rate_after,delta,delta_pct,grounded_fraction_before,grounded_fraction_after,below_support_floor_before,below_support_floor_after
+verifier_cause=mixed_set_error|failing_level=no_recursion|causal_status=causal|agent_mechanism=other,persisted_unchanged,0.020833333333333332,0.020833333333333332,0.0,0.0,0.0,0.0,True,True
+verifier_cause=mixed_set_error|failing_level=no_recursion|causal_status=causal|agent_mechanism=repl_contract_misuse,resolved,0.020833333333333332,0.0,-0.020833333333333332,-1.0,0.0,,True,
+verifier_cause=mixed_set_error|failing_level=no_recursion|causal_status=causal|agent_mechanism=repl_execution_fault,persisted_unchanged,0.020833333333333332,0.020833333333333332,0.0,0.0,0.0,0.0,True,True
+verifier_cause=mixed_set_error|failing_level=no_recursion|causal_status=causal|agent_mechanism=whole_input_subcall_collapse,resolved,0.0625,0.0,-0.0625,-1.0,0.0,,False,
+verifier_cause=mixed_set_error|failing_level=root|causal_status=causal|agent_mechanism=other,resolved,0.041666666666666664,0.0,-0.041666666666666664,-1.0,0.0,,False,
+verifier_cause=mixed_set_error|failing_level=root|causal_status=causal|agent_mechanism=repl_execution_fault,persisted_unchanged,0.020833333333333332,0.020833333333333332,0.0,0.0,0.0,0.0,True,False
+verifier_cause=mixed_set_error|failing_level=root|causal_status=causal|agent_mechanism=whole_input_subcall_collapse,resolved,0.020833333333333332,0.0,-0.020833333333333332,-1.0,0.0,,True,
+verifier_cause=no_answer|failing_level=root|causal_status=causal|agent_mechanism=repl_contract_misuse,new,0.0,0.020833333333333332,0.020833333333333332,,,0.0,,True
+verifier_cause=wrong_format|failing_level=no_recursion|causal_status=causal|agent_mechanism=iteration_budget_exhaustion,persisted_worsened,0.041666666666666664,0.0625,0.020833333333333336,0.5000000000000001,0.0,0.0,False,False
+verifier_cause=wrong_format|failing_level=no_recursion|causal_status=causal|agent_mechanism=other,new,0.0,0.020833333333333332,0.020833333333333332,,,0.0,,True
+verifier_cause=wrong_format|failing_level=no_recursion|causal_status=causal|agent_mechanism=repl_contract_misuse,new,0.0,0.041666666666666664,0.041666666666666664,,,0.0,,False
+verifier_cause=wrong_format|failing_level=no_recursion|causal_status=causal|agent_mechanism=repl_execution_fault,persisted_improved,0.041666666666666664,0.020833333333333332,-0.020833333333333332,-0.5,0.0,0.0,False,True
+verifier_cause=wrong_format|failing_level=no_recursion|causal_status=causal|agent_mechanism=whole_input_subcall_collapse,persisted_unchanged,0.0625,0.0625,0.0,0.0,0.0,0.0,False,False
+verifier_cause=wrong_format|failing_level=root|causal_status=causal|agent_mechanism=other,resolved,0.020833333333333332,0.0,-0.020833333333333332,-1.0,0.0,,True,
+verifier_cause=wrong_format|failing_level=root|causal_status=causal|agent_mechanism=repl_execution_fault,resolved,0.020833333333333332,0.0,-0.020833333333333332,-1.0,0.0,,True,
