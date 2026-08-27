@@ -9,6 +9,8 @@ against ``H0*``'s empty S2-S5 without raising. None of this needs a client.
 
 from dataclasses import replace
 
+import pytest
+
 from rlm.utils.prompts import ORCHESTRATOR_ADDENDUM
 from shrlm.harness_identity import harness_hash, serialize_harness
 from shrlm.optimization.candidates import (
@@ -71,3 +73,58 @@ def test_pattern_block_renders_against_h0_star_empty_surfaces():
     assert [index for index, _ in addressable] == [0]
     assert "surface S2" in rendered
     assert '"S2_decomposition_instruction": ""' in rendered
+
+
+# ---------------------------------------------------------------------------
+# U3: the fixed-instance loader behind the live recursion test
+# ---------------------------------------------------------------------------
+
+
+class TestRecursionInstanceLoader:
+    """``load_recursion_instances`` over a monkeypatched ``fetch_rows`` seam."""
+
+    def _rows(self):
+        from tests.environments.test_graphwalks import BFS_PROMPT, PARENTS_PROMPT, make_row
+
+        return [
+            make_row(prompt=f"{BFS_PROMPT}\nvariant {index}", problem_type="bfs")
+            for index in range(3)
+        ] + [make_row(prompt=f"{PARENTS_PROMPT}\nvariant 9", problem_type="parents")]
+
+    def _patch(self, monkeypatch, rows):
+        from shrlm.environments import graphwalks
+
+        monkeypatch.setattr(
+            graphwalks, "fetch_rows", lambda repo, file, revision: [dict(r) for r in rows]
+        )
+
+    def _ids(self, rows):
+        from shrlm.environments.graphwalks import row_to_instance
+
+        return tuple(row_to_instance(row, sample_seed=0, sample_index=0)["id"] for row in rows)
+
+    def test_returns_exactly_the_requested_ids_in_order(self, monkeypatch):
+        from shrlm.experiment.config import load_config
+        from tests.experiment.recursion_instances import load_recursion_instances
+
+        rows = self._rows()
+        self._patch(monkeypatch, rows)
+        wanted = (self._ids(rows)[3], self._ids(rows)[1])
+        instances = load_recursion_instances(load_config(), ids=wanted)
+        assert [instance["id"] for instance in instances] == list(wanted)
+        assert instances[0]["problem_type"] == "parents"
+
+    def test_missing_id_raises_naming_it(self, monkeypatch):
+        from shrlm.experiment.config import load_config
+        from tests.experiment.recursion_instances import load_recursion_instances
+
+        rows = self._rows()
+        self._patch(monkeypatch, rows)
+        with pytest.raises(LookupError, match="bfs-0000000000000000"):
+            load_recursion_instances(load_config(), ids=("bfs-0000000000000000",))
+
+    def test_default_ids_are_the_four_largest_held_in_instances(self):
+        from tests.experiment.recursion_instances import RECURSION_INSTANCE_IDS
+
+        assert len(RECURSION_INSTANCE_IDS) == 4
+        assert all(len(i.split("-", 1)[1]) == 16 for i in RECURSION_INSTANCE_IDS)
