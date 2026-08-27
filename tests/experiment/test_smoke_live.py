@@ -425,3 +425,30 @@ class TestPricingAttestationOffline:
         assert reason is not None and "SHRLM_VERIFIED_PRICING" in reason
         env["SHRLM_VERIFIED_PRICING"] = configured_list_price_attestation()
         assert live_skip_reason(env, runner_backend="azure_foundry") is None
+
+    def test_live_gate_checks_the_attestation_against_the_caller_s_config(self) -> None:
+        """A live test spending under a different config must pass that config:
+        the Kimi rate card (0.6/3.0) is not the shipped smoke card (0.1/0.3)."""
+        from dataclasses import replace
+
+        from shrlm.experiment.config import load_config
+
+        config = load_config(profile="smoke")
+        other = replace(
+            config,
+            pricing=replace(
+                config.pricing,
+                list_price=replace(
+                    config.pricing.list_price, input_per_million=0.6, output_per_million=3.0
+                ),
+            ),
+        )
+        env = {
+            "AZURE_API_KEY": "sentinel-key",
+            "AZURE_FOUNDRY_ENDPOINT": "https://sentinel.services.ai.azure.com",
+            "SHRLM_RUN_LIVE": "1",
+            "SHRLM_VERIFIED_PRICING": "0.6/3.0",
+        }
+        assert live_skip_reason(env, runner_backend="azure_foundry", config=other) is None
+        default = live_skip_reason(env, runner_backend="azure_foundry")
+        assert default is not None and "does not match" in default

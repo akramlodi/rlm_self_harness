@@ -18,7 +18,6 @@ Run with ``-s`` to see the table::
 """
 
 import copy
-import os
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +25,7 @@ import pytest
 
 from shrlm.environments.graphwalks import GraphWalksVerifier
 from shrlm.experiment.config import backend_kwargs_for, load_config
-from shrlm.experiment.live_gates import (
-    VERIFIED_PRICING_KEY,
-    live_skip_reason,
-    pricing_attestation_mismatch,
-)
+from shrlm.experiment.live_gates import live_skip_reason
 from shrlm.optimization.driver import RoundConfig, build_round_rlm, execute_run
 from shrlm.optimization.walker import walk
 from shrlm.rlm_harness import H0_STAR
@@ -46,12 +41,10 @@ LIVE_MAX_TIMEOUT_SECONDS = 600.0
 
 
 def _skip_reason() -> str | None:
-    reason = live_skip_reason(runner_backend="azure_foundry")
-    if reason is not None:
-        return reason
-    tier = load_config("full", path=KIMI_CONFIG).pricing.list_price
-    return pricing_attestation_mismatch(
-        os.environ.get(VERIFIED_PRICING_KEY), tier.input_per_million, tier.output_per_million
+    # The attestation must be checked against THIS config's rate card, not the
+    # shipped smoke profile's -- they differ (0.6/3.0 vs 0.1/0.3).
+    return live_skip_reason(
+        runner_backend="azure_foundry", config=load_config("full", path=KIMI_CONFIG)
     )
 
 

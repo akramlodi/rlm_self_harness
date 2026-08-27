@@ -36,8 +36,13 @@ the result, so ``-rs`` output names the exact missing gate.
 
 import os
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from shrlm.experiment.config import ExperimentConfig
+
 
 LIVE_FLAG = "SHRLM_RUN_LIVE"
 VERIFIED_PRICING_KEY = "SHRLM_VERIFIED_PRICING"
@@ -82,7 +87,9 @@ def pricing_attestation_mismatch(
 
 
 def live_skip_reason(
-    env: Mapping[str, str] | None = None, runner_backend: str | None = None
+    env: Mapping[str, str] | None = None,
+    runner_backend: str | None = None,
+    config: "ExperimentConfig | None" = None,
 ) -> str | None:
     """The reason the live tier must be skipped, or ``None`` when it may run.
 
@@ -95,7 +102,11 @@ def live_skip_reason(
 
     ``runner_backend`` of None means "read the smoke profile's configured
     runner backend"; offline tests pass a backend name to exercise the
-    conditional branches directly.
+    conditional branches directly. ``config`` is the experiment config whose
+    ``[pricing.list_price]`` the attestation is checked against; None means
+    the shipped smoke profile. A live test that spends under a different
+    config (``configs/experiment_kimiK25.toml``) must pass that config, or
+    the gate compares the attestation to the wrong rate card.
 
     When reading the real environment, ``load_dotenv()`` runs first so the
     gate sees exactly what the clients see (every ``rlm.clients`` module
@@ -113,9 +124,9 @@ def live_skip_reason(
     from shrlm.experiment.config import load_config
     from shrlm.optimization.driver import _BACKEND_ENV_KEYS
 
-    config = None
     if runner_backend is None:
-        config = load_config(profile="smoke")
+        if config is None:
+            config = load_config(profile="smoke")
         runner_backend = config.backends.runner.backend
     if runner_backend not in _BACKEND_ENV_KEYS:
         raise ValueError(
