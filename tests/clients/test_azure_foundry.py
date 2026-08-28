@@ -573,3 +573,47 @@ class TestAzureFoundryLive:
         content = lm.completion(LIVE_TRIVIAL_PROMPT)
         assert content and content.strip()
         assert "<think>" not in content
+
+
+class TestNativeToolCallTranslation:
+    """Kimi's leaked ``functions.repl`` calls become ```repl``` blocks; anything
+    else is left verbatim so the leak stays visible in the trace."""
+
+    LEAK = (
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.repl:0"
+        '<|tool_call_argument_begin|>{"code": "print(type(context))\\nprint(len(context))"}'
+        "<|tool_call_end|><|tool_calls_section_end|>"
+    )
+
+    def test_repl_call_becomes_a_fenced_block(self):
+        from rlm.clients.azure_foundry import translate_native_tool_calls
+
+        assert translate_native_tool_calls(self.LEAK) == (
+            "```repl\nprint(type(context))\nprint(len(context))\n```"
+        )
+
+    def test_plain_text_is_untouched(self):
+        from rlm.clients.azure_foundry import translate_native_tool_calls
+
+        text = "Plan first.\n```repl\nprint(1)\n```"
+        assert translate_native_tool_calls(text) is text
+
+    def test_non_repl_or_malformed_calls_stay_verbatim(self):
+        from rlm.clients.azure_foundry import translate_native_tool_calls
+
+        other = self.LEAK.replace("functions.repl", "functions.search")
+        assert translate_native_tool_calls(other) == other
+        broken = self.LEAK.replace('"code": ', '"code" ')
+        assert translate_native_tool_calls(broken) == broken
+
+    def test_prose_around_the_call_is_kept(self):
+        from rlm.clients.azure_foundry import translate_native_tool_calls
+
+        text = "Let me look.\n" + self.LEAK + "\nThen decide."
+        out = translate_native_tool_calls(text)
+        assert out.startswith("Let me look.\n```repl\n")
+        assert out.endswith("```\nThen decide.")
+
+    def test_client_completion_returns_the_translated_block(self, monkeypatch):
+        client = _make_client(monkeypatch, response=_make_response(content=self.LEAK))
+        assert client.completion("hi").startswith("```repl\n")
