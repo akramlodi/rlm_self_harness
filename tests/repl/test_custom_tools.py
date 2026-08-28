@@ -505,6 +505,23 @@ class TestFormatToolsForPrompt:
         assert "my_func" in result
         assert "custom function" in result.lower()
 
+    def test_callable_docstring_is_the_description(self):
+        """A documented helper is advertised with its docstring's first line,
+        not as "A custom function" (the S8 helpers of experiment_kimi were
+        rendered that way and went uncalled)."""
+
+        def format_id_list(ids):
+            """Format a list of IDs as [id1, id2] without quotes.
+
+            Longer explanation that must not be rendered.
+            """
+            return ids
+
+        result = format_tools_for_prompt({"format_id_list": format_id_list})
+        assert "- `format_id_list`: Format a list of IDs as [id1, id2] without quotes." in result
+        assert "Longer explanation" not in result
+        assert "custom function" not in result.lower()
+
     def test_value_with_description(self):
         """Value with description should show description."""
         tools = {"config": {"tool": ["a", "b", "c"], "description": "Configuration settings"}}

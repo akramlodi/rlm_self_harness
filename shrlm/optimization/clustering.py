@@ -145,12 +145,18 @@ def shared_symptoms(records: list[FailureRecord]) -> list[str]:
 
 
 def verifier_evidence(records: list[FailureRecord], limit: int = 3) -> list[str]:
-    """Concrete gold-versus-produced pairs, so the cause is inspectable."""
+    """Concrete produced-versus-gold pairs, so the cause is inspectable.
+
+    ``produced`` comes first: the proposer's prompt bounds each entry at
+    render time, and a 181-node gold list placed first hid the 20-character
+    produced string that carried the whole diagnosis (POST_MORTEM.md
+    section 6).
+    """
     lines = []
     for record in sorted(records, key=lambda r: r.instance_id)[:limit]:
         lines.append(
-            f"{record.instance_id}: expected {record.verdict.gold!r}, "
-            f"produced {record.verdict.produced!r}"
+            f"{record.instance_id}: produced {record.verdict.produced!r}, "
+            f"expected {record.verdict.gold!r}"
         )
     return lines
 

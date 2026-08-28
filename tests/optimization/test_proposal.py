@@ -7,6 +7,7 @@ rejections. That is the strongest guarantee available -- it proves the
 proposer's output clears the actual gate, not a re-description of it.
 """
 
+import copy
 import json
 from dataclasses import replace
 from typing import Any
@@ -939,3 +940,33 @@ def test_skills_pedagogy_only_rendered_when_an_s10_pattern_is_addressable():
     rendered, _ = render_prompt(with_s10, serialize_harness(H0), (), (), k=4)
     assert rendered.count("procedural anchor") == 1
     assert rendered.count("## Use When") == 1
+
+
+def test_render_prompt_names_the_verifier_contract_when_the_bundle_carries_it():
+    contract = {
+        "environment": "graphwalks",
+        "extraction_rule": "trailing-bracket-list;marker-optional;quotes-stripped",
+        "gold_ordering": "sorted",
+        "pass_f1_threshold": 1.0,
+    }
+    rendered, _ = render_prompt(
+        [PATTERN_TEXT], serialize_harness(H0), (), (), k=4, verifier_config=contract
+    )
+    assert "Verifier contract" in rendered
+    assert "extraction_rule=trailing-bracket-list;marker-optional;quotes-stripped" in rendered
+    absent, _ = render_prompt([PATTERN_TEXT], serialize_harness(H0), (), (), k=4)
+    assert "not recorded for this bundle" in absent
+
+
+def test_render_prompt_bounds_each_evidence_entry_separately():
+    """A huge gold list in one entry must not hide another entry's produced string."""
+    pattern = copy.deepcopy(PATTERN_TEXT)
+    huge = "x" * 50_000
+    pattern["verifier_evidence"] = [
+        f"a: produced '[1f0e3dad99]', expected '[{huge}]'",
+        "b: produced '[2c7f9ccb5a]', expected '[2c7f9ccb5a]'",
+    ]
+    rendered, _ = render_prompt([pattern], serialize_harness(H0), (), (), k=4)
+    assert "a: produced '[1f0e3dad99]'" in rendered
+    assert "b: produced '[2c7f9ccb5a]'" in rendered
+    assert huge not in rendered
