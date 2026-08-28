@@ -40,7 +40,13 @@ _EDGE_RE = re.compile(r"(\w+)\s*->\s*(\w+)")
 # bracketed text (e.g. "Final Answer: [a, b] (excluding [c])") into the list
 # and grade a correct answer wrong.
 _ANSWER_LIST_RE = re.compile(r"\[(.*?)\]")
-# The operation line of a dataset prompt, used as the instance's question.
+# Characters stripped from each parsed item: stray brackets from redundant
+# nesting, and quotes from a Python-repr'd list. Node ids are \w+ and can carry
+# neither, so stripping cannot merge or split a real id.
+_ITEM_STRIP_CHARS = "[]'\""
+# An operation line of a dataset prompt. Every GraphWalks prompt opens with a
+# worked example whose operation line matches this too, so the instance's
+# question is the LAST match, never the first (``extract_question``).
 _QUESTION_RE = re.compile(r"^\s*(Perform a BFS\b.*|Find the parents\b.*)$", re.MULTILINE)
 
 # Best-effort patterns over model-authored child prompts (see GraphWalksSubVerifier).
@@ -59,30 +65,39 @@ _EXCLUDE_WORD_RE = re.compile(r"\bexclud", re.IGNORECASE)
 
 def extract_answer_nodes(response: str) -> list[str] | None:
     """
-    Parse the node list out of a response's trailing 'Final Answer: [...]' line.
+    Parse the node list out of a response's trailing answer line.
 
-    Returns None when the last line carries no "Final Answer:" marker or no
-    bracketed list at all -- the response is not in the required format -- and
-    an empty list when a bracket pair parsed but held no items, i.e. the model
-    explicitly answered the empty set. Callers rely on that distinction: the
-    Verifier maps no-parse to WRONG_FORMAT but a parsed ``[]`` against a
-    non-empty gold to NO_ANSWER, and the SubVerifier treats an unparseable
-    child response as uncheckable rather than wrong.
+    The dataset card's format is a last line ``Final Answer: [n1, n2, ...]``.
+    Extraction is deliberately more tolerant than the card on two points that
+    are serialization, not graph reasoning (experiment_kimi/POST_MORTEM.md
+    section 3): the ``Final Answer:`` marker is optional -- a bracketed list
+    on the last line is the answer whether or not the marker precedes it --
+    and quote characters around an item are stripped, so ``['a', 'b']`` (a
+    Python list's ``str()``) parses to ``["a", "b"]``. Under the strict rule
+    84% of the H0 baseline's failures were correct node sets wearing quotes or
+    missing the marker, and the optimization loop spent five rounds moving
+    bytes across that boundary instead of improving the harness.
+
+    Returns None when the last line carries no bracketed list at all -- the
+    response is not in the required format -- and an empty list when a bracket
+    pair parsed but held no items, i.e. the model explicitly answered the empty
+    set. Callers rely on that distinction: the Verifier maps no-parse to
+    WRONG_FORMAT but a parsed ``[]`` against a non-empty gold to NO_ANSWER, and
+    the SubVerifier treats an unparseable child response as uncheckable rather
+    than wrong.
 
     The FIRST bracket pair on the line is the answer list; anything after its
     closing bracket (e.g. a parenthetical "(excluding [c])") is commentary and
     ignored. Redundantly nested brackets like "Final Answer: [[a, b]]" are
     tolerated by stripping stray bracket characters from each item -- node ids
-    are ``\\w+`` and can never legitimately contain brackets -- so that parse
-    yields ``["a", "b"]``.
+    are ``\\w+`` and can never legitimately contain brackets or quotes -- so
+    that parse yields ``["a", "b"]``.
     """
     line = response.strip().split("\n")[-1]
-    if "Final Answer:" not in line:
-        return None
     match = _ANSWER_LIST_RE.search(line)
     if match is None:
         return None
-    items = (item.strip().strip("[]").strip() for item in match.group(1).split(","))
+    items = (item.strip().strip(_ITEM_STRIP_CHARS).strip() for item in match.group(1).split(","))
     return [item for item in items if item]
 
 
@@ -145,10 +160,18 @@ def row_to_instance(row: dict[str, Any], sample_seed: int, sample_index: int) ->
 
 def extract_question(prompt: str) -> str:
     """The operation line of the prompt ("Perform a BFS..."/"Find the parents..."),
-    falling back to the first non-empty line when no operation line is found."""
-    match = _QUESTION_RE.search(prompt)
-    if match is not None:
-        return match.group(1).strip()
+    falling back to the first non-empty line when no operation line is found.
+
+    The LAST operation line wins. Dataset prompts embed a worked example
+    ("Perform a BFS from node abcd with depth 1.") before the real
+    ``Operation:`` block; taking the first match handed the attributor the
+    example's question for every instance of experiment_kimi and 41% of its
+    attributions blamed the model for "using the wrong node"
+    (POST_MORTEM.md section 5).
+    """
+    matches = _QUESTION_RE.findall(prompt)
+    if matches:
+        return matches[-1].strip()
     for line in prompt.splitlines():
         if line.strip():
             return line.strip()
@@ -320,9 +343,11 @@ class GraphWalksVerifier:
 
     Cause mapping, decided entirely by set arithmetic on the parsed answer:
 
-    * no parseable trailing "Final Answer: [...]" line (including a prose
+    * no bracketed node list on the trailing line (including a prose
       fallback answer) -> WRONG_FORMAT. The response never entered the
-      environment's answer channel, so nothing finer can be measured.
+      environment's answer channel, so nothing finer can be measured. The
+      ``Final Answer:`` marker itself is optional and item quotes are
+      stripped; see ``extract_answer_nodes``.
     * a parsed ``[]`` against a non-empty gold -> NO_ANSWER. The format was
       honored but no answer nodes were produced; ``extract_answer_nodes``
       returning ``[]`` rather than None is what separates this from the case
@@ -336,7 +361,7 @@ class GraphWalksVerifier:
     """
 
     PASS_F1_THRESHOLD: float = 1.0
-    EXTRACTION_RULE: str = "trailing-final-answer-line"
+    EXTRACTION_RULE: str = "trailing-bracket-list;marker-optional;quotes-stripped"
     GOLD_ORDERING: str = "sorted"
 
     def config(self) -> dict[str, Any]:
@@ -359,7 +384,7 @@ class GraphWalksVerifier:
                 cause=VerifierCause.WRONG_FORMAT,
                 gold=gold,
                 produced=produced,
-                detail="no trailing 'Final Answer: [...]' line to parse",
+                detail="no bracketed node list on the trailing line to parse",
             )
 
         pred_set = set(parsed)

@@ -244,3 +244,26 @@ class TestMarginals:
             EditableSurface.SKILLS.value: 1,
         }
         assert EditableSurface.SKILLS.value == "S10"
+
+
+class TestAnswerShapeSymptoms:
+    def test_verifier_causes_and_produced_shapes_are_counted(self):
+        from shrlm.optimization.clustering import answer_shape_symptoms
+        from shrlm.optimization.taxonomy import VerifierCause
+        from shrlm.optimization.types import Verdict
+
+        def rec(name, cause, produced):
+            record = make_record(name)
+            record.verdict = Verdict(passed=False, cause=cause, gold="[a, b]", produced=produced)
+            return record
+
+        records = [
+            rec("r1", VerifierCause.MIXED_SET_ERROR, "Final Answer: ['a', 'b']"),
+            rec("r2", VerifierCause.WRONG_FORMAT, "I could not find it"),
+            rec("r3", VerifierCause.NO_ANSWER, "Final Answer: []"),
+        ]
+        lines = answer_shape_symptoms(records)
+        assert "verifier causes: mixed_set_error 1/3, no_answer 1/3, wrong_format 1/3" in lines
+        assert "produced answer list carried quoted items in 1/3 runs" in lines
+        assert "no bracketed answer list on the last produced line in 1/3 runs" in lines
+        assert "produced answer was the empty list in 1/3 runs" in lines

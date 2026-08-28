@@ -27,11 +27,12 @@ class GroundingResult:
     Outcome of the sub-verification pass.
 
     ``verdicts`` maps node id to True, False, or None for "not checkable in
-    isolation". ``failing_level`` is None when no sub-verifier ran, in which
-    case the attributor is asked for it instead. ``grounded`` is True only
-    when the level is a checkable fact: a sub-verifier ran and either the tree
-    had no descendants (NO_RECURSION) or at least one verdict was non-None.
-    An all-None pass leaves ``failing_level`` UNDETERMINED with ``grounded``
+    isolation". ``grounded`` is True only when the level is a checkable fact:
+    the tree had no descendants (NO_RECURSION -- a structural fact that needs
+    no sub-verifier), or a sub-verifier ran and at least one verdict was
+    non-None. ``failing_level`` is None when a sub-verifier would be needed
+    and none ran, in which case the attributor is asked for it instead. An
+    all-None pass leaves ``failing_level`` UNDETERMINED with ``grounded``
     False, and the attributor is asked for the level there too.
     """
 
@@ -71,6 +72,14 @@ def apply_sub_verifier(
     show the attributor which sub-calls were independently wrong without
     threading a second structure through it.
     """
+    # No descendants is NO_RECURSION whether or not a sub-verifier exists: the
+    # level is read off the tree, and there is nothing a verifier could score.
+    # Asking the attributor instead let it answer "root" for 32% of
+    # experiment_kimi's zero-sub-call records -- a level whose definition
+    # ("every sub-call returned a correct local result") cannot apply -- and
+    # the split signatures halved cluster support (POST_MORTEM.md section 5.3).
+    if derive_failing_level(root, {}) is FailingLevel.NO_RECURSION:
+        return GroundingResult(failing_level=FailingLevel.NO_RECURSION, grounded=True, verdicts={})
     if sub_verifier is None:
         return GroundingResult(failing_level=None, grounded=False, verdicts={})
 

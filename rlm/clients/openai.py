@@ -334,7 +334,7 @@ class OpenAIClient(BaseLM):
         # models can spend the whole max_tokens budget on hidden reasoning
         # (observed on OpenRouter stealth/ox-alpha). The declared return type
         # is str, and callers regex/parse it, so an absent text is "".
-        return response.choices[0].message.content or ""
+        return self._normalize_content(response.choices[0].message.content or "")
 
     async def acompletion(
         self, prompt: str | list[dict[str, Any]], model: str | None = None
@@ -428,7 +428,17 @@ class OpenAIClient(BaseLM):
             await asyncio.sleep(_transport_backoff_seconds(transport_attempt))
         self._track_cost(response, model)
         # Same None-content coercion as the sync path above.
-        return response.choices[0].message.content or ""
+        return self._normalize_content(response.choices[0].message.content or "")
+
+    def _normalize_content(self, content: str) -> str:
+        """Provider-specific repair of the returned text; identity here.
+
+        The one sanctioned place to rewrite what the model said before the
+        harness parses it. A subclass overrides it for a provider whose model
+        leaks a non-text serialization into ``content`` (see
+        ``AzureFoundryClient``); everything else returns the text unchanged.
+        """
+        return content
 
     def _empty_content_retry_reason(self, response: Any) -> str | None:
         """Why this 200 response should be retried for an empty body, or None.

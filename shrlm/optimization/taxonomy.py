@@ -45,7 +45,7 @@ from shrlm.rlm_harness import SURFACES
 # mapping changes. Bundles carrying different versions are not comparable, so
 # the frequency-before-vs-after analysis excludes bundles written under any
 # other version (``pattern_frequency_diff.bundle_completeness``).
-TAXONOMY_VERSION = "3.0.0"
+TAXONOMY_VERSION = "3.1.0"
 
 
 class EditableSurface(str, Enum):
@@ -338,9 +338,12 @@ MECHANISM_DOCS: dict[AgentMechanism, str] = {
 }
 
 
-# Each mechanism maps to exactly one editable surface. OTHER is deliberately
-# absent: an unclassified mechanism has no known surface, and
-# `surface_addressable` in the actionability score reads that absence.
+# Each mechanism maps to ONE primary editable surface -- the surface its
+# definition implicates and the one the bundle records as ``pattern.surface``.
+# OTHER is deliberately absent: an unclassified mechanism has no primary
+# surface, and ``surface_addressable`` in the actionability score reads that
+# absence. Which surfaces the PROPOSER may edit for a pattern is the wider
+# ``MECHANISM_SURFACES`` below; this dict is its first column.
 MECHANISM_SURFACE: dict[AgentMechanism, EditableSurface] = {
     AgentMechanism.REPL_CONTRACT_MISUSE: EditableSurface.REPL_CONTRACT,
     AgentMechanism.WHOLE_INPUT_SUBCALL_COLLAPSE: EditableSurface.DECOMPOSITION_INSTRUCTION,
@@ -358,6 +361,106 @@ MECHANISM_SURFACE: dict[AgentMechanism, EditableSurface] = {
     AgentMechanism.REPL_EXECUTION_FAULT: EditableSurface.REPL_HELPERS,
     AgentMechanism.LOSSY_AGGREGATION: EditableSurface.ANSWER_MIDDLEWARE,
     AgentMechanism.UNCONSULTED_PROCEDURE: EditableSurface.SKILLS,
+}
+
+
+# The surfaces the proposer may target for a pattern, primary first. Taxonomy
+# 3.1.0: the 3.0.0 loop funneled every pattern into its one primary surface, and
+# in a regime with no sub-calls that left S3/S5/S7/S9/S10 unreachable while
+# the proposer spent 12 of 14 candidates on S8 and S2 (experiment_kimi/
+# POST_MORTEM.md section 6). The alternates are the surfaces on which a minimal
+# edit can plausibly address the same mechanism -- an answer-format contract
+# misuse is also an S9 normalization or an S10 procedure; an execution fault is
+# also a skill or an execution instruction. OTHER, an unclassified mechanism,
+# may be addressed on any surface: the proposer decides from the evidence.
+# ``MECHANISM_SURFACE`` stays the first element of every concrete entry so the
+# bundle's recorded ``surface`` and the analysis tables are unchanged.
+MECHANISM_SURFACES: dict[AgentMechanism, tuple[EditableSurface, ...]] = {
+    AgentMechanism.REPL_CONTRACT_MISUSE: (
+        EditableSurface.REPL_CONTRACT,
+        EditableSurface.ANSWER_MIDDLEWARE,
+        EditableSurface.SKILLS,
+        EditableSurface.VERIFICATION_INSTRUCTION,
+    ),
+    AgentMechanism.WHOLE_INPUT_SUBCALL_COLLAPSE: (
+        EditableSurface.DECOMPOSITION_INSTRUCTION,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.SKILLS,
+        EditableSurface.RUNTIME_POLICY,
+    ),
+    AgentMechanism.INCOMPLETE_COVERAGE: (
+        EditableSurface.DECOMPOSITION_INSTRUCTION,
+        EditableSurface.VERIFICATION_INSTRUCTION,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.SKILLS,
+    ),
+    AgentMechanism.REDUNDANT_DECOMPOSITION: (
+        EditableSurface.DECOMPOSITION_INSTRUCTION,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.SKILLS,
+    ),
+    AgentMechanism.MISALIGNED_UNIT: (
+        EditableSurface.DECOMPOSITION_INSTRUCTION,
+        EditableSurface.SKILLS,
+    ),
+    AgentMechanism.DEPTH_DEGRADATION: (
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.RUNTIME_POLICY,
+        EditableSurface.DECOMPOSITION_INSTRUCTION,
+    ),
+    AgentMechanism.INSUFFICIENT_RECURSION: (
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.DECOMPOSITION_INSTRUCTION,
+        EditableSurface.RUNTIME_POLICY,
+    ),
+    AgentMechanism.LLM_FOR_RLM_SUBSTITUTION: (
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.REPL_CONTRACT,
+        EditableSurface.SKILLS,
+    ),
+    AgentMechanism.PREMATURE_TERMINATION: (
+        EditableSurface.VERIFICATION_INSTRUCTION,
+        EditableSurface.ANSWER_MIDDLEWARE,
+        EditableSurface.EXECUTION_INSTRUCTION,
+    ),
+    AgentMechanism.SKIPPED_VERIFICATION: (
+        EditableSurface.VERIFICATION_INSTRUCTION,
+        EditableSurface.ANSWER_MIDDLEWARE,
+        EditableSurface.SKILLS,
+    ),
+    AgentMechanism.SWALLOWED_SUBCALL_ERROR: (
+        EditableSurface.RECOVERY_INSTRUCTION,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.RUNTIME_POLICY,
+    ),
+    AgentMechanism.ITERATION_BUDGET_EXHAUSTION: (
+        EditableSurface.RUNTIME_POLICY,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.REPL_CONTRACT,
+        EditableSurface.SKILLS,
+    ),
+    AgentMechanism.UNPARSED_CHILD_OUTPUT: (
+        EditableSurface.METADATA,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.RECOVERY_INSTRUCTION,
+    ),
+    AgentMechanism.REPL_EXECUTION_FAULT: (
+        EditableSurface.REPL_HELPERS,
+        EditableSurface.SKILLS,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.REPL_CONTRACT,
+    ),
+    AgentMechanism.LOSSY_AGGREGATION: (
+        EditableSurface.ANSWER_MIDDLEWARE,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.VERIFICATION_INSTRUCTION,
+    ),
+    AgentMechanism.UNCONSULTED_PROCEDURE: (
+        EditableSurface.SKILLS,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.DECOMPOSITION_INSTRUCTION,
+    ),
+    AgentMechanism.OTHER: tuple(EditableSurface),
 }
 
 
@@ -415,7 +518,7 @@ def render_surface_block() -> str:
     Reach matters to attribution: a mechanism describing a child's own behavior
     must not be pinned on a root-only surface, whose edits children never see.
     """
-    lines = ["editable_surfaces (each mechanism implicates exactly one):"]
+    lines = ["editable_surfaces (each mechanism implicates one primary surface):"]
     for surface in EditableSurface:
         declared = SURFACES[surface.value]
         lines.append(

@@ -101,6 +101,16 @@ class TestApplySubVerifier:
         assert result.grounded is False
         assert result.failing_level is FailingLevel.UNDETERMINED
 
+    def test_no_descendants_without_sub_verifier_is_grounded_no_recursion(self):
+        # The level is read off the tree; the ablation switch only decides
+        # whether CHILD/ROOT are checkable. experiment_kimi ran without a
+        # sub-verifier and the attributor labelled 32% of zero-sub-call runs
+        # "root".
+        result = apply_sub_verifier({}, build_call_tree_from_dict(shallow_run()), None)
+        assert result.grounded is True
+        assert result.failing_level is FailingLevel.NO_RECURSION
+        assert result.verdicts == {}
+
     def test_no_descendants_with_sub_verifier_is_still_grounded(self):
         # NO_RECURSION is read off the tree structure, not off verdicts, so it
         # remains a checkable fact even though there is nothing to score.

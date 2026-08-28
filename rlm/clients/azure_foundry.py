@@ -1,5 +1,7 @@
+import json
 import math
 import os
+import re
 import threading
 from typing import Any
 from urllib.parse import urlparse
@@ -61,6 +63,54 @@ def _validate_endpoint(endpoint: str) -> None:
             "AZURE_FOUNDRY_ENDPOINT host must end with '.services.ai.azure.com' or "
             "'.openai.azure.com'; refusing to construct a client."
         )
+
+
+# Kimi-K2.5's native function-calling serialization. When the model decides to
+# "call" the REPL as a tool instead of writing a ```repl``` block, the Foundry
+# route returns these tokens as plain text in ``message.content`` -- no tools
+# were declared, so nothing parses them, the block never executes, and the
+# model repeats the same call until the iteration budget is gone (14 of 240
+# mining runs in experiment_kimi, 0% pass; POST_MORTEM.md section 9.1). The
+# intent is unambiguous -- ``functions.repl`` with a ``code`` argument IS a
+# REPL block -- so it is translated back into one rather than dropped.
+_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call_begin\|>\s*(?P<name>[\w.]+?)(?::\d+)?\s*"
+    r"<\|tool_call_argument_begin\|>(?P<args>.*?)<\|tool_call_end\|>",
+    re.DOTALL,
+)
+_TOOL_SECTION_RE = re.compile(r"<\|tool_calls_section_(?:begin|end)\|>")
+NATIVE_TOOL_CALL_MARKER = "<|tool_call"
+
+
+def translate_native_tool_calls(content: str) -> str:
+    """Rewrite leaked ``functions.repl`` tool calls as ```repl``` blocks.
+
+    Only a call named ``repl`` (any ``functions.`` prefix) whose JSON argument
+    object carries a string ``code`` is translated; any other call, or one
+    whose arguments do not parse, is left byte-for-byte so the leak stays
+    visible in the trace rather than being silently swallowed. Text without
+    the marker is returned unchanged.
+    """
+    if NATIVE_TOOL_CALL_MARKER not in content:
+        return content
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group("name").rsplit(".", 1)[-1]
+        if name != "repl":
+            return match.group(0)
+        try:
+            arguments = json.loads(match.group("args"))
+        except json.JSONDecodeError:
+            return match.group(0)
+        code = arguments.get("code") if isinstance(arguments, dict) else None
+        if not isinstance(code, str):
+            return match.group(0)
+        return f"```repl\n{code}\n```"
+
+    translated = _TOOL_CALL_RE.sub(_replace, content)
+    if translated == content:
+        return content
+    return _TOOL_SECTION_RE.sub("", translated).strip()
 
 
 class AzureFoundryClient(OpenAIClient):
@@ -230,6 +280,9 @@ class AzureFoundryClient(OpenAIClient):
         if content is None or content == "":
             return f"finish_reason={getattr(choice, 'finish_reason', None)!r}"
         return None
+
+    def _normalize_content(self, content: str) -> str:
+        return translate_native_tool_calls(content)
 
     def get_usage_summary(self) -> UsageSummary:
         summary = super().get_usage_summary()

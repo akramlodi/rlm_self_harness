@@ -38,6 +38,12 @@ k = 4 # candidate edits proposed per round
 # an identity key (R3), so extending the run later needs a fresh out-dir.
 t = 3 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
+# Registry harness the loop starts from: "H0" (the mechanism floor, S2-S5 one
+# line each, no orchestrator addendum) or "H0*" (the shipped RLM system prompt
+# with ORCHESTRATOR_ADDENDUM appended at runtime; S2-S5 start empty). Identity
+# key (R3): a different value needs a fresh --out-dir. Evaluation's B1
+# condition is always H0 regardless of this value.
+initial_harness = "H0"
 
 [promotion]
 # Preregistered promotion rule, sections 3.2 and 3.10 rows 6-7. Zero

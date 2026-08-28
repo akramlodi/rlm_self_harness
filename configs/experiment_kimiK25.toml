@@ -43,6 +43,11 @@ k = 4 # candidate edits proposed per round
 # an identity key (R3), so extending the run later needs a fresh out-dir.
 t = 5 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
+# Start from the shipped reference prompt plus the orchestrator addendum.
+# experiment_kimi (identity bf56cc0e..., started from H0) made zero sub-calls
+# in 5,104 runs -- see experiment_kimi/POST_MORTEM.md section 8. Identity key:
+# this config no longer resumes into experiment_kimi/.
+initial_harness = "H0*"
 
 [promotion]
 # Preregistered promotion rule, sections 3.2 and 3.10 rows 6-7. Zero

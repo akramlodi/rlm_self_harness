@@ -141,16 +141,65 @@ def shared_symptoms(records: list[FailureRecord]) -> list[str]:
             f"trace known to be missing sub-calls in {degraded}/{n} runs "
             "(lower bound; child-level attribution is understated here)"
         )
+    lines.extend(answer_shape_symptoms(records))
     return lines
 
 
+def answer_shape_symptoms(records: list[FailureRecord]) -> list[str]:
+    """
+    What the produced answers have in common, as arithmetic over the verdicts.
+
+    The tree statistics above were identical for every pattern of
+    experiment_kimi ("no sub-calls issued at all in n/n runs") and told the
+    proposer nothing; the discriminating facts were in the produced strings --
+    quoted items, a missing answer line, an empty list -- which it could only
+    see through truncated evidence quotes. Descriptive only: each line states a
+    count, never a remedy (``bundle.assert_no_prescription``).
+    """
+    n = len(records)
+    causes = Counter(
+        record.verdict.cause.value if record.verdict.cause is not None else "pass"
+        for record in records
+    )
+    lines = [
+        "verifier causes: "
+        + ", ".join(f"{cause} {count}/{n}" for cause, count in sorted(causes.items()))
+    ]
+    produced = [record.verdict.produced or "" for record in records]
+    quoted = sum(1 for text in produced if _bracket_list_has_quoted_items(text))
+    no_list = sum(1 for text in produced if "[" not in text.strip().split("\n")[-1])
+    empty = sum(1 for text in produced if text.strip().endswith("[]"))
+    if quoted:
+        lines.append(f"produced answer list carried quoted items in {quoted}/{n} runs")
+    if no_list:
+        lines.append(f"no bracketed answer list on the last produced line in {no_list}/{n} runs")
+    if empty:
+        lines.append(f"produced answer was the empty list in {empty}/{n} runs")
+    return lines
+
+
+def _bracket_list_has_quoted_items(text: str) -> bool:
+    last = text.strip().split("\n")[-1]
+    start, end = last.find("["), last.rfind("]")
+    if start < 0 or end <= start:
+        return False
+    body = last[start + 1 : end]
+    return any(item.strip()[:1] in ("'", '"') for item in body.split(",") if item.strip())
+
+
 def verifier_evidence(records: list[FailureRecord], limit: int = 3) -> list[str]:
-    """Concrete gold-versus-produced pairs, so the cause is inspectable."""
+    """Concrete produced-versus-gold pairs, so the cause is inspectable.
+
+    ``produced`` comes first: the proposer's prompt bounds each entry at
+    render time, and a 181-node gold list placed first hid the 20-character
+    produced string that carried the whole diagnosis (POST_MORTEM.md
+    section 6).
+    """
     lines = []
     for record in sorted(records, key=lambda r: r.instance_id)[:limit]:
         lines.append(
-            f"{record.instance_id}: expected {record.verdict.gold!r}, "
-            f"produced {record.verdict.produced!r}"
+            f"{record.instance_id}: produced {record.verdict.produced!r}, "
+            f"expected {record.verdict.gold!r}"
         )
     return lines
 

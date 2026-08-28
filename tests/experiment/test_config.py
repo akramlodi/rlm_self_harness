@@ -621,3 +621,41 @@ def test_evaluation_config_kwargs_accepted_by_evaluation_config(tmp_path: Path) 
 def test_unknown_client_role_raises() -> None:
     with pytest.raises(ValueError, match="unknown client role"):
         backend_kwargs_for(load_config(), "judge")
+
+
+# ---------------------------------------------------------------------------
+# [loop] initial_harness -- the registry harness the loop starts from
+# ---------------------------------------------------------------------------
+
+
+def _with_initial_harness(text: str, value: str) -> str:
+    """Rewrite the shipped ``[loop] initial_harness`` line to ``value``."""
+    assert 'initial_harness = "H0"\n' in text
+    return text.replace('initial_harness = "H0"\n', f'initial_harness = "{value}"\n', 1)
+
+
+def test_initial_harness_defaults_to_h0() -> None:
+    assert load_config().loop.initial_harness == "H0"
+    assert load_config("smoke").loop.initial_harness == "H0"
+
+
+def test_kimi_config_starts_from_h0_star() -> None:
+    config = load_config("full", path=Path("configs/experiment_kimiK25.toml"))
+    assert config.loop.initial_harness == "H0*"
+
+
+def test_initial_harness_outside_the_registry_is_rejected_at_load(tmp_path: Path) -> None:
+    path = write_config(tmp_path, _with_initial_harness(shipped_text(), "H9"))
+    with pytest.raises(ValueError, match=r"initial_harness.*H0\*.*H9"):
+        load_config("full", path=path)
+
+
+def test_initial_harness_is_an_identity_key(tmp_path: Path) -> None:
+    base = identity_hash(load_config())
+    star = write_config(tmp_path, _with_initial_harness(shipped_text(), "H0*"))
+    assert identity_hash(load_config("full", path=star)) != base
+
+
+def test_explicit_h0_hashes_identically_to_the_default(tmp_path: Path) -> None:
+    explicit = write_config(tmp_path, _with_initial_harness(shipped_text(), "H0"))
+    assert identity_hash(load_config("full", path=explicit)) == identity_hash(load_config())
