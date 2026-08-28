@@ -112,7 +112,7 @@ from typing import TYPE_CHECKING, Any
 
 from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
-from shrlm.environments.graphwalks import GraphWalksVerifier
+from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier
 from shrlm.experiment.config import (
     GOVERNED_ROUND_KEYS,
     ExperimentConfig,
@@ -1199,10 +1199,19 @@ def run_experiment(
         ExperimentPersistenceError: Persisted state contradicts itself or the
             configuration.
     """
+    # The sub-verifier pairs with the verifier: when the caller takes the
+    # GraphWalks default for one, it gets the GraphWalks default for the other.
+    # experiment_kimi ran with neither passed and therefore no grounding at all
+    # (bundle config sub_verifier_enabled=False). The ablation is still one
+    # call away -- pass verifier=GraphWalksVerifier() with sub_verifier=None.
+    if verifier is None:
+        verifier = GraphWalksVerifier()
+        if sub_verifier is None:
+            sub_verifier = GraphWalksSubVerifier()
     experiment = _Experiment(
         config=config,
         out_dir=Path(out_dir),
-        verifier=verifier if verifier is not None else GraphWalksVerifier(),
+        verifier=verifier,
         sub_verifier=sub_verifier,
         attributor_lm=attributor_lm,
         proposer_lm=proposer_lm,

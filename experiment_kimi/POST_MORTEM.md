@@ -15,7 +15,7 @@ scripts are described in Appendix C so the figures can be regenerated.
 The loop did not improve the harness because the signal it optimized was not task
 capability. Five findings, in order of how much they explain:
 
-1. **The pass-rate signal was a serialization artifact.** Ignoring quote characters and
+1. **The pass-rate signal was a serialization artifact.** *(FIXED — `4ae1bdab`)* Ignoring quote characters and
    the literal `Final Answer:` prefix, Kimi-K2.5 produced the *exact gold node set* in
    86–91% of runs under every harness tested — including the untouched H0 baseline
    (0.91). The measured pass rate (0.375 → 0.646 held-in) tracks only whether those bytes
@@ -27,17 +27,17 @@ capability. Five findings, in order of how much they explain:
    (held-out, of 160). A candidate byte-identical to the incumbent is rejected by the
    preregistered `tau=0` rule **72%** of the time. The incumbent, re-measured in rounds
    3–5, scored 58, 64, 51 held-in passes.
-3. **The evidence chain fed the attributor the wrong question.** `instances.jsonl`
+3. **The evidence chain fed the attributor the wrong question.** *(FIXED — `4ae1bdab`)* `instances.jsonl`
    `question` is the prompt's worked *example* ("Perform a BFS from node abcd") for
    100% of instances — a `_QUESTION_RE` first-match bug. 49 of 120 attribution records
    (41%) blame the model for "hardcoding the wrong node" when the model used the node
    the real operation asked for. The proposer then chased a phantom.
-4. **The proposer was funnelled into surfaces that could not fix the real bug.**
+4. **The proposer was funnelled into surfaces that could not fix the real bug.** *(FIXED — taxonomy 3.1.0, `d74fcc95`)*
    Surface choice is hard-wired by mechanism (`MECHANISM_SURFACE`). In a regime with
    zero sub-calls, S3/S5/S7/S9/S10 are unreachable by construction; the loop spent 12 of
    14 candidates on S8 (×7) and S2 (×5), zero promotions. S9 — the surface designed for
    programmatic answer normalization, i.e. the actual fix — was never reachable.
-5. **S8 was dead on arrival.** Helpers are advertised to the model as
+5. **S8 was dead on arrival.** *(FIXED — `7fcfa107`)* Helpers are advertised to the model as
    ``- `format_id_list`: A custom function`` (docstring dropped by
    `rlm/environments/base_env.py:format_tools_for_prompt`). The model called the helper
    in 2 of 96 runs. Every S8 candidate also inflated input tokens ~60%, tripping the
@@ -133,14 +133,14 @@ the best harness in the table and nothing that followed beat it.
 |---|---:|---:|---|
 | S1 repl_contract | 2 | 0 | yes (`repl_contract_misuse`) |
 | S2 decomposition | 5 | 0 | yes (`whole_input_subcall_collapse`) |
-| S3 execution | 0 | 0 | **no** — only via depth/recursion mechanisms |
+| S3 execution | 0 | 0 | **no** under 3.0.0 — only via depth/recursion mechanisms; eligible for every mechanism seen here under 3.1.0 |
 | S4 verification | 1 | 1 | yes (`skipped_verification`, `premature_termination`) |
-| S5 recovery | 0 | 0 | **no** — only via `swallowed_subcall_error` |
+| S5 recovery | 0 | 0 | **no** under 3.0.0 — only via `swallowed_subcall_error`; 3.1.0 adds `unparsed_child_output` and `other` |
 | S6 runtime_policy | 0 | 0 | yes (`iteration_budget_exhaustion`), never proposed |
-| S7 metadata | 0 | 0 | **no** — only via `unparsed_child_output` |
+| S7 metadata | 0 | 0 | **no** under 3.0.0 — only via `unparsed_child_output`; 3.1.0 adds `other` |
 | S8 repl_helpers | 7 | 0 | yes (`repl_execution_fault`) |
-| S9 answer_middleware | 0 | 0 | **no** — only via `lossy_aggregation` |
-| S10 skills | 0 | 0 | **no** — only via `unconsulted_procedure` |
+| S9 answer_middleware | 0 | 0 | **no** under 3.0.0 — only via `lossy_aggregation`; 3.1.0 adds `repl_contract_misuse`, `skipped_verification`, `premature_termination`, `other` |
+| S10 skills | 0 | 0 | **no** under 3.0.0 — only via `unconsulted_procedure`; 3.1.0 adds `repl_execution_fault`, `repl_contract_misuse`, `whole_input_subcall_collapse`, `iteration_budget_exhaustion`, `other` |
 
 Six of ten surfaces were structurally unreachable given that no run ever made a
 sub-call. Of the four reachable ones, the loop spent 12 of 14 candidates on the two
@@ -148,7 +148,7 @@ sub-call. Of the four reachable ones, the loop spent 12 of 14 candidates on the 
 
 ---
 
-## 3. Finding 1 — the signal was a serialization artifact
+## 3. Finding 1 — the signal was a serialization artifact *(FIXED — `4ae1bdab`)*
 
 ### 3.1 The verifier's contract
 
@@ -167,7 +167,7 @@ is `str(answer["content"])` (`rlm/environments/local_repl.py:772`). So:
 The harness (S1–S5) never states this contract. The model infers it from the task
 prompt's own instruction and complies inconsistently. Nothing in the loop — not the
 digest, not the pattern block, not the proposer prompt — shows the verifier's
-extraction rule.
+extraction rule. *(FIXED — `7fcfa107`: the pattern block now carries `verifier_config`.)*
 
 ### 3.2 What the failures actually were
 
@@ -260,7 +260,7 @@ round's `promotions.jsonl` `rule.*.baseline_pass_count`) and draw the error bar.
 
 ---
 
-## 5. Finding 3 — the attributor was told the wrong question
+## 5. Finding 3 — the attributor was told the wrong question *(FIXED — `4ae1bdab`)*
 
 ### 5.1 The bug
 
@@ -313,7 +313,7 @@ that did not exist.
 
 ### 5.3 Two further attribution-integrity problems
 
-- **`failing_level=root` with zero sub-calls: 38 of 120 records (32%).** The taxonomy
+- *(FIXED — grounding reads `NO_RECURSION` off the tree; `run_experiment` now defaults the GraphWalks sub-verifier)* **`failing_level=root` with zero sub-calls: 38 of 120 records (32%).** The taxonomy
   defines `root` as "every sub-call returned a correct local result"; with no
   sub-calls it is a category error. `grounding.derive_failing_level` would return
   `NO_RECURSION` deterministically, but `level_grounded` is `False` on all 120 records,
@@ -335,7 +335,7 @@ flips, and the diffs after round 2 are churn, not trend.
 
 ---
 
-## 6. Finding 4 — the proposer could only reach the wrong surfaces
+## 6. Finding 4 — the proposer could only reach the wrong surfaces *(FIXED — taxonomy 3.1.0, `d74fcc95`)*
 
 `shrlm/optimization/proposal.py` states the constraint: *"already assigned to the ONE
 harness surface its mechanism implicates — you may not choose a different surface for
@@ -349,10 +349,10 @@ What the proposer saw per pattern (`_render_pattern_block`): signature, mechanis
 doc, support, `shared_symptoms`, truncated `verifier_evidence`, representative ids,
 current surface text. Two problems:
 
-- `shared_symptoms` was identical for every pattern in every round
+- *(FIXED — `answer_shape_symptoms`)* `shared_symptoms` was identical for every pattern in every round
   (`"median sub-calls per run: 0" … "no sub-calls issued at all in n/n runs"`). It
   carried no discriminating information.
-- `verifier_evidence` is truncated at 2,000 chars at render time. Gold sets run to
+- *(FIXED — `7fcfa107`)* `verifier_evidence` is truncated at 2,000 chars at render time. Gold sets run to
   181 nodes; the `expected '[…]'` list alone can exceed the cap, so for the largest
   instances the proposer never saw the `produced` side — the one string that shows the
   quotes.
@@ -369,7 +369,7 @@ addressable, above-floor patterns existed, not by the cap.
 
 ---
 
-## 7. Finding 5 — S8 helpers were never usable
+## 7. Finding 5 — S8 helpers were never usable *(FIXED — `7fcfa107`)*
 
 `rlm/environments/base_env.py:format_tools_for_prompt` renders a callable without a
 `description` as ``- `name`: A custom function``. The harness passes S8 helpers as
@@ -414,7 +414,7 @@ includes "or performed no meaningful decomposition at all") as a catch-all — 2
 
 ## 9. Finding 7 — model–harness incompatibilities the taxonomy cannot name
 
-### 9.1 Native tool-call leakage
+### 9.1 Native tool-call leakage *(FIXED — `9cc3742f`)*
 
 Kimi-K2.5 sometimes emits its function-calling tokens instead of a fenced block:
 
@@ -442,7 +442,7 @@ code block at all: 31, 107, 92, 64, 93 per round (of ~250–300).
 recover in a later turn; the aggregate pass rate of those runs (0.55) is not below the
 rest (0.48), so this is a hazard rather than the dominant cause — but it is the true
 cause in the trace the attributor mislabelled in §5.2, and the kind of concrete,
-reusable procedure an S10 skill exists to encode. S10 was unreachable.
+reusable procedure an S10 skill exists to encode. S10 was unreachable under taxonomy 3.0.0; under 3.1.0 it is an eligible surface for `repl_execution_fault`, `repl_contract_misuse`, `whole_input_subcall_collapse`, `iteration_budget_exhaustion`, and `other` — every mechanism this run produced.
 
 ### 9.3 Content filter
 
@@ -475,13 +475,13 @@ suppressed (`→ S8`, inert), and tool-call leakage (`→ S6`, never chosen).
 
 Ordered by evidence, not by effort.
 
-1. **Normalize the answer channel once, programmatically.** S9 `accept_answer`
+1. *(FIXED — `4ae1bdab`, at the verifier rather than S9)* **Normalize the answer channel once, programmatically.** S9 `accept_answer`
    already receives the produced string. Rewrite the last line to
    `Final Answer: [sorted, deduplicated, quote-stripped ids]`. Expected effect from
    §3.2: every harness in the table moves to ≈0.86–0.91 measured; the H0 → S4 delta
    disappears. Alternatively state the contract in S1. Either way the loop should start
    from a harness whose measured pass rate reflects capability.
-2. **Fix `extract_question`** to take the last `Operation:` block. One-line change;
+2. *(FIXED — `4ae1bdab`)* **Fix `extract_question`** to take the last `Operation:` block. One-line change;
    removes 41% of attribution text being about a phantom node.
 3. **Make the promotion decision statistically honest.** Options, cheapest first:
    report the re-measured baseline and a CI; set `tau_regression` to ≥ 1 SD (≈ 6–8
@@ -489,25 +489,25 @@ Ordered by evidence, not by effort.
    per-instance p ≈ 0.6 needs ≈ 16 reps to resolve a 10-point effect at 80% power
    per instance); or run the baseline and candidates in the same batch so provider
    drift is shared.
-4. **Ground `failing_level` from the tree.** `derive_failing_level` already returns
+4. *(FIXED)* **Ground `failing_level` from the tree.** `derive_failing_level` already returns
    `NO_RECURSION` for zero descendants; use it whenever the tree has no descendants,
    regardless of sub-verifier availability. Removes the 32% `root`-with-no-sub-calls
    split.
-5. **Let the proposer see the contract and the produced string.** Add the verifier's
+5. *(FIXED — `7fcfa107`)* **Let the proposer see the contract and the produced string.** Add the verifier's
    extraction rule to the pattern block; show `produced` before `expected` and
    truncate each side separately so a 181-node gold list cannot hide a 20-char
    produced string.
-6. **Fix `format_tools_for_prompt`** to render the helper's docstring, or have the
+6. *(FIXED — `7fcfa107`)* **Fix `format_tools_for_prompt`** to render the helper's docstring, or have the
    harness pass `{"tool": fn, "description": doc}`. Until then every S8 edit is inert
    and should be reported as such rather than validated at $5 each.
-7. **Decouple surface from mechanism, or map more mechanisms to more surfaces.**
+7. *(FIXED — taxonomy 3.1.0, `d74fcc95`)* **Decouple surface from mechanism, or map more mechanisms to more surfaces.**
    At minimum give `OTHER` a surface, let `repl_contract_misuse` reach S9, and let
    `iteration_budget_exhaustion` reach S1/S3 (where "emit a ```repl``` block, not a
    tool call" belongs).
-8. **Handle native function-calling.** Either disable it on the Kimi deployment
+8. *(FIXED — `9cc3742f`, response-side translation)* **Handle native function-calling.** Either disable it on the Kimi deployment
    (`tool_choice: "none"` / no tools declared) or detect `<|tool_call` in a response
    and re-prompt. This is a runner fix, not a harness edit.
-9. **Pick an environment where recursion is load-bearing.** GraphWalks-long
+9. *(PARTLY — `8ec2dc43` makes the starting harness configurable; see the addendum)* **Pick an environment where recursion is load-bearing.** GraphWalks-long
    (256k–1M chars) or OOLONG-Pairs at 262k tokens would at least produce sub-calls for
    the taxonomy to label. On the short split the "recursive" harness is a Python REPL
    with an unused function.
@@ -584,3 +584,63 @@ All from the on-disk artifacts; no re-execution.
 - **S8 advertisement**: `r01-c02-s8/heldin/round_00/runs/*.json` grep for
   `format_id_list` in the system prompt vs. `format_id_list(` in code.
 - **Cost**: `stage_usage.jsonl` summed by (`round_index`, `stage`).
+
+---
+
+## Addendum (2026-08-27): `H0*` alone does not recurse on GraphWalks-short
+
+Follow-up to §8 and §11 item 9. The loop's starting harness is now a config key
+(`[loop] initial_harness`, default `H0`; `configs/experiment_kimiK25.toml`
+selects `H0*`), and `tests/experiment/test_recursion_live.py` runs `H0*` —
+the shipped RLM prompt plus `ORCHESTRATOR_ADDENDUM` — against the four largest
+held-in instances (~110k chars). One live pass, Kimi-K2.5 thinking mode, per-run
+cap $0.20:
+
+| instance | chars | sub-calls | iterations | verdict | cost |
+|---|---:|---:|---:|---|---:|
+| bfs-a1c463dbfd91f84c | 110,363 | 0 | 5 | mixed_set_error | $0.014 |
+| bfs-e1b3ed79dbe72c0f | 110,363 | 0 | 31 | wrong_format | $0.123 |
+| parents-7cfd78c8d93d5bfc | 110,309 | 0 | 3 | pass | $0.007 |
+| bfs-2b1afb378791d043 | 110,363 | 0 | 4 | pass | $0.010 |
+
+Zero sub-calls on every instance. The addendum's own escape hatch — "if a
+Python keyword / regex search over `context` would already pin the answer …
+just read it directly" — is the path the model takes: an edge list parses with
+one regex and BFS is ten lines. Prompt text does not make this task recursive.
+The next lever is the runtime, not the prompt: S6 `max_prompt_chars` below the
+instance size (with the derived capacity sentence), or an environment whose
+context does not fit one REPL (GraphWalks-long, OOLONG-Pairs at 262k).
+
+---
+
+## Fixes landed (2026-08-27, branch `feat/experiments`)
+
+The items below from §11 are implemented; each links the commit and the test
+that pins it. Findings 1, 3, 4, 5 and §9.1 are closed at the source. Finding 2
+(promotion noise) is untouched.
+
+| §11 item | Change | Commit | Pinned by |
+|---|---|---|---|
+| 1 — serialization artifact | `GraphWalksVerifier` extraction: quote characters stripped from items; `Final Answer:` marker optional when the last line is a bracketed list. `EXTRACTION_RULE` is now `trailing-bracket-list;marker-optional;quotes-stripped`. Under the old rule 116 of the H0 baseline's 138 failures (84%) were correct sets. | `4ae1bdab` | `tests/environments/test_graphwalks.py::TestExtractionTolerance` |
+| 2 — `extract_question` | Takes the **last** operation line, not the first (the worked example). | `4ae1bdab` | `…::TestQuestionIsTheLastOperationLine` |
+| 5 — proposer sees the contract | Pattern block carries the bundle's `verifier_config`; evidence is `produced` before `expected` and bounded per entry. Proposer `PROMPT_VERSION` 1.4.0 → 1.5.0 (cache keys move). | `7fcfa107` | `tests/optimization/test_proposal.py::test_render_prompt_names_the_verifier_contract…`, `…bounds_each_evidence_entry_separately` |
+| 6 — `format_tools_for_prompt` | A callable's docstring first line is its advertised description; "A custom function" only when there is no docstring. | `7fcfa107` | `tests/repl/test_custom_tools.py::test_callable_docstring_is_the_description` |
+| 7 — mechanism→surface funnel | Taxonomy 3.1.0: `MECHANISM_SURFACES` gives every mechanism a set of eligible surfaces (primary unchanged, so `pattern.surface` and the analysis tables are stable); `other` is addressable on any surface; the proposer names the surface per candidate (`"surface"` field, validated against the eligible set; edit shape follows the chosen surface). `shared_symptoms` gains verifier-cause counts and produced-answer shape counts (quoted items, no bracket list, empty list). Proposer `PROMPT_VERSION` 1.6.0, `VALIDATOR_VERSION` 1.4.0. | `d74fcc95` | `tests/optimization/test_taxonomy.py::TestMechanismSurfaces`, `test_proposal.py::test_validate_candidate_spec_*surface*`, `test_clustering.py::TestAnswerShapeSymptoms` |
+| 4 — ground `failing_level` | `apply_sub_verifier` returns `NO_RECURSION`, grounded, for any tree with no descendants, sub-verifier or not; the attributor is no longer asked for a level it cannot answer. Root cause of the 0% grounding: `examples/run_experiment.py` never passed a sub-verifier, so `run_experiment` now defaults `GraphWalksSubVerifier()` alongside the default `GraphWalksVerifier()` (ablation: pass the verifier explicitly with `sub_verifier=None`). | (see git log) | `tests/optimization/test_grounding.py::…without_sub_verifier_is_grounded_no_recursion` |
+| 8 — native function-calling | `AzureFoundryClient` rewrites a leaked `functions.repl` call with a string `code` argument into a ```repl``` block (`translate_native_tool_calls`); any other leaked call is left verbatim. `tool_choice="none"` was not used: the Foundry `/openai/v1` route rejects unknown body parameters and no tools are declared, so the safe fix is on the response side. | `9cc3742f` | `tests/clients/test_azure_foundry.py::TestNativeToolCallTranslation` |
+| 9 — starting harness | `[loop] initial_harness` config key; Kimi config starts from `H0*`. See the addendum above for why that alone does not produce sub-calls. | `8ec2dc43` | `tests/experiment/test_config.py`, `tests/experiment/test_initial_harness.py` |
+
+What this changes for a re-run: the measured pass rate will now track the
+set-correct rate (§3.2, ≈0.86–0.91 for every harness in the table), so the
+loop starts from a signal with real headroom only where the model is actually
+wrong; the attributor is told the right question; the proposer can see what the
+verifier accepts and what the model produced; S8 helpers are visible to the
+model; and iteration-budget exhaustion from tool-call leakage should disappear.
+Every one of these moves the attribution and proposal cache keys, and the
+verifier change moves what a "pass" means, so a re-run needs a fresh
+`--out-dir` and is not comparable to `experiment_kimi/` on measured pass rate
+— compare on set-correct (Appendix C) instead.
+
+Still open, and the one that decides whether the loop can promote anything:
+finding 2 (a `tau=0` rule at v=4 rejects an identical candidate 72% of the
+time).
