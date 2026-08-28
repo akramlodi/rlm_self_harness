@@ -71,7 +71,7 @@ def test_pattern_block_renders_against_h0_star_empty_surfaces():
     pattern = make_pattern("whole_input_subcall_collapse")
     rendered, addressable = render_prompt([pattern], serialize_harness(H0_STAR), (), (), k=4)
     assert [index for index, _ in addressable] == [0]
-    assert "surface S2" in rendered
+    assert "eligible surfaces: S2" in rendered
     assert '"S2_decomposition_instruction": ""' in rendered
 
 

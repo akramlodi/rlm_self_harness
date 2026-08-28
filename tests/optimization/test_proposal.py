@@ -194,9 +194,44 @@ def test_validate_candidate_spec_rejects_out_of_range_index():
         validate_candidate_spec(edit_item(99, {"kind": "text", "new_text": "x"}), ALL_PATTERNS)
 
 
-def test_validate_candidate_spec_rejects_other_mechanism():
-    with pytest.raises(ProposalRejection, match="no editable surface"):
-        validate_candidate_spec(edit_item(6, {"kind": "text", "new_text": "x"}), ALL_PATTERNS)
+def test_validate_candidate_spec_accepts_other_on_any_surface():
+    # Taxonomy 3.1.0: OTHER is addressable; the proposer names the surface.
+    spec = validate_candidate_spec(
+        edit_item(6, {"kind": "text", "new_text": "x"}, surface="S3"), ALL_PATTERNS
+    )
+    assert spec.surface == "S3"
+
+
+def test_validate_candidate_spec_defaults_to_the_primary_surface():
+    spec = validate_candidate_spec(edit_item(0, {"kind": "text", "new_text": "x"}), ALL_PATTERNS)
+    assert spec.surface == "S4"  # skipped_verification's primary
+
+
+def test_validate_candidate_spec_accepts_an_eligible_alternate_surface():
+    # skipped_verification may also be addressed on S9 (answer middleware).
+    source = (
+        "def accept_answer(answer, repl_inventory):\n    return AnswerDecision.accept(answer)\n"
+    )
+    spec = validate_candidate_spec(
+        edit_item(0, {"kind": "code", "source": source}, surface="S9"), ALL_PATTERNS
+    )
+    assert spec.surface == "S9"
+    assert spec.edit["kind"] == "code"
+
+
+def test_validate_candidate_spec_rejects_a_surface_outside_the_eligible_set():
+    with pytest.raises(ProposalRejection, match="not eligible"):
+        validate_candidate_spec(
+            edit_item(0, {"kind": "text", "new_text": "x"}, surface="S2"), ALL_PATTERNS
+        )
+
+
+def test_validate_candidate_spec_edit_shape_follows_the_chosen_surface():
+    # S9 chosen but a text edit supplied: rejected on shape, not on surface.
+    with pytest.raises(ProposalRejection, match="needs edit.kind='code'"):
+        validate_candidate_spec(
+            edit_item(0, {"kind": "text", "new_text": "x"}, surface="S9"), ALL_PATTERNS
+        )
 
 
 def test_validate_candidate_spec_rejects_wrong_edit_kind():
@@ -344,9 +379,11 @@ def test_render_prompt_includes_surfaces_patterns_and_fallbacks():
     assert "skipped_verification" in rendered
     assert "no passing runs" in rendered.lower()
     assert "no prior validation rounds" in rendered.lower()
-    # OTHER mechanism must never be offered as an addressable index; the S10
-    # pattern (unconsulted_procedure) must be.
-    assert [index for index, _ in addressable] == [0, 1, 2, 3, 4, 5]
+    # Taxonomy 3.1.0: every recognized mechanism is addressable, OTHER included,
+    # and each pattern advertises its eligible surfaces with the primary first.
+    assert [index for index, _ in addressable] == [0, 1, 2, 3, 4, 5, 6]
+    assert "eligible surfaces: S4" in rendered
+    assert "-- primary" in rendered
 
 
 def test_render_prompt_passing_and_history_blocks():
@@ -421,7 +458,8 @@ def test_propose_round_writes_every_addressable_kind(tmp_path):
     )
     assert result.materialization_failures == []
     assert {w.surface for w in result.written} == {"S4", "S6", "S7", "S9"}
-    assert result.skipped_patterns == [4, 5]  # the S8 and S10 patterns were never proposed for
+    # The S8, S10, and OTHER patterns were addressable and never proposed for.
+    assert result.skipped_patterns == [4, 5, 6]
 
     loaded, rejections = load_candidates(tmp_path / "proposals", H0)
     assert rejections == [], rejections
@@ -931,7 +969,9 @@ def test_s10_inventory_line_names_all_entries_past_the_truncation_point():
 
 
 def test_skills_pedagogy_only_rendered_when_an_s10_pattern_is_addressable():
-    no_s10 = [PATTERN_TEXT, PATTERN_POLICY, PATTERN_OTHER]
+    # PATTERN_TEXT (skipped_verification -> S4, S9, S10) and PATTERN_OTHER both
+    # list S10 under 3.1.0; only lossy_aggregation's set (S9, S3, S4) does not.
+    no_s10 = [PATTERN_CODE_S9]
     rendered, _ = render_prompt(no_s10, serialize_harness(H0), (), (), k=4)
     assert "procedural anchor" not in rendered
     assert '"kind": "skills"' in rendered  # the compact format bullet stays
