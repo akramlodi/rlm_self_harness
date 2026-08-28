@@ -85,7 +85,10 @@ def parse_tool_entry(name: str, entry: Any) -> ToolInfo:
         description = entry.get("description")
         if description is not None and isinstance(description, str):
             return ToolInfo(name=name, value=value, description=description)
-        return ToolInfo(name=name, value=value, description=_docstring_summary(value))
+        # An explicit but non-string description is dropped, as before: the
+        # author said something and it was unusable. Only the bare-callable
+        # form below reads the docstring.
+        return ToolInfo(name=name, value=value, description=None)
     # No explicit description: a callable's docstring is the description it
     # was written with. Rendering "A custom function" instead left every S8
     # helper the Self-Harness proposer wrote unexplained to the model, which
