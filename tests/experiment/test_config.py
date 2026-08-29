@@ -165,6 +165,47 @@ def test_smoke_may_override_validation_workers(tmp_path: Path) -> None:
     assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
 
 
+def test_environment_selector_defaults_to_graphwalks_and_is_identity_covered(
+    tmp_path: Path,
+) -> None:
+    config = load_config()
+    assert config.loop.environment == "graphwalks"
+    switched = dataclasses.replace(config.loop, environment="oolong_synth")
+    assert identity_hash(dataclasses.replace(config, loop=switched)) != identity_hash(config)
+
+
+def test_unknown_environment_selector_is_rejected(tmp_path: Path) -> None:
+    text = shipped_text().replace(
+        'environment = "graphwalks"', 'environment = "oolong_pairs"'
+    )
+    with pytest.raises(ValueError, match=r"\[loop\] environment must be one of"):
+        load_config(path=write_config(tmp_path, text))
+
+
+def test_oolong_environment_table_parses() -> None:
+    oolong = load_config("full", path=Path("configs/experiment_oolong.toml")).environments.oolong
+    assert oolong.synth.dataset_repo == "oolongbench/oolong-synth"
+    assert 131072 in oolong.synth.context_lengths
+    assert oolong.real.config_name == "dnd"
+    assert oolong.real.n_check == 20
+
+
+def test_real_check_cadence_is_identity_exempt() -> None:
+    config = load_config()
+    assert config.operational.real_check_every_n_rounds == 0
+    base = identity_hash(config)
+    with_check = dataclasses.replace(config.operational, real_check_every_n_rounds=3)
+    assert identity_hash(dataclasses.replace(config, operational=with_check)) == base
+
+
+def test_real_check_cadence_must_be_a_non_negative_integer() -> None:
+    operational = load_config().operational
+    with pytest.raises(ValueError, match="real_check_every_n_rounds"):
+        dataclasses.replace(operational, real_check_every_n_rounds=-1)
+    with pytest.raises(ValueError, match="real_check_every_n_rounds"):
+        dataclasses.replace(operational, real_check_every_n_rounds=cast(int, 1.5))
+
+
 def test_validation_run_workers_defaults_to_one_and_is_identity_exempt() -> None:
     """Run-level fan-out changes wall clock and request rate, never behavior.
 

@@ -27,6 +27,7 @@ import rlm.core.rlm as rlm_module
 import shrlm.experiment.analysis_io as analysis_io_module
 import shrlm.experiment.incumbent_quality as incumbent_quality_module
 import shrlm.experiment.orchestrator as orchestrator_module
+from shrlm.environments.oolong import OolongSubVerifier, OolongVerifier
 from shrlm.experiment.analysis_io import (
     ANALYSIS_DIR,
     PROVENANCE_FILENAME,
@@ -51,8 +52,10 @@ from shrlm.experiment.orchestrator import (
     EVIDENCE_MARKER_FILENAME,
     FROZEN_DIR,
     FROZEN_HARNESS_FILENAME,
+    OOLONG_SYNTH_VERIFIER_FACTORY,
     POST_ROUND_BATCH_TOOL,
     PROPOSALS_MARKER_FILENAME,
+    REAL_CHECK_DIR,
     ROUND_MARKER_FILENAME,
     STOP_MAX_ROUNDS,
     STOP_PATIENCE,
@@ -61,6 +64,7 @@ from shrlm.experiment.orchestrator import (
     MiningBudgetExceededError,
     check_identity,
     experiment_round_dir,
+    resolve_env_binding,
     run_experiment,
 )
 from shrlm.experiment.pattern_frequency_diff import BUNDLES_FILENAME
@@ -207,6 +211,25 @@ context_length_long = 262144
 max_scan = 100
 n_short = 1
 n_long = 1
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "rev-oolong-synth"
+subsets = []
+task_groups = ["counting", "user", "timeline"]
+context_lengths = [1024, 4096]
+max_scan = 100
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "toy_dnd"
+split = "test"
+dataset_revision = "rev-oolong-real"
+question_types = []
+episode_counts = [1, 2]
+max_scan = 100
+n_check = 2
 
 [backends.runner]
 backend = "openai"
@@ -1505,3 +1528,136 @@ class TestPostRoundAnalysisOnResume:
         assert len(refreshed) == 2
         provenance = json.loads((refreshed[-1] / PROVENANCE_FILENAME).read_text())
         assert provenance["rounds"] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# OOLONG-synth as the loop environment; the non-gated OOLONG-real check
+# ---------------------------------------------------------------------------
+
+
+def oolong_real_fake_loader(
+    config: ExperimentConfig, length: str, limit: int, seed: int
+) -> list[dict[str, Any]]:
+    """Fake OOLONG-real check instances -- shaped so OolongVerifier("real") can
+    grade them (answer_kind / answer_raw), unlike the generic fake_loader."""
+    return [
+        {
+            "id": f"oolong-real-{index}",
+            "question": "Total number of rolls in this episode?",
+            "prompt": f"episode transcript {index}",
+            "answer_kind": "numeric",
+            "answer_raw": "[2]",
+            "question_type": "singledoc_rolls",
+            "n_episodes": 1,
+        }
+        for index in range(limit)
+    ]
+
+
+def _oolong_config(tmp_path: Path, *, real_check: int = 0, t: int = 1) -> ExperimentConfig:
+    cfg = make_config(tmp_path, t=t)
+    return replace(
+        cfg,
+        loop=replace(cfg.loop, environment="oolong_synth"),
+        operational=replace(cfg.operational, real_check_every_n_rounds=real_check),
+    )
+
+
+class _FakeUsageSummary:
+    total_input_tokens = 5
+    total_output_tokens = 5
+    total_cost = 0.0001
+
+
+class _FakeCompletion:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.usage_summary = _FakeUsageSummary()
+
+
+class _FakeOutcome:
+    def __init__(self, completion: _FakeCompletion, verdict: Any) -> None:
+        self.completion = completion
+        self.verdict = verdict
+        self.usage_lower_bound = False
+
+
+def _fake_real_execute_run(
+    harnessed: Any, instance: dict[str, Any], *, model_name: str, verifier: Any = None
+) -> _FakeOutcome:
+    response = "FINAL: 2"  # matches the fake loader's answer_raw "[2]"
+    completion = _FakeCompletion(response)
+    return _FakeOutcome(completion, verifier(instance, response) if verifier else None)
+
+
+class TestOolongEnvironment:
+    def test_resolve_env_binding_selects_oolong(self, tmp_path):
+        binding = resolve_env_binding(_oolong_config(tmp_path))
+        assert (binding.name, binding.length) == ("oolong_synth", "short")
+        assert isinstance(binding.verifier, OolongVerifier) and binding.verifier.task_set == "synth"
+        assert isinstance(binding.sub_verifier, OolongSubVerifier)
+        assert binding.verifier_factory == OOLONG_SYNTH_VERIFIER_FACTORY
+
+    def test_offline_round_mines_and_validates_oolong_synth_only(self, tmp_path, monkeypatch):
+        config = _oolong_config(tmp_path, real_check=0, t=1)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL)
+        result = run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders={"oolong_synth": fake_loader("oolong_synth")},
+        )
+        splits = out / SPLITS_DIR
+        assert (splits / split_file_name("oolong_synth", "short", "held_in")).exists()
+        assert not (splits / split_file_name("graphwalks", "short", "held_in")).exists()
+        assert result.frozen_path.exists()
+
+    def test_real_check_writes_summary_without_touching_promotion(self, tmp_path, monkeypatch):
+        config = _oolong_config(tmp_path, real_check=1, t=1)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL)
+        monkeypatch.setattr(orchestrator_module, "build_round_rlm", lambda round_config: object())
+        monkeypatch.setattr(orchestrator_module, "execute_run", _fake_real_execute_run)
+        run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders={
+                "oolong_synth": fake_loader("oolong_synth"),
+                "oolong_real": oolong_real_fake_loader,
+            },
+        )
+        round_summary = out / "opt" / REAL_CHECK_DIR / "round_01" / "summary.json"
+        final_summary = out / "opt" / REAL_CHECK_DIR / "final" / "summary.json"
+        assert round_summary.exists() and final_summary.exists()
+        payload = json.loads(round_summary.read_text())
+        assert payload["per_answer_kind"]["numeric"]["n"] >= 1
+        assert payload["pass_rate"] == 1.0
+        assert payload["mean_score"] == 1.0
+        # Zero candidates -> no ledger, no promotion; the check touched none of it.
+        assert not validation_round_path(out, 1).exists()
+        marker = json.loads((experiment_round_dir(out, 1) / ROUND_MARKER_FILENAME).read_text())
+        assert marker["promoted"] is False and marker["has_ledger"] is False
+        # ...but it IS metered.
+        stages = {record["stage"] for record in read_jsonl(out / STAGE_USAGE_FILE)}
+        assert "real_check" in stages
+
+    def test_real_check_absent_when_disabled(self, tmp_path, monkeypatch):
+        config = _oolong_config(tmp_path, real_check=0, t=1)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL)
+        run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders={"oolong_synth": fake_loader("oolong_synth")},
+        )
+        assert not (out / "opt" / REAL_CHECK_DIR).exists()
+        assert not (out / SPLITS_DIR / split_file_name("oolong_real", "short", "check")).exists()

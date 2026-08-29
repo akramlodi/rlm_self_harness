@@ -66,6 +66,7 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.environments.graphwalks import GraphWalksVerifier
+from shrlm.environments.oolong import OolongVerifier
 from shrlm.environments.oolong_pairs import OolongPairsVerifier
 from shrlm.experiment.config import (
     GOVERNED_ROUND_KEYS,
@@ -204,6 +205,8 @@ DEFAULT_CONDITIONS: tuple[str, ...] = (
 DEFAULT_VERIFIERS: dict[str, Verifier] = {
     "graphwalks": GraphWalksVerifier(),
     "oolong_pairs": OolongPairsVerifier(),
+    "oolong_synth": OolongVerifier(task_set="synth"),
+    "oolong_real": OolongVerifier(task_set="real"),
 }
 
 

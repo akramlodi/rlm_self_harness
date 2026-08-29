@@ -1,33 +1,44 @@
 # =============================================================================
-# configs/experiment.toml -- the single source of truth for every Self-Harness
-# experiment parameter (docs/plans/experiments_draft.md, section 3.10).
+# configs/experiment_oolong.toml -- the OOLONG profile of the Self-Harness
+# experiment. Identical machinery to configs/experiment.toml; the loop mines
+# and validates OOLONG-synth instead of GraphWalks ([loop] environment =
+# "oolong_synth"), and OOLONG-real is run every N rounds as a generalization
+# check that never feeds the promotion gate.
 #
-# Edit values here; scaffold code never hardcodes an experiment parameter (R1).
-# Load with shrlm.experiment.config.load_config(profile="full" | "smoke").
-# The [smoke] table at the bottom overrides scale counts only (instance
-# counts, repetitions, candidate width, rounds, spend caps); every other
-# semantic is identical between profiles (R2).
+# Run separately from GraphWalks -- its own --out-dir, its own identity:
+#   uv run python examples/run_experiment.py \
+#       --config configs/experiment_oolong.toml --out-dir ./experiment_oolong
+#
+# Load with load_config(profile="full" | "smoke", path=".../experiment_oolong.toml").
 # =============================================================================
 
 [decoding]
-# Qwen3-30B-A3B-Instruct-2507 model-card defaults (non-thinking mode), applied
-# identically to root and sub-calls per the section 3.0 invariant. top_k and
-# min_p are routed through sampling_args["extra_body"]; max_output_tokens is
-# passed as sampling_args["max_tokens"] -- the OpenAI client itself renames it
-# to max_completion_tokens, so the rename must never happen in config code.
-temperature = 0.7
-top_p = 0.8
-top_k = 20
-min_p = 0.0
-max_output_tokens = 4096 # pilot tuning range 2048-8192 (section 3.10 row 3)
+# Kimi-K2.5 model-card defaults (moonshotai/Kimi-K2.5), applied
+# identically to root and sub-calls per the section 3.0 invariant. The card
+# specifies no top_k/min_p, and the Foundry /openai/v1 route REJECTS unknown
+# extra_body keys with 400 unrecognized_request_argument (verified against the
+# live deployment 2026-08-25), so both stay unset (omitted from the request
+# entirely). max_output_tokens is passed as sampling_args["max_tokens"]
+# -- the OpenAI client itself renames it to max_completion_tokens, so the
+# rename must never happen in config code.
+temperature = 0.6
+top_p = 0.95
+# Top of the pilot tuning range 2048-8192 (section 3.10 row 3). Raised from
+# 4096 on 2026-08-25 alongside thinking = true: reasoning tokens count against
+# this budget, so an instant-mode ceiling would let a hard instance spend the
+# allowance on reasoning and truncate the answer.
+max_output_tokens = 8192
 
 [splits]
-# Source-environment (GraphWalks) split definitions, section 3.1.
+# OOLONG-synth split definitions. The held_in / held_out / test sets are a
+# seeded partition of ONE length-diverse pool (see [environments.oolong.synth]
+# context_lengths), so both mined and validated instances span the "solvable
+# without decomposing" and "aggregation breaks down" regimes.
 n_in = 24 # held-in: weakness mining + one arm of validation
 n_ho = 40 # held-out: validation only, never mined
-test_short = 40 # source-short test, untouched until the harness is frozen
-test_long = 150 # source-long test, untouched until the harness is frozen
-seed = 0 # seeded partition of the source-short pool
+test_short = 40 # OOLONG-synth internal test, untouched until the harness is frozen
+test_long = 40 # unused when environment = "oolong_synth" (no separate long split); kept: [splits] key is mandatory
+seed = 0 # seeded partition of the OOLONG-synth pool
 
 [loop]
 # Optimization-loop counts, section 3.2.
@@ -36,19 +47,12 @@ v = 4 # validation repetitions per instance per subject
 k = 4 # candidate edits proposed per round
 # Set to 3 for the 2026-08-23 Qwen comparison run (was 15, section 3.2). t is
 # an identity key (R3), so extending the run later needs a fresh out-dir.
-t = 3 # maximum optimization rounds
+t = 5 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
-# Which environment the loop mines and validates: "graphwalks" (source, the
-# shipped default) or "oolong_synth". Identity key (R3): a run against a
-# different environment gets a distinct identity and its own --out-dir. See
-# configs/experiment_oolong.toml for the OOLONG profile.
-environment = "graphwalks"
-# Registry harness the loop starts from: "H0" (the mechanism floor, S2-S5 one
-# line each, no orchestrator addendum) or "H0*" (the shipped RLM system prompt
-# with ORCHESTRATOR_ADDENDUM appended at runtime; S2-S5 start empty). Identity
-# key (R3): a different value needs a fresh --out-dir. Evaluation's B1
-# condition is always H0 regardless of this value.
-initial_harness = "H0"
+environment = "oolong_synth" # this profile mines/validates OOLONG-synth (identity key)
+# Start from the shipped reference prompt plus the orchestrator addendum, so
+# the harness-comparison machinery (H0 / H0*) works unmodified for OOLONG too.
+initial_harness = "H0*"
 
 [promotion]
 # Preregistered promotion rule, sections 3.2 and 3.10 rows 6-7. Zero
@@ -119,51 +123,49 @@ n_long = 40 # target-long test size; the upstream ceiling, not a choice:
 # the coverage gate in load_oolong_pairs before any spend.
 
 [environments.oolong]
-# OOLONG (arXiv:2511.02817). Two task sets: `synth` is the mining/validation
-# pool when [loop] environment = "oolong_synth"; `real` is a periodic
-# generalization check that is run but NEVER fed into the promotion gate
-# (cadence: [operational] real_check_every_n_rounds). Both sub-tables are
-# inert when environment = "graphwalks" (the shipped default) -- they are
-# present so the config schema stays uniform across environments.
+# OOLONG (arXiv:2511.02817). `synth` is the mining/validation pool when
+# [loop] environment = "oolong_synth"; `real` is a periodic generalization
+# check that is run but NEVER fed into the promotion gate (cadence:
+# [operational] real_check_every_n_rounds). Both sub-tables are inert when
+# environment = "graphwalks" -- present so the schema is uniform.
 
 [environments.oolong.synth]
 dataset_repo = "oolongbench/oolong-synth"
 split = "test" # OOLONG-synth's own split carrying the full 1K-128K power-of-two range
 dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-29
 subsets = [] # source ICL datasets to draw from; [] = all (spam, trec_coarse, imdb, ...)
-task_groups = ["counting", "user", "timeline"] # the three OOLONG-synth question families
-# Length diversity is REQUIRED, not optional: this pool must span lengths the
-# model can solve without decomposing (1K-4K) AND lengths where aggregation
-# genuinely breaks down (>=64K; published models score <50% even at 128K). The
-# loader draws a balanced share per length so the taxonomy sees both regimes.
+task_groups = ["counting", "user", "timeline"]
+# Length diversity is REQUIRED: this pool must span lengths the model can solve
+# without decomposing (1K-4K) AND lengths where aggregation breaks down (>=64K;
+# published models <50% at 128K). The loader draws a balanced share per length.
 context_lengths = [1024, 4096, 16384, 65536, 131072]
-max_scan = 40000 # cap on raw rows streamed while collecting the length-diverse pool
+max_scan = 40000
 
 [environments.oolong.real]
 dataset_repo = "oolongbench/oolong-real"
 config_name = "dnd" # Critical Role D&D transcripts ("toy_dnd" is the tiny smoke variant)
 split = "test"
 dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb" # HF main, pinned 2026-08-29
-question_types = [] # [] = all (singledoc_rolls, singledoc_spells, multidoc_rolls)
-episode_counts = [1, 2, 3] # transcript counts to spread the check across (length diversity)
-max_scan = 40000 # cap on raw rows streamed while collecting the check set
-n_check = 20 # size of the periodic generalization set
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
 
-# Shipped roles run OpenRouter Qwen3-30B-A3B-Instruct-2507 (the 2026-08-23
-# comparison run); azure_foundry / Kimi-K2.5 is the alternate backbone. To
-# switch back, edit these three role tables plus [decoding] and [pricing].
+# All three roles run azure_foundry / Kimi-K2.5 in its default thinking mode.
+# To switch to the OpenRouter Qwen3-30B-A3B-Instruct-2507 comparison backbone,
+# edit these three role tables plus [decoding] and [pricing].
 
 [backends.runner]
-backend = "openrouter"
-model = "qwen/qwen3-30b-a3b-instruct-2507"
+backend = "azure_foundry"
+model = "Kimi-K2.5" # must equal YOUR Foundry deployment name (catalog default: Kimi-K2.5)
 
 [backends.attributor]
-backend = "openrouter"
-model = "qwen/qwen3-30b-a3b-instruct-2507"
+backend = "azure_foundry"
+model = "Kimi-K2.5" # must equal YOUR Foundry deployment name (catalog default: Kimi-K2.5)
 
 [backends.proposer]
-backend = "openrouter"
-model = "qwen/qwen3-30b-a3b-instruct-2507"
+backend = "azure_foundry"
+model = "Kimi-K2.5" # must equal YOUR Foundry deployment name (catalog default: Kimi-K2.5)
 
 [backends.openrouter]
 # Provider routing, sent as sampling_args["extra_body"]["provider"] for
@@ -174,23 +176,38 @@ provider_order = []
 allow_fallbacks = true
 
 [backends.azure_foundry]
-# Optional provider table for azure_foundry-backed roles, kept so the
-# Kimi-K2.5 path stays selectable (unused while no role selects it; the
-# loader allows its presence). thinking = false is sent as
-# sampling_args["extra_body"]["chat_template_kwargs"] = {"thinking": false}:
-# Kimi-K2.5 runs in instant (non-thinking) mode.
-thinking = false
+# Provider table for azure_foundry-backed roles. All three roles select
+# azure_foundry in this config, so the loader requires this table and its
+# value is live. thinking = true leaves the request unmodified,
+# so Kimi-K2.5 runs in its default thinking mode -- the model as its card
+# intends it, which is what the paper measures. Suppressing reasoning would
+# ablate core model functionality to save money and make the measurement a
+# study of a crippled configuration; the budget is the knob for cost, not this.
+#
+# Cost consequence, measured against this deployment 2026-08-25 on a trivial
+# 6-edge prompt: 1,242 completion tokens with thinking vs 174 with
+# reasoning_effort="none" (~7x). Reasoning tokens bill at the output rate, so
+# caps.max_budget and decoding.max_output_tokens must be sized for it.
+#
+# Do NOT set this to false against Azure: the false branch emits
+# extra_body["chat_template_kwargs"], which the Foundry /openai/v1 route
+# rejects with 400 unrecognized_request_argument (verified 2026-08-25). The
+# route's working instant-mode switch is reasoning_effort="none".
+thinking = true
 
 [pricing.promo]
-# OpenRouter promotional rate for qwen/qwen3-30b-a3b-instruct-2507, USD per
-# 1M tokens (read 2026-08-12; refresh before the main run).
-input_per_million = 0.08
-output_per_million = 0.29
+# Azure AI Foundry pay-as-you-go rate for Kimi-K2.5 (Global Standard), USD per
+# 1M tokens (catalog + aggregators, 2026-08). Azure has a single tier, so promo
+# deliberately equals list. Azure returns no per-response cost: the client
+# SYNTHESIZES cost from token counts x list_price, so these numbers arm the
+# spend breaker -- verify them in the portal before any live spend.
+input_per_million = 0.60
+output_per_million = 3.00
 
 [pricing.list_price]
-# Non-promotional list rate, same units and provenance.
-input_per_million = 0.10
-output_per_million = 0.30
+# Same single Azure tier; this is the table cost synthesis reads.
+input_per_million = 0.60
+output_per_million = 3.00
 
 [[gpu_scenarios]]
 name = "h100_sxm_rented"
@@ -234,22 +251,14 @@ long = 450.0
 
 [report]
 p_merge = 0.5 # assumed fraction of rounds ending in a promotion + merge re-evaluation
-eval_conditions = 4 # B1/H0, H0*, lambda-RLM, SH-RLM: full fixed-weight grid (section 3.5)
+eval_conditions = 3 # B1, H1, SH-RLM: the full-experiment evaluation grid (section 3.5)
 
 [operational]
 loader_timeout_seconds = 120.0
-attribution_cache_path = ".cache/shrlm/attribution.jsonl"
-proposal_cache_path = ".cache/shrlm/proposals.jsonl"
+attribution_cache_path = ".cache/shrlm/attribution_oolong.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_oolong.jsonl"
 eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
-# How many validation subjects (baseline + candidates) evaluate concurrently,
-# each in its own child process (python -m shrlm.optimization.subject_worker).
-# 1 = the sequential in-process path. Wall clock and peak request rate only:
-# every subject keeps its own breaker, hard deadline, and resumable manifests,
-# and worst-case spend is unchanged (same run count, same caps), so this key is
-# identity-exempt and may change under an existing out-dir. Above 1 each subject
-# directory also carries worker_request.json, worker.log, and worker_result.json. The full profile's
-# 5 subjects (1 + k) make 5 the useful ceiling.
-validation_workers = 1
+validation_workers = 5
 
 # How many of ONE subject's runs execute concurrently, each in its own child
 # process (python -m shrlm.optimization.run_worker). 1 = the sequential
@@ -274,15 +283,20 @@ validation_workers = 1
 # NOTE: 1 is a placeholder, not a measured recommendation. The plan's U8
 # measurement -- which spends real money -- chooses the shipped value and
 # supplies the pass-rate evidence that concurrency did not move the results.
-validation_run_workers = 1
+# Lowered 4 -> 3 on 2026-08-26. At 4, a round with k=4 candidates runs 5
+# subjects x 4 = 20-25 concurrent requests against one Azure deployment, and
+# the 20-attempt rate-limit backoff saturated: retry depth sat pinned at 19/20
+# and 15 runs died of exhausted 429s (0.6% of 2,553). At 3 the ceiling is 15
+# in flight. Identity-exempt, so this changes under an existing --out-dir.
+validation_run_workers = 3
 
-# OOLONG-real generalization-check cadence, in executed rounds. 0 disables it
-# (the shipped default -- the source experiment is GraphWalks). N > 0 runs the
-# check after every Nth executed round plus once for the final incumbent; it
+# OOLONG-real generalization-check cadence in executed rounds. This profile
+# runs it after every 2nd executed round plus once for the final incumbent. It
 # evaluates only the incumbent, is metered under stage "real_check", and NEVER
-# feeds tau_regression/tau_improvement or the promotion ledger. Identity-exempt
-# like the worker counts. Ignored when [loop] environment = "graphwalks".
-real_check_every_n_rounds = 0
+# feeds tau_regression/tau_improvement or the promotion ledger -- real
+# transcripts are less cleanly decomposable and would add a second uncontrolled
+# noise source on top of the gate's known sensitivity. Identity-exempt.
+real_check_every_n_rounds = 2
 
 
 # -----------------------------------------------------------------------------
@@ -309,7 +323,15 @@ candidate_budget = 3.0
 
 [smoke.operational]
 eval_repetitions = 1
+real_check_every_n_rounds = 0 # smoke never spends on the OOLONG-real check
 
 [smoke.environments.oolong_pairs]
 n_short = 4
 n_long = 2
+
+[smoke.environments.oolong.synth]
+max_scan = 2000
+
+[smoke.environments.oolong.real]
+max_scan = 2000
+n_check = 4

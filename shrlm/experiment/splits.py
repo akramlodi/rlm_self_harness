@@ -38,6 +38,10 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.environments.graphwalks import load_graphwalks
+from shrlm.environments.oolong import (
+    load_oolong_real_from_config,
+    load_oolong_synth_from_config,
+)
 from shrlm.environments.oolong_pairs import load_oolong_pairs_from_config
 from shrlm.experiment.config import ExperimentConfig
 from shrlm.experiment.errors import ExperimentError
@@ -98,9 +102,32 @@ def load_oolong_pairs_split(
     return load_oolong_pairs_from_config(env, n=limit, seed=seed, context_lengths=(context_length,))
 
 
+def load_oolong_synth_split(
+    config: ExperimentConfig, length: str, limit: int, seed: int
+) -> list[dict[str, Any]]:
+    """OOLONG-synth loader wiring. Only the ``short`` length is used: the
+    held_in / held_out / test partition is one length-diverse pool (the loader
+    draws a balanced share per ``context_lengths`` bucket), so there is no
+    separate long split to route."""
+    if length != "short":
+        raise ValueError(f"oolong_synth has only a 'short' pool; got length {length!r}")
+    return load_oolong_synth_from_config(config, n=limit, seed=seed)
+
+
+def load_oolong_real_split(
+    config: ExperimentConfig, length: str, limit: int, seed: int
+) -> list[dict[str, Any]]:
+    """OOLONG-real loader wiring for the periodic generalization check set."""
+    if length != "short":
+        raise ValueError(f"oolong_real has only a 'short' check set; got length {length!r}")
+    return load_oolong_real_from_config(config, n=limit, seed=seed)
+
+
 DEFAULT_LOADERS: dict[str, LoaderFn] = {
     "graphwalks": load_graphwalks_split,
     "oolong_pairs": load_oolong_pairs_split,
+    "oolong_synth": load_oolong_synth_split,
+    "oolong_real": load_oolong_real_split,
 }
 
 
@@ -109,19 +136,48 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
 
     Role order within a length is the partition order: the seeded sample is
     sliced sequentially, so held-in comes first, then held-out, then test.
+
+    The plan holds only the environments a run actually uses:
+    ``loop.environment == "graphwalks"`` (the default) materializes GraphWalks
+    (the mined/validated source) plus OOLONG-Pairs (evaluation-only), exactly as
+    before; ``"oolong_synth"`` materializes the OOLONG-synth pool and -- when
+    ``operational.real_check_every_n_rounds > 0`` -- the OOLONG-real check set,
+    and nothing else. ``materialize_splits`` skips any registered loader absent
+    from the plan, so an OOLONG run never touches the GraphWalks dataset.
     """
     splits = config.splits
-    oolong = config.environments.oolong_pairs
-    return {
-        "graphwalks": {
-            "short": {"held_in": splits.n_in, "held_out": splits.n_ho, "test": splits.test_short},
-            "long": {"test": splits.test_long},
-        },
-        "oolong_pairs": {
-            "short": {"test": oolong.n_short},
-            "long": {"test": oolong.n_long},
-        },
-    }
+    if config.loop.environment == "graphwalks":
+        oolong_pairs = config.environments.oolong_pairs
+        return {
+            "graphwalks": {
+                "short": {
+                    "held_in": splits.n_in,
+                    "held_out": splits.n_ho,
+                    "test": splits.test_short,
+                },
+                "long": {"test": splits.test_long},
+            },
+            "oolong_pairs": {
+                "short": {"test": oolong_pairs.n_short},
+                "long": {"test": oolong_pairs.n_long},
+            },
+        }
+    if config.loop.environment == "oolong_synth":
+        plan: dict[str, dict[str, dict[str, int]]] = {
+            "oolong_synth": {
+                "short": {
+                    "held_in": splits.n_in,
+                    "held_out": splits.n_ho,
+                    "test": splits.test_short,
+                },
+            },
+        }
+        if config.operational.real_check_every_n_rounds > 0:
+            plan["oolong_real"] = {
+                "short": {"check": config.environments.oolong.real.n_check},
+            }
+        return plan
+    raise ValueError(f"unsupported loop.environment {config.loop.environment!r} in split_plan")
 
 
 def split_file_name(environment: str, length: str, role: str) -> str:
@@ -133,7 +189,15 @@ def sha256_text(content: str) -> str:
 
 
 def dataset_revision_for(config: ExperimentConfig, environment: str) -> str:
-    """The configured dataset revision pin for one environment."""
+    """The configured dataset revision pin for one environment.
+
+    ``oolong_synth`` / ``oolong_real`` are sub-tables of ``environments.oolong``
+    rather than top-level attributes, so they are resolved explicitly.
+    """
+    if environment == "oolong_synth":
+        return str(config.environments.oolong.synth.dataset_revision)
+    if environment == "oolong_real":
+        return str(config.environments.oolong.real.dataset_revision)
     if not hasattr(config.environments, environment):
         raise ValueError(
             f"unknown environment {environment!r} in loaders; the config defines "
@@ -262,6 +326,13 @@ def materialize_splits(
         )
 
     for environment in sorted(loaders):
+        if environment not in plan and environment in DEFAULT_LOADERS:
+            # A recognized loader the selected ``loop.environment`` does not use
+            # (e.g. graphwalks on an OOLONG run). Skip it entirely -- its
+            # dataset is never downloaded and no split file is written. An
+            # unrecognized name still falls through to dataset_revision_for,
+            # which raises "unknown environment".
+            continue
         revision = dataset_revision_for(config, environment)
         recorded = manifest["environments"].get(environment)
         if recorded is not None:

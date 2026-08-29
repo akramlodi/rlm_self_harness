@@ -126,8 +126,12 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
         "operational.eval_repetitions",
         "operational.validation_workers",
         "operational.validation_run_workers",
+        "operational.real_check_every_n_rounds",
         "environments.oolong_pairs.n_short",
         "environments.oolong_pairs.n_long",
+        "environments.oolong.synth.max_scan",
+        "environments.oolong.real.max_scan",
+        "environments.oolong.real.n_check",
     }
 )
 
@@ -187,6 +191,12 @@ class LoopConfig:
     t: int
     patience: int
     initial_harness: str = "H0"
+    # Which environment the loop mines and validates: ``graphwalks`` (default,
+    # unchanged) or ``oolong_synth``. Identity key like the counts -- which
+    # environment round 1 mines decides every run that lands on disk -- so a run
+    # against a different environment gets a distinct experiment identity and
+    # its own out-dir. ``load_config`` validates it before any spend.
+    environment: str = "graphwalks"
 
 
 @dataclass(frozen=True)
@@ -251,9 +261,50 @@ class OolongPairsConfig:
 
 
 @dataclass(frozen=True)
+class OolongSynthConfig:
+    """OOLONG-synth: the mining/validation pool when ``loop.environment ==
+    "oolong_synth"``. ``context_lengths`` MUST span short (solvable without
+    decomposing) through long (aggregation breaks down) -- the loader draws a
+    balanced share per length so the loop sees both."""
+
+    dataset_repo: str
+    split: str
+    dataset_revision: str
+    subsets: tuple[str, ...]
+    task_groups: tuple[str, ...]
+    context_lengths: tuple[int, ...]
+    max_scan: int
+
+
+@dataclass(frozen=True)
+class OolongRealConfig:
+    """OOLONG-real: the periodic generalization check. Run but NEVER fed into the
+    promotion gate (``operational.real_check_every_n_rounds`` controls cadence)."""
+
+    dataset_repo: str
+    config_name: str
+    split: str
+    dataset_revision: str
+    question_types: tuple[str, ...]
+    episode_counts: tuple[int, ...]
+    max_scan: int
+    n_check: int
+
+
+@dataclass(frozen=True)
+class OolongConfig:
+    """The OOLONG environment: a synth sub-table (loop pool) and a real
+    sub-table (generalization check)."""
+
+    synth: OolongSynthConfig
+    real: OolongRealConfig
+
+
+@dataclass(frozen=True)
 class EnvironmentsConfig:
     graphwalks: GraphWalksConfig
     oolong_pairs: OolongPairsConfig
+    oolong: OolongConfig
 
 
 @dataclass(frozen=True)
@@ -378,11 +429,30 @@ class OperationalConfig:
     eval_repetitions: int
     validation_workers: int = 1
     validation_run_workers: int = 1
+    # How often (in executed rounds) the OOLONG-real generalization check runs
+    # when ``loop.environment == "oolong_synth"``: 0 disables it, N > 0 runs it
+    # after every Nth executed round plus once for the final incumbent. It never
+    # feeds the promotion gate, so like the worker counts it changes what a run
+    # costs, not what it decides -- identity-exempt, may change under an existing
+    # out-dir. Ignored entirely for ``environment == "graphwalks"``.
+    real_check_every_n_rounds: int = 0
 
     def __post_init__(self) -> None:
         _require_positive_int("operational.eval_repetitions", self.eval_repetitions)
         _require_positive_int("operational.validation_workers", self.validation_workers)
         _require_positive_int("operational.validation_run_workers", self.validation_run_workers)
+        if isinstance(self.real_check_every_n_rounds, bool) or not isinstance(
+            self.real_check_every_n_rounds, int
+        ):
+            raise ValueError(
+                f"operational.real_check_every_n_rounds must be an integer, got "
+                f"{self.real_check_every_n_rounds!r}"
+            )
+        if self.real_check_every_n_rounds < 0:
+            raise ValueError(
+                f"operational.real_check_every_n_rounds must be >= 0, got "
+                f"{self.real_check_every_n_rounds}"
+            )
 
 
 def _require_positive_int(label: str, value: Any) -> None:
@@ -454,6 +524,24 @@ def _validate_initial_harness(loop: LoopConfig) -> LoopConfig:
         raise ValueError(
             f"[loop] initial_harness must name a registry harness, one of "
             f"{sorted(HARNESSES)}; got {loop.initial_harness!r}"
+        )
+    return loop
+
+
+SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_synth")
+
+
+def _validate_environment(loop: LoopConfig) -> LoopConfig:
+    """Reject a ``[loop] environment`` the orchestrator cannot mine/validate.
+
+    ``graphwalks`` (default) and ``oolong_synth`` are the two environments the
+    optimization loop supports as its mined/validated pool; ``oolong_pairs`` and
+    the OOLONG-real check are evaluation-only and never named here.
+    """
+    if loop.environment not in SELECTABLE_ENVIRONMENTS:
+        raise ValueError(
+            f"[loop] environment must be one of {list(SELECTABLE_ENVIRONMENTS)}; got "
+            f"{loop.environment!r}"
         )
     return loop
 
@@ -542,11 +630,20 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     tuplify(promotion_table, "sub_call_band")
 
     env_table = raw["environments"]
-    check_keys(env_table, ("graphwalks", "oolong_pairs"), "environments")
+    check_keys(env_table, ("graphwalks", "oolong_pairs", "oolong"), "environments")
     graphwalks_table = dict(env_table["graphwalks"])
     tuplify(graphwalks_table, "problem_types")
-    oolong_table = dict(env_table["oolong_pairs"])
-    tuplify(oolong_table, "task_ids")
+    oolong_pairs_table = dict(env_table["oolong_pairs"])
+    tuplify(oolong_pairs_table, "task_ids")
+
+    oolong_env_table = env_table["oolong"]
+    check_keys(oolong_env_table, ("synth", "real"), "environments.oolong")
+    oolong_synth_table = dict(oolong_env_table["synth"])
+    for key in ("subsets", "task_groups", "context_lengths"):
+        tuplify(oolong_synth_table, key)
+    oolong_real_table = dict(oolong_env_table["real"])
+    for key in ("question_types", "episode_counts"):
+        tuplify(oolong_real_table, key)
 
     backends_table = raw["backends"]
     check_keys(
@@ -590,13 +687,23 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         profile=profile,
         decoding=build_section(DecodingConfig, raw["decoding"], "decoding"),
         splits=build_section(SplitsConfig, raw["splits"], "splits"),
-        loop=_validate_initial_harness(build_section(LoopConfig, raw["loop"], "loop")),
+        loop=_validate_environment(
+            _validate_initial_harness(build_section(LoopConfig, raw["loop"], "loop"))
+        ),
         promotion=build_section(PromotionSettings, promotion_table, "promotion"),
         caps=build_section(CapsConfig, raw["caps"], "caps"),
         environments=EnvironmentsConfig(
             graphwalks=build_section(GraphWalksConfig, graphwalks_table, "environments.graphwalks"),
             oolong_pairs=build_section(
-                OolongPairsConfig, oolong_table, "environments.oolong_pairs"
+                OolongPairsConfig, oolong_pairs_table, "environments.oolong_pairs"
+            ),
+            oolong=OolongConfig(
+                synth=build_section(
+                    OolongSynthConfig, oolong_synth_table, "environments.oolong.synth"
+                ),
+                real=build_section(
+                    OolongRealConfig, oolong_real_table, "environments.oolong.real"
+                ),
             ),
         ),
         backends=BackendsConfig(

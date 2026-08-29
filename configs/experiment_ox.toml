@@ -53,6 +53,7 @@ k = 4 # candidate edits proposed per round
 # run later needs a fresh out-dir.
 t = 16 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
+environment = "graphwalks" # loop mines/validates this env; "oolong_synth" is the alternative (identity key, own --out-dir). See configs/experiment_oolong.toml.
 
 [promotion]
 # Preregistered promotion rule, sections 3.2 and 3.10 rows 6-7. Zero
@@ -121,6 +122,35 @@ n_long = 40 # target-long test size; the upstream ceiling, not a choice:
 # context length, and the loader pairs each window with the 20 task_ids above,
 # so 2 x 20 = 40 is every instance that exists at 262,144. A larger value fails
 # the coverage gate in load_oolong_pairs before any spend.
+
+[environments.oolong]
+# OOLONG (arXiv:2511.02817). `synth` is the mining/validation pool when
+# [loop] environment = "oolong_synth"; `real` is a periodic generalization
+# check that is run but NEVER fed into the promotion gate (cadence:
+# [operational] real_check_every_n_rounds). Both sub-tables are inert when
+# environment = "graphwalks" -- present so the schema is uniform.
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test" # OOLONG-synth's own split carrying the full 1K-128K power-of-two range
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-29
+subsets = [] # source ICL datasets to draw from; [] = all (spam, trec_coarse, imdb, ...)
+task_groups = ["counting", "user", "timeline"]
+# Length diversity is REQUIRED: this pool must span lengths the model can solve
+# without decomposing (1K-4K) AND lengths where aggregation breaks down (>=64K;
+# published models <50% at 128K). The loader draws a balanced share per length.
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd" # Critical Role D&D transcripts ("toy_dnd" is the tiny smoke variant)
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb" # HF main, pinned 2026-08-29
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
 
 # All roles run stealth/ox-alpha: an OpenRouter stealth (cloaked) model,
 # free at time of writing, downstream provider anonymous. Stealth caveats:
@@ -248,6 +278,11 @@ validation_workers = 5
 # measurement -- which spends real money -- chooses the shipped value and
 # supplies the pass-rate evidence that concurrency did not move the results.
 validation_run_workers = 4
+
+# OOLONG-real generalization-check cadence in executed rounds. 0 disables (default;
+# this profile's source env is GraphWalks). Never feeds the promotion gate;
+# identity-exempt like the worker counts.
+real_check_every_n_rounds = 0
 
 
 # -----------------------------------------------------------------------------
