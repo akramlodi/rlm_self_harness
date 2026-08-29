@@ -1098,14 +1098,15 @@ class TestMineRound:
             miner=miner,
             split_id="held_in_v1",
         )
-        # No sub-verifier, narrow trees: the single ungrounded, non-aggregate
-        # variant, persisted under its content-addressed (sha-suffixed) name.
-        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
+        # Narrow trees with no descendants are grounded NO_RECURSION with or
+        # without a sub-verifier: the single grounded, non-aggregate variant,
+        # persisted under its content-addressed (sha-suffixed) name.
+        sha = miner.attributor.prompt_sha256(grounded=True, no_subcalls=True)
         round_path = round_dir(config.out_dir, config.round_index)
         prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
         assert prompt_path.is_file()
         assert prompt_path.read_text() == miner.attributor.system_prompt(
-            grounded=False, no_subcalls=True
+            grounded=True, no_subcalls=True
         )
         # The legacy unsuffixed name is never written by new mines.
         assert not (round_path / "attributor_prompt.txt").exists()
@@ -1267,6 +1268,16 @@ class TestPromptPersistence:
             miner=make_miner(BoomVerifier()),
             split_id="held_in_v1",
         )
+        # The round's runs have no descendants, so grounding renders the same
+        # variant with or without a sub-verifier; the second variant comes from
+        # a changed no-sub-calls evidence instruction embedded in the prompt.
+        import shrlm.optimization.attribution as attribution_module
+
+        monkeypatch.setattr(
+            attribution_module,
+            "EVIDENCE_INSTRUCTION_NO_SUBCALLS",
+            attribution_module.EVIDENCE_INSTRUCTION_NO_SUBCALLS + " (variant B)",
+        )
         result_grounded = mine_round(
             out_dir=config.out_dir,
             round_index=config.round_index,
@@ -1294,8 +1305,8 @@ class TestPromptPersistence:
         whose bytes already hash to its address is skipped, not rewritten."""
         config = run_full_round(tmp_path, monkeypatch)
         miner = make_miner(BoomVerifier())
-        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
-        text = miner.attributor.system_prompt(grounded=False, no_subcalls=True)
+        sha = miner.attributor.prompt_sha256(grounded=True, no_subcalls=True)
+        text = miner.attributor.system_prompt(grounded=True, no_subcalls=True)
         round_path = round_dir(config.out_dir, config.round_index)
         prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
         prompt_path.write_text(text)
@@ -1317,7 +1328,7 @@ class TestPromptPersistence:
         trusting it would permanently break the audit's prompt hash link."""
         config = run_full_round(tmp_path, monkeypatch)
         miner = make_miner(BoomVerifier())
-        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
+        sha = miner.attributor.prompt_sha256(grounded=True, no_subcalls=True)
         round_path = round_dir(config.out_dir, config.round_index)
         prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
         prompt_path.write_text("sentinel: bytes that do not hash to the file's name")
@@ -1330,7 +1341,7 @@ class TestPromptPersistence:
         )
 
         healed = prompt_path.read_text()
-        assert healed == miner.attributor.system_prompt(grounded=False, no_subcalls=True)
+        assert healed == miner.attributor.system_prompt(grounded=True, no_subcalls=True)
         assert hashlib.sha256(healed.encode("utf-8")).hexdigest() == sha
 
     def test_truncated_digest_file_is_healed_on_remine(self, tmp_path, monkeypatch):

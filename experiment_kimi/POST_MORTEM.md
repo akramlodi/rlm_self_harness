@@ -313,7 +313,7 @@ that did not exist.
 
 ### 5.3 Two further attribution-integrity problems
 
-- *(FIXED — grounding reads `NO_RECURSION` off the tree; `run_experiment` now defaults the GraphWalks sub-verifier)* **`failing_level=root` with zero sub-calls: 38 of 120 records (32%).** The taxonomy
+- *(FIXED — `4a2bb952`: grounding reads `NO_RECURSION` off the tree; `run_experiment` now defaults the GraphWalks sub-verifier)* **`failing_level=root` with zero sub-calls: 38 of 120 records (32%).** The taxonomy
   defines `root` as "every sub-call returned a correct local result"; with no
   sub-calls it is a category error. `grounding.derive_failing_level` would return
   `NO_RECURSION` deterministically, but `level_grounded` is `False` on all 120 records,
@@ -489,7 +489,7 @@ Ordered by evidence, not by effort.
    per-instance p ≈ 0.6 needs ≈ 16 reps to resolve a 10-point effect at 80% power
    per instance); or run the baseline and candidates in the same batch so provider
    drift is shared.
-4. *(FIXED)* **Ground `failing_level` from the tree.** `derive_failing_level` already returns
+4. *(FIXED — `4a2bb952`)* **Ground `failing_level` from the tree.** `derive_failing_level` already returns
    `NO_RECURSION` for zero descendants; use it whenever the tree has no descendants,
    regardless of sub-verifier availability. Removes the 32% `root`-with-no-sub-calls
    split.
@@ -626,7 +626,7 @@ that pins it. Findings 1, 3, 4, 5 and §9.1 are closed at the source. Finding 2
 | 5 — proposer sees the contract | Pattern block carries the bundle's `verifier_config`; evidence is `produced` before `expected` and bounded per entry. Proposer `PROMPT_VERSION` 1.4.0 → 1.5.0 (cache keys move). | `7fcfa107` | `tests/optimization/test_proposal.py::test_render_prompt_names_the_verifier_contract…`, `…bounds_each_evidence_entry_separately` |
 | 6 — `format_tools_for_prompt` | A callable's docstring first line is its advertised description; "A custom function" only when there is no docstring. | `7fcfa107` | `tests/repl/test_custom_tools.py::test_callable_docstring_is_the_description` |
 | 7 — mechanism→surface funnel | Taxonomy 3.1.0: `MECHANISM_SURFACES` gives every mechanism a set of eligible surfaces (primary unchanged, so `pattern.surface` and the analysis tables are stable); `other` is addressable on any surface; the proposer names the surface per candidate (`"surface"` field, validated against the eligible set; edit shape follows the chosen surface). `shared_symptoms` gains verifier-cause counts and produced-answer shape counts (quoted items, no bracket list, empty list). Proposer `PROMPT_VERSION` 1.6.0, `VALIDATOR_VERSION` 1.4.0. | `d74fcc95` | `tests/optimization/test_taxonomy.py::TestMechanismSurfaces`, `test_proposal.py::test_validate_candidate_spec_*surface*`, `test_clustering.py::TestAnswerShapeSymptoms` |
-| 4 — ground `failing_level` | `apply_sub_verifier` returns `NO_RECURSION`, grounded, for any tree with no descendants, sub-verifier or not; the attributor is no longer asked for a level it cannot answer. Root cause of the 0% grounding: `examples/run_experiment.py` never passed a sub-verifier, so `run_experiment` now defaults `GraphWalksSubVerifier()` alongside the default `GraphWalksVerifier()` (ablation: pass the verifier explicitly with `sub_verifier=None`). | (see git log) | `tests/optimization/test_grounding.py::…without_sub_verifier_is_grounded_no_recursion` |
+| 4 — ground `failing_level` | `apply_sub_verifier` returns `NO_RECURSION`, grounded, for any tree with no descendants, sub-verifier or not; the attributor is no longer asked for a level it cannot answer. Root cause of the 0% grounding: `examples/run_experiment.py` never passed a sub-verifier, so `run_experiment` now defaults `GraphWalksSubVerifier()` alongside the default `GraphWalksVerifier()` (ablation: pass the verifier explicitly with `sub_verifier=None`). | `4a2bb952` | `tests/optimization/test_grounding.py::…without_sub_verifier_is_grounded_no_recursion` |
 | 8 — native function-calling | `AzureFoundryClient` rewrites a leaked `functions.repl` call with a string `code` argument into a ```repl``` block (`translate_native_tool_calls`); any other leaked call is left verbatim. `tool_choice="none"` was not used: the Foundry `/openai/v1` route rejects unknown body parameters and no tools are declared, so the safe fix is on the response side. | `9cc3742f` | `tests/clients/test_azure_foundry.py::TestNativeToolCallTranslation` |
 | 9 — starting harness | `[loop] initial_harness` config key; Kimi config starts from `H0*`. See the addendum above for why that alone does not produce sub-calls. | `8ec2dc43` | `tests/experiment/test_config.py`, `tests/experiment/test_initial_harness.py` |
 
