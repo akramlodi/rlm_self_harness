@@ -74,7 +74,10 @@ def _azure_live_skip() -> str | None:
     """
     from shrlm.experiment.config import CONFIG_PATH, load_config
 
-    config = load_config(profile="smoke", path=live_config_path(CONFIG_PATH))
+    try:
+        config = load_config(profile="smoke", path=live_config_path(CONFIG_PATH))
+    except Exception as exc:  # bad SHRLM_EXPERIMENT_CONFIG must skip, not error collection
+        return f"failed to load config selected via {CONFIG_ENV_KEY}: {exc!r}"
     if config.backends.runner.backend != "azure_foundry":
         return (
             "selected runner backend is not azure_foundry -- azure live tier requires "
@@ -350,9 +353,15 @@ class TestLiveRoundConstructionOffline:
         assert len(resumed) == len(entries)
         assert idle.total_calls == 0
 
-    def test_kimi_row_is_the_round_the_azure_tier_pays_for(self, tmp_path):
+    def test_kimi_row_is_the_round_the_azure_tier_pays_for(self, tmp_path, monkeypatch):
         """The paid azure tier's default construction and the matrix's Kimi
-        row build the same round: same backend and byte-identical kwargs."""
+        row build the same round: same backend and byte-identical kwargs.
+
+        Offline and always-run (no live opt-in required), so it must pin the
+        default Kimi config regardless of any ``SHRLM_EXPERIMENT_CONFIG``
+        left set in the environment.
+        """
+        monkeypatch.delenv(CONFIG_ENV_KEY, raising=False)
         paid = make_live_round_config(tmp_path)
         matrix = make_live_round_config(tmp_path, smoke_config_for(AZURE_KIMI))
         assert paid.backend == matrix.backend == "azure_foundry"

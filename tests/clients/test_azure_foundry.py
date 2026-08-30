@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from shrlm.experiment.live_gates import live_config_path, live_skip_reason
+from shrlm.experiment.live_gates import CONFIG_ENV_KEY, live_config_path, live_skip_reason
 
 VALID_ENDPOINT = "https://my-resource.services.ai.azure.com"
 VALID_PRICING = {"input_per_million": 0.60, "output_per_million": 3.00}
@@ -514,6 +514,50 @@ class TestHarmonyMarkerStripping:
         assert out == "```repl\nprint(type(context))\nprint(len(context))\n```"
         assert client.harmony_markers_dropped == 3
 
+    def test_analysis_only_length_raises_token_limit_with_spend(self, monkeypatch):
+        """An analysis-only harmony body cut at the length cap (no ``final``
+        channel) has non-empty RAW content but normalizes to "": it must
+        terminate once as TokenLimitExceededError with the spend already
+        banked, never return a silent empty string."""
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        monkeypatch.setattr(
+            "rlm.clients.openai.time.sleep",
+            lambda _s: (_ for _ in ()).throw(AssertionError("no backoff for a budget limit")),
+        )
+        response = _make_response(
+            prompt_tokens=1000,
+            completion_tokens=500,
+            finish_reason="length",
+            content="<|channel|>analysis<|message|>think think think",
+        )
+        client = _make_client(monkeypatch, response=response, sampling_args={"max_tokens": 500})
+        with pytest.raises(TokenLimitExceededError, match="no final body") as excinfo:
+            client.completion("hi")
+
+        assert client.client.chat.completions.create.call_count == 1
+        assert excinfo.value.tokens_used == 500
+        assert excinfo.value.token_limit == 500
+        expected = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
+        summary = client.get_usage_summary()
+        assert summary.total_cost == pytest.approx(expected)
+        assert summary.model_usage_summaries["kimi-k2.5"].total_output_tokens == 500
+
+    def test_analysis_only_stop_is_retried_then_raises_runtime_error(self, monkeypatch):
+        """Same shape with finish_reason='stop': behaves exactly like the raw
+        empty body -- retried on the empty-content ladder, then raises."""
+        from rlm.clients.openai import EMPTY_CONTENT_ATTEMPTS
+
+        monkeypatch.setattr("rlm.clients.openai.time.sleep", lambda _s: None)
+        response = _make_response(
+            content="<|channel|>analysis<|message|>only reasoning<|end|>",
+            finish_reason="stop",
+        )
+        client = _make_client(monkeypatch, response=response)
+        with pytest.raises(RuntimeError, match="empty"):
+            client.completion("hi")
+        assert client.client.chat.completions.create.call_count == EMPTY_CONTENT_ATTEMPTS
+
     def test_plain_content_round_trips_byte_identical_and_counts_nothing(self, monkeypatch):
         plain = "Plan first.\n```repl\nprint(1)\n```"
         client = _make_client(monkeypatch, response=_make_response(content=plain))
@@ -763,7 +807,10 @@ def _azure_live_skip() -> str | None:
     tier therefore also requires the selected config to run azure_foundry;
     the pricing attestation is checked against that config's rate card.
     """
-    config = _selected_config()
+    try:
+        config = _selected_config()
+    except Exception as exc:  # bad SHRLM_EXPERIMENT_CONFIG must skip, not error collection
+        return f"failed to load config selected via {CONFIG_ENV_KEY}: {exc!r}"
     if config.backends.runner.backend != "azure_foundry":
         return (
             "selected runner backend is not azure_foundry -- azure live tier requires "

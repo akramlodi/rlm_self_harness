@@ -24,7 +24,7 @@ import pytest
 
 from shrlm.environments.oolong import OolongVerifier
 from shrlm.experiment.config import backend_kwargs_for, load_config
-from shrlm.experiment.live_gates import live_config_path, live_skip_reason
+from shrlm.experiment.live_gates import CONFIG_ENV_KEY, live_config_path, live_skip_reason
 from shrlm.optimization.driver import RoundConfig, build_round_rlm, execute_run
 from shrlm.optimization.walker import walk
 from shrlm.rlm_harness import HARNESSES
@@ -47,7 +47,11 @@ def _config() -> Any:
 
 def _skip_reason() -> str | None:
     # Checked against the SELECTED config's runner backend and rate card.
-    return live_skip_reason(config=_config())
+    try:
+        config = _config()
+    except Exception as exc:  # bad SHRLM_EXPERIMENT_CONFIG must skip, not error collection
+        return f"failed to load config selected via {CONFIG_ENV_KEY}: {exc!r}"
+    return live_skip_reason(config=config)
 
 
 _LIVE_SKIP = _skip_reason()

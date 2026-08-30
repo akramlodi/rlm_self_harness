@@ -314,6 +314,36 @@ class AzureFoundryClient(OpenAIClient):
         content = getattr(getattr(choice, "message", None), "content", None)
         if content is None or content == "":
             raise RuntimeError("Azure Foundry returned empty content for this response.")
+        if self._strips_to_empty(content):
+            # Non-empty raw content that _normalize_content will collapse to
+            # "" (e.g. an analysis-only harmony response with no ``final``
+            # channel). Classify the stripped emptiness here, where
+            # finish_reason is available, instead of returning a silent empty
+            # reply that downstream consumers treat as a real answer.
+            if getattr(choice, "finish_reason", None) == "length":
+                completion_tokens = getattr(usage, "completion_tokens", None)
+                tokens_used = completion_tokens if isinstance(completion_tokens, int) else 0
+                token_limit = self.sampling_args.get("max_tokens") or tokens_used
+                raise TokenLimitExceededError(
+                    tokens_used=tokens_used,
+                    token_limit=token_limit,
+                    message=(
+                        "Azure Foundry output budget exhausted mid-reasoning: harmony "
+                        "channel content with no final body, finish_reason='length' "
+                        f"({tokens_used:,} completion tokens, max_tokens={token_limit:,})."
+                    ),
+                )
+            raise RuntimeError("Azure Foundry returned empty content for this response.")
+
+    @staticmethod
+    def _strips_to_empty(content: str) -> bool:
+        """Whether non-empty raw ``content`` would normalize to "" -- e.g. a
+        harmony response carrying only an ``analysis`` channel body, which
+        ``strip_harmony_markers`` drops entirely. Runs the same pipeline as
+        ``_normalize_content`` but is pure: no marker counting, no client
+        state, so the classifier can run before normalization does."""
+        stripped, _ = strip_harmony_markers(translate_native_tool_calls(content))
+        return stripped == ""
 
     def _validate_usage(self, usage: Any) -> None:
         """A paid call must never count as free: token counts must be present,
@@ -402,6 +432,14 @@ class AzureFoundryClient(OpenAIClient):
         content = getattr(getattr(choice, "message", None), "content", None)
         if content is None or content == "":
             return f"finish_reason={getattr(choice, 'finish_reason', None)!r}"
+        if self._strips_to_empty(content):
+            # An analysis-only harmony body normalizes to "": empty in every
+            # way that matters downstream, so it keeps the same retry ladder
+            # as a raw empty body. A 'length' cut is deterministic for the
+            # prompt (re-sending only re-bills); _validate_response raises it.
+            if getattr(choice, "finish_reason", None) == "length":
+                return None
+            return f"stripped-empty finish_reason={getattr(choice, 'finish_reason', None)!r}"
         return None
 
     def _normalize_content(self, content: str) -> str:

@@ -25,7 +25,7 @@ import pytest
 
 from shrlm.environments.graphwalks import GraphWalksVerifier
 from shrlm.experiment.config import backend_kwargs_for, load_config
-from shrlm.experiment.live_gates import live_config_path, live_skip_reason
+from shrlm.experiment.live_gates import CONFIG_ENV_KEY, live_config_path, live_skip_reason
 from shrlm.optimization.driver import RoundConfig, build_round_rlm, execute_run
 from shrlm.optimization.walker import walk
 from shrlm.rlm_harness import HARNESSES
@@ -49,7 +49,11 @@ def _skip_reason() -> str | None:
     # The attestation must be checked against THIS config's rate card, not the
     # shipped smoke profile's -- they differ (0.6/3.0 vs 0.1/0.3). The gate
     # reads the selected config's own runner backend and credentials.
-    return live_skip_reason(config=_config())
+    try:
+        config = _config()
+    except Exception as exc:  # bad SHRLM_EXPERIMENT_CONFIG must skip, not error collection
+        return f"failed to load config selected via {CONFIG_ENV_KEY}: {exc!r}"
+    return live_skip_reason(config=config)
 
 
 _LIVE_SKIP = _skip_reason()
