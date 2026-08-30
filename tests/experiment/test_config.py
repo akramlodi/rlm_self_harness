@@ -325,10 +325,97 @@ def test_unknown_key_inside_a_table_raises(tmp_path: Path) -> None:
 
 
 def test_unknown_key_inside_azure_foundry_table_raises(tmp_path: Path) -> None:
-    text = shipped_text().replace("\nthinking = false\n", "\nthinking = false\nreasoning = 1\n")
+    text = shipped_text().replace("\nthinking = false\n", "\nthinking = false\neffort_level = 1\n")
     path = write_config(tmp_path, text)
-    with pytest.raises(ValueError, match="reasoning"):
+    with pytest.raises(ValueError, match="effort_level"):
         load_config(path=path)
+
+
+def with_azure_table(text: str, *, thinking: bool, reasoning_effort: str | None) -> str:
+    """``text`` with the shipped ``[backends.azure_foundry]`` table rewritten."""
+    anchor = "\nthinking = false\n"
+    assert anchor in text
+    lines = [f"thinking = {'true' if thinking else 'false'}"]
+    if reasoning_effort is not None:
+        lines.append(f'reasoning_effort = "{reasoning_effort}"')
+    return text.replace(anchor, "\n" + "\n".join(lines) + "\n")
+
+
+class TestReasoningEffort:
+    """[backends.azure_foundry] reasoning_effort (R3-R5, KTD1-KTD2)."""
+
+    def test_effort_reaches_sampling_args_top_level_without_chat_template_kwargs(
+        self, tmp_path: Path
+    ) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=True, reasoning_effort="medium")
+        config = load_config(path=write_config(tmp_path, text))
+        assert config.backends.azure_foundry is not None
+        assert config.backends.azure_foundry.reasoning_effort == "medium"
+        args = sampling_args(config, "runner")
+        assert args["reasoning_effort"] == "medium"
+        assert "chat_template_kwargs" not in args["extra_body"]
+        assert "reasoning_effort" not in args["extra_body"]
+
+    def test_thinking_true_without_effort_emits_neither_knob(self, tmp_path: Path) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=True, reasoning_effort=None)
+        config = load_config(path=write_config(tmp_path, text))
+        args = sampling_args(config, "runner")
+        assert "reasoning_effort" not in args
+        assert "chat_template_kwargs" not in args["extra_body"]
+
+    def test_thinking_false_without_effort_keeps_instant_mode(self, tmp_path: Path) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=False, reasoning_effort=None)
+        config = load_config(path=write_config(tmp_path, text))
+        args = sampling_args(config, "runner")
+        assert args["extra_body"]["chat_template_kwargs"] == {"thinking": False}
+        assert "reasoning_effort" not in args
+
+    def test_thinking_false_with_effort_is_refused_naming_both_keys(self, tmp_path: Path) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=False, reasoning_effort="low")
+        with pytest.raises(ValueError, match="thinking = false.*reasoning_effort"):
+            load_config(path=write_config(tmp_path, text))
+
+    def test_effort_outside_the_enum_is_refused_listing_the_values(self, tmp_path: Path) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=True, reasoning_effort="xhigh")
+        with pytest.raises(ValueError, match="low.*medium.*high.*none.*xhigh"):
+            load_config(path=write_config(tmp_path, text))
+
+    def test_openrouter_roles_never_carry_the_effort(self, tmp_path: Path) -> None:
+        # Shipped config: every role openrouter; the dormant azure table sets an effort.
+        text = with_azure_table(shipped_text(), thinking=True, reasoning_effort="high")
+        config = load_config(path=write_config(tmp_path, text))
+        for role in CLIENT_ROLES:
+            assert "reasoning_effort" not in sampling_args(config, role)
+
+    def test_explicit_none_hashes_identically_to_absent(self, tmp_path: Path) -> None:
+        base = load_config(path=write_config(tmp_path, all_azure_roles_text()))
+        explicit = dataclasses.replace(
+            base,
+            backends=dataclasses.replace(
+                base.backends,
+                azure_foundry=dataclasses.replace(
+                    cast(Any, base.backends.azure_foundry), reasoning_effort=None
+                ),
+            ),
+        )
+        assert identity_hash(explicit) == identity_hash(base)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "configs/experiment.toml",
+        "configs/experiment_kimiK25.toml",
+        "configs/experiment_ox.toml",
+        "configs/experiment_oolong.toml",
+    ],
+)
+@pytest.mark.parametrize("profile", ["full", "smoke"])
+def test_every_shipped_config_loads_under_the_current_schema(
+    config_path: str, profile: str
+) -> None:
+    config = load_config(profile, path=Path(config_path))
+    assert len(identity_hash(config)) == 64
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +601,15 @@ def test_identity_hash_changes_with_behavior_changing_values() -> None:
                 config.backends,
                 azure_foundry=dataclasses.replace(
                     cast(Any, config.backends.azure_foundry), thinking=True
+                ),
+            ),
+        ),
+        dataclasses.replace(
+            config,
+            backends=dataclasses.replace(
+                config.backends,
+                azure_foundry=dataclasses.replace(
+                    cast(Any, config.backends.azure_foundry), reasoning_effort="high"
                 ),
             ),
         ),

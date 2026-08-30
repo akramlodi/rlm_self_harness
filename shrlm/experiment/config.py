@@ -24,7 +24,7 @@ Identity hash (R3; KTD3)
     (including per-round attempts), environment definitions with their dataset
     revision pins, the runner/attributor/proposer backends including the
     optional provider tables (OpenRouter routing, Azure Foundry thinking
-    mode), and the evaluation repetition count
+    mode and reasoning effort), and the evaluation repetition count
     (``IDENTITY_OPERATIONAL_KEYS``; see below). The remaining operational keys
     -- cache paths, loader timeout, the validation worker count, pricing and
     GPU tables, report settings -- are excluded: they change what a run costs,
@@ -324,13 +324,33 @@ class OpenRouterConfig:
     allow_fallbacks: bool
 
 
+AZURE_REASONING_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "none")
+
+
 @dataclass(frozen=True)
 class AzureFoundryConfig:
-    """Azure AI Foundry provider settings. ``thinking = False`` selects
-    Kimi-K2.5 instant mode, forwarded as
-    ``extra_body["chat_template_kwargs"] = {"thinking": False}``."""
+    """Azure AI Foundry provider settings, one knob per model family.
+
+    ``thinking = False`` selects Kimi-K2.5 instant mode, forwarded as
+    ``extra_body["chat_template_kwargs"] = {"thinking": False}``.
+
+    ``reasoning_effort`` is the OpenAI-style knob for reasoning models served
+    on the same route (gpt-oss-120b): forwarded as a top-level request
+    parameter when set, omitted when ``None``. ``"none"`` is the Kimi route's
+    documented instant switch, not a gpt-oss value. The two knobs are
+    exclusive in one direction: ``thinking = false`` with an effort set is
+    refused at load, because that request would carry ``chat_template_kwargs``
+    the reasoning-model deployment rejects.
+
+    Adding this field moved ``identity_hash`` for every config carrying the
+    table (2026-08-30): ``backends`` is an identity section and ``asdict``
+    renders the ``None`` default. Existing experiment directories refuse to
+    resume, as they did when ``initial_harness`` was added; a provider switch
+    is a new experiment.
+    """
 
     thinking: bool
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -662,6 +682,19 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         azure_foundry = build_section(
             AzureFoundryConfig, backends_table["azure_foundry"], "backends.azure_foundry"
         )
+        effort = azure_foundry.reasoning_effort
+        if effort is not None and effort not in AZURE_REASONING_EFFORTS:
+            raise ValueError(
+                f"[backends.azure_foundry] reasoning_effort must be one of "
+                f"{list(AZURE_REASONING_EFFORTS)}; got {effort!r}"
+            )
+        if azure_foundry.thinking is False and effort is not None:
+            raise ValueError(
+                "[backends.azure_foundry] sets thinking = false together with "
+                f"reasoning_effort = {effort!r}: thinking = false emits Kimi's "
+                "chat_template_kwargs, which a reasoning-effort deployment rejects. "
+                "Declare exactly one of the two knobs."
+            )
     else:
         azure_roles = sorted(
             role for role in CLIENT_ROLES if backends_table[role].get("backend") == "azure_foundry"
@@ -669,9 +702,10 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         if azure_roles:
             raise ValueError(
                 f"missing [backends.azure_foundry] table: role(s) {azure_roles} use the "
-                "azure_foundry backend, whose thinking mode must be declared explicitly "
-                "(an absent table would send no chat_template_kwargs, silently defaulting "
-                "Kimi to thinking mode -- ~10x output cost and <think> markup in outputs)."
+                "azure_foundry backend, whose reasoning mode must be declared explicitly "
+                "(thinking for Kimi-K2.5, reasoning_effort for gpt-oss); an absent table "
+                "would send neither knob, silently defaulting Kimi to thinking mode -- "
+                "~10x output cost and <think> markup in outputs."
             )
 
     pricing_table = raw["pricing"]
@@ -701,9 +735,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
                 synth=build_section(
                     OolongSynthConfig, oolong_synth_table, "environments.oolong.synth"
                 ),
-                real=build_section(
-                    OolongRealConfig, oolong_real_table, "environments.oolong.real"
-                ),
+                real=build_section(OolongRealConfig, oolong_real_table, "environments.oolong.real"),
             ),
         ),
         backends=BackendsConfig(
@@ -759,7 +791,9 @@ def sampling_args(config: ExperimentConfig, role: str) -> dict[str, Any]:
     entirely. Provider-specific ``extra_body`` branches on the role's backend:
     an openrouter role with a non-empty ``provider_order`` gets the routing
     dict; an azure_foundry role with ``thinking = False`` gets the instant-mode
-    ``chat_template_kwargs``. ``max_tokens`` stays ``max_tokens`` -- the OpenAI
+    ``chat_template_kwargs``, and one with ``reasoning_effort`` set gets it as a
+    top-level ``reasoning_effort`` parameter (the OpenAI client forwards every
+    non-null top-level key). ``max_tokens`` stays ``max_tokens`` -- the OpenAI
     client performs the ``max_completion_tokens`` rename itself.
     """
     if role not in CLIENT_ROLES:
@@ -778,16 +812,22 @@ def sampling_args(config: ExperimentConfig, role: str) -> dict[str, Any]:
                 "order": list(routing.provider_order),
                 "allow_fallbacks": routing.allow_fallbacks,
             }
-    elif endpoint.backend == "azure_foundry":
+    reasoning_effort: str | None = None
+    if endpoint.backend == "azure_foundry":
         foundry = config.backends.azure_foundry
         if foundry is not None and foundry.thinking is False:
             extra_body["chat_template_kwargs"] = {"thinking": False}
-    return {
+        if foundry is not None:
+            reasoning_effort = foundry.reasoning_effort
+    args: dict[str, Any] = {
         "temperature": decoding.temperature,
         "top_p": decoding.top_p,
         "max_tokens": decoding.max_output_tokens,
         "extra_body": extra_body,
     }
+    if reasoning_effort is not None:
+        args["reasoning_effort"] = reasoning_effort
+    return args
 
 
 def backend_kwargs_for(config: ExperimentConfig, role: str) -> dict[str, Any]:
