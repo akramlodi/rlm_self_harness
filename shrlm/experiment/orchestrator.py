@@ -163,7 +163,12 @@ from shrlm.optimization.driver import (
 )
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.promotion import DECISION_PROMOTED, PromotionConfig
-from shrlm.optimization.proposal import ProposalCache, load_passing_behaviors, propose_round
+from shrlm.optimization.proposal import (
+    ProposalBudgetExhausted,
+    ProposalCache,
+    load_passing_behaviors,
+    propose_round,
+)
 from shrlm.optimization.types import SubVerifier, Verifier
 from shrlm.optimization.validation import (
     SPLIT_HELDIN,
@@ -926,28 +931,56 @@ class _Experiment:
         ) as meter:
             proposer_lm = self._proposer()
             meter.watch(proposer_lm)
-            result = propose_round(
-                bundle,
-                incumbent,
-                proposer_lm,
-                proposals_dir,
-                round_index=round_index,
-                passing_behaviors=load_passing_behaviors(mining_round_path),
-                prior_history=self.prior_history,
-                config=proposer_config(self.config),
-                cache=ProposalCache(path=str(cache_path)),
-                workdir=round_path / WORK_DIR,
-            )
+            try:
+                result = propose_round(
+                    bundle,
+                    incumbent,
+                    proposer_lm,
+                    proposals_dir,
+                    round_index=round_index,
+                    passing_behaviors=load_passing_behaviors(mining_round_path),
+                    prior_history=self.prior_history,
+                    config=proposer_config(self.config),
+                    cache=ProposalCache(path=str(cache_path)),
+                    workdir=round_path / WORK_DIR,
+                )
+            except ProposalBudgetExhausted as exc:
+                # The proposer spent its output budget on reasoning (R6/KTD3):
+                # deterministic for the prompt, so re-asking only re-bills it,
+                # and letting it escape would re-ask on every resume. Seal the
+                # stage as a failure with zero candidates; validation then sees
+                # an empty proposals directory and the round closes unpromoted,
+                # exactly as a round whose proposer wrote nothing.
+                print(
+                    f"round {round_index}: proposal stage failed with zero candidates "
+                    f"({exc}); sealing {marker_path.name} and continuing",
+                    file=sys.stderr,
+                )
+                payload = {
+                    "format": PROPOSALS_MARKER_FORMAT,
+                    "round": round_index,
+                    "candidate_ids": [],
+                    "prompt_sha256": None,
+                    "skipped_patterns": [],
+                    "n_materialization_failures": 0,
+                    "stage_failure": {
+                        "kind": "budget_exhausted",
+                        "error": str(exc),
+                        "n_attempts": len(exc.attempts),
+                    },
+                }
+            else:
+                payload = {
+                    "format": PROPOSALS_MARKER_FORMAT,
+                    "round": round_index,
+                    "candidate_ids": sorted(written.candidate_id for written in result.written),
+                    "prompt_sha256": result.prompt_sha256,
+                    "skipped_patterns": list(result.skipped_patterns),
+                    "n_materialization_failures": len(result.materialization_failures),
+                }
         _persist_once(
             marker_path,
-            {
-                "format": PROPOSALS_MARKER_FORMAT,
-                "round": round_index,
-                "candidate_ids": sorted(written.candidate_id for written in result.written),
-                "prompt_sha256": result.prompt_sha256,
-                "skipped_patterns": list(result.skipped_patterns),
-                "n_materialization_failures": len(result.materialization_failures),
-            },
+            payload,
             f"{marker_path} already seals a diverging candidate set for round "
             f"{round_index}; the persisted proposal cache should have made this "
             "impossible -- refusing to mix two proposal outcomes.",

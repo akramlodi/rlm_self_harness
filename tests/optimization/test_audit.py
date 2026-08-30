@@ -215,9 +215,11 @@ class TestBreakage:
         "extra_fields",
         [
             {"attribution_error_kind": "transport"},
+            {"attribution_error_kind": "content_filtered"},
+            {"attribution_error_kind": "token_limit"},
             {"error": "transport failure: LM unreachable"},
         ],
-        ids=["typed kind", "legacy prefix"],
+        ids=["typed kind", "content filtered", "token limit", "legacy prefix"],
     )
     def test_transport_failed_entry_is_exempt_from_the_attempts_demand(self, audited, extra_fields):
         round_path, _, _ = audited

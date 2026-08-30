@@ -34,10 +34,13 @@ def _make_response(
     finish_reason: str = "stop",
     content: str | None = "hello from foundry",
     usage: Any = "default",
+    reasoning_tokens: int | None = None,
 ) -> SimpleNamespace:
     """Build a fake chat.completions response using SimpleNamespace so that
     hasattr checks behave like real pydantic models (MagicMock would report
-    every attribute as present)."""
+    every attribute as present). ``completion_tokens_details`` is emitted only
+    when ``reasoning_tokens`` is set, mirroring a deployment that may or may
+    not report the detail block."""
     if usage == "default":
         usage_kwargs: dict[str, Any] = {
             "prompt_tokens": prompt_tokens,
@@ -46,6 +49,10 @@ def _make_response(
         }
         if cost is not None:
             usage_kwargs["cost"] = cost
+        if reasoning_tokens is not None:
+            usage_kwargs["completion_tokens_details"] = SimpleNamespace(
+                reasoning_tokens=reasoning_tokens
+            )
         usage = SimpleNamespace(**usage_kwargs)
     message = SimpleNamespace(content=content)
     choice = SimpleNamespace(finish_reason=finish_reason, message=message)
@@ -308,6 +315,256 @@ class TestResponseValidation:
         client = _make_client(monkeypatch, response=response)
         with pytest.raises(RuntimeError, match="empty"):
             client.completion("hi")
+
+
+class TestReasoningExhaustion:
+    """An empty body with ``finish_reason='length'`` whose output budget went
+    to reasoning is a deterministic budget exhaustion (R6/KTD3): terminate
+    once as ``TokenLimitExceededError`` with the spend already banked, never
+    re-send it as a transient empty body."""
+
+    @staticmethod
+    def _no_sleep(monkeypatch):
+        def _boom(_seconds):  # pragma: no cover - failure reporting
+            raise AssertionError("retry backoff must not run for reasoning exhaustion")
+
+        monkeypatch.setattr("rlm.clients.openai.time.sleep", _boom)
+
+    def test_reasoning_dominated_length_terminates_once_with_spend(self, monkeypatch):
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        self._no_sleep(monkeypatch)
+        response = _make_response(
+            prompt_tokens=1000,
+            completion_tokens=500,
+            finish_reason="length",
+            content="",
+            reasoning_tokens=500,
+        )
+        client = _make_client(monkeypatch, response=response, sampling_args={"max_tokens": 500})
+        with pytest.raises(TokenLimitExceededError, match="reasoning") as excinfo:
+            client.completion("hi")
+
+        assert client.client.chat.completions.create.call_count == 1
+        assert excinfo.value.tokens_used == 500
+        assert excinfo.value.token_limit == 500
+        expected = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
+        summary = client.get_usage_summary()
+        assert summary.total_cost == pytest.approx(expected)
+        assert summary.model_usage_summaries["kimi-k2.5"].total_output_tokens == 500
+
+    def test_length_without_token_details_terminates_the_same_way(self, monkeypatch):
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        self._no_sleep(monkeypatch)
+        response = _make_response(completion_tokens=800, finish_reason="length", content=None)
+        client = _make_client(monkeypatch, response=response)
+        with pytest.raises(TokenLimitExceededError, match="reasoning") as excinfo:
+            client.completion("hi")
+        assert client.client.chat.completions.create.call_count == 1
+        # No max_tokens configured: the limit falls back to what was spent.
+        assert excinfo.value.tokens_used == 800
+        assert excinfo.value.token_limit == 800
+        assert client.get_usage_summary().total_cost > 0
+
+    def test_acompletion_terminates_the_same_way(self, monkeypatch):
+        from rlm.clients.azure_foundry import AzureFoundryClient
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        monkeypatch.setattr(
+            "rlm.clients.openai.asyncio.sleep",
+            lambda _s: (_ for _ in ()).throw(AssertionError("no backoff")),
+            raising=False,
+        )
+        monkeypatch.setenv("AZURE_API_KEY", "test-key")
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
+        response = _make_response(
+            completion_tokens=500, finish_reason="length", content="", reasoning_tokens=480
+        )
+        calls = 0
+        with (
+            patch("rlm.clients.openai.openai.OpenAI"),
+            patch("rlm.clients.openai.openai.AsyncOpenAI") as mock_async_openai,
+        ):
+            mock_async = MagicMock()
+
+            async def _create(**kwargs):
+                nonlocal calls
+                calls += 1
+                return response
+
+            mock_async.chat.completions.create = _create
+            mock_async_openai.return_value = mock_async
+            client = AzureFoundryClient(model_name="kimi-k2.5", pricing=dict(VALID_PRICING))
+
+        with pytest.raises(TokenLimitExceededError, match="reasoning"):
+            asyncio.run(client.acompletion("hi"))
+        assert calls == 1
+        assert client.last_cost is not None and client.last_cost > 0
+
+    def test_empty_stop_is_still_retried_then_raises_runtime_error(self, monkeypatch):
+        """Kimi's transient empty body (finish_reason='stop') keeps its ladder."""
+        from rlm.clients.openai import EMPTY_CONTENT_ATTEMPTS
+
+        monkeypatch.setattr("rlm.clients.openai.time.sleep", lambda _s: None)
+        response = _make_response(content="", finish_reason="stop")
+        client = _make_client(monkeypatch, response=response)
+        with pytest.raises(RuntimeError, match="empty"):
+            client.completion("hi")
+        assert client.client.chat.completions.create.call_count == EMPTY_CONTENT_ATTEMPTS
+
+    def test_length_with_minor_reasoning_share_is_still_retried(self, monkeypatch):
+        """Reasoning did not dominate the budget: not the exhaustion signature."""
+        from rlm.clients.openai import EMPTY_CONTENT_ATTEMPTS
+
+        monkeypatch.setattr("rlm.clients.openai.time.sleep", lambda _s: None)
+        response = _make_response(
+            completion_tokens=500, finish_reason="length", content="", reasoning_tokens=100
+        )
+        client = _make_client(monkeypatch, response=response)
+        with pytest.raises(RuntimeError, match="empty"):
+            client.completion("hi")
+        assert client.client.chat.completions.create.call_count == EMPTY_CONTENT_ATTEMPTS
+
+    def test_classifier_is_pure(self):
+        from rlm.clients.azure_foundry import AzureFoundryClient
+
+        exhausted = _make_response(
+            completion_tokens=500, finish_reason="length", content="", reasoning_tokens=450
+        )
+        assert AzureFoundryClient._reasoning_exhausted(exhausted) is True
+        with_text = _make_response(
+            completion_tokens=500, finish_reason="length", content="x", reasoning_tokens=450
+        )
+        assert AzureFoundryClient._reasoning_exhausted(with_text) is False
+        stopped = _make_response(completion_tokens=500, finish_reason="stop", content="")
+        assert AzureFoundryClient._reasoning_exhausted(stopped) is False
+        assert AzureFoundryClient._reasoning_exhausted(SimpleNamespace(choices=[])) is False
+
+
+class TestHarmonyMarkerStripping:
+    """gpt-oss harmony control tokens never reach the REPL parser (R6a/KTD4):
+    with channel structure only the ``final`` body survives; bare markers are
+    stripped; every dropped marker is counted on the client."""
+
+    FINAL_ONLY = "<|channel|>final<|message|>42<|return|>"
+    ANALYSIS_THEN_FINAL = (
+        "<|channel|>analysis<|message|>think think<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>42<|return|>"
+    )
+
+    def test_final_channel_body_is_kept(self):
+        from rlm.clients.azure_foundry import strip_harmony_markers
+
+        assert strip_harmony_markers(self.FINAL_ONLY) == ("42", 3)
+
+    def test_analysis_body_is_dropped_with_its_markers(self):
+        from rlm.clients.azure_foundry import strip_harmony_markers
+
+        text, dropped = strip_harmony_markers(self.ANALYSIS_THEN_FINAL)
+        assert text == "42"
+        assert "think" not in text
+        assert dropped == 7  # channel, message, end, start, channel, message, return
+
+    def test_bare_markers_are_stripped_without_channel_structure(self):
+        from rlm.clients.azure_foundry import strip_harmony_markers
+
+        text, dropped = strip_harmony_markers("answer<|return|>")
+        assert text == "answer"
+        assert dropped == 1
+        text, dropped = strip_harmony_markers("<|start|>a<|end|><|constrain|>json<|call|>")
+        assert text == "ajson"
+        assert dropped == 4
+
+    def test_plain_content_is_byte_identical(self):
+        from rlm.clients.azure_foundry import strip_harmony_markers
+
+        plain = "Plan first.\n```repl\nprint('<|not a marker')\n```\n"
+        text, dropped = strip_harmony_markers(plain)
+        assert text is plain
+        assert dropped == 0
+
+    def test_client_completion_returns_the_final_body_and_counts(self, monkeypatch):
+        client = _make_client(monkeypatch, response=_make_response(content=self.FINAL_ONLY))
+        assert client.completion("hi") == "42"
+        assert client.harmony_markers_dropped == 3
+
+    def test_client_completion_drops_the_analysis_channel(self, monkeypatch):
+        client = _make_client(
+            monkeypatch, response=_make_response(content=self.ANALYSIS_THEN_FINAL)
+        )
+        assert client.completion("hi") == "42"
+        assert client.harmony_markers_dropped == 7
+
+    def test_acompletion_strips_and_counts_too(self, monkeypatch):
+        from rlm.clients.azure_foundry import AzureFoundryClient
+
+        monkeypatch.setenv("AZURE_API_KEY", "test-key")
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
+        response = _make_response(content=self.FINAL_ONLY)
+        with (
+            patch("rlm.clients.openai.openai.OpenAI"),
+            patch("rlm.clients.openai.openai.AsyncOpenAI") as mock_async_openai,
+        ):
+            mock_async = MagicMock()
+
+            async def _create(**kwargs):
+                return response
+
+            mock_async.chat.completions.create = _create
+            mock_async_openai.return_value = mock_async
+            client = AzureFoundryClient(model_name="kimi-k2.5", pricing=dict(VALID_PRICING))
+
+        assert asyncio.run(client.acompletion("hi")) == "42"
+        assert client.harmony_markers_dropped == 3
+
+    def test_kimi_tool_call_translation_runs_before_harmony_stripping(self, monkeypatch):
+        leak = TestNativeToolCallTranslation.LEAK
+        content = "<|channel|>final<|message|>" + leak + "<|return|>"
+        client = _make_client(monkeypatch, response=_make_response(content=content))
+        out = client.completion("hi")
+        assert out == "```repl\nprint(type(context))\nprint(len(context))\n```"
+        assert client.harmony_markers_dropped == 3
+
+    def test_plain_content_round_trips_byte_identical_and_counts_nothing(self, monkeypatch):
+        plain = "Plan first.\n```repl\nprint(1)\n```"
+        client = _make_client(monkeypatch, response=_make_response(content=plain))
+        assert client.completion("hi") == plain
+        assert client.harmony_markers_dropped == 0
+
+    def test_concurrent_mixed_responses_count_exactly_the_marker_total(self, monkeypatch):
+        import threading
+
+        responses = {
+            "harmony": _make_response(content=self.ANALYSIS_THEN_FINAL),  # 7 markers
+            "plain": _make_response(content="plain answer"),  # 0 markers
+            "bare": _make_response(content="answer<|return|>"),  # 1 marker
+        }
+
+        def create(**kwargs):
+            return responses[kwargs["messages"][0]["content"]]
+
+        client = _make_client(monkeypatch)
+        client.client.chat.completions.create = create
+        calls_per_thread = 50
+        errors: list[BaseException] = []
+        outputs: dict[str, set[str]] = {key: set() for key in responses}
+
+        def run(prompt: str) -> None:
+            try:
+                for _ in range(calls_per_thread):
+                    outputs[prompt].add(client.completion(prompt))
+            except BaseException as exc:  # pragma: no cover - failure reporting
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run, args=(key,)) for key in responses]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not errors
+        assert outputs == {"harmony": {"42"}, "plain": {"plain answer"}, "bare": {"answer"}}
+        assert client.harmony_markers_dropped == calls_per_thread * (7 + 0 + 1)
 
 
 class TestThreadSafety:

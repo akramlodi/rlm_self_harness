@@ -588,6 +588,40 @@ class TestResumeMidMining:
         assert result.rounds[0].promoted
 
 
+class TestProposalBudgetExhaustion:
+    def test_reasoning_exhausted_proposer_seals_a_zero_candidate_round(self, tmp_path, monkeypatch):
+        """A proposer that spends its output budget on reasoning (the client's
+        ``TokenLimitExceededError``, R6/KTD3) is a deterministic stage failure:
+        asked once, sealed with zero candidates, and the experiment continues
+        to the next round instead of crashing or re-asking."""
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        config = make_config(tmp_path, t=1)
+        out = tmp_path / "exp"
+
+        def boom(prompt: Any) -> str:
+            raise TokenLimitExceededError(
+                tokens_used=16384,
+                token_limit=16384,
+                message="Azure Foundry output budget exhausted by reasoning",
+            )
+
+        factory = patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(response_fn=boom)
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 1  # raised once, never re-asked
+        assert factory.total_calls == 2  # mining only: nothing to validate
+        assert [outcome.promoted for outcome in result.rounds] == [False]
+        round_path = experiment_round_dir(out, 1)
+        marker = json.loads((round_path / PROPOSALS_MARKER_FILENAME).read_text())
+        assert marker["candidate_ids"] == []
+        assert marker["stage_failure"]["kind"] == "budget_exhausted"
+        assert "reasoning" in marker["stage_failure"]["error"]
+        assert (round_path / ROUND_MARKER_FILENAME).exists()
+
+
 class TestResumeAfterBundle:
     def test_crash_before_proposals_sealed_resumes_without_remining(self, tmp_path, monkeypatch):
         config = make_config(tmp_path)

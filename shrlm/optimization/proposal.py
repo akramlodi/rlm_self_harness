@@ -65,6 +65,7 @@ from typing import Any
 
 from rlm.clients.base_lm import BaseLM
 from rlm.environments.base_env import RESERVED_TOOL_NAMES
+from rlm.utils.exceptions import TokenLimitExceededError
 from shrlm.harness_identity import (
     HARNESS_FORMAT,
     HarnessSerializationError,
@@ -204,6 +205,22 @@ class ProposalTransportError(Exception):
     """The LM call itself failed (network, rate limit, server error) after
     bounded retries. The model never produced a judgable response, so the
     caller should checkpoint the round rather than record a rejected batch."""
+
+    def __init__(self, message: str, attempts: list["ProposalAttempt"] | None = None):
+        super().__init__(message)
+        self.attempts: list[ProposalAttempt] = attempts or []
+
+
+class ProposalBudgetExhausted(Exception):
+    """The client raised ``TokenLimitExceededError``: the proposer spent its
+    whole output budget on reasoning and returned no content (R6/KTD3).
+
+    The parallel of ``attribution.AttributionBudgetExhausted``. Deterministic
+    for the prompt at temperature 0, so it is neither a transport glitch to
+    re-send nor a rejected attempt to re-ask: it surfaces immediately with the
+    attempts made so far, and the proposal stage records a round with zero
+    candidates.
+    """
 
     def __init__(self, message: str, attempts: list["ProposalAttempt"] | None = None):
         super().__init__(message)
@@ -1141,7 +1158,9 @@ def _completion_with_retry(
     """Call the LM, retrying transient failures with exponential backoff.
 
     Identical retry/backoff/exception-classification policy to
-    ``attribution._completion_with_retry``.
+    ``attribution._completion_with_retry``: a ``TokenLimitExceededError`` is
+    deterministic for the prompt and propagates at once as
+    ProposalBudgetExhausted rather than being re-sent.
     """
     last_error: Exception | None = None
     for retry in range(config.transport_retries):
@@ -1149,6 +1168,11 @@ def _completion_with_retry(
             return lm.completion(messages)
         except NON_TRANSPORT_ERRORS:
             raise
+        except TokenLimitExceededError as exc:
+            raise ProposalBudgetExhausted(
+                f"output budget exhausted on the proposer response: {exc}",
+                attempts=list(attempts),
+            ) from exc
         except Exception as exc:
             last_error = exc
             if retry + 1 < config.transport_retries:
@@ -1201,6 +1225,8 @@ def propose_round(
     Raises:
         ProposalRejection: No attempt validated within ``config.max_attempts``.
         ProposalTransportError: The LM stayed unreachable after bounded retries.
+        ProposalBudgetExhausted: The proposer spent its output budget without
+            producing content; raised once, never re-asked.
     """
     config = config or ProposerConfig()
     cache = cache or ProposalCache()

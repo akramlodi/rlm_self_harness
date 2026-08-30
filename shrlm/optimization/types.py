@@ -47,11 +47,12 @@ class TraceIntegrity(str, Enum):
 
 class AttributionErrorKind(str, Enum):
     """Why an attribution failed: the model's response was unusable, the model
-    was never reached at all, or the provider refused to return one. The
-    distinction matters downstream -- transport and content-filter failures are
-    exempt from the attempts-audit demand (neither produces a response to
-    record), and transport failures are counted separately in the integrity
-    report."""
+    was never reached at all, the provider refused to return one, or the
+    model spent its whole output budget without producing one. The
+    distinction matters downstream -- transport, content-filter, and
+    token-limit failures are exempt from the attempts-audit demand (none
+    produces a response to record), and transport failures are counted
+    separately in the integrity report."""
 
     REJECTION = "rejection"
     TRANSPORT = "transport"
@@ -60,6 +61,10 @@ class AttributionErrorKind(str, Enum):
     # unlike TRANSPORT it will not clear on a re-invocation: the round must
     # record it and move on rather than checkpoint and wait for a retry.
     CONTENT_FILTERED = "content_filtered"
+    # The client raised ``TokenLimitExceededError``: a reasoning model spent
+    # the output budget without emitting content (R6). Deterministic for the
+    # prompt at temperature 0, so it is routed exactly like CONTENT_FILTERED.
+    TOKEN_LIMIT = "token_limit"
 
 
 @dataclass
