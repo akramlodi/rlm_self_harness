@@ -408,6 +408,7 @@ class TestReasoningEffort:
         "configs/experiment_kimiK25.toml",
         "configs/experiment_ox.toml",
         "configs/experiment_oolong.toml",
+        "configs/experiment_oolong_gptoss.toml",
     ],
 )
 @pytest.mark.parametrize("profile", ["full", "smoke"])
@@ -845,6 +846,48 @@ def _with_initial_harness(text: str, value: str) -> str:
 def test_initial_harness_defaults_to_h0() -> None:
     assert load_config().loop.initial_harness == "H0"
     assert load_config("smoke").loop.initial_harness == "H0"
+
+
+class TestGptOssOolongConfig:
+    """configs/experiment_oolong_gptoss.toml (U2: R1, R2)."""
+
+    PATH = Path("configs/experiment_oolong_gptoss.toml")
+    KIMI_PATH = Path("configs/experiment_oolong.toml")
+
+    @pytest.mark.parametrize("profile", ["full", "smoke"])
+    def test_loads_with_every_role_on_azure_gpt_oss(self, profile: str) -> None:
+        config = load_config(profile, path=self.PATH)
+        for role in CLIENT_ROLES:
+            endpoint = getattr(config.backends, role)
+            assert (endpoint.backend, endpoint.model) == ("azure_foundry", "gpt-oss-120b")
+
+    def test_every_role_carries_the_gpt_oss_rate_card(self) -> None:
+        config = load_config("full", path=self.PATH)
+        for role in CLIENT_ROLES:
+            kwargs = backend_kwargs_for(config, role)
+            assert kwargs["pricing"] == {"input_per_million": 0.15, "output_per_million": 0.60}
+        assert config.pricing.promo == config.pricing.list_price
+
+    def test_decoding_and_reasoning_knob_reach_sampling_args(self) -> None:
+        config = load_config("full", path=self.PATH)
+        args = sampling_args(config, "runner")
+        assert args["temperature"] == 0
+        assert args["top_p"] == 1.0
+        assert args["max_tokens"] == 16384
+        assert args["reasoning_effort"] == "medium"
+        assert "chat_template_kwargs" not in args["extra_body"]
+
+    def test_inherits_the_kimi_profile_except_the_swapped_tables(self) -> None:
+        gptoss = load_config("full", path=self.PATH)
+        kimi = load_config("full", path=self.KIMI_PATH)
+        for section in ("caps", "splits", "loop", "promotion", "environments"):
+            assert getattr(gptoss, section) == getattr(kimi, section)
+        assert gptoss.operational == kimi.operational
+
+    def test_identity_differs_from_the_kimi_profile(self) -> None:
+        gptoss = load_config("full", path=self.PATH)
+        kimi = load_config("full", path=self.KIMI_PATH)
+        assert identity_hash(gptoss) != identity_hash(kimi)
 
 
 def test_kimi_config_starts_from_h0_star() -> None:
