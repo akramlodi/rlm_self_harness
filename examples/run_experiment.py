@@ -64,6 +64,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -95,18 +96,45 @@ def missing_env_keys(config: ExperimentConfig) -> list[str]:
 
 
 def print_preflight(config: ExperimentConfig, out_dir: Path) -> None:
-    """The pre-flight summary: identity, per-role backends, loop counts."""
+    """The pre-flight summary: identity, per-role backends (with the list
+    rate cost synthesis bills against, for azure_foundry roles), loop counts."""
     print(f"Profile:  {config.profile}")
     print(f"Identity: {identity_hash(config)}")
+    tier = config.pricing.list_price
     for role in CLIENT_ROLES:
         endpoint = getattr(config.backends, role)
-        print(f"  {role:<10} {endpoint.backend} / {endpoint.model}")
+        line = f"  {role:<10} {endpoint.backend} / {endpoint.model}"
+        if endpoint.backend == "azure_foundry":
+            line += f" @ {tier.input_per_million}/{tier.output_per_million}"
+        print(line)
     loop = config.loop
     print(f"Loop:     m={loop.m}, v={loop.v}, k={loop.k}, t={loop.t}, patience={loop.patience}")
     print(
         f"Resume:   re-invoking with --out-dir {out_dir} resumes this experiment; "
         "a changed config refuses (R3) -- use a fresh --out-dir."
     )
+
+
+def print_probe_verdict(path: Path) -> None:
+    """Print the probe verdict ``experiment_smoke.py --probe`` persisted, if any.
+
+    Informational only, never failing: a missing or unreadable file prints a
+    "no probe verdict" line and the dry run proceeds. The raw ``payloads``
+    are elided from stdout (they live in the file itself).
+    """
+    try:
+        verdict = json.loads(path.read_text())
+    except (OSError, ValueError):
+        print(
+            f"Probe:    no probe verdict at {path} "
+            "(run examples/experiment_smoke.py --probe to write one)."
+        )
+        return
+    if isinstance(verdict, dict):
+        shown: object = {key: value for key, value in verdict.items() if key != "payloads"}
+    else:
+        shown = verdict
+    print(f"Probe:    verdict from {path}: {json.dumps(shown, sort_keys=True)}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -131,6 +159,12 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run",
         action="store_true",
         help="pre-flight only: env gate, config load, identity print; spends nothing",
+    )
+    parser.add_argument(
+        "--probe-json",
+        default=None,
+        help="path to the probe verdict examples/experiment_smoke.py --probe wrote "
+        "(default: <out-dir>/probe.json); --dry-run prints it when present",
     )
     args = parser.parse_args(argv)
 
@@ -166,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
     print_preflight(config, out_dir)
 
     if args.dry_run:
+        probe_path = Path(args.probe_json) if args.probe_json else out_dir / "probe.json"
+        print_probe_verdict(probe_path)
         print("Dry run: pre-flight passed; nothing was created and nothing was spent.")
         return 0
 
