@@ -439,10 +439,15 @@ def azure_role_text(text: str, role: str) -> str:
 
 
 def all_roles_text(provider: ProviderCase) -> str:
-    """Shipped text with every role switched to ``provider``'s table."""
+    """Shipped text with every role switched to ``provider``'s table, plus the
+    row's ``[backends.azure_foundry]`` overrides (``azure_table``) when it has
+    any. The shipped ``[decoding]`` is untouched, so every row sends the same
+    decoding knobs and differs only in its provider contract."""
     text = shipped_text()
     for role in CLIENT_ROLES:
         text = role_text(text, role, provider)
+    if provider.azure_table:
+        text = with_azure_table(text, **provider.azure_table)
     return text
 
 
@@ -491,10 +496,48 @@ def test_matrix_response_factory_yields_fresh_plain_objects(provider: ProviderCa
     first, second = provider.response(), provider.response()
     assert first is not second
     assert first.usage is not second.usage
-    # No row sets reasoning fields yet: neither attribute exists.
-    assert not hasattr(first.choices[0].message, "reasoning_content")
-    assert not hasattr(first.usage, "completion_tokens_details")
+    # Reasoning-model fields exist exactly on the rows that declare them.
+    message, usage = first.choices[0].message, first.usage
+    assert hasattr(message, "reasoning_content") == provider.expects_reasoning_fields
+    assert hasattr(usage, "completion_tokens_details") == provider.expects_reasoning_fields
+    if provider.expects_reasoning_fields:
+        assert isinstance(message.reasoning_content, str)
+        assert isinstance(usage.completion_tokens_details.reasoning_tokens, int)
     assert provider.response(content="x").choices[0].message.content == "x"
+
+
+def test_matrix_row_azure_table_overrides_reach_sampling_args(
+    provider: ProviderCase, tmp_path: Path
+) -> None:
+    """The row's ``azure_table`` overrides (thinking / reasoning_effort) land in
+    the loaded config and its sampling args: ``reasoning_effort`` rides
+    top-level exactly when the row expects it, ``chat_template_kwargs`` appears
+    exactly when the row's ``extra_body`` says so, and ``max_tokens`` is the
+    shipped decoding cap."""
+    config = load_config(path=write_config(tmp_path, all_roles_text(provider)))
+    foundry = config.backends.azure_foundry
+    assert foundry is not None
+    for key, value in provider.azure_table.items():
+        assert getattr(foundry, key) == value
+    args = sampling_args(config, "runner")
+    assert ("reasoning_effort" in args) == ("reasoning_effort" in provider.expected_sampling_keys)
+    assert ("reasoning_effort" in args) != ("reasoning_effort" in provider.forbidden_sampling_keys)
+    assert "reasoning_effort" not in args["extra_body"]
+    assert args["extra_body"] == provider.expected_extra_body
+    assert args["max_tokens"] == config.decoding.max_output_tokens
+
+
+def test_matrix_row_shipped_config_decoding_cap(provider: ProviderCase) -> None:
+    """``config_path``'s decoding cap is the row's declared one and reaches
+    ``sampling_args["max_tokens"]`` (the client renames it on the wire)."""
+    config = load_config(path=provider.config_path)
+    assert config.decoding.max_output_tokens == provider.config_max_output_tokens
+    args = sampling_args(config, "runner")
+    assert args["max_tokens"] == provider.config_max_output_tokens
+    assert ("reasoning_effort" in args) == ("reasoning_effort" in provider.expected_sampling_keys)
+    assert "reasoning_effort" not in args["extra_body"]
+    # Loader invariant: reasoning_effort never travels with chat_template_kwargs.
+    assert not ("reasoning_effort" in args and "chat_template_kwargs" in args["extra_body"])
 
 
 _BRANCH_ON_PROVIDER = re.compile(r"if\s+provider" + r"\.id\b")

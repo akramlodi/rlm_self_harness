@@ -658,6 +658,32 @@ class TestSamplingArgsFidelity:
         assert call_kwargs["max_completion_tokens"] == config.decoding.max_output_tokens
         assert call_kwargs["extra_body"] == provider.expected_extra_body
 
+    def test_row_config_path_decoding_reaches_the_wire(self, provider, monkeypatch):
+        """The row's shipped ``config_path`` (not the surgered default) builds
+        a client whose ``create`` call carries the row's key contract and the
+        file's own output cap as ``max_completion_tokens`` (16384 for gpt-oss);
+        ``reasoning_effort`` never hides inside ``extra_body`` and never
+        travels with ``chat_template_kwargs``."""
+        from shrlm.experiment.config import backend_kwargs_for, load_config
+
+        config = load_config(path=provider.config_path)
+        backend_kwargs = backend_kwargs_for(config, "runner")
+        client = provider.make_client(
+            monkeypatch,
+            response=provider.response(),
+            sampling_args=backend_kwargs["sampling_args"],
+        )
+        client.completion("hi")
+        call_kwargs = client.client.chat.completions.create.call_args.kwargs
+        assert provider.expected_sampling_keys <= set(call_kwargs)
+        assert provider.forbidden_sampling_keys.isdisjoint(call_kwargs)
+        assert call_kwargs["max_completion_tokens"] == provider.config_max_output_tokens
+        extra_body = call_kwargs["extra_body"]
+        assert "reasoning_effort" not in extra_body
+        # Loader invariant: a reasoning-effort request never carries Kimi's
+        # instant-mode chat_template_kwargs (the Foundry route rejects it).
+        assert not ("reasoning_effort" in call_kwargs and "chat_template_kwargs" in extra_body)
+
 
 class TestModelUsageSummaryCostSource:
     def test_to_dict_omits_cost_source_when_unset(self):

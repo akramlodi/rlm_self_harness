@@ -9,13 +9,13 @@ a provider name (branching on the row id is forbidden; a guard test enforces it)
 Provider-specific divergence belongs in a row field or in an
 ``xfail(strict=True)`` attached from ``pytest_collection_modifyitems``.
 
-Two rows today (``azure_kimi``, ``openrouter_qwen``); the gpt-oss row lands
-once the reasoning knob and the reasoning-response hardening exist.
+Three rows: ``azure_kimi``, ``azure_gptoss``, ``openrouter_qwen``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Protocol
@@ -101,7 +101,18 @@ class ProviderCase:
     cost_source: str
     # The shipped config whose roles select this provider.
     config_path: Path
+    # ``decoding.max_output_tokens`` in ``config_path`` -- the output cap that
+    # must reach the wire as ``max_completion_tokens`` from the shipped file.
+    config_max_output_tokens: int
     response_defaults: dict[str, Any]
+    # ``[backends.azure_foundry]`` overrides the shipped provider table needs
+    # for this row (``thinking`` / ``reasoning_effort``); empty when the
+    # shipped table already fits. Applied by ``all_roles_text`` (text surgery)
+    # and ``smoke_config_for`` (dataclass replace) alike.
+    azure_table: dict[str, Any] = field(default_factory=dict)
+    # Whether ``response()`` carries the reasoning-model fields
+    # (``message.reasoning_content`` and ``usage.completion_tokens_details``).
+    expects_reasoning_fields: bool = False
 
     def role_table_text(self, role: str) -> str:
         """The exact ``[backends.<role>]`` TOML table for this provider."""
@@ -117,13 +128,14 @@ def _azure_client(
     *,
     response: Any = None,
     sampling_args: dict[str, Any] | None = None,
+    pricing: dict[str, float],
 ) -> Any:
     from tests.clients.test_azure_foundry import _make_client
 
     kwargs: dict[str, Any] = {}
     if sampling_args is not None:
         kwargs["sampling_args"] = sampling_args
-    return _make_client(monkeypatch, response=response, pricing=dict(AZURE_KIMI_PRICING), **kwargs)
+    return _make_client(monkeypatch, response=response, pricing=dict(pricing), **kwargs)
 
 
 def _openrouter_client(
@@ -139,6 +151,7 @@ def _openrouter_client(
 
 
 AZURE_KIMI_PRICING: dict[str, float] = {"input_per_million": 0.60, "output_per_million": 3.00}
+AZURE_GPTOSS_PRICING: dict[str, float] = {"input_per_million": 0.15, "output_per_million": 0.60}
 
 # The OpenAI client renames max_tokens -> max_completion_tokens itself.
 _OPENAI_SURFACE_KEYS = frozenset({"temperature", "top_p", "max_completion_tokens"})
@@ -149,7 +162,7 @@ AZURE_KIMI = ProviderCase(
     model="Kimi-K2.5",
     env_keys=("AZURE_API_KEY", "AZURE_FOUNDRY_ENDPOINT"),
     pricing=AZURE_KIMI_PRICING,
-    make_client=_azure_client,
+    make_client=partial(_azure_client, pricing=AZURE_KIMI_PRICING),
     expected_sampling_keys=_OPENAI_SURFACE_KEYS,
     forbidden_sampling_keys=frozenset({"max_tokens", "reasoning_effort", "pricing"}),
     # Instant mode rides chat_template_kwargs; the shipped decoding knobs
@@ -157,7 +170,35 @@ AZURE_KIMI = ProviderCase(
     expected_extra_body={"top_k": 20, "min_p": 0.0, "chat_template_kwargs": {"thinking": False}},
     cost_source="synthesized",
     config_path=CONFIG_DIR / "experiment_kimiK25.toml",
+    config_max_output_tokens=8192,
     response_defaults={"content": "hello from foundry"},
+)
+
+AZURE_GPTOSS = ProviderCase(
+    id="azure_gptoss",
+    backend="azure_foundry",
+    model="gpt-oss-120b",
+    env_keys=("AZURE_API_KEY", "AZURE_FOUNDRY_ENDPOINT"),
+    pricing=AZURE_GPTOSS_PRICING,
+    make_client=partial(_azure_client, pricing=AZURE_GPTOSS_PRICING),
+    # reasoning_effort is a TOP-LEVEL request parameter, never extra_body.
+    expected_sampling_keys=_OPENAI_SURFACE_KEYS | {"reasoning_effort"},
+    forbidden_sampling_keys=frozenset({"max_tokens", "pricing"}),
+    # Same convention as the Kimi row: the shipped [decoding] (top_k/min_p)
+    # after role surgery, so extra_body carries those two knobs and NO
+    # chat_template_kwargs (thinking = true sends nothing). The gpt-oss TOML
+    # itself sets neither top_k nor min_p; the config_path tests cover that.
+    expected_extra_body={"top_k": 20, "min_p": 0.0},
+    cost_source="synthesized",
+    config_path=CONFIG_DIR / "experiment_oolong_gptoss.toml",
+    config_max_output_tokens=16384,
+    response_defaults={
+        "content": "hello from gpt-oss",
+        "reasoning_content": "thinking about hi",
+        "completion_tokens_details": {"reasoning_tokens": 100},
+    },
+    azure_table={"thinking": True, "reasoning_effort": "medium"},
+    expects_reasoning_fields=True,
 )
 
 OPENROUTER_QWEN = ProviderCase(
@@ -173,10 +214,11 @@ OPENROUTER_QWEN = ProviderCase(
     expected_extra_body={"top_k": 20, "min_p": 0.0},
     cost_source="provider",
     config_path=CONFIG_DIR / "experiment.toml",
+    config_max_output_tokens=4096,
     response_defaults={"content": "ok", "cost": 0.001},
 )
 
-PROVIDER_CASES: tuple[ProviderCase, ...] = (AZURE_KIMI, OPENROUTER_QWEN)
+PROVIDER_CASES: tuple[ProviderCase, ...] = (AZURE_KIMI, AZURE_GPTOSS, OPENROUTER_QWEN)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -187,7 +229,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 
 # Provider-specific divergence hooks go here as xfail(strict=True) marks keyed
-# on (test name, row id); none exist for the two-row table.
+# on (test name, row id); none exist for the three-row table.
 _ROW_XFAILS: dict[tuple[str, str], str] = {}
 
 
@@ -203,6 +245,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 __all__: list[str] = [
+    "AZURE_GPTOSS",
+    "AZURE_GPTOSS_PRICING",
     "AZURE_KIMI",
     "AZURE_KIMI_PRICING",
     "OPENROUTER_QWEN",

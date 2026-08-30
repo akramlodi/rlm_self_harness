@@ -136,9 +136,9 @@ def smoke_config_for(provider: ProviderCase) -> Any:
     """The shipped smoke profile with the runner role switched to ``provider``.
 
     A no-op when the shipped config already selects the row's backend and
-    model; otherwise the runner endpoint is replaced and the shipped provider
-    tables (``[backends.azure_foundry]``, ``[backends.openrouter]``) and
-    ``[pricing.list_price]`` supply the rest.
+    model; otherwise the runner endpoint is replaced, the row's ``azure_table``
+    overrides (if any) are applied to ``[backends.azure_foundry]``, and the
+    shipped provider tables and ``[pricing.list_price]`` supply the rest.
     """
     from dataclasses import replace
 
@@ -148,13 +148,16 @@ def smoke_config_for(provider: ProviderCase) -> Any:
     runner = config.backends.runner
     if (runner.backend, runner.model) == (provider.backend, provider.model):
         return config
-    return replace(
-        config,
-        backends=replace(
-            config.backends,
-            runner=replace(runner, backend=provider.backend, model=provider.model),
-        ),
+    backends = replace(
+        config.backends,
+        runner=replace(runner, backend=provider.backend, model=provider.model),
     )
+    if provider.azure_table:
+        assert backends.azure_foundry is not None
+        backends = replace(
+            backends, azure_foundry=replace(backends.azure_foundry, **provider.azure_table)
+        )
+    return replace(config, backends=backends)
 
 
 def azure_smoke_config() -> Any:
@@ -312,8 +315,11 @@ class TestLiveRoundConstructionOffline:
                 "input_per_million",
                 "output_per_million",
             }
-        extra_body = config.backend_kwargs["sampling_args"]["extra_body"]
-        assert extra_body == provider.expected_extra_body
+        sampling = config.backend_kwargs["sampling_args"]
+        assert sampling["extra_body"] == provider.expected_extra_body
+        assert ("reasoning_effort" in sampling) == (
+            "reasoning_effort" in provider.expected_sampling_keys
+        )
 
         entries = run_round(config)
         assert len(entries) == len(live_instances())
