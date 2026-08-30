@@ -24,10 +24,10 @@ import pytest
 
 from shrlm.environments.oolong import OolongVerifier
 from shrlm.experiment.config import backend_kwargs_for, load_config
-from shrlm.experiment.live_gates import live_skip_reason
+from shrlm.experiment.live_gates import live_config_path, live_skip_reason
 from shrlm.optimization.driver import RoundConfig, build_round_rlm, execute_run
 from shrlm.optimization.walker import walk
-from shrlm.rlm_harness import H0_STAR
+from shrlm.rlm_harness import HARNESSES
 from shrlm.runner import run_metrics
 from tests.experiment.oolong_recursion_instances import load_oolong_recursion_instances
 
@@ -38,25 +38,30 @@ LIVE_MAX_BUDGET_USD = 0.40
 LIVE_MAX_TIMEOUT_SECONDS = 900.0
 
 
+def _config() -> Any:
+    """The env-selected experiment config (KTD7); the OOLONG Kimi TOML by
+    default -- ``SHRLM_EXPERIMENT_CONFIG=configs/experiment_oolong_gptoss.toml``
+    points this tier at the gpt-oss deployment."""
+    return load_config("full", path=live_config_path(OOLONG_CONFIG))
+
+
 def _skip_reason() -> str | None:
-    return live_skip_reason(
-        runner_backend="azure_foundry", config=load_config("full", path=OOLONG_CONFIG)
-    )
+    # Checked against the SELECTED config's runner backend and rate card.
+    return live_skip_reason(config=_config())
 
 
 _LIVE_SKIP = _skip_reason()
 
 
 def _round_config(out_dir: Path, instances: list[dict[str, Any]]) -> RoundConfig:
-    config = load_config("full", path=OOLONG_CONFIG)
-    assert config.loop.initial_harness == "H0*"
+    config = _config()
     return RoundConfig(
         round_index=1,
-        harness=H0_STAR,
+        harness=HARNESSES[config.loop.initial_harness],
         instances=instances,
         verifier=OolongVerifier(task_set="synth"),
         out_dir=out_dir,
-        backend="azure_foundry",
+        backend=config.backends.runner.backend,
         backend_kwargs=copy.deepcopy(backend_kwargs_for(config, "runner")),
         attempts=1,
         max_iterations=config.caps.max_iterations,
@@ -73,7 +78,7 @@ def _sub_call_counts(completion: Any) -> tuple[int, int]:
 
 @pytest.fixture(scope="module")
 def recursion_rows(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, Any]]:
-    config = load_config("full", path=OOLONG_CONFIG)
+    config = _config()
     instances = load_oolong_recursion_instances(config, n=N_INSTANCES)
     round_config = _round_config(tmp_path_factory.mktemp("oolong_recursion"), instances)
     harnessed = build_round_rlm(round_config)
@@ -99,6 +104,9 @@ def recursion_rows(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, A
                 "passed": bool(verdict.passed) if verdict else None,
                 "cause": (verdict.cause.value if verdict and verdict.cause else "pass"),
                 "cost_usd": completion.usage_summary.total_cost,
+                "input_tokens": completion.usage_summary.total_input_tokens,
+                "output_tokens": completion.usage_summary.total_output_tokens,
+                "wall_s": completion.execution_time,
             }
         )
     _print_table(rows)
@@ -108,17 +116,19 @@ def recursion_rows(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, A
 def _print_table(rows: list[dict[str, Any]]) -> None:
     header = (
         f"{'instance':<44} {'ctxlen':>7} {'chars':>8} {'subcalls':>8} {'tree':>5} "
-        f"{'iters':>5} {'cause':<16} {'cost':>7}"
+        f"{'iters':>5} {'cause':<16} {'cost':>7} {'in_tok':>8} {'out_tok':>8} {'wall_s':>7}"
     )
     print("\n" + header)
     for row in rows:
         print(
             f"{row['instance_id']:<44} {row['context_len']:>7} {row['prompt_chars']:>8} "
             f"{row['sub_calls_metrics']:>8} {row['sub_calls_tree']:>5} {row['iterations']:>5} "
-            f"{row['cause']:<16} {row['cost_usd'] or 0.0:>7.4f}"
+            f"{row['cause']:<16} {row['cost_usd'] or 0.0:>7.4f} {row['input_tokens']:>8} "
+            f"{row['output_tokens']:>8} {row['wall_s']:>7.1f}"
         )
 
 
+@pytest.mark.live
 @pytest.mark.skipif(_LIVE_SKIP is not None, reason=_LIVE_SKIP or "live gates satisfied")
 class TestOolongRecursesLive:
     def test_every_selected_instance_produced_a_row(self, recursion_rows):

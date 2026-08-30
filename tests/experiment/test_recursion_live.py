@@ -25,10 +25,10 @@ import pytest
 
 from shrlm.environments.graphwalks import GraphWalksVerifier
 from shrlm.experiment.config import backend_kwargs_for, load_config
-from shrlm.experiment.live_gates import live_skip_reason
+from shrlm.experiment.live_gates import live_config_path, live_skip_reason
 from shrlm.optimization.driver import RoundConfig, build_round_rlm, execute_run
 from shrlm.optimization.walker import walk
-from shrlm.rlm_harness import H0_STAR
+from shrlm.rlm_harness import HARNESSES
 from shrlm.runner import run_metrics
 from tests.experiment.recursion_instances import RECURSION_INSTANCE_IDS, load_recursion_instances
 
@@ -40,28 +40,32 @@ LIVE_MAX_BUDGET_USD = 0.20
 LIVE_MAX_TIMEOUT_SECONDS = 600.0
 
 
+def _config() -> Any:
+    """The env-selected experiment config (KTD7); the Kimi TOML by default."""
+    return load_config("full", path=live_config_path(KIMI_CONFIG))
+
+
 def _skip_reason() -> str | None:
     # The attestation must be checked against THIS config's rate card, not the
-    # shipped smoke profile's -- they differ (0.6/3.0 vs 0.1/0.3).
-    return live_skip_reason(
-        runner_backend="azure_foundry", config=load_config("full", path=KIMI_CONFIG)
-    )
+    # shipped smoke profile's -- they differ (0.6/3.0 vs 0.1/0.3). The gate
+    # reads the selected config's own runner backend and credentials.
+    return live_skip_reason(config=_config())
 
 
 _LIVE_SKIP = _skip_reason()
 
 
 def _live_round_config(out_dir: Path) -> RoundConfig:
-    """H0* plus the Kimi config's real runner kwargs, under tight per-run caps."""
-    config = load_config("full", path=KIMI_CONFIG)
-    assert config.loop.initial_harness == "H0*"
+    """The config's initial harness plus its real runner kwargs, under tight
+    per-run caps."""
+    config = _config()
     return RoundConfig(
         round_index=1,
-        harness=H0_STAR,
+        harness=HARNESSES[config.loop.initial_harness],
         instances=load_recursion_instances(config),
         verifier=GraphWalksVerifier(),
         out_dir=out_dir,
-        backend="azure_foundry",
+        backend=config.backends.runner.backend,
         backend_kwargs=copy.deepcopy(backend_kwargs_for(config, "runner")),
         attempts=1,
         max_iterations=config.caps.max_iterations,
@@ -104,6 +108,9 @@ def recursion_rows(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, A
                 "passed": bool(verdict.passed) if verdict else None,
                 "cause": (verdict.cause.value if verdict and verdict.cause else "pass"),
                 "cost_usd": completion.usage_summary.total_cost,
+                "input_tokens": completion.usage_summary.total_input_tokens,
+                "output_tokens": completion.usage_summary.total_output_tokens,
+                "wall_s": completion.execution_time,
                 "usage_lower_bound": outcome.usage_lower_bound,
             }
         )
@@ -114,17 +121,19 @@ def recursion_rows(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, A
 def _print_table(rows: list[dict[str, Any]]) -> None:
     header = (
         f"{'instance':<28} {'chars':>7} {'subcalls':>8} {'tree':>5} {'iters':>5} "
-        f"{'cause':<20} {'cost':>7} lb"
+        f"{'cause':<20} {'cost':>7} {'in_tok':>8} {'out_tok':>8} {'wall_s':>7} lb"
     )
     print("\n" + header)
     for row in rows:
         print(
             f"{row['instance_id']:<28} {row['prompt_chars']:>7} {row['sub_calls_metrics']:>8} "
             f"{row['sub_calls_tree']:>5} {row['iterations']:>5} {row['cause']:<20} "
-            f"{row['cost_usd']:>7.4f} {'*' if row['usage_lower_bound'] else ''}"
+            f"{row['cost_usd'] or 0.0:>7.4f} {row['input_tokens']:>8} {row['output_tokens']:>8} "
+            f"{row['wall_s']:>7.1f} {'*' if row['usage_lower_bound'] else ''}"
         )
 
 
+@pytest.mark.live
 @pytest.mark.skipif(_LIVE_SKIP is not None, reason=_LIVE_SKIP or "live gates satisfied")
 class TestH0StarRecursesLive:
     def test_every_selected_instance_produced_a_row(self, recursion_rows):

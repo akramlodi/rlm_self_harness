@@ -36,6 +36,7 @@ the result, so ``-rs`` output names the exact missing gate.
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -46,6 +47,25 @@ if TYPE_CHECKING:
 
 LIVE_FLAG = "SHRLM_RUN_LIVE"
 VERIFIED_PRICING_KEY = "SHRLM_VERIFIED_PRICING"
+CONFIG_ENV_KEY = "SHRLM_EXPERIMENT_CONFIG"
+
+
+def live_config_path(default: Path | str) -> Path:
+    """The experiment TOML a live tier should load (KTD7).
+
+    ``SHRLM_EXPERIMENT_CONFIG``, when set and non-empty, selects the config
+    for every live pytest tier; otherwise each load site keeps its OWN current
+    default (the shipped smoke path for the client and smoke tiers,
+    ``configs/experiment_kimiK25.toml`` and ``configs/experiment_oolong.toml``
+    for the two recursion modules) -- one global default would make the
+    recursion modules load the smoke profile and fail at client construction.
+    The caller passes the selected config on to ``live_skip_reason`` so the
+    pricing attestation compares against that file's rate card.
+    """
+    override = os.environ.get(CONFIG_ENV_KEY)
+    if override:
+        return Path(override)
+    return Path(default)
 
 
 def pricing_attestation_mismatch(

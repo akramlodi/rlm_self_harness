@@ -233,7 +233,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 _ROW_XFAILS: dict[tuple[str, str], str] = {}
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     for item in items:
         callspec = getattr(item, "callspec", None)
         provider = callspec.params.get("provider") if callspec is not None else None
@@ -242,6 +242,22 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         reason = _ROW_XFAILS.get((item.originalname, provider.id))
         if reason is not None:
             item.add_marker(pytest.mark.xfail(reason=reason, strict=True))
+
+    # Live (paid) items are DESELECTED -- not merely skipped -- unless the
+    # explicit opt-in is present and we are not in CI (KTD8). The modules'
+    # own module-level skipif gates stay in place: once selected, `-rs` names
+    # the exact missing gate (credential, flag, or pricing attestation).
+    import os
+
+    if os.environ.get("SHRLM_RUN_LIVE") == "1" and not os.environ.get("CI"):
+        return
+    kept: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    for item in items:
+        (deselected if item.get_closest_marker("live") else kept).append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = kept
 
 
 __all__: list[str] = [
