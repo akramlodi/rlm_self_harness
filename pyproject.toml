@@ -85,3 +85,6 @@ quote-style = "double"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["live: spends real money; needs SHRLM_RUN_LIVE=1 and provider credentials"]
+addopts = "--strict-markers"
+xfail_strict = true

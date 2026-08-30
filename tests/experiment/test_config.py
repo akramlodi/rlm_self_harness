@@ -3,6 +3,7 @@ experiment parameter, its fail-fast loader, the identity hash, and the
 factory helpers that feed the existing optimization constructors."""
 
 import dataclasses
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,6 +29,7 @@ from shrlm.optimization.driver import RoundConfig
 from shrlm.optimization.promotion import Band, PromotionConfig
 from shrlm.optimization.proposal import ProposerConfig
 from shrlm.optimization.validation import EvaluationConfig, ValidationSplits
+from tests.conftest import AZURE_KIMI, OPENROUTER_QWEN, ProviderCase
 
 DUMMY_VERIFIER = cast(Any, lambda *args, **kwargs: None)
 
@@ -175,9 +177,7 @@ def test_environment_selector_defaults_to_graphwalks_and_is_identity_covered(
 
 
 def test_unknown_environment_selector_is_rejected(tmp_path: Path) -> None:
-    text = shipped_text().replace(
-        'environment = "graphwalks"', 'environment = "oolong_pairs"'
-    )
+    text = shipped_text().replace('environment = "graphwalks"', 'environment = "oolong_pairs"')
     with pytest.raises(ValueError, match=r"\[loop\] environment must be one of"):
         load_config(path=write_config(tmp_path, text))
 
@@ -336,22 +336,93 @@ def test_unknown_key_inside_azure_foundry_table_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def azure_role_text(text: str, role: str) -> str:
-    """``text`` with one role's table switched to the azure_foundry backend."""
-    before = (
-        f'[backends.{role}]\nbackend = "openrouter"\nmodel = "qwen/qwen3-30b-a3b-instruct-2507"'
-    )
-    after = f'[backends.{role}]\nbackend = "azure_foundry"\nmodel = "Kimi-K2.5"'
+def role_text(text: str, role: str, provider: ProviderCase) -> str:
+    """``text`` with one role's shipped (openrouter Qwen) table switched to
+    ``provider``'s table."""
+    before = OPENROUTER_QWEN.role_table_text(role)
     assert before in text, f"no openrouter table found for role {role!r}"
-    return text.replace(before, after)
+    return text.replace(before, provider.role_table_text(role))
+
+
+def azure_role_text(text: str, role: str) -> str:
+    """``text`` with one role's table switched to the azure_foundry backend
+    (the Kimi row of the provider matrix)."""
+    return role_text(text, role, AZURE_KIMI)
+
+
+def all_roles_text(provider: ProviderCase) -> str:
+    """Shipped text with every role switched to ``provider``'s table."""
+    text = shipped_text()
+    for role in CLIENT_ROLES:
+        text = role_text(text, role, provider)
+    return text
 
 
 def all_azure_roles_text() -> str:
     """Shipped text with every role switched to the azure_foundry backend."""
+    return all_roles_text(AZURE_KIMI)
+
+
+def test_matrix_row_table_text_is_the_shipped_openrouter_table() -> None:
+    """The Qwen row's table text IS the shipped role table, so the matrix
+    surgery replaces exactly what ships (an edit to either side fails here)."""
     text = shipped_text()
-    for role in ("runner", "attributor", "proposer"):
-        text = azure_role_text(text, role)
-    return text
+    for role in CLIENT_ROLES:
+        assert OPENROUTER_QWEN.role_table_text(role) in text
+    assert all_roles_text(OPENROUTER_QWEN) == text
+
+
+def test_matrix_row_roles_load_and_route(provider: ProviderCase, tmp_path: Path) -> None:
+    """Provider matrix (KTD5): every role switched to the row loads, selects
+    the row's backend and model, carries pricing exactly when the row says
+    so, and sends the row's ``extra_body``."""
+    config = load_config(path=write_config(tmp_path, all_roles_text(provider)))
+    for role in CLIENT_ROLES:
+        endpoint = getattr(config.backends, role)
+        assert (endpoint.backend, endpoint.model) == (provider.backend, provider.model)
+        kwargs = backend_kwargs_for(config, role)
+        assert kwargs["model_name"] == provider.model
+        assert ("pricing" in kwargs) == (provider.pricing is not None)
+        if provider.pricing is not None:
+            assert set(kwargs["pricing"]) == set(provider.pricing)
+        assert kwargs["sampling_args"]["extra_body"] == provider.expected_extra_body
+
+
+def test_matrix_row_shipped_config_selects_the_row(provider: ProviderCase) -> None:
+    """Each row's ``config_path`` is a shipped config whose runner is the row."""
+    config = load_config(path=provider.config_path)
+    assert (config.backends.runner.backend, config.backends.runner.model) == (
+        provider.backend,
+        provider.model,
+    )
+    kwargs = backend_kwargs_for(config, "runner")
+    assert ("pricing" in kwargs) == (provider.pricing is not None)
+
+
+def test_matrix_response_factory_yields_fresh_plain_objects(provider: ProviderCase) -> None:
+    first, second = provider.response(), provider.response()
+    assert first is not second
+    assert first.usage is not second.usage
+    # No row sets reasoning fields yet: neither attribute exists.
+    assert not hasattr(first.choices[0].message, "reasoning_content")
+    assert not hasattr(first.usage, "completion_tokens_details")
+    assert provider.response(content="x").choices[0].message.content == "x"
+
+
+_BRANCH_ON_PROVIDER = re.compile(r"if\s+provider" + r"\.id\b")
+
+
+def test_no_test_body_branches_on_the_provider_id() -> None:
+    """Divergence lives in matrix row fields or collection-time xfails (KTD5),
+    never in a test body."""
+    tests_dir = Path(__file__).resolve().parent.parent
+    hits = [
+        f"{path.relative_to(tests_dir.parent)}:{number}"
+        for path in sorted(tests_dir.rglob("*.py"))
+        for number, line in enumerate(path.read_text().splitlines(), start=1)
+        if _BRANCH_ON_PROVIDER.search(line)
+    ]
+    assert hits == [], f"test bodies branch on provider.id: {hits}"
 
 
 def test_absent_openrouter_table_loads_when_roles_use_azure_foundry(tmp_path: Path) -> None:

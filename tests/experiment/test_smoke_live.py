@@ -49,6 +49,7 @@ from shrlm.optimization.driver import (
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
 from shrlm.rlm_harness import H0
+from tests.conftest import AZURE_KIMI, SENTINEL_ENV, ProviderCase
 from tests.optimization.test_driver import read_manifest
 
 # The credentials the azure_foundry gate path demands.
@@ -131,14 +132,13 @@ class ContainsGoldVerifier:
         )
 
 
-def azure_smoke_config() -> Any:
-    """The shipped smoke profile with the runner role forced to azure_foundry.
+def smoke_config_for(provider: ProviderCase) -> Any:
+    """The shipped smoke profile with the runner role switched to ``provider``.
 
-    A no-op when the shipped config already selects azure_foundry (the only
-    case the paid tier runs in); otherwise -- e.g. the shipped openrouter
-    config -- it gives the offline construction tests the azure semantics they
-    exercise, using the shipped ``[backends.azure_foundry]`` table and
-    ``[pricing.list_price]``.
+    A no-op when the shipped config already selects the row's backend and
+    model; otherwise the runner endpoint is replaced and the shipped provider
+    tables (``[backends.azure_foundry]``, ``[backends.openrouter]``) and
+    ``[pricing.list_price]`` supply the rest.
     """
     from dataclasses import replace
 
@@ -146,33 +146,43 @@ def azure_smoke_config() -> Any:
 
     config = load_config(profile="smoke")
     runner = config.backends.runner
-    if runner.backend == "azure_foundry":
+    if (runner.backend, runner.model) == (provider.backend, provider.model):
         return config
     return replace(
         config,
         backends=replace(
             config.backends,
-            runner=replace(runner, backend="azure_foundry", model="Kimi-K2.5"),
+            runner=replace(runner, backend=provider.backend, model=provider.model),
         ),
     )
 
 
-def make_live_round_config(out_dir: Path) -> RoundConfig:
+def azure_smoke_config() -> Any:
+    """The shipped smoke profile with the runner role forced to azure_foundry
+    (the Kimi row) -- what the paid azure tier runs."""
+    return smoke_config_for(AZURE_KIMI)
+
+
+def make_live_round_config(out_dir: Path, config: Any = None) -> RoundConfig:
     """The real construction path: H0 + real configured runner backend_kwargs.
 
-    ``backend_kwargs_for`` builds fresh dicts per call; the deep copy makes
-    doubly sure no shared config object can be mutated through the RoundConfig.
+    ``config`` defaults to ``azure_smoke_config()`` (the paid tier); the
+    offline matrix passes ``smoke_config_for(provider)``. ``backend_kwargs_for``
+    builds fresh dicts per call; the deep copy makes doubly sure no shared
+    config object can be mutated through the RoundConfig.
     """
     from shrlm.experiment.config import backend_kwargs_for
 
-    backend_kwargs = copy.deepcopy(backend_kwargs_for(azure_smoke_config(), "runner"))
+    if config is None:
+        config = azure_smoke_config()
+    backend_kwargs = copy.deepcopy(backend_kwargs_for(config, "runner"))
     return RoundConfig(
         round_index=1,
         harness=H0,
         instances=live_instances(),
         verifier=ContainsGoldVerifier(),
         out_dir=out_dir,
-        backend="azure_foundry",
+        backend=config.backends.runner.backend,
         backend_kwargs=backend_kwargs,
         attempts=1,
         max_iterations=LIVE_MAX_ITERATIONS,
@@ -266,43 +276,66 @@ class TestLiveDriverRound:
 
 
 class TestLiveRoundConstructionOffline:
-    """Prove the round the live tier would pay for is well-formed, offline.
+    """Prove the round the live tier would pay for is well-formed, offline,
+    once per provider-matrix row (KTD5).
 
-    Same ``make_live_round_config`` (H0, azure_foundry, the real smoke-profile
-    backend_kwargs), run through the scripted-client seam every driver test
-    uses -- so a backend_kwargs shape error, a sensitive-kwarg refusal, or a
-    broken resume would surface here for free, never on the paid tier.
+    Same ``make_live_round_config`` (H0, the row's backend, the real
+    smoke-profile backend_kwargs), run through the scripted-client seam every
+    driver test uses -- so a backend_kwargs shape error, a sensitive-kwarg
+    refusal, or a broken resume would surface here for free, never on the
+    paid tier. The Kimi row is byte-for-byte the round the azure tier pays for.
     """
 
-    def test_live_config_runs_and_resumes_through_run_round(self, tmp_path, monkeypatch):
+    def test_live_config_runs_and_resumes_through_run_round(
+        self, provider: ProviderCase, tmp_path, monkeypatch
+    ):
         import rlm.core.rlm as rlm_module
         from tests.optimization.test_driver import ClientFactory, final
 
-        monkeypatch.setenv("AZURE_API_KEY", "sentinel-key")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://sentinel.services.ai.azure.com")
-        factory = ClientFactory([final("B"), final("WRONG")], cost_source="synthesized")
+        # The driver refuses to start a round without the backend's credentials.
+        assert set(provider.env_keys) == set(_BACKEND_ENV_KEYS[provider.backend])
+        for key in provider.env_keys:
+            monkeypatch.setenv(key, SENTINEL_ENV[key])
+        factory = ClientFactory([final("B"), final("WRONG")], cost_source=provider.cost_source)
         monkeypatch.setattr(rlm_module, "get_client", factory)
 
-        config = make_live_round_config(tmp_path)
+        config = make_live_round_config(tmp_path, smoke_config_for(provider))
+        assert config.backend == provider.backend
+        assert config.backend_kwargs["model_name"] == provider.model
         # The real configured kwargs the live tier sends: nested pricing (which
-        # the driver's sensitive-kwarg scan must accept) and instant mode.
-        assert set(config.backend_kwargs["pricing"]) == {
-            "input_per_million",
-            "output_per_million",
-        }
+        # the driver's sensitive-kwarg scan must accept) exactly when the row
+        # carries pricing, and the row's extra_body (instant mode for Kimi:
+        # chat_template_kwargs == {"thinking": False}).
+        assert ("pricing" in config.backend_kwargs) == (provider.pricing is not None)
+        if provider.pricing is not None:
+            assert set(config.backend_kwargs["pricing"]) == {
+                "input_per_million",
+                "output_per_million",
+            }
         extra_body = config.backend_kwargs["sampling_args"]["extra_body"]
-        assert extra_body["chat_template_kwargs"] == {"thinking": False}
+        assert extra_body == provider.expected_extra_body
 
         entries = run_round(config)
         assert len(entries) == len(live_instances())
-        assert all(entry["cost_source"] == "synthesized" for entry in entries)
+        assert all(entry["cost_source"] == provider.cost_source for entry in entries)
         assert all(isinstance(entry["verdict"], dict) for entry in entries)
 
         idle = ClientFactory([])
         monkeypatch.setattr(rlm_module, "get_client", idle)
-        resumed = run_round(make_live_round_config(tmp_path))
+        resumed = run_round(make_live_round_config(tmp_path, smoke_config_for(provider)))
         assert len(resumed) == len(entries)
         assert idle.total_calls == 0
+
+    def test_kimi_row_is_the_round_the_azure_tier_pays_for(self, tmp_path):
+        """The paid azure tier's default construction and the matrix's Kimi
+        row build the same round: same backend and byte-identical kwargs."""
+        paid = make_live_round_config(tmp_path)
+        matrix = make_live_round_config(tmp_path, smoke_config_for(AZURE_KIMI))
+        assert paid.backend == matrix.backend == "azure_foundry"
+        assert paid.backend_kwargs == matrix.backend_kwargs
+        assert matrix.backend_kwargs["sampling_args"]["extra_body"]["chat_template_kwargs"] == {
+            "thinking": False
+        }
 
 
 # ---------------------------------------------------------------------------

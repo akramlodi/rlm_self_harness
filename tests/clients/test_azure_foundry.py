@@ -374,6 +374,33 @@ class TestSamplingArgsFidelity:
         assert call_kwargs["max_completion_tokens"] == 128
         assert "max_tokens" not in call_kwargs
 
+    def test_shipped_decoding_reaches_the_wire_per_provider(self, provider, tmp_path, monkeypatch):
+        """Provider matrix (KTD5): the shipped ``[decoding]`` table, routed
+        through a runner role switched to ``provider``, reaches the mocked
+        ``chat.completions.create`` with exactly the row's contract -- the
+        expected top-level keys present, the forbidden ones absent, and the
+        row's ``extra_body`` byte-for-byte."""
+        from shrlm.experiment.config import backend_kwargs_for, load_config
+        from tests.experiment.test_config import all_roles_text, write_config
+
+        config = load_config(path=write_config(tmp_path, all_roles_text(provider)))
+        backend_kwargs = backend_kwargs_for(config, "runner")
+        assert ("pricing" in backend_kwargs) == (provider.pricing is not None)
+
+        client = provider.make_client(
+            monkeypatch,
+            response=provider.response(),
+            sampling_args=backend_kwargs["sampling_args"],
+        )
+        client.completion("hi")
+        call_kwargs = client.client.chat.completions.create.call_args.kwargs
+        assert provider.expected_sampling_keys <= set(call_kwargs)
+        assert provider.forbidden_sampling_keys.isdisjoint(call_kwargs)
+        assert call_kwargs["temperature"] == config.decoding.temperature
+        assert call_kwargs["top_p"] == config.decoding.top_p
+        assert call_kwargs["max_completion_tokens"] == config.decoding.max_output_tokens
+        assert call_kwargs["extra_body"] == provider.expected_extra_body
+
 
 class TestModelUsageSummaryCostSource:
     def test_to_dict_omits_cost_source_when_unset(self):
