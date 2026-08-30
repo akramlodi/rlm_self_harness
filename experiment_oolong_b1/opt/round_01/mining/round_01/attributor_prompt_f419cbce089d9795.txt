@@ -1,0 +1,60 @@
+You are analyzing one failed run of a recursive language model, in order to describe *why* it failed in terms that generalize across runs.
+
+A recursive language model keeps its input in a REPL variable, writes code to split that input into pieces, issues sub-calls over the pieces, and combines the results. The run below was rejected by a deterministic verifier.
+
+Your job is diagnosis only. Do NOT propose, name, hint at, or describe any change to the system. Do not say what should be done differently. Describe only what happened and which reusable behavior produced it.
+
+Choose exactly one value from each vocabulary below. Use the literal string value. If nothing fits, choose the "other"/"unattributed" member and explain in the corresponding detail field -- do not stretch a member that does not fit.
+
+editable_surfaces (each mechanism implicates one primary surface):
+  - S1 repl_contract [child_reachable]: the factual REPL contract
+  - S2 decomposition_instruction [child_reachable]: probing `context` and planning the decomposition
+  - S3 execution_instruction [child_reachable]: what to print, when to offload, how to aggregate
+  - S4 verification_instruction [child_reachable]: what to check before flipping `answer["ready"]`
+  - S5 recovery_instruction [child_reachable]: what to do when a sub-call errors or returns something unusable
+  - S6 runtime_policy [root_only]: every number and switch
+  - S7 metadata [root_only]: what carries across turns
+  - S8 repl_helpers+sub_repl_helpers [child_reachable]: proposer-written functions and data injected into the REPL; the harness-installed skill loader is scaffold and belongs to S10
+  - S9 answer_middleware [root_only]: programmatic inspection of the detected answer, with redirect
+  - S10 skills [child_reachable]: the skill library: one named, reusable procedure per entry -- `name` identifies it, a one-line `description` states when to consult it, and `body` is its ordered steps; neither description nor body may restate per-turn execution or decomposition guidance
+
+causal_status (choose exactly one):
+  - causal: An evidence chain in the trace links the behavior to the wrong output.
+  - contributing: One of several factors; removing it would plausibly but not certainly repair the run.
+  - correlated: The behavior co-occurs with the failure but no evidence chain connects them.
+  - unattributed: The trace evidence is insufficient to place the behavior. Requires a free-text detail.
+
+agent_mechanism (choose exactly one):
+  - repl_contract_misuse: The root violated or misread the documented REPL contract -- for example attempting to read the prompt variable into context wholesale, or ignoring the documented variable protocol.
+  - whole_input_subcall_collapse: The root delegated nearly the entire context to a single sub-call, or performed no meaningful decomposition at all.
+  - incomplete_coverage: The union of the sub-call inputs did not cover the input; some spans were never examined.
+  - redundant_decomposition: Sub-call inputs overlapped or duplicated each other, inflating cost and double-counting results at merge time.
+  - misaligned_unit: The decomposition unit did not match the task's unit of solvability, so no sub-call was in a position to answer its piece correctly.
+  - depth_degradation: Recursion went deeper than the task required; accuracy degraded and cost inflated with no corresponding gain.
+  - insufficient_recursion: A sub-call received a piece that was still too large and answered it directly instead of decomposing further.
+  - llm_for_rlm_substitution: A plain llm_query was used where a recursive rlm_query was required, or the reverse.
+  - lossy_aggregation: Sub-calls returned correct local results, but the root's combine step dropped, truncated, or mis-merged them.
+  - unparsed_child_output: The root could not reliably parse free-text sub-call returns because no return structure was imposed on them.
+  - premature_termination: The root committed to an answer while evidence of incompleteness was still available, such as unvisited slices or an unresolved frontier.
+  - skipped_verification: The root submitted an answer without any verification pass over the accumulated results; nothing was checked before the answer was marked ready.
+  - iteration_budget_exhaustion: The root never committed to an answer; the iteration budget ran out and the answer was synthesized by the fallback.
+  - swallowed_subcall_error: A sub-call failed and returned an error string, which the root consumed as if it were a valid result.
+  - repl_execution_fault: The failure originated in the root's own code -- a traceback, an off-by-one slice, a bad index -- rather than in any model judgment.
+  - unconsulted_procedure: A reusable procedure the run needed was never consulted. With a non-empty skill index (the digest's available_skills line): a skill whose description names the failing step was available and the root never loaded it (absent from loaded_skills) before failing. With no available_skills line (no skill was available): the fallback signal is the root re-deriving, in a later turn or for a later sub-call, a procedure it had already carried out in this run. Precedence: choose this mechanism only when neither iteration_budget_exhaustion (S6) nor depth_degradation (S3) independently explains the terminal failure; when either does, choose that one.
+  - other: A recurring mechanism not covered above. Requires a free-text detail describing it.
+
+
+Respond with a single fenced JSON block and nothing else:
+
+```json
+{
+  "causal_status": "<value>",
+  "agent_mechanism": "<value>",
+  "causal_status_detail": "<free text, required only for unattributed>",
+  "agent_mechanism_detail": "<free text, required only for other>",
+  "evidence_node_ids": ["<node_id from the sub-call table>"],
+  "symptom_summary": "<one sentence describing the observed behavior>"
+}
+```
+
+This run made no sub-calls, so the run below lists no sub-call node ids. Leave evidence_node_ids as an empty list. Do not invent identifiers.
