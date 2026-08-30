@@ -86,6 +86,30 @@ def _make_client(monkeypatch, response=None, pricing="default", **kwargs):
     return client
 
 
+def _make_async_client(monkeypatch, response=None, create=None, **kwargs):
+    """An ``AzureFoundryClient`` whose async SDK returns ``response`` (or runs
+    ``create``); the sync SDK is patched inert. Mirrors ``_make_client``."""
+    from rlm.clients.azure_foundry import AzureFoundryClient
+
+    monkeypatch.setenv("AZURE_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
+    if create is None:
+
+        async def create(**_kwargs):
+            return response
+
+    with (
+        patch("rlm.clients.openai.openai.OpenAI"),
+        patch("rlm.clients.openai.openai.AsyncOpenAI") as mock_async_openai,
+    ):
+        mock_async = MagicMock()
+        mock_async.chat.completions.create = create
+        mock_async_openai.return_value = mock_async
+        kwargs.setdefault("model_name", "kimi-k2.5")
+        kwargs.setdefault("pricing", dict(VALID_PRICING))
+        return AzureFoundryClient(**kwargs)
+
+
 class TestConstructionValidation:
     def test_missing_api_key_names_variable(self, monkeypatch):
         import rlm.clients.azure_foundry as mod
@@ -190,24 +214,8 @@ class TestCostSynthesis:
         assert summary.model_usage_summaries["kimi-k2.5"].cost_source == "synthesized"
 
     def test_acompletion_synthesizes_cost(self, monkeypatch):
-        from rlm.clients.azure_foundry import AzureFoundryClient
-
-        monkeypatch.setenv("AZURE_API_KEY", "test-key")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
         response = _make_response(prompt_tokens=1000, completion_tokens=500)
-
-        with (
-            patch("rlm.clients.openai.openai.OpenAI"),
-            patch("rlm.clients.openai.openai.AsyncOpenAI") as mock_async_openai,
-        ):
-            mock_async = MagicMock()
-
-            async def _create(**kwargs):
-                return response
-
-            mock_async.chat.completions.create = _create
-            mock_async_openai.return_value = mock_async
-            client = AzureFoundryClient(model_name="kimi-k2.5", pricing=dict(VALID_PRICING))
+        client = _make_async_client(monkeypatch, response=response)
 
         result = asyncio.run(client.acompletion("hi"))
         assert result == "hello from foundry"
@@ -370,7 +378,6 @@ class TestReasoningExhaustion:
         assert client.get_usage_summary().total_cost > 0
 
     def test_acompletion_terminates_the_same_way(self, monkeypatch):
-        from rlm.clients.azure_foundry import AzureFoundryClient
         from rlm.utils.exceptions import TokenLimitExceededError
 
         monkeypatch.setattr(
@@ -378,30 +385,20 @@ class TestReasoningExhaustion:
             lambda _s: (_ for _ in ()).throw(AssertionError("no backoff")),
             raising=False,
         )
-        monkeypatch.setenv("AZURE_API_KEY", "test-key")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
         response = _make_response(
             completion_tokens=500, finish_reason="length", content="", reasoning_tokens=480
         )
-        calls = 0
-        with (
-            patch("rlm.clients.openai.openai.OpenAI"),
-            patch("rlm.clients.openai.openai.AsyncOpenAI") as mock_async_openai,
-        ):
-            mock_async = MagicMock()
+        calls = [0]
 
-            async def _create(**kwargs):
-                nonlocal calls
-                calls += 1
-                return response
+        async def _create(**kwargs):
+            calls[0] += 1
+            return response
 
-            mock_async.chat.completions.create = _create
-            mock_async_openai.return_value = mock_async
-            client = AzureFoundryClient(model_name="kimi-k2.5", pricing=dict(VALID_PRICING))
+        client = _make_async_client(monkeypatch, create=_create)
 
         with pytest.raises(TokenLimitExceededError, match="reasoning"):
             asyncio.run(client.acompletion("hi"))
-        assert calls == 1
+        assert calls[0] == 1
         assert client.last_cost is not None and client.last_cost > 0
 
     def test_empty_stop_is_still_retried_then_raises_runtime_error(self, monkeypatch):
@@ -431,17 +428,21 @@ class TestReasoningExhaustion:
     def test_classifier_is_pure(self):
         from rlm.clients.azure_foundry import AzureFoundryClient
 
+        def classify(response):
+            return AzureFoundryClient._reasoning_exhausted(
+                response.choices[0], getattr(response, "usage", None)
+            )
+
         exhausted = _make_response(
             completion_tokens=500, finish_reason="length", content="", reasoning_tokens=450
         )
-        assert AzureFoundryClient._reasoning_exhausted(exhausted) is True
+        assert classify(exhausted) is True
         with_text = _make_response(
             completion_tokens=500, finish_reason="length", content="x", reasoning_tokens=450
         )
-        assert AzureFoundryClient._reasoning_exhausted(with_text) is False
+        assert classify(with_text) is False
         stopped = _make_response(completion_tokens=500, finish_reason="stop", content="")
-        assert AzureFoundryClient._reasoning_exhausted(stopped) is False
-        assert AzureFoundryClient._reasoning_exhausted(SimpleNamespace(choices=[])) is False
+        assert classify(stopped) is False
 
 
 class TestHarmonyMarkerStripping:
@@ -499,23 +500,8 @@ class TestHarmonyMarkerStripping:
         assert client.harmony_markers_dropped == 7
 
     def test_acompletion_strips_and_counts_too(self, monkeypatch):
-        from rlm.clients.azure_foundry import AzureFoundryClient
-
-        monkeypatch.setenv("AZURE_API_KEY", "test-key")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
         response = _make_response(content=self.FINAL_ONLY)
-        with (
-            patch("rlm.clients.openai.openai.OpenAI"),
-            patch("rlm.clients.openai.openai.AsyncOpenAI") as mock_async_openai,
-        ):
-            mock_async = MagicMock()
-
-            async def _create(**kwargs):
-                return response
-
-            mock_async.chat.completions.create = _create
-            mock_async_openai.return_value = mock_async
-            client = AzureFoundryClient(model_name="kimi-k2.5", pricing=dict(VALID_PRICING))
+        client = _make_async_client(monkeypatch, response=response)
 
         assert asyncio.run(client.acompletion("hi")) == "42"
         assert client.harmony_markers_dropped == 3

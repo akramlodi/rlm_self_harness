@@ -124,7 +124,7 @@ def translate_native_tool_calls(content: str) -> str:
 # ``execute_run`` as a non-limit exception and take the experiment down.
 HARMONY_CHANNEL_MARKER = "<|channel|>"
 _HARMONY_CONTROL_TOKENS = (
-    "<|channel|>",
+    HARMONY_CHANNEL_MARKER,
     "<|message|>",
     "<|call|>",
     "<|return|>",
@@ -255,27 +255,23 @@ class AzureFoundryClient(OpenAIClient):
         self.harmony_markers_dropped: int = 0
 
     @staticmethod
-    def _reasoning_exhausted(response: Any) -> bool:
-        """Whether an empty response spent its whole output budget on reasoning.
+    def _reasoning_exhausted(choice: Any, usage: Any) -> bool:
+        """Whether an empty choice spent its whole output budget on reasoning.
 
         True when ``finish_reason == "length"``, the content is empty, and
         either ``usage.completion_tokens_details.reasoning_tokens`` accounts
         for at least 90% of ``completion_tokens`` or the detail block is not
         reported at all (Azure does not document it for gpt-oss chat
         completions; an empty body cut at the length cap is then the only
-        signal). Pure: the client is shared across threads, so no per-call
-        state lives on the instance.
+        signal). Takes the caller's already-extracted first choice and usage.
+        Pure: the client is shared across threads, so no per-call state lives
+        on the instance.
         """
-        choices = getattr(response, "choices", None)
-        if not choices:
-            return False
-        choice = choices[0]
         if getattr(choice, "finish_reason", None) != "length":
             return False
         content = getattr(getattr(choice, "message", None), "content", None)
         if content is not None and content != "":
             return False
-        usage = getattr(response, "usage", None)
         details = getattr(usage, "completion_tokens_details", None)
         reasoning_tokens = getattr(details, "reasoning_tokens", None)
         if reasoning_tokens is None:
@@ -296,11 +292,11 @@ class AzureFoundryClient(OpenAIClient):
                 "Azure Foundry blocked this response via content filter "
                 "(finish_reason='content_filter')."
             )
-        if self._reasoning_exhausted(response):
+        usage = getattr(response, "usage", None)
+        if self._reasoning_exhausted(choice, usage):
             # A limit, not a glitch: surfaces as the same class the RLM's own
             # iteration cap raises, so the root run persists as
             # resource_terminated with the spend banked just above.
-            usage = getattr(response, "usage", None)
             completion_tokens = getattr(usage, "completion_tokens", None)
             tokens_used = completion_tokens if isinstance(completion_tokens, int) else 0
             details = getattr(usage, "completion_tokens_details", None)
@@ -401,7 +397,7 @@ class AzureFoundryClient(OpenAIClient):
         choice = choices[0]
         if getattr(choice, "finish_reason", None) == "content_filter":
             return None  # a deliberate refusal; retrying would only re-spend
-        if self._reasoning_exhausted(response):
+        if self._reasoning_exhausted(choice, getattr(response, "usage", None)):
             return None  # a budget limit; _validate_response raises it
         content = getattr(getattr(choice, "message", None), "content", None)
         if content is None or content == "":

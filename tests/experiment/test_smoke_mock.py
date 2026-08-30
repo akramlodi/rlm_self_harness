@@ -893,10 +893,22 @@ class TestProbeExpectation:
         assert gptoss.max_output_tokens == 16384
 
     def test_effort_none_expects_no_reasoning(self):
-        assert experiment_smoke.ProbeExpectation(expects_reasoning=False).expects_reasoning is False
-        # The derivation rule itself: "none" and None both mean no reasoning.
+        """The derivation rule itself: "none" and None both mean no reasoning."""
+        import dataclasses
+
+        base = gptoss_live_config()
         for effort in (None, "none"):
-            assert effort in (None, "none")
+            config = dataclasses.replace(
+                base,
+                backends=dataclasses.replace(
+                    base.backends,
+                    azure_foundry=dataclasses.replace(
+                        base.backends.azure_foundry, reasoning_effort=effort
+                    ),
+                ),
+            )
+            expectation = experiment_smoke.probe_expectation(config)
+            assert expectation.expects_reasoning is False
 
 
 class TestCheckProbeReasoningDefault:

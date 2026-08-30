@@ -815,9 +815,9 @@ def sampling_args(config: ExperimentConfig, role: str) -> dict[str, Any]:
     reasoning_effort: str | None = None
     if endpoint.backend == "azure_foundry":
         foundry = config.backends.azure_foundry
-        if foundry is not None and foundry.thinking is False:
-            extra_body["chat_template_kwargs"] = {"thinking": False}
         if foundry is not None:
+            if foundry.thinking is False:
+                extra_body["chat_template_kwargs"] = {"thinking": False}
             reasoning_effort = foundry.reasoning_effort
     args: dict[str, Any] = {
         "temperature": decoding.temperature,

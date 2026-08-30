@@ -343,6 +343,11 @@ PROBE_JSON_FILENAME = "probe.json"
 FORBIDDEN_CONTENT_MARKERS: tuple[str, ...] = ("<think>", *_HARMONY_CONTROL_TOKENS)
 
 
+def _leaked_content_markers(content: str) -> list[str]:
+    """Every forbidden marker present in ``content``, in tuple order."""
+    return [marker for marker in FORBIDDEN_CONTENT_MARKERS if marker in content]
+
+
 class SmokeError(RuntimeError):
     """The live smoke's own precondition or structural check failed."""
 
@@ -618,7 +623,7 @@ def check_content_markers(name: str, payload: dict[str, Any]) -> None:
     instead of being repaired silently.
     """
     content = _probe_message(payload).get("content") or ""
-    leaked = [marker for marker in FORBIDDEN_CONTENT_MARKERS if marker in content]
+    leaked = _leaked_content_markers(content)
     if leaked:
         raise SmokeError(
             f"the {name!r} probe response's content carries forbidden marker(s) "
@@ -657,7 +662,7 @@ def check_probe_reasoning(
 
     if expectation.expects_reasoning:
         signals: list[str] = []
-        leaked = [marker for marker in FORBIDDEN_CONTENT_MARKERS if marker in content]
+        leaked = _leaked_content_markers(content)
         if leaked:
             signals.append(f"content carries forbidden marker(s) {leaked}")
         reasoning_fields = sorted(
