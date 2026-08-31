@@ -25,13 +25,18 @@ report carrying a full-experiment estimate. It NEVER asserts accuracy, pass
 counts, or promotion outcomes -- at smoke scale the tau pass-count rule is
 meaningless, so model behavior is the model's business.
 
-Spend control (KTD7; hard ceiling $5, CUMULATIVE across every live tier)
-    The $5.00 ceiling covers everything the provider-switch plan spends live,
+Spend control (KTD7; hard ceiling $5 across the smoke tiers)
+    The $5.00 ceiling covers the smoke tiers of the provider-switch plan,
     added together: the U4 pytest live tier (one client check plus a minimal
     driver round, reserved below as ``PYTEST_LIVE_RESERVE_USD``), this
     script's standalone ``--probe`` invocation (reserved below as the
     standalone probe reserve; the ``--live`` run's own probe calls are
     counted inside the ungoverned class), and the full ``--live`` run.
+    The recursion live tier (ladder step 3;
+    ``tests/experiment/test_oolong_recursion_live.py``) budgets separately
+    on top -- 4 runs x $0.40 = $1.60 worst case -- so the plan's worst-case
+    total live spend is ~$6.58, not $5.00; this static proof does not
+    include that tier.
     ``check_budget_arithmetic`` proves the whole sum before a cent is spent. Every paid call falls in exactly one of two
     classes; the ceiling adds both, then the reserve.
 
@@ -232,8 +237,10 @@ from shrlm.optimization.proposal import DEFAULT_TRANSPORT_RETRIES as PROPOSAL_TR
 load_dotenv()
 
 # The hard ceiling from the plan's Goal Capsule stop condition (c). It is
-# CUMULATIVE across every live tier of the provider-switch plan: the U4 pytest
+# CUMULATIVE across the SMOKE tiers of the provider-switch plan: the U4 pytest
 # live tier (reserved below), this script's probe, and the full --live run.
+# The recursion live tier (4 runs x $0.40 = $1.60 worst case) budgets
+# separately on top and is NOT in this proof; see the module docstring.
 SPEND_CEILING_USD = 5.0
 
 # Worst case reserved for the U4 pytest live tier (one client check ~$0.01

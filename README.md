@@ -74,6 +74,13 @@ The config's `model` value must equal your Foundry **deployment name** (the cata
 default is `Kimi-K2.5`). In every configuration the launcher refuses to start — and
 spends nothing — if a required credential or attestation is missing.
 
+Note (applies to every Azure Foundry deployment, Kimi-K2.5 included): an empty
+completion arriving with `finish_reason='length'` is classified once as token-limit
+exhaustion (`TokenLimitExceededError` -> `resource_terminated`, spend kept) instead of
+entering the empty-content retry ladder — a length cut is deterministic for the prompt,
+so a retry only re-bills the same outcome. Empty completions with other finish reasons
+keep the retry ladder as before.
+
 The `SHRLM_VERIFIED_PRICING` attestation is **per config**, matched against the
 selected config's `[pricing.list_price]`:
 
@@ -106,7 +113,8 @@ uv run python examples/experiment_smoke.py --probe \
     --config configs/experiment_oolong_gptoss.toml --out-dir ./smoke_gptoss
 # 2. Client live (~4 calls, < $0.05): azure_gptoss rows must show PASSED in -rs
 uv run pytest -rs -m live tests/clients/test_azure_foundry.py
-# 3. Recursion live (4 runs x $0.40 max): sub-calls, token and wall-time columns
+# 3. Recursion live (4 runs x $0.40 max, budgeted separately -- up to $1.60 on
+#    top of the $5 smoke-tier ceiling): sub-calls, token and wall-time columns
 uv run pytest -rs -m live tests/experiment/test_oolong_recursion_live.py -s
 # 4. Smoke live: the whole loop, three roles, cost provenance
 uv run python examples/experiment_smoke.py --live \
