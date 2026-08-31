@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from rlm.core.comms_utils import LMRequest, send_lm_request, send_lm_request_batched
+from rlm.core.subcall_context import budget_share
 from rlm.core.types import REPLResult, RLMChatCompletion
 from rlm.environments.base_env import (
     RESERVED_TOOL_NAMES,
@@ -600,25 +601,41 @@ class LocalREPL(NonIsolatedEnv):
                     results[index] = text
                 return self._finalize_batch(self._rlm_query_once, prompts, model, allowed, results)
 
-            # Parallel execution for multiple prompts
+            # Parallel execution for multiple prompts. Each child gets an equal
+            # share of the parent's remaining budget: siblings run concurrently
+            # and their spend is only folded into the parent when they finish,
+            # so handing each the whole remainder let a batch of N spend up to
+            # N x the cap (observed 2026-08-29: $2.78 against a $1.00 cap).
             max_workers = min(self.max_concurrent_subcalls, len(allowed))
             completions: list[tuple[int, RLMChatCompletion]] = []
             lock = threading.Lock()
+            share = 1.0 / len(allowed)
 
             def _run_subcall(index: int, prompt: str) -> None:
-                text, completion = self._rlm_query_once(prompt, model)
+                with budget_share(share):
+                    text, completion = self._rlm_query_once(prompt, model)
                 if completion is not None:
                     with lock:
                         completions.append((index, completion))
                 results[index] = text
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Not a ``with`` block: ``__exit__`` would wait for every running
+            # child before letting a hard-deadline signal (a BaseException
+            # raised on this thread) propagate, which is exactly the hang the
+            # deadline exists to end. On the normal path we wait as before.
+            executor = ThreadPoolExecutor(max_workers=max_workers)
+            try:
                 futures = [
                     executor.submit(_run_subcall, index, prompts[index]) for index in allowed
                 ]
                 # Wait for all futures to complete; exceptions are captured inside _run_subcall
                 for future in as_completed(futures):
                     future.result()  # Re-raises unexpected executor errors
+            except BaseException:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                executor.shutdown(wait=True)
 
             # Append completions in original prompt order for deterministic metadata
             completions.sort(key=lambda x: x[0])
@@ -737,13 +754,18 @@ class LocalREPL(NonIsolatedEnv):
 
     @contextmanager
     def _temp_cwd(self):
-        """Temporarily change to temp directory for execution."""
-        old_cwd = os.getcwd()
-        try:
-            os.chdir(self.temp_dir)
-            yield
-        finally:
-            os.chdir(old_cwd)
+        """Execution scope for one code block. Deliberately does NOT ``chdir``.
+
+        ``os.chdir`` is process-global. ``rlm_query_batched`` runs child RLMs on
+        a thread pool, each with its own ``LocalREPL`` and ``temp_dir``; when
+        children chdir'd here, sibling A's ``finally`` restored a cwd that was
+        sibling B's temp dir, B's ``cleanup()`` then removed it, and every later
+        ``os.getcwd()`` in the process raised ``FileNotFoundError`` (observed
+        2026-08-29: 1,273 child deaths in one 48-run mining round). Model code
+        that writes relative paths now lands in the process cwd; ``temp_dir``
+        is still used for the context files this REPL manages itself.
+        """
+        yield
 
     def _restore_scaffold(self) -> None:
         """Restore scaffold names after execution so overwrites (e.g. context = 'x') don't persist."""

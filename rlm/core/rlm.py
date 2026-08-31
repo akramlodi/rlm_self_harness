@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from rlm.clients import BaseLM, get_client
+from rlm.core import subcall_context
 from rlm.core.lm_handler import LMHandler
 from rlm.core.types import (
     ANSWER_REDIRECTED,
@@ -961,7 +962,9 @@ class RLM:
         response = client.completion(message)
         return response
 
-    def _subcall(self, prompt: str, model: str | None = None) -> RLMChatCompletion:
+    def _subcall(
+        self, prompt: str, model: str | None = None, *, budget_fraction: float | None = None
+    ) -> RLMChatCompletion:
         """
         Handle a subcall from the environment, potentially spawning a child RLM.
 
@@ -1022,7 +1025,15 @@ class RLM:
                     execution_time=end_time - start_time,
                 )
 
-        # Calculate remaining budget for child (if budget tracking enabled)
+        # Calculate remaining budget for child (if budget tracking enabled).
+        # A fraction < 1 means this child is one of a concurrent batch: the
+        # siblings all read the same ``_cumulative_cost`` snapshot (spend is
+        # folded in only when a child completes), so each may claim only its
+        # share of the remainder or the batch as a whole overshoots the cap.
+        # The batch sets the share on its worker thread (``subcall_context``);
+        # an explicit argument overrides it.
+        if budget_fraction is None:
+            budget_fraction = subcall_context.budget_fraction()
         remaining_budget = None
         if self.max_budget is not None:
             remaining_budget = self.max_budget - self._cumulative_cost
@@ -1037,6 +1048,9 @@ class RLM:
                     usage_summary=UsageSummary(model_usage_summaries={}),
                     execution_time=0.0,
                 )
+            if not 0.0 < budget_fraction <= 1.0:
+                raise ValueError(f"budget_fraction must be in (0, 1], got {budget_fraction}")
+            remaining_budget *= budget_fraction
 
         # Calculate remaining timeout for child (if timeout tracking enabled)
         remaining_timeout = None

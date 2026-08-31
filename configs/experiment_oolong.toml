@@ -21,7 +21,7 @@
 # entirely). max_output_tokens is passed as sampling_args["max_tokens"]
 # -- the OpenAI client itself renames it to max_completion_tokens, so the
 # rename must never happen in config code.
-temperature = 0.6
+temperature = 0
 top_p = 0.95
 # Top of the pilot tuning range 2048-8192 (section 3.10 row 3). Raised from
 # 4096 on 2026-08-25 alongside thinking = true: reasoning tokens count against
@@ -35,9 +35,9 @@ max_output_tokens = 8192
 # context_lengths), so both mined and validated instances span the "solvable
 # without decomposing" and "aggregation breaks down" regimes.
 n_in = 24 # held-in: weakness mining + one arm of validation
-n_ho = 40 # held-out: validation only, never mined
-test_short = 40 # OOLONG-synth internal test, untouched until the harness is frozen
-test_long = 40 # unused when environment = "oolong_synth" (no separate long split); kept: [splits] key is mandatory
+n_ho = 24 # 40 # held-out: validation only, never mined
+test_short = 24 # 40 # OOLONG-synth internal test, untouched until the harness is frozen
+test_long = 0 # unused when environment = "oolong_synth" (no separate long split); kept: [splits] key is mandatory
 seed = 0 # seeded partition of the OOLONG-synth pool
 
 [loop]
@@ -47,12 +47,12 @@ v = 4 # validation repetitions per instance per subject
 k = 4 # candidate edits proposed per round
 # Set to 3 for the 2026-08-23 Qwen comparison run (was 15, section 3.2). t is
 # an identity key (R3), so extending the run later needs a fresh out-dir.
-t = 5 # maximum optimization rounds
+t = 3 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
 environment = "oolong_synth" # this profile mines/validates OOLONG-synth (identity key)
 # Start from the shipped reference prompt plus the orchestrator addendum, so
 # the harness-comparison machinery (H0 / H0*) works unmodified for OOLONG too.
-initial_harness = "H0*"
+initial_harness = "H0*R"
 
 [promotion]
 # Preregistered promotion rule, sections 3.2 and 3.10 rows 6-7. Zero
@@ -92,9 +92,15 @@ max_depth = 3
 # now cost ~10x the old Qwen rate, so the old cap risked censoring long runs
 # -- a cap that censors long runs defeats the KTD6 measurement it protects.
 # Prior OpenRouter smoke measurements put the mean run at $0.0024-$0.0134.
-max_budget = 0.5 # USD per run
+max_budget = 1.0 # USD per run
 max_timeout = 1800.0 # seconds per run
-candidate_budget = 60.0 # USD across all of one candidate's runs
+# Applies to EVERY validation subject, the baseline included: an over-budget
+# baseline makes the round unscorable (promotion.assess_round raises). The
+# 2026-08-29 H0* run spent $59.54 on the baseline at max_budget = 1.0 and lost
+# the round to the $2 dispatch reservation; the H0*R run averaged ~$0.30/run.
+# 192 validation runs x ~$0.30 = ~$58 nominal plus per-run-ceiling charges for
+# crashed children, so 100 leaves real headroom. Identity key (R3).
+candidate_budget = 100.0 # USD across all of one subject's runs
 
 [environments.graphwalks]
 # Source environment, section 3.1.
@@ -288,7 +294,11 @@ validation_workers = 5
 # the 20-attempt rate-limit backoff saturated: retry depth sat pinned at 19/20
 # and 15 runs died of exhausted 429s (0.6% of 2,553). At 3 the ceiling is 15
 # in flight. Identity-exempt, so this changes under an existing --out-dir.
-validation_run_workers = 3
+# Lowered 3 -> 1 on 2026-08-30 for the recursive (H0*R) profile: each run now
+# fans out rlm_query_batched children, so 4 subjects x 3 runs x N children
+# saturated the deployment (4,557 RateLimitError retries in one validation
+# stage; runs spent their whole max_timeout in 429 backoff). Identity-exempt.
+validation_run_workers = 1
 
 # OOLONG-real generalization-check cadence in executed rounds. This profile
 # runs it after every 2nd executed round plus once for the final incumbent. It

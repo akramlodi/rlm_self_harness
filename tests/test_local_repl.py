@@ -291,3 +291,27 @@ class TestLocalREPLSimulatingRLMNoPersistence:
         assert "NameError" in result.stderr
         assert "my_helper" in result.stderr
         completion_2_env.cleanup()
+
+
+class TestExecutionDoesNotChangeProcessCwd:
+    """``os.chdir`` is process-global; ``rlm_query_batched`` runs child REPLs on
+    threads. A REPL that chdir'd into its temp dir left siblings pointing at a
+    directory another sibling's ``cleanup()`` then removed, and every later
+    ``os.getcwd()`` raised (2026-08-29: 1,273 child deaths in one round)."""
+
+    def test_execute_leaves_cwd_untouched_and_cleanup_of_a_sibling_is_harmless(self):
+        original = os.getcwd()
+        first = LocalREPL()
+        second = LocalREPL()
+
+        result = first.execute_code("import os\nseen = os.getcwd()")
+        assert result.stderr == ""
+        assert first.locals["seen"] == original
+        assert os.getcwd() == original
+
+        second.cleanup()  # a sibling finishing must not invalidate the process cwd
+        result = first.execute_code("import os\nseen_after = os.getcwd()")
+        assert result.stderr == ""
+        assert first.locals["seen_after"] == original
+        assert os.getcwd() == original
+        first.cleanup()

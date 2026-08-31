@@ -606,4 +606,107 @@ H0_STAR = Harness(
     skills=build_skills(),
 )
 
-HARNESSES: dict[str, Harness] = {"H0": H0, "H0*": H0_STAR}
+# H0*R - H0* with recursion made legible. Live OOLONG mining on H0* (2026-08-29,
+# 48 runs) issued zero ``rlm_query`` calls: S1 introduces it as a fallback alias
+# and ``ORCHESTRATOR_ADDENDUM`` names only ``llm_query``, so every aggregation
+# sub-task went to a bare completion that had to count in its head
+# (``llm_for_rlm_substitution`` / ``whole_input_subcall_collapse`` attributions).
+# S1 differs from H0* by exactly one bullet (the ``rlm_query`` contract); S2
+# adds the decision rule and one worked pattern. The addendum still applies
+# (``orchestrator=True``), so its capacity guidance is unchanged for flat calls.
+
+_H0_STAR_RLM_QUERY_BULLET = (
+    "- `rlm_query(prompt, model=None)` / `rlm_query_batched(prompts, model=None)`: "
+    "recursive RLM sub-calls. Fall back to `llm_query` / `llm_query_batched` when "
+    "recursion is disabled."
+)
+_H0_STAR_R_RLM_QUERY_BULLET = (
+    "- `rlm_query(prompt: str, model=None) -> str` / "
+    "`rlm_query_batched(prompts: list[str], model=None) -> list[str]`: recursive "
+    "RLM sub-calls. Each spawns a child RLM that has its own REPL and these same "
+    "tools; the string you pass becomes the child's `context`, and the child works "
+    "on it turn by turn (it can slice, count, and call sub-LLMs itself) before "
+    "returning a final string. Recursion is enabled: use it whenever a sub-task "
+    "needs computation over its input rather than a single read of it."
+)
+
+
+def _build_recursion_decomposition_instruction() -> str:
+    """S2 for H0*R: when a sub-task goes to ``rlm_query`` versus ``llm_query``."""
+    return textwrap.dedent(
+        """\
+        Choosing the sub-call for each sub-task:
+
+        - `llm_query` is a single bare completion with no REPL. Use it only when the
+          sub-answer is a direct read of the text you hand it: extract a field, label
+          ONE item, summarize ONE passage, answer a question a single visible passage
+          settles.
+        - `rlm_query` is a child RLM with a REPL. Use it whenever the sub-task must
+          COMPUTE over many items - count, tally frequencies, compare two counts,
+          find the most/least common label, filter-then-count, anything phrased as
+          "how many", "which is more common", or "the total number of". A bare
+          completion asked to count hundreds of items counts in its head and is wrong
+          past a few dozen; a child RLM labels items in a loop and counts in Python.
+        - For counting tasks, the chunk you hand a child is sized by what the child can
+          enumerate exactly, not by context capacity: a few hundred lines per child is
+          right, and a child returning a small JSON of counts is the ideal unit. Do not
+          pack a counting chunk to the flat-call capacity ceiling.
+
+        Pattern for label statistics over a long line-oriented `context`
+        (split into chunks, have each child classify every line and return counts,
+        merge in Python):
+
+        ```repl
+        import json
+        lines = [ln for ln in context.split("\\n") if ln.strip()]
+        CHUNK = 300
+        chunks = [lines[i:i + CHUNK] for i in range(0, len(lines), CHUNK)]
+        labels = ["positive", "negative"]  # the label set stated in the task
+        prompts = [
+            "Classify EVERY line below into exactly one of " + json.dumps(labels)
+            + ". Do it line by line in your REPL, keep a running count per label, "
+            + "and finish by setting answer['content'] to a JSON object mapping each "
+            + "label to its count (integers, no other keys).\\n\\n" + "\\n".join(chunk)
+            for chunk in chunks
+        ]
+        results = rlm_query_batched(prompts)
+        totals = {{label: 0 for label in labels}}
+        for raw in results:
+            for label, n in json.loads(raw).items():
+                totals[label] += int(n)
+        print(totals)
+        ```
+
+        Then decide the answer from `totals` in Python and print it before setting
+        `answer["ready"] = True`. If a child's result does not parse, print it, fix the
+        prompt, and re-run that chunk - do not fall back to counting by eye."""
+    )
+
+
+def _h0_star_r_repl_contract() -> str:
+    """H0*'s S1 with exactly the ``rlm_query`` bullet replaced."""
+    if RLM_SYSTEM_PROMPT.count(_H0_STAR_RLM_QUERY_BULLET) != 1:
+        raise RuntimeError(
+            "RLM_SYSTEM_PROMPT no longer contains the rlm_query bullet H0*R rewrites; "
+            "update _H0_STAR_RLM_QUERY_BULLET to match the shipped prompt"
+        )
+    return RLM_SYSTEM_PROMPT.replace(_H0_STAR_RLM_QUERY_BULLET, _H0_STAR_R_RLM_QUERY_BULLET)
+
+
+H0_STAR_R = Harness(
+    name="H0*R",
+    orchestrator=True,
+    repl_contract=_h0_star_r_repl_contract(),
+    decomposition_instruction=_build_recursion_decomposition_instruction(),
+    execution_instruction="",
+    verification_instruction="",
+    recovery_instruction="",
+    runtime_policy=build_runtime_policy(),
+    metadata=build_metadata,
+    repl_helpers=build_repl_helpers(),
+    sub_repl_helpers=build_sub_repl_helpers(),
+    answer_middleware=build_answer_middleware(),
+    skills=build_skills(),
+)
+
+HARNESSES: dict[str, Harness] = {"H0": H0, "H0*": H0_STAR, "H0*R": H0_STAR_R}

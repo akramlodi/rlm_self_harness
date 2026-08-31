@@ -532,6 +532,65 @@ class TestSharedRunExecutionBody:
         assert outcome.verdict.cause is VerifierCause.RESOURCE_TERMINATED
         assert "TimeoutExceededError" in outcome.verdict.detail
 
+    def test_the_hard_deadline_signal_is_persisted_as_a_timeout(self, tmp_path, monkeypatch):
+        """The alarm raises a BaseException so no inner ``except Exception``
+        can swallow it; the driver alone converts it into the usual terminated
+        run (2026-08-29: runs went 5011s past an 1800s cap when the alarm was a
+        plain Exception caught inside the REPL)."""
+        from rlm.utils.exceptions import HardDeadlineSignal
+
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        harnessed = build_round_rlm(config)
+
+        def verifier_hit_by_the_alarm(instance, response):
+            raise HardDeadlineSignal(2730.0)
+
+        outcome = execute_run(
+            harnessed,
+            config.instances[0],
+            model_name="driver-test",
+            verifier=verifier_hit_by_the_alarm,
+        )
+
+        assert outcome.usage_lower_bound is True
+        assert outcome.verdict.cause is VerifierCause.RESOURCE_TERMINATED
+        assert "HardDeadlineExceeded" in outcome.verdict.detail
+        assert "2730.0s" in outcome.verdict.detail
+
+    def test_an_exhausted_rate_limit_is_persisted_with_its_recorded_usage(
+        self, tmp_path, monkeypatch
+    ):
+        """A 429 that outlives the client's retries must land as a terminated
+        run carrying the usage it recorded. Letting it escape crashed the child,
+        which left no trace and was charged the flat per-run ceiling (nine
+        phantom $1.00 charges on 2026-08-30)."""
+        import httpx
+        import openai
+
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        harnessed = build_round_rlm(config)
+
+        def verifier_rate_limited(instance, response):
+            request = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+            raise openai.RateLimitError(
+                "Error code: 429 - rate limit reached",
+                response=httpx.Response(429, request=request),
+                body=None,
+            )
+
+        outcome = execute_run(
+            harnessed,
+            config.instances[0],
+            model_name="driver-test",
+            verifier=verifier_rate_limited,
+        )
+
+        assert outcome.usage_lower_bound is True
+        assert outcome.verdict.cause is VerifierCause.RESOURCE_TERMINATED
+        assert "RateLimitError" in outcome.verdict.detail
+
     def test_omitting_the_verifier_leaves_the_verdict_for_the_parent(self, tmp_path, monkeypatch):
         """A run child never verifies -- the parent owns verdict construction (KTD5)."""
         monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
