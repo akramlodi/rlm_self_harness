@@ -1,0 +1,335 @@
+# =============================================================================
+# configs/experiment_oolong.toml -- the OOLONG profile of the Self-Harness
+# experiment. Identical machinery to configs/experiment.toml; the loop mines
+# and validates OOLONG-synth instead of GraphWalks ([loop] environment =
+# "oolong_synth"), and OOLONG-real is run every N rounds as a generalization
+# check that never feeds the promotion gate.
+#
+# Run separately from GraphWalks -- its own --out-dir, its own identity:
+#   uv run python examples/run_experiment.py \
+#       --config configs/experiment_oolong.toml --out-dir ./experiment_oolong
+#
+# Load with load_config(profile="full" | "smoke", path=".../experiment_oolong.toml").
+# =============================================================================
+
+[decoding]
+temperature = 0
+top_p = 0.95
+# Top of the pilot tuning range 2048-8192 (section 3.10 row 3). Raised from
+# 4096 on 2026-08-25 alongside thinking = true: reasoning tokens count against
+# this budget, so an instant-mode ceiling would let a hard instance spend the
+# allowance on reasoning and truncate the answer.
+max_output_tokens = 8192
+
+[splits]
+# OOLONG-synth split definitions. The held_in / held_out / test sets are a
+# seeded partition of ONE length-diverse pool (see [environments.oolong.synth]
+# context_lengths), so both mined and validated instances span the "solvable
+# without decomposing" and "aggregation breaks down" regimes.
+n_in = 10 # 24 # held-in: weakness mining + one arm of validation
+n_ho = 10 # 40 # held-out: validation only, never mined
+test_short = 10 # 40 # OOLONG-synth internal test, untouched until the harness is frozen
+test_long = 0 # unused when environment = "oolong_synth" (no separate long split); kept: [splits] key is mandatory
+seed = 0 # seeded partition of the OOLONG-synth pool
+
+[loop]
+# Optimization-loop counts, section 3.2.
+m = 2 # mining repetitions per held-in instance
+v = 3 # validation repetitions per instance per subject
+k = 4 # candidate edits proposed per round
+# Set to 3 for the 2026-08-23 Qwen comparison run (was 15, section 3.2). t is
+# an identity key (R3), so extending the run later needs a fresh out-dir.
+t = 3 # maximum optimization rounds
+patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
+environment = "oolong_synth" # this profile mines/validates OOLONG-synth (identity key)
+# Start from the shipped reference prompt plus the orchestrator addendum, so
+# the harness-comparison machinery (H0 / H0*) works unmodified for OOLONG too.
+initial_harness = "H0*R"
+
+[promotion]
+# Preregistered promotion rule, sections 3.2 and 3.10 rows 6-7. Zero
+# thresholds reproduce the strict non-regression rule of Zhang et al.; the
+# pilot replaces them before optimization starts. Bands are inclusive
+# multipliers on the baseline's mean.
+tau_regression = 0.0
+tau_improvement = 0.0
+# The upper bound is the single most cost-sensitive value in this file. It
+# gates promotion, but a promoted edit may raise cost every round, so the
+# drift compounds: the pessimistic projection multiplies the optimization
+# leg by sum(ceiling^i) over T rounds. At 2.0 that is x2,184 ($143k at list
+# price); at 1.25 it is x7.3 ($507). A candidate that costs 25% more than
+# its incumbent is already a hard sell as an improvement, so the ceiling
+# buys almost nothing above 1.25 and costs orders of magnitude.
+cost_band = [0.5, 1.25]
+# sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
+
+[caps]
+# Experiment-owned per-run limits (KTD3). max_budget, max_timeout, and
+# candidate_budget are mandatory: the loader raises immediately when one is
+# missing (R12). candidate_budget is the cumulative circuit-breaker budget
+# across all of one candidate's validation runs.
+attempts = 1 # default per-round attempts; stages override with m / v / eval_repetitions
+max_iterations = 30
+# Raised from 1 to 3 on 2026-08-22 alongside the S10 skills surface: at depth 1
+# every sub-call is a bare completion (no system prompt, no REPL), so a child
+# could never see the skills index or call the loader. At 2, rlm_query children
+# are real RLMs that inherit the prompt and the child REPL namespace; llm_query
+# and depth-2 leaves stay bare completions. Per-run exposure is still bounded by
+# max_budget; S6 may set a lower depth but may not exceed this cap.
+max_depth = 3
+# The one hard cost guarantee: the spend breaker terminates any run that
+# exceeds this, so total exposure is bounded by total_runs x max_budget
+# regardless of what the optimization loop does -- 24,270 x $0.50 = $12,135.
+# Raised from 0.1 alongside the Kimi-K2.5 switch (2026-08-23): output tokens
+# now cost ~10x the old Qwen rate, so the old cap risked censoring long runs
+# -- a cap that censors long runs defeats the KTD6 measurement it protects.
+# Prior OpenRouter smoke measurements put the mean run at $0.0024-$0.0134.
+max_budget = 2.0 # USD per run
+max_timeout = 3600.0 # seconds per run
+# Applies to EVERY validation subject, the baseline included: an over-budget
+# baseline makes the round unscorable (promotion.assess_round raises). The
+# 2026-08-29 H0* run spent $59.54 on the baseline at max_budget = 1.0 and lost
+# the round to the $2 dispatch reservation; the H0*R run averaged ~$0.30/run.
+# 192 validation runs x ~$0.30 = ~$58 nominal plus per-run-ceiling charges for
+# crashed children, so 100 leaves real headroom. Identity key (R3).
+candidate_budget = 100.0 # USD across all of one subject's runs
+
+[environments.graphwalks]
+# Source environment, section 3.1.
+dataset_repo = "openai/graphwalks"
+dataset_file_short = "graphwalks_128k_and_shorter.parquet"
+dataset_file_long = "graphwalks_256k_to_1mil.parquet"
+dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead" # HF main, pinned 2026-08-12
+max_chars = 128000 # inclusive upper bound on prompt_chars for the short split
+min_chars = 0 # inclusive lower bound on prompt_chars
+problem_types = ["bfs", "parents"]
+
+[environments.oolong_pairs]
+# Target environment, held out from optimization in its entirety, section 3.1.
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-12
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192 # tokens; 32x pairing per section 3.10 row 4
+context_length_long = 262144
+max_scan = 50000 # cap on raw dataset rows streamed while collecting windows
+n_short = 40 # target-short test size
+n_long = 40 # target-long test size; the upstream ceiling, not a choice:
+# the trec_coarse validation split ships only 2 distinct context windows per
+# context length, and the loader pairs each window with the 20 task_ids above,
+# so 2 x 20 = 40 is every instance that exists at 262,144. A larger value fails
+# the coverage gate in load_oolong_pairs before any spend.
+
+[environments.oolong]
+# OOLONG (arXiv:2511.02817). `synth` is the mining/validation pool when
+# [loop] environment = "oolong_synth"; `real` is a periodic generalization
+# check that is run but NEVER fed into the promotion gate (cadence:
+# [operational] real_check_every_n_rounds). Both sub-tables are inert when
+# environment = "graphwalks" -- present so the schema is uniform.
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test" # OOLONG-synth's own split carrying the full 1K-128K power-of-two range
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-29
+subsets = [] # source ICL datasets to draw from; [] = all (spam, trec_coarse, imdb, ...)
+task_groups = ["counting", "user", "timeline"]
+# Length diversity is REQUIRED: this pool must span lengths the model can solve
+# without decomposing (1K-4K) AND lengths where aggregation breaks down (>=64K;
+# published models <50% at 128K). The loader draws a balanced share per length.
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd" # Critical Role D&D transcripts ("toy_dnd" is the tiny smoke variant)
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb" # HF main, pinned 2026-08-29
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
+
+[backends.runner]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
+
+[backends.attributor]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name 
+
+[backends.proposer]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name 
+
+[backends.openrouter]
+# Provider routing, sent as sampling_args["extra_body"]["provider"] for
+# openrouter-backed roles only. An empty order list means no restriction; the
+# pilot pins the serving provider before the main run so quantization cannot
+# drift mid-experiment.
+provider_order = []
+allow_fallbacks = true
+
+[backends.azure_foundry]
+# Provider table for azure_foundry-backed roles. All three roles select
+# azure_foundry in this config, so the loader requires this table and its
+# value is live. thinking = true leaves the request unmodified,
+# so Kimi-K2.5 runs in its default thinking mode -- the model as its card
+# intends it, which is what the paper measures. Suppressing reasoning would
+# ablate core model functionality to save money and make the measurement a
+# study of a crippled configuration; the budget is the knob for cost, not this.
+#
+# Cost consequence, measured against this deployment 2026-08-25 on a trivial
+# 6-edge prompt: 1,242 completion tokens with thinking vs 174 with
+# reasoning_effort="none" (~7x). Reasoning tokens bill at the output rate, so
+# caps.max_budget and decoding.max_output_tokens must be sized for it.
+#
+# Do NOT set this to false against Azure: the false branch emits
+# extra_body["chat_template_kwargs"], which the Foundry /openai/v1 route
+# rejects with 400 unrecognized_request_argument (verified 2026-08-25). The
+# route's working instant-mode switch is reasoning_effort="none".
+thinking = true
+
+[pricing.promo]
+# Azure AI Foundry pay-as-you-go rate for Kimi-K2.5 (Global Standard), USD per
+# 1M tokens (catalog + aggregators, 2026-08). Azure has a single tier, so promo
+# deliberately equals list. Azure returns no per-response cost: the client
+# SYNTHESIZES cost from token counts x list_price, so these numbers arm the
+# spend breaker -- verify them in the portal before any live spend.
+input_per_million = 0.19
+output_per_million = 0.51
+
+[pricing.list_price]
+# Same single Azure tier; this is the table cost synthesis reads.
+input_per_million = 0.19
+output_per_million = 0.51
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true # eligible for the recommendation (rate and throughput are sourced)
+sensitivity_range = [1.99, 3.49] # USD/hour band for the sensitivity analysis
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+# Aggregate decode throughput by context bucket, single GPU, tokens/second.
+short = 2400.0 # contexts <= 32k tokens
+long = 700.0 # contexts >= 128k tokens
+
+[[gpu_scenarios]]
+name = "2x_a100_tp2_rented"
+hourly_rate_usd = 2.58 # 2 GPUs x $1.29/h
+provenance = "Unvalidated estimate from A100 80GB marketplace rates 2026-08; BF16 needs 2xA100 at 262k (weights ~61GB + KV ~24.6GB/seq)"
+provenance_validated = false # scenario-only until the rate and throughput are measured
+sensitivity_range = [0.94, 4.12]
+precision_note = "bf16 weights, tensor-parallel 2, vLLM serving"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2000.0
+long = 500.0
+
+[[gpu_scenarios]]
+name = "1x_a100_int4"
+hourly_rate_usd = 1.29
+provenance = "Unvalidated estimate; AWQ/GPTQ-INT4 weights ~17GB fit 262k KV on one A100 80GB"
+provenance_validated = false # scenario-only until the rate and throughput are measured
+sensitivity_range = [0.47, 2.06]
+precision_note = "INT4 quantized weights change model numerics; measurements and comparability do not transfer (report prefers precision-preserving scenarios)"
+changes_numerics = true # INT4: a candidate only when quantization is explicitly accepted
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 1800.0
+long = 450.0
+
+[report]
+p_merge = 0.5 # assumed fraction of rounds ending in a promotion + merge re-evaluation
+eval_conditions = 3 # B1, H1, SH-RLM: the full-experiment evaluation grid (section 3.5)
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution_oolong.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_oolong.jsonl"
+eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
+validation_workers = 5
+
+# How many of ONE subject's runs execute concurrently, each in its own child
+# process (python -m shrlm.optimization.run_worker). 1 = the sequential
+# in-process path, byte-identical to before this knob existed.
+#
+# This is the knob that actually shortens a round. Subject-level fan-out only
+# helps when a round produces several candidates, and round 1 of both live
+# experiments produced exactly one -- so two subjects ran and most worker slots
+# sat idle. The remaining time is all inside a subject: 256 runs at a mean of
+# 83 s, about 5.9 h, executed one at a time.
+#
+# The parent owns every shared file: it prepares the round, writes the one
+# surface module children import, appends every manifest line itself on reap,
+# and charges every run through the single breaker. A child writes only its own
+# trace and result. Identity-exempt for the same reason as validation_workers.
+#
+# THE TWO KNOBS MULTIPLY. Total in-flight runs is validation_workers x
+# validation_run_workers, and provider rate limiting is the real ceiling (the
+# live experiments already log retries at three concurrent runs). Prefer
+# run-level fan-out and keep subject workers at 1.
+#
+# NOTE: 1 is a placeholder, not a measured recommendation. The plan's U8
+# measurement -- which spends real money -- chooses the shipped value and
+# supplies the pass-rate evidence that concurrency did not move the results.
+# Lowered 4 -> 3 on 2026-08-26. At 4, a round with k=4 candidates runs 5
+# subjects x 4 = 20-25 concurrent requests against one Azure deployment, and
+# the 20-attempt rate-limit backoff saturated: retry depth sat pinned at 19/20
+# and 15 runs died of exhausted 429s (0.6% of 2,553). At 3 the ceiling is 15
+# in flight. Identity-exempt, so this changes under an existing --out-dir.
+# Lowered 3 -> 1 on 2026-08-30 for the recursive (H0*R) profile: each run now
+# fans out rlm_query_batched children, so 4 subjects x 3 runs x N children
+# saturated the deployment (4,557 RateLimitError retries in one validation
+# stage; runs spent their whole max_timeout in 429 backoff). Identity-exempt.
+validation_run_workers = 1
+
+# OOLONG-real generalization-check cadence in executed rounds. This profile
+# runs it after every 2nd executed round plus once for the final incumbent. It
+# evaluates only the incumbent, is metered under stage "real_check", and NEVER
+# feeds tau_regression/tau_improvement or the promotion ledger -- real
+# transcripts are less cleanly decomposable and would add a second uncontrolled
+# noise source on top of the gate's known sensitivity. Identity-exempt.
+real_check_every_n_rounds = 2
+
+
+# -----------------------------------------------------------------------------
+# Smoke profile: scale counts only. Any key here outside the loader's
+# smoke-overridable set is rejected at load time.
+# -----------------------------------------------------------------------------
+
+[smoke.splits]
+n_in = 3
+n_ho = 3
+test_short = 4
+test_long = 2
+
+[smoke.loop]
+m = 1
+v = 1
+k = 2
+t = 1
+
+[smoke.caps]
+max_budget = 0.5
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+real_check_every_n_rounds = 0 # smoke never spends on the OOLONG-real check
+
+[smoke.environments.oolong_pairs]
+n_short = 4
+n_long = 2
+
+[smoke.environments.oolong.synth]
+max_scan = 2000
+
+[smoke.environments.oolong.real]
+max_scan = 2000
+n_check = 4

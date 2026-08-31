@@ -666,7 +666,7 @@ def make_real_verifier() -> OolongVerifier:
 # Dataset streaming (the module's only network seam)
 # =============================================================================
 
-DEFAULT_SCAN_DEADLINE_SECONDS: float = 60.0
+DEFAULT_SCAN_DEADLINE_SECONDS: float = 300.0  # 60s tripped on unauthenticated HF rate-limit pauses (2026-08-31); 300s rides them out while still bounding a true hang
 
 
 def _bounded_iter(
