@@ -19,6 +19,7 @@ import pytest
 
 import shrlm.optimization.attribution as attribution_module
 from shrlm.optimization.attribution import (
+    AttributionBudgetExhausted,
     AttributionContentFiltered,
     AttributionRejection,
     AttributionTransportError,
@@ -460,6 +461,57 @@ class TestContentFilterContainment:
         # Visible in the totals, absent from errors: the round closes.
         assert result.bundle.totals.n_unattributed == 1
         assert result.errors == []
+
+
+class TestBudgetExhaustionContainment:
+    """A reasoning-exhausted response (the client's ``TokenLimitExceededError``,
+    R6/KTD3) is deterministic for the prompt at temperature 0: re-sending
+    bills the same exhaustion again, and routing it through the round-close
+    gate is the same unbounded restart loop as a content-filter block."""
+
+    @staticmethod
+    def _budget_error() -> Exception:
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        return TokenLimitExceededError(
+            tokens_used=16384,
+            token_limit=16384,
+            message="Azure Foundry output budget exhausted by reasoning",
+        )
+
+    def test_token_limit_propagates_immediately_without_retrying(self):
+        lm = RecordingLM([self._budget_error()] * 3)
+        attributor = LLMAttributor(lm, config=FAST_CONFIG)
+        digest, root, verdict = attribution_inputs()
+
+        with pytest.raises(AttributionBudgetExhausted, match="reasoning") as excinfo:
+            attributor.attribute(digest, root, verdict, UNGROUNDED)
+        assert lm._call_count == 1
+        assert excinfo.value.attempts == []
+
+    def test_mine_records_the_exhaustion_and_keeps_the_round_clean(self):
+        lm = RecordingLM([canned_attribution(), self._budget_error()])
+        miner = WeaknessMiner(
+            verifier=_failing_verifier, attributor=LLMAttributor(lm, config=FAST_CONFIG)
+        )
+        runs = [
+            ({"id": "inst-1", "question": "q"}, as_completion(shallow_run())),
+            ({"id": "inst-2", "question": "q"}, as_completion(shallow_run())),
+        ]
+
+        result = miner.mine(runs, round_index=1, harness_version="H0", split_id="held_in_v1")
+
+        attributed, exhausted = result.records
+        assert attributed.signature is not None
+        assert exhausted.instance_id == "inst-2" and exhausted.attribution_failed
+        assert exhausted.attribution_error.startswith("token limit:")
+        assert exhausted.attribution_error_kind is AttributionErrorKind.TOKEN_LIMIT
+        assert exhausted.signature is None
+        # Visible in the totals, absent from errors: the round-close gate is
+        # not held, and the integrity report does not count it as transport.
+        assert result.bundle.totals.n_unattributed == 1
+        assert result.errors == []
+        assert result.bundle.integrity.n_transport_errors == 0
 
 
 class TestAttributorConfigValidation:

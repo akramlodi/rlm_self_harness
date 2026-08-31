@@ -85,7 +85,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
-from rlm.utils.exceptions import TimeoutExceededError
+from rlm.utils.exceptions import HardDeadlineExceeded, HardDeadlineSignal, TimeoutExceededError
 from shrlm.harness_identity import harness_hash, serialize_harness
 from shrlm.optimization.bundle import round_dir
 from shrlm.optimization.candidates import (
@@ -148,24 +148,9 @@ HARD_DEADLINE_GRACE_SECONDS = 30.0
 _T = TypeVar("_T")
 
 
-class HardDeadlineExceeded(TimeoutExceededError):
-    """The hard wall-clock backstop fired: a run slice never returned control.
-
-    Subclasses ``TimeoutExceededError`` deliberately: the driver's per-run
-    limit handler (``driver.ROOT_LIMIT_EXCEPTIONS``) then persists it exactly
-    like the runtime's own timeout -- a failing RESOURCE_TERMINATED run whose
-    error string names this class -- with no driver change required.
-    """
-
-    def __init__(self, deadline: float):
-        super().__init__(
-            elapsed=deadline,
-            timeout=deadline,
-            message=(
-                f"hard wall-clock deadline exceeded: the run slice did not return "
-                f"within {deadline:.1f}s; candidate code likely hung inside a live call"
-            ),
-        )
+# ``HardDeadlineExceeded`` now lives beside ``HardDeadlineSignal`` in
+# ``rlm.utils.exceptions`` (the driver raises it too); re-exported here so
+# ``costs.HardDeadlineExceeded`` keeps working for existing imports.
 
 
 def hard_deadline_seconds(max_timeout: float | None) -> float | None:
@@ -196,12 +181,18 @@ def _call_with_hard_deadline(fn: Callable[[], _T], deadline: float | None) -> _T
         return fn()
 
     def _on_alarm(signum: int, frame: Any) -> None:
-        raise HardDeadlineExceeded(deadline)
+        # A BaseException so the REPL's and sub-call wrappers' ``except
+        # Exception`` cannot swallow it; ``execute_run`` persists it as a
+        # terminated run, and anything that escapes ``run_round`` is converted
+        # below into the ``HardDeadlineExceeded`` the slice handler expects.
+        raise HardDeadlineSignal(deadline)
 
     previous = signal.signal(signal.SIGALRM, _on_alarm)
     signal.setitimer(signal.ITIMER_REAL, deadline)
     try:
         return fn()
+    except HardDeadlineSignal as signal_:
+        raise HardDeadlineExceeded(signal_.deadline) from None
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0.0)
         signal.signal(signal.SIGALRM, previous)
@@ -522,6 +513,33 @@ def _run_reservation(caps: ValidationCaps) -> float:
     return caps.max_budget * RUN_RESERVATION_FACTOR
 
 
+# Mirror of ``rlm.clients.openai._CONTENT_FILTER_MARKERS``. Duplicated rather
+# than imported: this module is imported by every run child on spawn, and
+# pulling the OpenAI SDK into that path costs ~0.2s per child.
+_CONTENT_FILTER_MARKERS = ("content_filter", "responsibleai", "content management policy")
+
+
+def _error_verdict(detail: str, produced: str = "") -> Verdict:
+    """The failing verdict for a child trace that carries an ``error``.
+
+    A child runs ``execute_run`` and records a provider content-filter refusal
+    as a CONTENT_FILTERED verdict, but only the trace (not the verdict) crosses
+    the process boundary, and the parent used to relabel every ``error`` as
+    RESOURCE_TERMINATED. The error string is the refusal text itself, so the
+    label is recovered from it here.
+    """
+    lowered = detail.lower()
+    if any(marker in lowered for marker in _CONTENT_FILTER_MARKERS):
+        return Verdict(
+            passed=False,
+            cause=VerifierCause.CONTENT_FILTERED,
+            gold="",
+            produced=produced,
+            detail=detail,
+        )
+    return _terminated_verdict(detail, produced)
+
+
 def _terminated_verdict(detail: str, produced: str = "") -> Verdict:
     """The failing verdict a terminated run carries.
 
@@ -561,7 +579,7 @@ def _adopt_orphan_traces(
         if completion is None:
             continue
         verdict = (
-            _terminated_verdict(str(completion.error), completion.response)
+            _error_verdict(str(completion.error), completion.response)
             if completion.error
             else config.verifier(instance, completion.response)
         )
@@ -802,7 +820,7 @@ def _reap_run(
     completion = read_child_trace(trace_path_for(path, run_id))
     if completion is not None:
         verdict = (
-            _terminated_verdict(str(completion.error), completion.response)
+            _error_verdict(str(completion.error), completion.response)
             if completion.error
             else config.verifier(instance, completion.response)
         )

@@ -65,6 +65,52 @@ class ErrorThresholdExceededError(Exception):
         )
 
 
+class HardDeadlineSignal(BaseException):
+    """A wall-clock backstop fired on this thread (SIGALRM handler).
+
+    Derives from ``BaseException`` on purpose: the alarm can land while the
+    main thread is inside model code (``LocalREPL.execute``) or a sub-call
+    wrapper, both of which catch ``Exception`` and turn it into an in-band
+    error string. A plain ``Exception`` was swallowed there and the run kept
+    going past its deadline (observed 2026-08-29: 5011s against an 1800s cap).
+    Only the run driver's limit handler converts this into a persisted,
+    resource-terminated run; nothing else should catch it.
+    """
+
+    def __init__(self, deadline: float, message: str | None = None):
+        self.deadline = deadline
+        super().__init__(
+            message
+            or (
+                f"hard wall-clock deadline exceeded: the run slice did not return "
+                f"within {deadline:.1f}s; candidate code likely hung inside a live call"
+            )
+        )
+
+
+class HardDeadlineExceeded(TimeoutExceededError):
+    """The hard wall-clock backstop fired: a run slice never returned control.
+
+    Subclasses ``TimeoutExceededError`` so the run driver persists it exactly
+    like the runtime's own timeout -- a failing RESOURCE_TERMINATED run -- while
+    the error string still names this class, which is how a backstop kill is
+    told apart from an ordinary between-iteration timeout in the audit. It is
+    raised by the driver when it catches ``HardDeadlineSignal``, and by the
+    governed-round slice when the signal escapes ``run_round`` entirely.
+    """
+
+    def __init__(self, deadline: float, message: str | None = None):
+        super().__init__(
+            elapsed=deadline,
+            timeout=deadline,
+            message=message
+            or (
+                f"hard wall-clock deadline exceeded: the run slice did not return "
+                f"within {deadline:.1f}s; candidate code likely hung inside a live call"
+            ),
+        )
+
+
 class CancellationError(Exception):
     """Raised when the RLM execution is cancelled by the user."""
 

@@ -791,3 +791,4 @@ class TestLiveSmokeGuards:
         # Only the configured backend's credentials are demanded.
         assert "AZURE_API_KEY" not in out
         assert "Nothing was spent" in out
+

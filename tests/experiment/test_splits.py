@@ -338,3 +338,59 @@ class TestLoaderInjection:
         splits_dir = materialize_splits(config, tmp_path, loaders={"graphwalks": fake_loader})
         held_in = (splits_dir / split_file_name("graphwalks", "short", "held_in")).read_text()
         assert held_in == instance_lines(instances_by_length["short"][:24])
+
+
+class TestOolongSynthEnvironment:
+    """``loop.environment == "oolong_synth"`` mines/validates the OOLONG-synth
+    pool; GraphWalks is never materialized."""
+
+    @pytest.fixture
+    def oolong_config(self) -> ExperimentConfig:
+        return load_config("full", path=Path("configs/experiment_oolong.toml"))
+
+    def test_split_plan_holds_only_the_selected_environment(self, oolong_config):
+        plan = split_plan(oolong_config)
+        assert set(plan) == {"oolong_synth", "oolong_real"}  # real_check_every_n_rounds = 2 > 0
+        assert plan["oolong_synth"]["short"] == {
+            "held_in": oolong_config.splits.n_in,
+            "held_out": oolong_config.splits.n_ho,
+            "test": oolong_config.splits.test_short,
+        }
+        assert plan["oolong_real"]["short"] == {
+            "check": oolong_config.environments.oolong.real.n_check
+        }
+
+    def test_real_check_absent_from_plan_when_disabled(self, oolong_config):
+        disabled = replace(
+            oolong_config,
+            operational=replace(oolong_config.operational, real_check_every_n_rounds=0),
+        )
+        assert set(split_plan(disabled)) == {"oolong_synth"}
+
+    def test_materializes_oolong_only_and_skips_graphwalks(self, oolong_config, tmp_path):
+        seen: list[str] = []
+
+        def fake_loader(
+            cfg: ExperimentConfig, length: str, limit: int, seed: int
+        ) -> list[dict[str, Any]]:
+            seen.append(length)
+            return [
+                {"id": f"oolong-{length}-i{index:03d}", "prompt": f"p{index}"}
+                for index in range(limit)
+            ]
+
+        splits_dir = materialize_splits(
+            oolong_config,
+            tmp_path,
+            loaders={
+                "graphwalks": pytest.fail,  # must never be called on an OOLONG run
+                "oolong_synth": fake_loader,
+                "oolong_real": fake_loader,
+            },
+        )
+        for role in ("held_in", "held_out", "test"):
+            assert (splits_dir / split_file_name("oolong_synth", "short", role)).exists()
+        assert (splits_dir / split_file_name("oolong_real", "short", "check")).exists()
+        assert not (splits_dir / split_file_name("graphwalks", "short", "held_in")).exists()
+        manifest = json.loads((splits_dir / MANIFEST_FILE).read_text())
+        assert set(manifest["environments"]) == {"oolong_synth", "oolong_real"}

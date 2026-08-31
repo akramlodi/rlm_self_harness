@@ -26,6 +26,9 @@ post-trip call ~$0.013) ~= $0.23, inside the $0.60 U4 reserve
 
 import copy
 import json
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,7 +36,9 @@ from typing import Any
 import pytest
 
 from shrlm.experiment.live_gates import (
+    CONFIG_ENV_KEY,
     LIVE_FLAG,
+    live_config_path,
     live_skip_reason,
     pricing_attestation_mismatch,
 )
@@ -49,6 +54,7 @@ from shrlm.optimization.driver import (
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
 from shrlm.rlm_harness import H0
+from tests.conftest import AZURE_KIMI, CONFIG_DIR, PROJECT_ROOT, SENTINEL_ENV, ProviderCase
 from tests.optimization.test_driver import read_manifest
 
 # The credentials the azure_foundry gate path demands.
@@ -58,20 +64,26 @@ AZURE_CREDENTIAL_KEYS = _BACKEND_ENV_KEYS["azure_foundry"]
 def _azure_live_skip() -> str | None:
     """Skip reason for the azure-specific live tier, or ``None`` to run it.
 
-    ``live_skip_reason`` gates on the CONFIGURED runner backend, so with a
-    non-azure backend shipped an open gate would demand that backend's
-    credentials and then run this module's azure code paths (backend_kwargs
-    without pricing -> constructor error). The azure live tier therefore also
-    requires the shipped smoke config to select azure_foundry.
+    ``live_skip_reason`` gates on the SELECTED config's runner backend
+    (``SHRLM_EXPERIMENT_CONFIG``, else the shipped smoke profile; KTD7), so
+    with a non-azure backend selected an open gate would demand that
+    backend's credentials and then run this module's azure code paths
+    (backend_kwargs without pricing -> constructor error). The azure live
+    tier therefore also requires the selected config to run azure_foundry;
+    the pricing attestation is checked against that config's rate card.
     """
-    from shrlm.experiment.config import load_config
+    from shrlm.experiment.config import CONFIG_PATH, load_config
 
-    if load_config(profile="smoke").backends.runner.backend != "azure_foundry":
+    try:
+        config = load_config(profile="smoke", path=live_config_path(CONFIG_PATH))
+    except Exception as exc:  # bad SHRLM_EXPERIMENT_CONFIG must skip, not error collection
+        return f"failed to load config selected via {CONFIG_ENV_KEY}: {exc!r}"
+    if config.backends.runner.backend != "azure_foundry":
         return (
-            "shipped runner backend is not azure_foundry -- azure live tier requires "
-            "the azure config"
+            "selected runner backend is not azure_foundry -- azure live tier requires "
+            "an azure config (set SHRLM_EXPERIMENT_CONFIG to one)"
         )
-    return live_skip_reason()
+    return live_skip_reason(config=config)
 
 
 _LIVE_SKIP = _azure_live_skip()
@@ -131,14 +143,13 @@ class ContainsGoldVerifier:
         )
 
 
-def azure_smoke_config() -> Any:
-    """The shipped smoke profile with the runner role forced to azure_foundry.
+def smoke_config_for(provider: ProviderCase) -> Any:
+    """The shipped smoke profile with the runner role switched to ``provider``.
 
-    A no-op when the shipped config already selects azure_foundry (the only
-    case the paid tier runs in); otherwise -- e.g. the shipped openrouter
-    config -- it gives the offline construction tests the azure semantics they
-    exercise, using the shipped ``[backends.azure_foundry]`` table and
-    ``[pricing.list_price]``.
+    A no-op when the shipped config already selects the row's backend and
+    model; otherwise the runner endpoint is replaced, the row's ``azure_table``
+    overrides (if any) are applied to ``[backends.azure_foundry]``, and the
+    shipped provider tables and ``[pricing.list_price]`` supply the rest.
     """
     from dataclasses import replace
 
@@ -146,33 +157,55 @@ def azure_smoke_config() -> Any:
 
     config = load_config(profile="smoke")
     runner = config.backends.runner
-    if runner.backend == "azure_foundry":
+    if (runner.backend, runner.model) == (provider.backend, provider.model):
         return config
-    return replace(
-        config,
-        backends=replace(
-            config.backends,
-            runner=replace(runner, backend="azure_foundry", model="Kimi-K2.5"),
-        ),
+    backends = replace(
+        config.backends,
+        runner=replace(runner, backend=provider.backend, model=provider.model),
     )
+    if provider.azure_table:
+        assert backends.azure_foundry is not None
+        backends = replace(
+            backends, azure_foundry=replace(backends.azure_foundry, **provider.azure_table)
+        )
+    return replace(config, backends=backends)
 
 
-def make_live_round_config(out_dir: Path) -> RoundConfig:
+def azure_smoke_config() -> Any:
+    """The smoke profile the paid azure tier runs (KTD7).
+
+    The env-selected config (``SHRLM_EXPERIMENT_CONFIG``) is used as-is when
+    its runner already selects azure_foundry (e.g. the gpt-oss profile). With
+    the env unset the shipped smoke profile runs openrouter, so -- exactly as
+    before -- the runner role is forced to the Kimi row."""
+    from shrlm.experiment.config import CONFIG_PATH, load_config
+
+    config = load_config(profile="smoke", path=live_config_path(CONFIG_PATH))
+    if config.backends.runner.backend == "azure_foundry":
+        return config
+    return smoke_config_for(AZURE_KIMI)
+
+
+def make_live_round_config(out_dir: Path, config: Any = None) -> RoundConfig:
     """The real construction path: H0 + real configured runner backend_kwargs.
 
-    ``backend_kwargs_for`` builds fresh dicts per call; the deep copy makes
-    doubly sure no shared config object can be mutated through the RoundConfig.
+    ``config`` defaults to ``azure_smoke_config()`` (the paid tier); the
+    offline matrix passes ``smoke_config_for(provider)``. ``backend_kwargs_for``
+    builds fresh dicts per call; the deep copy makes doubly sure no shared
+    config object can be mutated through the RoundConfig.
     """
     from shrlm.experiment.config import backend_kwargs_for
 
-    backend_kwargs = copy.deepcopy(backend_kwargs_for(azure_smoke_config(), "runner"))
+    if config is None:
+        config = azure_smoke_config()
+    backend_kwargs = copy.deepcopy(backend_kwargs_for(config, "runner"))
     return RoundConfig(
         round_index=1,
         harness=H0,
         instances=live_instances(),
         verifier=ContainsGoldVerifier(),
         out_dir=out_dir,
-        backend="azure_foundry",
+        backend=config.backends.runner.backend,
         backend_kwargs=backend_kwargs,
         attempts=1,
         max_iterations=LIVE_MAX_ITERATIONS,
@@ -191,6 +224,7 @@ def live_round(tmp_path_factory: pytest.TempPathFactory) -> tuple[RoundConfig, P
     return config, round_dir(out_dir, config.round_index)
 
 
+@pytest.mark.live
 @pytest.mark.skipif(_LIVE_SKIP is not None, reason=_LIVE_SKIP or "live gates satisfied")
 class TestLiveDriverRound:
     def test_round_directory_contract(self, live_round):
@@ -266,43 +300,75 @@ class TestLiveDriverRound:
 
 
 class TestLiveRoundConstructionOffline:
-    """Prove the round the live tier would pay for is well-formed, offline.
+    """Prove the round the live tier would pay for is well-formed, offline,
+    once per provider-matrix row (KTD5).
 
-    Same ``make_live_round_config`` (H0, azure_foundry, the real smoke-profile
-    backend_kwargs), run through the scripted-client seam every driver test
-    uses -- so a backend_kwargs shape error, a sensitive-kwarg refusal, or a
-    broken resume would surface here for free, never on the paid tier.
+    Same ``make_live_round_config`` (H0, the row's backend, the real
+    smoke-profile backend_kwargs), run through the scripted-client seam every
+    driver test uses -- so a backend_kwargs shape error, a sensitive-kwarg
+    refusal, or a broken resume would surface here for free, never on the
+    paid tier. The Kimi row is byte-for-byte the round the azure tier pays for.
     """
 
-    def test_live_config_runs_and_resumes_through_run_round(self, tmp_path, monkeypatch):
+    def test_live_config_runs_and_resumes_through_run_round(
+        self, provider: ProviderCase, tmp_path, monkeypatch
+    ):
         import rlm.core.rlm as rlm_module
         from tests.optimization.test_driver import ClientFactory, final
 
-        monkeypatch.setenv("AZURE_API_KEY", "sentinel-key")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://sentinel.services.ai.azure.com")
-        factory = ClientFactory([final("B"), final("WRONG")], cost_source="synthesized")
+        # The driver refuses to start a round without the backend's credentials.
+        assert set(provider.env_keys) == set(_BACKEND_ENV_KEYS[provider.backend])
+        for key in provider.env_keys:
+            monkeypatch.setenv(key, SENTINEL_ENV[key])
+        factory = ClientFactory([final("B"), final("WRONG")], cost_source=provider.cost_source)
         monkeypatch.setattr(rlm_module, "get_client", factory)
 
-        config = make_live_round_config(tmp_path)
+        config = make_live_round_config(tmp_path, smoke_config_for(provider))
+        assert config.backend == provider.backend
+        assert config.backend_kwargs["model_name"] == provider.model
         # The real configured kwargs the live tier sends: nested pricing (which
-        # the driver's sensitive-kwarg scan must accept) and instant mode.
-        assert set(config.backend_kwargs["pricing"]) == {
-            "input_per_million",
-            "output_per_million",
-        }
-        extra_body = config.backend_kwargs["sampling_args"]["extra_body"]
-        assert extra_body["chat_template_kwargs"] == {"thinking": False}
+        # the driver's sensitive-kwarg scan must accept) exactly when the row
+        # carries pricing, and the row's extra_body (instant mode for Kimi:
+        # chat_template_kwargs == {"thinking": False}).
+        assert ("pricing" in config.backend_kwargs) == (provider.pricing is not None)
+        if provider.pricing is not None:
+            assert set(config.backend_kwargs["pricing"]) == {
+                "input_per_million",
+                "output_per_million",
+            }
+        sampling = config.backend_kwargs["sampling_args"]
+        assert sampling["extra_body"] == provider.expected_extra_body
+        assert ("reasoning_effort" in sampling) == (
+            "reasoning_effort" in provider.expected_sampling_keys
+        )
 
         entries = run_round(config)
         assert len(entries) == len(live_instances())
-        assert all(entry["cost_source"] == "synthesized" for entry in entries)
+        assert all(entry["cost_source"] == provider.cost_source for entry in entries)
         assert all(isinstance(entry["verdict"], dict) for entry in entries)
 
         idle = ClientFactory([])
         monkeypatch.setattr(rlm_module, "get_client", idle)
-        resumed = run_round(make_live_round_config(tmp_path))
+        resumed = run_round(make_live_round_config(tmp_path, smoke_config_for(provider)))
         assert len(resumed) == len(entries)
         assert idle.total_calls == 0
+
+    def test_kimi_row_is_the_round_the_azure_tier_pays_for(self, tmp_path, monkeypatch):
+        """The paid azure tier's default construction and the matrix's Kimi
+        row build the same round: same backend and byte-identical kwargs.
+
+        Offline and always-run (no live opt-in required), so it must pin the
+        default Kimi config regardless of any ``SHRLM_EXPERIMENT_CONFIG``
+        left set in the environment.
+        """
+        monkeypatch.delenv(CONFIG_ENV_KEY, raising=False)
+        paid = make_live_round_config(tmp_path)
+        matrix = make_live_round_config(tmp_path, smoke_config_for(AZURE_KIMI))
+        assert paid.backend == matrix.backend == "azure_foundry"
+        assert paid.backend_kwargs == matrix.backend_kwargs
+        assert matrix.backend_kwargs["sampling_args"]["extra_body"]["chat_template_kwargs"] == {
+            "thinking": False
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -452,3 +518,111 @@ class TestPricingAttestationOffline:
         assert live_skip_reason(env, runner_backend="azure_foundry", config=other) is None
         default = live_skip_reason(env, runner_backend="azure_foundry")
         assert default is not None and "does not match" in default
+
+
+class TestLiveConfigPathOffline:
+    """KTD7: ``SHRLM_EXPERIMENT_CONFIG`` selects the config for every live
+    tier; unset or empty, each load site keeps its OWN current default."""
+
+    def test_env_unset_resolves_each_live_module_default(self, monkeypatch):
+        """Each live module resolves the config it loads today: the shipped
+        smoke path for the client-live and smoke-live tiers (and the smoke
+        script), the Kimi and OOLONG TOMLs for the two recursion modules."""
+        from shrlm.experiment.config import CONFIG_PATH
+        from tests.experiment.test_oolong_recursion_live import OOLONG_CONFIG
+        from tests.experiment.test_recursion_live import KIMI_CONFIG
+
+        monkeypatch.delenv(CONFIG_ENV_KEY, raising=False)
+        assert live_config_path(CONFIG_PATH) == CONFIG_PATH
+        assert (
+            live_config_path(KIMI_CONFIG) == KIMI_CONFIG == Path("configs/experiment_kimiK25.toml")
+        )
+        assert (
+            live_config_path(OOLONG_CONFIG)
+            == OOLONG_CONFIG
+            == Path("configs/experiment_oolong.toml")
+        )
+
+    def test_empty_env_resolves_the_default(self, monkeypatch):
+        monkeypatch.setenv(CONFIG_ENV_KEY, "")
+        default = Path("configs/experiment.toml")
+        assert live_config_path(default) == default
+
+    def test_env_set_wins_over_every_default(self, monkeypatch):
+        selected = "configs/experiment_oolong_gptoss.toml"
+        monkeypatch.setenv(CONFIG_ENV_KEY, selected)
+        for default in ("configs/experiment.toml", Path("configs/experiment_kimiK25.toml")):
+            assert live_config_path(default) == Path(selected)
+
+    def test_gptoss_attestation_is_checked_against_its_own_rate_card(self):
+        """Proof-first (U6): attesting the KIMI rates ('0.60/3.00') against
+        the gpt-oss config must be refused with a reason naming the gpt-oss
+        card 0.15/0.6 -- the gate compares against the SELECTED config."""
+        from shrlm.experiment.config import load_config
+
+        config = load_config("full", path=CONFIG_DIR / "experiment_oolong_gptoss.toml")
+        env = {
+            "AZURE_API_KEY": "sentinel-key",
+            "AZURE_FOUNDRY_ENDPOINT": "https://sentinel.services.ai.azure.com",
+            LIVE_FLAG: "1",
+            "SHRLM_VERIFIED_PRICING": "0.60/3.00",
+        }
+        reason = live_skip_reason(env, config=config)
+        assert reason is not None and "does not match" in reason
+        assert "0.15/0.6" in reason
+
+        env["SHRLM_VERIFIED_PRICING"] = "0.15/0.6"
+        assert live_skip_reason(env, config=config) is None
+
+
+class TestLiveDeselectionOffline:
+    """The ``live``-marker deselection hook (tests/conftest.py): live items
+    are DESELECTED -- never executed -- unless ``SHRLM_RUN_LIVE == "1"`` and
+    ``CI`` is unset; the modules' own skipif gates then name any still-missing
+    gate in ``-rs``. Proven through a real pytest subprocess collection."""
+
+    TARGET = "tests/experiment/test_oolong_recursion_live.py"
+
+    def _collect(self, overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        env = dict(os.environ)
+        for key in ("SHRLM_RUN_LIVE", "CI", CONFIG_ENV_KEY):
+            env.pop(key, None)
+        env.update(overrides)
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-m",
+                "live",
+                "-p",
+                "no:cacheprovider",
+                self.TARGET,
+            ],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+            env=env,
+            timeout=300,
+        )
+
+    def test_without_the_opt_in_zero_live_items_are_selected(self):
+        result = self._collect({})
+        assert result.returncode == 5, result.stdout + result.stderr  # nothing selected
+        assert "deselected" in result.stdout
+        assert "::" not in result.stdout  # no test id survived collection
+
+    def test_ci_deselects_even_with_the_opt_in_flag(self):
+        result = self._collect({"SHRLM_RUN_LIVE": "1", "CI": "true"})
+        assert result.returncode == 5, result.stdout + result.stderr
+        assert "deselected" in result.stdout
+        assert "::" not in result.stdout
+
+    def test_the_opt_in_without_ci_selects_the_live_items(self):
+        """Selection (not execution: this is --collect-only, $0) resumes with
+        the opt-in; the skipif gates still guard actual runs."""
+        result = self._collect({"SHRLM_RUN_LIVE": "1"})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "TestOolongRecursesLive" in result.stdout

@@ -340,12 +340,15 @@ class TestDeadline:
         assert result.entries[0]["run_id"] == run_id_for("inst-1", 1)
         assert result.entries[0]["cause"] == VerifierCause.RESOURCE_TERMINATED.value
         # Which deadline fired matters, and so does how. The child's own alarm
-        # must raise the runtime's TimeoutExceededError, not the builtin: only
-        # the former is in ROOT_LIMIT_EXCEPTIONS, so only the former is caught
-        # inside execute_run, which turns the hang into an ordinary terminated
-        # run carrying whatever usage the runtime recorded. Raising the builtin
-        # instead would crash the child, and the parent would then price the run
-        # at its flat ceiling rather than what it actually spent.
+        # raises HardDeadlineSignal (a BaseException, so no ``except Exception``
+        # inside the REPL or a sub-call wrapper can swallow it), and only
+        # execute_run converts it -- into HardDeadlineExceeded, a
+        # TimeoutExceededError persisted as an ordinary terminated run carrying
+        # whatever usage the runtime recorded, its name in the detail so the
+        # audit can tell a backstop kill from a between-iteration timeout. An
+        # alarm that escaped execute_run would crash the child, and the parent
+        # would then price the run at its flat ceiling rather than what it
+        # actually spent.
         #
         # So the child reports success -- it did its job -- with a terminated
         # run inside, and it leaves a trace behind. A crashed child reports
@@ -356,7 +359,7 @@ class TestDeadline:
         payload = json.loads((run_path / "result.json").read_text())
         assert payload["ok"] is True
         assert payload["terminated"] is True
-        assert "TimeoutExceededError" in payload["detail"]
+        assert "HardDeadlineExceeded" in payload["detail"]
         assert trace_path_for(
             round_dir(config.out_dir, config.round_index), run_id_for("inst-1", 1)
         ).exists()

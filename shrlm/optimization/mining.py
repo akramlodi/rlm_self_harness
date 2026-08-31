@@ -23,6 +23,7 @@ from rlm.core.types import RLMChatCompletion
 from shrlm.optimization.attribution import (
     ATTRIBUTOR_SYSTEM_PROMPT,
     VALIDATOR_VERSION,
+    AttributionBudgetExhausted,
     AttributionContentFiltered,
     AttributionRejection,
     AttributionTransportError,
@@ -192,7 +193,8 @@ class WeaknessMiner:
         # not produce; a transport failure must checkpoint, not raise away the
         # round's completed records. A content-filter block is recorded like a
         # rejection instead -- it is deterministic in the digest's bytes, so
-        # checkpointing it asks for a retry that can never succeed.
+        # checkpointing it asks for a retry that can never succeed; so is a
+        # reasoning-exhausted output budget (R6), for the same reason.
         try:
             result = self.attributor.attribute(digest, root, verdict, grounding)
         except AttributionRejection as exc:
@@ -234,6 +236,21 @@ class WeaknessMiner:
             record.attribution_failed = True
             record.attribution_error = f"content filtered: {exc}"
             record.attribution_error_kind = AttributionErrorKind.CONTENT_FILTERED
+            raw.update(
+                signature=None,
+                detail=None,
+                attributed=False,
+                error=record.attribution_error,
+                attribution_error_kind=record.attribution_error_kind.value,
+                attempts=[attempt.to_dict() for attempt in exc.attempts],
+            )
+            return outcome
+        except AttributionBudgetExhausted as exc:
+            # Same containment as the content-filter branch: recorded with its
+            # own error kind, counted in n_unattributed, never checkpointed.
+            record.attribution_failed = True
+            record.attribution_error = f"token limit: {exc}"
+            record.attribution_error_kind = AttributionErrorKind.TOKEN_LIMIT
             raw.update(
                 signature=None,
                 detail=None,

@@ -1,0 +1,8 @@
+{
+  "detail": "BadRequestError: Error code: 400 - {'id': 'f0b0d95133a24d389cec9f02f98c4a6d', 'model': 'Kimi-K2.5', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': ''}, 'finish_reason': 'content_filter', 'content_filter_results': {'error': {'code': 'content_filter', 'message': \"Response content blocked by label 'MultiSeverity_HateSpeechScore'.\"}}}], 'usage': {'prompt_tokens': 12642, 'completion_tokens': 581, 'total_tokens': 13223}, 'created': 1788047806, 'object': 'chat.completion', 'prompt_filter_results': None}",
+  "format": "shrlm-run-worker-result/v1",
+  "ok": true,
+  "run_id": "oolong-synth-task-type-relative-freq-131072-1ba6e030b7b4d2f0__a04",
+  "terminated": true,
+  "usage_lower_bound": true
+}

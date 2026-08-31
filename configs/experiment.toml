@@ -38,6 +38,11 @@ k = 4 # candidate edits proposed per round
 # an identity key (R3), so extending the run later needs a fresh out-dir.
 t = 3 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
+# Which environment the loop mines and validates: "graphwalks" (source, the
+# shipped default) or "oolong_synth". Identity key (R3): a run against a
+# different environment gets a distinct identity and its own --out-dir. See
+# configs/experiment_oolong.toml for the OOLONG profile.
+environment = "graphwalks"
 # Registry harness the loop starts from: "H0" (the mechanism floor, S2-S5 one
 # line each, no orchestrator addendum) or "H0*" (the shipped RLM system prompt
 # with ORCHESTRATOR_ADDENDUM appended at runtime; S2-S5 start empty). Identity
@@ -112,6 +117,37 @@ n_long = 40 # target-long test size; the upstream ceiling, not a choice:
 # context length, and the loader pairs each window with the 20 task_ids above,
 # so 2 x 20 = 40 is every instance that exists at 262,144. A larger value fails
 # the coverage gate in load_oolong_pairs before any spend.
+
+[environments.oolong]
+# OOLONG (arXiv:2511.02817). Two task sets: `synth` is the mining/validation
+# pool when [loop] environment = "oolong_synth"; `real` is a periodic
+# generalization check that is run but NEVER fed into the promotion gate
+# (cadence: [operational] real_check_every_n_rounds). Both sub-tables are
+# inert when environment = "graphwalks" (the shipped default) -- they are
+# present so the config schema stays uniform across environments.
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test" # OOLONG-synth's own split carrying the full 1K-128K power-of-two range
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-29
+subsets = [] # source ICL datasets to draw from; [] = all (spam, trec_coarse, imdb, ...)
+task_groups = ["counting", "user", "timeline"] # the three OOLONG-synth question families
+# Length diversity is REQUIRED, not optional: this pool must span lengths the
+# model can solve without decomposing (1K-4K) AND lengths where aggregation
+# genuinely breaks down (>=64K; published models score <50% even at 128K). The
+# loader draws a balanced share per length so the taxonomy sees both regimes.
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000 # cap on raw rows streamed while collecting the length-diverse pool
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd" # Critical Role D&D transcripts ("toy_dnd" is the tiny smoke variant)
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb" # HF main, pinned 2026-08-29
+question_types = [] # [] = all (singledoc_rolls, singledoc_spells, multidoc_rolls)
+episode_counts = [1, 2, 3] # transcript counts to spread the check across (length diversity)
+max_scan = 40000 # cap on raw rows streamed while collecting the check set
+n_check = 20 # size of the periodic generalization set
 
 # Shipped roles run OpenRouter Qwen3-30B-A3B-Instruct-2507 (the 2026-08-23
 # comparison run); azure_foundry / Kimi-K2.5 is the alternate backbone. To
@@ -239,6 +275,14 @@ validation_workers = 1
 # measurement -- which spends real money -- chooses the shipped value and
 # supplies the pass-rate evidence that concurrency did not move the results.
 validation_run_workers = 1
+
+# OOLONG-real generalization-check cadence, in executed rounds. 0 disables it
+# (the shipped default -- the source experiment is GraphWalks). N > 0 runs the
+# check after every Nth executed round plus once for the final incumbent; it
+# evaluates only the incumbent, is metered under stage "real_check", and NEVER
+# feeds tau_regression/tau_improvement or the promotion ledger. Identity-exempt
+# like the worker counts. Ignored when [loop] environment = "graphwalks".
+real_check_every_n_rounds = 0
 
 
 # -----------------------------------------------------------------------------

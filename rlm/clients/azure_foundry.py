@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from rlm.clients.openai import OpenAIClient, extract_provider_cost
 from rlm.core.types import ModelUsageSummary, UsageSummary
+from rlm.utils.exceptions import TokenLimitExceededError
 
 load_dotenv()
 
@@ -113,6 +114,73 @@ def translate_native_tool_calls(content: str) -> str:
     return _TOOL_SECTION_RE.sub("", translated).strip()
 
 
+# gpt-oss's harmony response format. The Foundry chat route is expected to
+# unwrap it, but a leak into ``message.content`` would hand the REPL parser
+# reasoning text and control tokens (KTD4). With channel structure present
+# only the ``final`` channel's message body is the answer; ``analysis`` and
+# ``commentary`` bodies are reasoning and are dropped with their markers.
+# Bare control tokens without channel structure are simply stripped. Every
+# dropped marker is counted on the client, never raised: raising would escape
+# ``execute_run`` as a non-limit exception and take the experiment down.
+HARMONY_CHANNEL_MARKER = "<|channel|>"
+_HARMONY_CONTROL_TOKENS = (
+    HARMONY_CHANNEL_MARKER,
+    "<|message|>",
+    "<|call|>",
+    "<|return|>",
+    "<|start|>",
+    "<|end|>",
+    "<|constrain|>",
+)
+_HARMONY_CONTROL_RE = re.compile("|".join(re.escape(token) for token in _HARMONY_CONTROL_TOKENS))
+# One channel: ``<|channel|>NAME[<|constrain|>TYPE]<|message|>BODY`` terminated
+# by ``<|end|>``, ``<|return|>``, ``<|call|>``, the next ``<|start|>``, or the end
+# of the text. Any ``<|start|>ROLE`` header preceding the channel is part of it.
+_HARMONY_CHANNEL_RE = re.compile(
+    r"(?:<\|start\|>[^<]*)?<\|channel\|>(?P<name>[^<]*?)"
+    r"(?:<\|constrain\|>[^<]*)?<\|message\|>"
+    r"(?P<body>.*?)"
+    r"(?:<\|end\|>|<\|return\|>|<\|call\|>|(?=<\|start\|>)|\Z)",
+    re.DOTALL,
+)
+HARMONY_FINAL_CHANNEL = "final"
+
+
+def _count_control_tokens(text: str) -> int:
+    return len(_HARMONY_CONTROL_RE.findall(text))
+
+
+def strip_harmony_markers(content: str) -> tuple[str, int]:
+    """Drop harmony control tokens from ``content``; return the text and the
+    number of markers dropped.
+
+    With channel structure (``<|channel|>`` present) only the ``final``
+    channel's message body is kept; every other channel's body is dropped
+    together with its markers, so reasoning never reaches the parser. Without
+    channel structure the bare control tokens are stripped and the text
+    around them is kept. Text carrying no marker is returned as-is (the same
+    object) with a count of zero.
+    """
+    if HARMONY_CHANNEL_MARKER not in content:
+        if _HARMONY_CONTROL_RE.search(content) is None:
+            return content, 0
+        stripped, dropped = _HARMONY_CONTROL_RE.subn("", content)
+        return stripped, dropped
+
+    total = _count_control_tokens(content)
+    kept: list[str] = []
+    cursor = 0
+    for match in _HARMONY_CHANNEL_RE.finditer(content):
+        # Text between channels is not a message body; keep it minus markers.
+        between = content[cursor : match.start()]
+        kept.append(_HARMONY_CONTROL_RE.sub("", between))
+        if match.group("name").strip() == HARMONY_FINAL_CHANNEL:
+            kept.append(_HARMONY_CONTROL_RE.sub("", match.group("body")))
+        cursor = match.end()
+    kept.append(_HARMONY_CONTROL_RE.sub("", content[cursor:]))
+    return "".join(kept).strip(), total
+
+
 class AzureFoundryClient(OpenAIClient):
     """
     LM Client for models served from Azure AI Foundry over the
@@ -181,6 +249,38 @@ class AzureFoundryClient(OpenAIClient):
         # must be atomic per call.
         self._cost_lock = threading.Lock()
 
+        # Harmony control tokens dropped from ``message.content`` over this
+        # client's lifetime (see strip_harmony_markers). Process-local, not
+        # persisted; incremented under the cost lock.
+        self.harmony_markers_dropped: int = 0
+
+    @staticmethod
+    def _reasoning_exhausted(choice: Any, usage: Any) -> bool:
+        """Whether an empty choice spent its whole output budget on reasoning.
+
+        True when ``finish_reason == "length"``, the content is empty, and
+        either ``usage.completion_tokens_details.reasoning_tokens`` accounts
+        for at least 90% of ``completion_tokens`` or the detail block is not
+        reported at all (Azure does not document it for gpt-oss chat
+        completions; an empty body cut at the length cap is then the only
+        signal). Takes the caller's already-extracted first choice and usage.
+        Pure: the client is shared across threads, so no per-call state lives
+        on the instance.
+        """
+        if getattr(choice, "finish_reason", None) != "length":
+            return False
+        content = getattr(getattr(choice, "message", None), "content", None)
+        if content is not None and content != "":
+            return False
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(details, "reasoning_tokens", None)
+        if reasoning_tokens is None:
+            return True
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        if not isinstance(completion_tokens, int) or completion_tokens <= 0:
+            return True
+        return reasoning_tokens >= 0.9 * completion_tokens
+
     def _validate_response(self, response: openai.ChatCompletion) -> None:
         """Fail loud on filtered or empty responses instead of returning junk."""
         choices = getattr(response, "choices", None)
@@ -192,9 +292,58 @@ class AzureFoundryClient(OpenAIClient):
                 "Azure Foundry blocked this response via content filter "
                 "(finish_reason='content_filter')."
             )
+        usage = getattr(response, "usage", None)
+        if self._reasoning_exhausted(choice, usage):
+            # A limit, not a glitch: surfaces as the same class the RLM's own
+            # iteration cap raises, so the root run persists as
+            # resource_terminated with the spend banked just above.
+            completion_tokens = getattr(usage, "completion_tokens", None)
+            tokens_used = completion_tokens if isinstance(completion_tokens, int) else 0
+            details = getattr(usage, "completion_tokens_details", None)
+            reasoning_tokens = getattr(details, "reasoning_tokens", None)
+            token_limit = self.sampling_args.get("max_tokens") or tokens_used
+            raise TokenLimitExceededError(
+                tokens_used=tokens_used,
+                token_limit=token_limit,
+                message=(
+                    "Azure Foundry output budget exhausted by reasoning: empty content "
+                    f"with finish_reason='length' ({tokens_used:,} completion tokens, "
+                    f"reasoning_tokens={reasoning_tokens!r}, max_tokens={token_limit:,})."
+                ),
+            )
         content = getattr(getattr(choice, "message", None), "content", None)
         if content is None or content == "":
             raise RuntimeError("Azure Foundry returned empty content for this response.")
+        if self._strips_to_empty(content):
+            # Non-empty raw content that _normalize_content will collapse to
+            # "" (e.g. an analysis-only harmony response with no ``final``
+            # channel). Classify the stripped emptiness here, where
+            # finish_reason is available, instead of returning a silent empty
+            # reply that downstream consumers treat as a real answer.
+            if getattr(choice, "finish_reason", None) == "length":
+                completion_tokens = getattr(usage, "completion_tokens", None)
+                tokens_used = completion_tokens if isinstance(completion_tokens, int) else 0
+                token_limit = self.sampling_args.get("max_tokens") or tokens_used
+                raise TokenLimitExceededError(
+                    tokens_used=tokens_used,
+                    token_limit=token_limit,
+                    message=(
+                        "Azure Foundry output budget exhausted mid-reasoning: harmony "
+                        "channel content with no final body, finish_reason='length' "
+                        f"({tokens_used:,} completion tokens, max_tokens={token_limit:,})."
+                    ),
+                )
+            raise RuntimeError("Azure Foundry returned empty content for this response.")
+
+    @staticmethod
+    def _strips_to_empty(content: str) -> bool:
+        """Whether non-empty raw ``content`` would normalize to "" -- e.g. a
+        harmony response carrying only an ``analysis`` channel body, which
+        ``strip_harmony_markers`` drops entirely. Runs the same pipeline as
+        ``_normalize_content`` but is pure: no marker counting, no client
+        state, so the classifier can run before normalization does."""
+        stripped, _ = strip_harmony_markers(translate_native_tool_calls(content))
+        return stripped == ""
 
     def _validate_usage(self, usage: Any) -> None:
         """A paid call must never count as free: token counts must be present,
@@ -268,7 +417,9 @@ class AzureFoundryClient(OpenAIClient):
         into a dead run -- while an ordinary 429 gets 20 attempts.
 
         A content filter is a verdict rather than a glitch, so it is left to
-        _validate_response to raise.
+        _validate_response to raise; so is an empty body whose output budget
+        went to reasoning (finish_reason='length'), which is deterministic for
+        the prompt and would only be billed again on every re-send.
         """
         choices = getattr(response, "choices", None)
         if not choices:
@@ -276,13 +427,31 @@ class AzureFoundryClient(OpenAIClient):
         choice = choices[0]
         if getattr(choice, "finish_reason", None) == "content_filter":
             return None  # a deliberate refusal; retrying would only re-spend
+        if self._reasoning_exhausted(choice, getattr(response, "usage", None)):
+            return None  # a budget limit; _validate_response raises it
         content = getattr(getattr(choice, "message", None), "content", None)
         if content is None or content == "":
             return f"finish_reason={getattr(choice, 'finish_reason', None)!r}"
+        if self._strips_to_empty(content):
+            # An analysis-only harmony body normalizes to "": empty in every
+            # way that matters downstream, so it keeps the same retry ladder
+            # as a raw empty body. A 'length' cut is deterministic for the
+            # prompt (re-sending only re-bills); _validate_response raises it.
+            if getattr(choice, "finish_reason", None) == "length":
+                return None
+            return f"stripped-empty finish_reason={getattr(choice, 'finish_reason', None)!r}"
         return None
 
     def _normalize_content(self, content: str) -> str:
-        return translate_native_tool_calls(content)
+        """Kimi tool-call translation first, then harmony marker stripping, so
+        a ``final`` channel wrapping a leaked tool call still yields the fenced
+        block. Runs for ``completion`` and ``acompletion`` alike."""
+        translated = translate_native_tool_calls(content)
+        stripped, dropped = strip_harmony_markers(translated)
+        if dropped:
+            with self._cost_lock:
+                self.harmony_markers_dropped += dropped
+        return stripped
 
     def get_usage_summary(self) -> UsageSummary:
         summary = super().get_usage_summary()

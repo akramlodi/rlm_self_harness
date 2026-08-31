@@ -46,10 +46,10 @@ The links, in walk order:
   a legacy round persisted; either way the file's bytes must hash to the
   entry's ``prompt_sha256``), and every unattributed entry carries a non-empty
   per-attempt audit trail whose rejected attempts name their violations.
-  Entries whose ``attribution_error_kind`` is ``transport`` or
-  ``content_filtered`` (or, for legacy entries, an ``error`` prefixed
-  ``transport failure:``) are exempt from the non-empty demand: neither
-  produced a response to record.
+  Entries whose ``attribution_error_kind`` is ``transport``,
+  ``content_filtered``, or ``token_limit`` (or, for legacy entries, an
+  ``error`` prefixed ``transport failure:``) are exempt from the non-empty
+  demand: none produced a response to record.
 
 Grounding coverage, reported in the summary stats, is derived from
 ``records.jsonl`` alone: the fraction of failure records whose
@@ -533,9 +533,10 @@ def _audit_attributions(path: Path, entries: list[dict[str, Any]], walk: _Walk) 
             )
 
         # Unattributed entries must carry the per-attempt audit trail, each
-        # rejected attempt naming its violation. Transport failures and
-        # content-filter blocks are exempt from the non-empty demand: in
-        # neither case did the model produce a response to record.
+        # rejected attempt naming its violation. Transport failures,
+        # content-filter blocks, and reasoning-exhausted output budgets are
+        # exempt from the non-empty demand: in none of these cases did the
+        # model produce a response to record.
         if entry.get("attributed") is False:
             walk.check("attribution_attempts")
             attempts = entry.get("attempts") or []
@@ -545,6 +546,7 @@ def _audit_attributions(path: Path, entries: list[dict[str, Any]], walk: _Walk) 
                 in (
                     AttributionErrorKind.TRANSPORT.value,
                     AttributionErrorKind.CONTENT_FILTERED.value,
+                    AttributionErrorKind.TOKEN_LIMIT.value,
                 )
                 if kind is not None
                 else str(entry.get("error", "")).startswith(_TRANSPORT_ERROR_PREFIX)

@@ -23,6 +23,7 @@ from shrlm.optimization.proposal import (
     SKILL_NAME_MAX_CHARS,
     SKILL_TOTAL_MAX_CHARS,
     MaterializationFailure,
+    ProposalBudgetExhausted,
     ProposalCache,
     ProposalRejection,
     ProposerConfig,
@@ -514,6 +515,35 @@ def test_propose_round_empty_bundle_no_crash(tmp_path):
     result = propose_round(empty_bundle, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
     assert result.written == []
     assert result.skipped_patterns == []
+
+
+def test_propose_round_budget_exhaustion_is_raised_once_without_re_asking(tmp_path, monkeypatch):
+    """A reasoning-exhausted proposer response (the client's
+    ``TokenLimitExceededError``, R6/KTD3) is deterministic for the prompt:
+    it is neither a transport glitch to re-send nor a rejected attempt to
+    re-ask, so it surfaces once with the attempts so far."""
+    from rlm.utils.exceptions import TokenLimitExceededError
+
+    monkeypatch.setattr("shrlm.optimization.proposal.time.sleep", lambda _s: None)
+
+    def boom(prompt: Any) -> str:
+        raise TokenLimitExceededError(
+            tokens_used=16384, token_limit=16384, message="output budget exhausted by reasoning"
+        )
+
+    lm = MockLM(model_name="mock-proposer", response_fn=boom)
+    with pytest.raises(ProposalBudgetExhausted, match="reasoning") as excinfo:
+        propose_round(
+            BUNDLE,
+            H0,
+            lm,
+            tmp_path / "proposals",
+            config=ProposerConfig(max_attempts=3, transport_retries=3),
+            workdir=tmp_path / "work",
+        )
+    assert lm._call_count == 1
+    assert excinfo.value.attempts == []
+    assert not any((tmp_path / "proposals").glob("*/proposal.json"))
 
 
 def test_propose_round_raises_after_exhausting_attempts(tmp_path):

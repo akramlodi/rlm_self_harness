@@ -24,7 +24,7 @@ Identity hash (R3; KTD3)
     (including per-round attempts), environment definitions with their dataset
     revision pins, the runner/attributor/proposer backends including the
     optional provider tables (OpenRouter routing, Azure Foundry thinking
-    mode), and the evaluation repetition count
+    mode and reasoning effort), and the evaluation repetition count
     (``IDENTITY_OPERATIONAL_KEYS``; see below). The remaining operational keys
     -- cache paths, loader timeout, the validation worker count, pricing and
     GPU tables, report settings -- are excluded: they change what a run costs,
@@ -126,8 +126,12 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
         "operational.eval_repetitions",
         "operational.validation_workers",
         "operational.validation_run_workers",
+        "operational.real_check_every_n_rounds",
         "environments.oolong_pairs.n_short",
         "environments.oolong_pairs.n_long",
+        "environments.oolong.synth.max_scan",
+        "environments.oolong.real.max_scan",
+        "environments.oolong.real.n_check",
     }
 )
 
@@ -187,6 +191,12 @@ class LoopConfig:
     t: int
     patience: int
     initial_harness: str = "H0"
+    # Which environment the loop mines and validates: ``graphwalks`` (default,
+    # unchanged) or ``oolong_synth``. Identity key like the counts -- which
+    # environment round 1 mines decides every run that lands on disk -- so a run
+    # against a different environment gets a distinct experiment identity and
+    # its own out-dir. ``load_config`` validates it before any spend.
+    environment: str = "graphwalks"
 
 
 @dataclass(frozen=True)
@@ -251,9 +261,50 @@ class OolongPairsConfig:
 
 
 @dataclass(frozen=True)
+class OolongSynthConfig:
+    """OOLONG-synth: the mining/validation pool when ``loop.environment ==
+    "oolong_synth"``. ``context_lengths`` MUST span short (solvable without
+    decomposing) through long (aggregation breaks down) -- the loader draws a
+    balanced share per length so the loop sees both."""
+
+    dataset_repo: str
+    split: str
+    dataset_revision: str
+    subsets: tuple[str, ...]
+    task_groups: tuple[str, ...]
+    context_lengths: tuple[int, ...]
+    max_scan: int
+
+
+@dataclass(frozen=True)
+class OolongRealConfig:
+    """OOLONG-real: the periodic generalization check. Run but NEVER fed into the
+    promotion gate (``operational.real_check_every_n_rounds`` controls cadence)."""
+
+    dataset_repo: str
+    config_name: str
+    split: str
+    dataset_revision: str
+    question_types: tuple[str, ...]
+    episode_counts: tuple[int, ...]
+    max_scan: int
+    n_check: int
+
+
+@dataclass(frozen=True)
+class OolongConfig:
+    """The OOLONG environment: a synth sub-table (loop pool) and a real
+    sub-table (generalization check)."""
+
+    synth: OolongSynthConfig
+    real: OolongRealConfig
+
+
+@dataclass(frozen=True)
 class EnvironmentsConfig:
     graphwalks: GraphWalksConfig
     oolong_pairs: OolongPairsConfig
+    oolong: OolongConfig
 
 
 @dataclass(frozen=True)
@@ -273,13 +324,33 @@ class OpenRouterConfig:
     allow_fallbacks: bool
 
 
+AZURE_REASONING_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "none")
+
+
 @dataclass(frozen=True)
 class AzureFoundryConfig:
-    """Azure AI Foundry provider settings. ``thinking = False`` selects
-    Kimi-K2.5 instant mode, forwarded as
-    ``extra_body["chat_template_kwargs"] = {"thinking": False}``."""
+    """Azure AI Foundry provider settings, one knob per model family.
+
+    ``thinking = False`` selects Kimi-K2.5 instant mode, forwarded as
+    ``extra_body["chat_template_kwargs"] = {"thinking": False}``.
+
+    ``reasoning_effort`` is the OpenAI-style knob for reasoning models served
+    on the same route (gpt-oss-120b): forwarded as a top-level request
+    parameter when set, omitted when ``None``. ``"none"`` is the Kimi route's
+    documented instant switch, not a gpt-oss value. The two knobs are
+    exclusive in one direction: ``thinking = false`` with an effort set is
+    refused at load, because that request would carry ``chat_template_kwargs``
+    the reasoning-model deployment rejects.
+
+    Adding this field moved ``identity_hash`` for every config carrying the
+    table (2026-08-30): ``backends`` is an identity section and ``asdict``
+    renders the ``None`` default. Existing experiment directories refuse to
+    resume, as they did when ``initial_harness`` was added; a provider switch
+    is a new experiment.
+    """
 
     thinking: bool
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -378,11 +449,30 @@ class OperationalConfig:
     eval_repetitions: int
     validation_workers: int = 1
     validation_run_workers: int = 1
+    # How often (in executed rounds) the OOLONG-real generalization check runs
+    # when ``loop.environment == "oolong_synth"``: 0 disables it, N > 0 runs it
+    # after every Nth executed round plus once for the final incumbent. It never
+    # feeds the promotion gate, so like the worker counts it changes what a run
+    # costs, not what it decides -- identity-exempt, may change under an existing
+    # out-dir. Ignored entirely for ``environment == "graphwalks"``.
+    real_check_every_n_rounds: int = 0
 
     def __post_init__(self) -> None:
         _require_positive_int("operational.eval_repetitions", self.eval_repetitions)
         _require_positive_int("operational.validation_workers", self.validation_workers)
         _require_positive_int("operational.validation_run_workers", self.validation_run_workers)
+        if isinstance(self.real_check_every_n_rounds, bool) or not isinstance(
+            self.real_check_every_n_rounds, int
+        ):
+            raise ValueError(
+                f"operational.real_check_every_n_rounds must be an integer, got "
+                f"{self.real_check_every_n_rounds!r}"
+            )
+        if self.real_check_every_n_rounds < 0:
+            raise ValueError(
+                f"operational.real_check_every_n_rounds must be >= 0, got "
+                f"{self.real_check_every_n_rounds}"
+            )
 
 
 def _require_positive_int(label: str, value: Any) -> None:
@@ -454,6 +544,24 @@ def _validate_initial_harness(loop: LoopConfig) -> LoopConfig:
         raise ValueError(
             f"[loop] initial_harness must name a registry harness, one of "
             f"{sorted(HARNESSES)}; got {loop.initial_harness!r}"
+        )
+    return loop
+
+
+SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_synth")
+
+
+def _validate_environment(loop: LoopConfig) -> LoopConfig:
+    """Reject a ``[loop] environment`` the orchestrator cannot mine/validate.
+
+    ``graphwalks`` (default) and ``oolong_synth`` are the two environments the
+    optimization loop supports as its mined/validated pool; ``oolong_pairs`` and
+    the OOLONG-real check are evaluation-only and never named here.
+    """
+    if loop.environment not in SELECTABLE_ENVIRONMENTS:
+        raise ValueError(
+            f"[loop] environment must be one of {list(SELECTABLE_ENVIRONMENTS)}; got "
+            f"{loop.environment!r}"
         )
     return loop
 
@@ -542,11 +650,20 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     tuplify(promotion_table, "sub_call_band")
 
     env_table = raw["environments"]
-    check_keys(env_table, ("graphwalks", "oolong_pairs"), "environments")
+    check_keys(env_table, ("graphwalks", "oolong_pairs", "oolong"), "environments")
     graphwalks_table = dict(env_table["graphwalks"])
     tuplify(graphwalks_table, "problem_types")
-    oolong_table = dict(env_table["oolong_pairs"])
-    tuplify(oolong_table, "task_ids")
+    oolong_pairs_table = dict(env_table["oolong_pairs"])
+    tuplify(oolong_pairs_table, "task_ids")
+
+    oolong_env_table = env_table["oolong"]
+    check_keys(oolong_env_table, ("synth", "real"), "environments.oolong")
+    oolong_synth_table = dict(oolong_env_table["synth"])
+    for key in ("subsets", "task_groups", "context_lengths"):
+        tuplify(oolong_synth_table, key)
+    oolong_real_table = dict(oolong_env_table["real"])
+    for key in ("question_types", "episode_counts"):
+        tuplify(oolong_real_table, key)
 
     backends_table = raw["backends"]
     check_keys(
@@ -565,6 +682,19 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         azure_foundry = build_section(
             AzureFoundryConfig, backends_table["azure_foundry"], "backends.azure_foundry"
         )
+        effort = azure_foundry.reasoning_effort
+        if effort is not None and effort not in AZURE_REASONING_EFFORTS:
+            raise ValueError(
+                f"[backends.azure_foundry] reasoning_effort must be one of "
+                f"{list(AZURE_REASONING_EFFORTS)}; got {effort!r}"
+            )
+        if azure_foundry.thinking is False and effort is not None:
+            raise ValueError(
+                "[backends.azure_foundry] sets thinking = false together with "
+                f"reasoning_effort = {effort!r}: thinking = false emits Kimi's "
+                "chat_template_kwargs, which a reasoning-effort deployment rejects. "
+                "Declare exactly one of the two knobs."
+            )
     else:
         azure_roles = sorted(
             role for role in CLIENT_ROLES if backends_table[role].get("backend") == "azure_foundry"
@@ -572,9 +702,10 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         if azure_roles:
             raise ValueError(
                 f"missing [backends.azure_foundry] table: role(s) {azure_roles} use the "
-                "azure_foundry backend, whose thinking mode must be declared explicitly "
-                "(an absent table would send no chat_template_kwargs, silently defaulting "
-                "Kimi to thinking mode -- ~10x output cost and <think> markup in outputs)."
+                "azure_foundry backend, whose reasoning mode must be declared explicitly "
+                "(thinking for Kimi-K2.5, reasoning_effort for gpt-oss); an absent table "
+                "would send neither knob, silently defaulting Kimi to thinking mode -- "
+                "~10x output cost and <think> markup in outputs."
             )
 
     pricing_table = raw["pricing"]
@@ -590,13 +721,21 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         profile=profile,
         decoding=build_section(DecodingConfig, raw["decoding"], "decoding"),
         splits=build_section(SplitsConfig, raw["splits"], "splits"),
-        loop=_validate_initial_harness(build_section(LoopConfig, raw["loop"], "loop")),
+        loop=_validate_environment(
+            _validate_initial_harness(build_section(LoopConfig, raw["loop"], "loop"))
+        ),
         promotion=build_section(PromotionSettings, promotion_table, "promotion"),
         caps=build_section(CapsConfig, raw["caps"], "caps"),
         environments=EnvironmentsConfig(
             graphwalks=build_section(GraphWalksConfig, graphwalks_table, "environments.graphwalks"),
             oolong_pairs=build_section(
-                OolongPairsConfig, oolong_table, "environments.oolong_pairs"
+                OolongPairsConfig, oolong_pairs_table, "environments.oolong_pairs"
+            ),
+            oolong=OolongConfig(
+                synth=build_section(
+                    OolongSynthConfig, oolong_synth_table, "environments.oolong.synth"
+                ),
+                real=build_section(OolongRealConfig, oolong_real_table, "environments.oolong.real"),
             ),
         ),
         backends=BackendsConfig(
@@ -652,7 +791,9 @@ def sampling_args(config: ExperimentConfig, role: str) -> dict[str, Any]:
     entirely. Provider-specific ``extra_body`` branches on the role's backend:
     an openrouter role with a non-empty ``provider_order`` gets the routing
     dict; an azure_foundry role with ``thinking = False`` gets the instant-mode
-    ``chat_template_kwargs``. ``max_tokens`` stays ``max_tokens`` -- the OpenAI
+    ``chat_template_kwargs``, and one with ``reasoning_effort`` set gets it as a
+    top-level ``reasoning_effort`` parameter (the OpenAI client forwards every
+    non-null top-level key). ``max_tokens`` stays ``max_tokens`` -- the OpenAI
     client performs the ``max_completion_tokens`` rename itself.
     """
     if role not in CLIENT_ROLES:
@@ -671,16 +812,22 @@ def sampling_args(config: ExperimentConfig, role: str) -> dict[str, Any]:
                 "order": list(routing.provider_order),
                 "allow_fallbacks": routing.allow_fallbacks,
             }
-    elif endpoint.backend == "azure_foundry":
+    reasoning_effort: str | None = None
+    if endpoint.backend == "azure_foundry":
         foundry = config.backends.azure_foundry
-        if foundry is not None and foundry.thinking is False:
-            extra_body["chat_template_kwargs"] = {"thinking": False}
-    return {
+        if foundry is not None:
+            if foundry.thinking is False:
+                extra_body["chat_template_kwargs"] = {"thinking": False}
+            reasoning_effort = foundry.reasoning_effort
+    args: dict[str, Any] = {
         "temperature": decoding.temperature,
         "top_p": decoding.top_p,
         "max_tokens": decoding.max_output_tokens,
         "extra_body": extra_body,
     }
+    if reasoning_effort is not None:
+        args["reasoning_effort"] = reasoning_effort
+    return args
 
 
 def backend_kwargs_for(config: ExperimentConfig, role: str) -> dict[str, Any]:

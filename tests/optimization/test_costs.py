@@ -755,3 +755,24 @@ class TestSplitClaim:
         assert result.outcome == OUTCOME_COMPLETED
         assert len(result.entries) == 3
         assert result.skipped_run_ids == []
+
+
+class TestChildErrorVerdict:
+    """A child's trace crosses the process boundary but its verdict does not;
+    the parent rebuilds it from the error string. A provider content-filter
+    refusal must come back as CONTENT_FILTERED, not RESOURCE_TERMINATED."""
+
+    def test_a_content_filter_refusal_keeps_its_label(self):
+        detail = (
+            "BadRequestError: Error code: 400 - {'error': {'code': 'content_filter', "
+            "'message': \"Response content blocked by label 'MultiSeverity_ViolenceScore'.\"}}"
+        )
+        verdict = costs_module._error_verdict(detail, "partial")
+        assert verdict.cause is VerifierCause.CONTENT_FILTERED
+        assert verdict.passed is False
+        assert verdict.produced == "partial"
+        assert verdict.detail == detail
+
+    def test_any_other_error_is_a_termination(self):
+        verdict = costs_module._error_verdict("TimeoutExceededError: 1900.0s of 1800.0s", "")
+        assert verdict.cause is VerifierCause.RESOURCE_TERMINATED

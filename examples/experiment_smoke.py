@@ -25,13 +25,18 @@ report carrying a full-experiment estimate. It NEVER asserts accuracy, pass
 counts, or promotion outcomes -- at smoke scale the tau pass-count rule is
 meaningless, so model behavior is the model's business.
 
-Spend control (KTD7; hard ceiling $5, CUMULATIVE across every live tier)
-    The $5.00 ceiling covers everything the provider-switch plan spends live,
+Spend control (KTD7; hard ceiling $5 across the smoke tiers)
+    The $5.00 ceiling covers the smoke tiers of the provider-switch plan,
     added together: the U4 pytest live tier (one client check plus a minimal
     driver round, reserved below as ``PYTEST_LIVE_RESERVE_USD``), this
     script's standalone ``--probe`` invocation (reserved below as the
     standalone probe reserve; the ``--live`` run's own probe calls are
     counted inside the ungoverned class), and the full ``--live`` run.
+    The recursion live tier (ladder step 3;
+    ``tests/experiment/test_oolong_recursion_live.py``) budgets separately
+    on top -- 4 runs x $0.40 = $1.60 worst case -- so the plan's worst-case
+    total live spend is ~$6.58, not $5.00; this static proof does not
+    include that tier.
     ``check_budget_arithmetic`` proves the whole sum before a cent is spent. Every paid call falls in exactly one of two
     classes; the ceiling adds both, then the reserve.
 
@@ -57,22 +62,42 @@ Spend control (KTD7; hard ceiling $5, CUMULATIVE across every live tier)
     Ungoverned calls -- paid model calls no breaker ever sees:
 
         probe               2       the raw completion plus the client's own
+                                    (8 for a reasoning config: the seven-call
+                                    sequence plus the client's own; see below)
         attribution         18      t x n_in x m records x max_attempts x
                                     transport_retries (n_in = 2 live, below)
-        proposal            9       t x max_attempts x transport_retries
-        per call            $0.0418 = UNGOVERNED_INPUT_TOKENS (49,152) x
-                                    $0.60/1M in + 4,096 x $3.00/1M out
-        ungoverned ceiling  29 x $0.0417792 = $1.2116
+        proposal            24      t x max_attempts x transport_retries
+        per stage call      price-dependent: UNGOVERNED_INPUT_TOKENS (49,152)
+                                    at the config's list input rate plus
+                                    decoding.max_output_tokens at its list
+                                    output rate
+        per probe call      PROBE_INPUT_TOKENS (1,024; the probe prompts are
+                                    file-local constants) at the list input
+                                    rate plus decoding.max_output_tokens at
+                                    the list output rate -- except the
+                                    16-token exhaustion call, whose output is
+                                    capped at LENGTH_PROBE_OUTPUT_TOKENS
 
     Reserved on top: one standalone ``--probe`` invocation (the usage block
-    says to run it FIRST, so its two calls are spent in ADDITION to the
+    says to run it FIRST, so its calls are spent in ADDITION to the
     ``--live`` invocation's own probe counted above), and the U4 pytest live
-    tier (client check ~$0.01 + minimal driver round <$0.50, rounded up):
+    tier (client check ~$0.01 + minimal driver round <$0.50, rounded up as
+    ``PYTEST_LIVE_RESERVE_USD = $0.60``).
 
-        standalone probe    2 x $0.0417792 = $0.0836
-        U4 reserve          $0.60
+    ``check_budget_arithmetic`` re-derives every term from the LOADED config
+    (``--config``), so the one proof covers both shipped profiles. At the
+    gpt-oss config's $0.15/$0.60 per 1M with ``max_output_tokens = 16384``
+    and the eight-call reasoning probe:
 
-        cumulative ceiling  $3.08 + $1.2116 + $0.0836 + $0.60 = $4.9752 < $5.00
+        per stage call      $0.0172 = 49,152 x $0.15/1M + 16,384 x $0.60/1M
+        stage ceiling       42 x $0.0172032 = $0.7225
+        probe bound         7 x $0.009984 + $0.0001632 = $0.0701
+        cumulative ceiling  governed + $0.7225 + 2 x $0.0701 + $0.60 < $5.00
+
+    At the shipped Qwen config's $0.10/$0.30 per 1M with 4,096 output tokens
+    and the two-call probe, the same arithmetic gives $0.0061 per stage call
+    (42 calls, $0.2580), a $0.0027 probe bound, and a cumulative ceiling
+    likewise under $5.00.
 
     Why ``UNGOVERNED_INPUT_TOKENS`` and not the full context window: at the
     Kimi list price a full 262,144-token input bound prices 29 calls at $4.92
@@ -135,9 +160,13 @@ Long runs (KTD6, re-derived for Kimi-K2.5 pricing $0.60/$3.00 per 1M)
     every measured number.
 
 Usage:
-    # ~$0.01: the R10 execution-note probe, run this FIRST.
+    # ~$0.01: the R10 execution-note probe, run this FIRST. --config selects
+    # the experiment TOML whose [smoke] profile (backends, pricing, probe
+    # expectation) the smoke runs; the default is configs/experiment.toml.
+    # The verdict and every probe payload land in <out-dir>/probe.json.
     AZURE_API_KEY=... AZURE_FOUNDRY_ENDPOINT=... \\
-        uv run python examples/experiment_smoke.py --probe
+        uv run python examples/experiment_smoke.py --probe \\
+        --config configs/experiment_oolong_gptoss.toml --out-dir ./smoke_gptoss
 
     # bounded by the arithmetic above, up to a few hours: the full tier-2 smoke.
     AZURE_API_KEY=... AZURE_FOUNDRY_ENDPOINT=... \\
@@ -154,17 +183,20 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from openai import APIStatusError
 
 from rlm.clients import get_client
+from rlm.clients.azure_foundry import _HARMONY_CONTROL_TOKENS
 from rlm.clients.base_lm import BaseLM
 from rlm.clients.openai import _merge_extra_body, _normalize_sampling_args
 from shrlm.experiment.config import (
     CLIENT_ROLES,
+    CONFIG_PATH,
     ExperimentConfig,
     backend_kwargs_for,
     load_config,
@@ -205,8 +237,10 @@ from shrlm.optimization.proposal import DEFAULT_TRANSPORT_RETRIES as PROPOSAL_TR
 load_dotenv()
 
 # The hard ceiling from the plan's Goal Capsule stop condition (c). It is
-# CUMULATIVE across every live tier of the provider-switch plan: the U4 pytest
+# CUMULATIVE across the SMOKE tiers of the provider-switch plan: the U4 pytest
 # live tier (reserved below), this script's probe, and the full --live run.
+# The recursion live tier (4 runs x $0.40 = $1.60 worst case) budgets
+# separately on top and is NOT in this proof; see the module docstring.
 SPEND_CEILING_USD = 5.0
 
 # Worst case reserved for the U4 pytest live tier (one client check ~$0.01
@@ -241,12 +275,22 @@ MINING_BREAKERS = 1
 VALIDATION_FIXED_BREAKERS = 2  # baseline and the merged re-evaluation
 
 # The ungoverned paid calls. ``probe`` issues two (the raw completion, then the
-# client's own), and neither the attributor's nor the proposer's completions
-# are wrapped in a CandidateSpendBreaker -- they are per-stage LM calls, not
-# governed runs -- so the ceiling must allow for them explicitly. The attempt
-# and retry counts are imported from the stage modules whose defaults the
-# orchestrator actually constructs, so a change there moves this arithmetic.
+# client's own) for a config that expects no reasoning, and neither the
+# attributor's nor the proposer's completions are wrapped in a
+# CandidateSpendBreaker -- they are per-stage LM calls, not governed runs --
+# so the ceiling must allow for them explicitly. The attempt and retry counts
+# are imported from the stage modules whose defaults the orchestrator actually
+# constructs, so a change there moves this arithmetic.
 PROBE_CALLS = 2
+
+# A reasoning config (gpt-oss) runs the seven-call probe sequence instead --
+# configured effort, low, high, the 16-token length case, and three
+# informational calls -- plus the client-path completion that both modes
+# issue, so its probe budget is eight paid calls. ``probe_call_count`` picks
+# per config, which keeps the cumulative $5 proof true for BOTH the shipped
+# config (2 calls) and the gpt-oss config (8 calls).
+REASONING_PROBE_RAW_CALLS = 7
+REASONING_PROBE_CALLS = REASONING_PROBE_RAW_CALLS + 1
 
 # Input-token bound for one ungoverned completion. Every ungoverned prompt is
 # constructed mechanically and char-capped by this repo (see the module
@@ -259,10 +303,33 @@ PROBE_CALLS = 2
 # decoding.max_output_tokens (sent as ``max_tokens``).
 UNGOVERNED_INPUT_TOKENS = 49_152
 
+# Input-token bound for one PROBE completion, far below the stage bound above:
+# every probe prompt is a constant in this file (PROBE_PROMPT ~30 chars,
+# HARD_PROBE_PROMPT ~200 chars), and a BPE token never encodes less than one
+# character, so 1,024 tokens is a >4x bound on the probe's input side. The
+# output side stays bounded by decoding.max_output_tokens (sent as
+# ``max_tokens`` on every probe call) -- except the deliberate 16-token
+# length-exhaustion call, whose output is bounded by its own
+# ``max_completion_tokens=16``. Pricing probe calls at the stage bound would
+# claim input spend the probe cannot incur and push the eight-call reasoning
+# probe's cumulative proof past the $5 ceiling on paper alone.
+PROBE_INPUT_TOKENS = 1_024
+LENGTH_PROBE_OUTPUT_TOKENS = 16
+
 # The length whose per-run means the extrapolation is most sensitive to (KTD6).
 LONG = LENGTHS[1]
 
 PROBE_PROMPT = "Reply with the single word OK."
+
+# The HARD prompt for the reasoning probe's low/high/16-token calls: it must
+# actually induce reasoning so effort levels are distinguishable, and a
+# 16-token completion budget must be exhausted by reasoning alone (the
+# length case). Multi-step by construction, trivial to a human.
+HARD_PROBE_PROMPT = (
+    "What is the smallest prime number greater than 400 whose decimal digits "
+    "sum to another prime? Check each candidate carefully, then reply with "
+    "the number only."
+)
 
 # A probe completion grossly longer than this trivial prompt warrants is a
 # reasoning signal (thinking tokens billed as completion tokens) even when no
@@ -270,9 +337,59 @@ PROBE_PROMPT = "Reply with the single word OK."
 # tokens, so this ceiling is already >10x generous.
 PROBE_COMPLETION_TOKEN_CEILING = 64
 
+# Every probe payload and the verdict are persisted here under --out-dir, so
+# the ladder's later steps (run_experiment.py --dry-run --probe-json) can
+# print the evidence without re-spending.
+PROBE_JSON_FILENAME = "probe.json"
+
+# Markers that must never appear in a probe response's visible content:
+# ``<think>`` (Kimi/Qwen thinking markup) plus the harmony control tokens
+# (gpt-oss). The client strips these on the run path; the probe reads the RAW
+# response on purpose, so a leak fails here instead of being repaired
+# silently.
+FORBIDDEN_CONTENT_MARKERS: tuple[str, ...] = ("<think>", *_HARMONY_CONTROL_TOKENS)
+
+
+def _leaked_content_markers(content: str) -> list[str]:
+    """Every forbidden marker present in ``content``, in tuple order."""
+    return [marker for marker in FORBIDDEN_CONTENT_MARKERS if marker in content]
+
 
 class SmokeError(RuntimeError):
     """The live smoke's own precondition or structural check failed."""
+
+
+@dataclass(frozen=True)
+class ProbeExpectation:
+    """What the loaded config says a probe response must look like (KTD6).
+
+    Derived from the config, never from a provider name: a config whose
+    ``[backends.azure_foundry]`` sets a real ``reasoning_effort`` expects a
+    reasoning signal in the response; every other config (the shipped
+    openrouter profile, Kimi's instant mode, ``reasoning_effort = "none"``)
+    expects none. The default instance reproduces today's no-reasoning checks.
+    """
+
+    expects_reasoning: bool = False
+    effort: str | None = None
+    max_output_tokens: int = PROBE_COMPLETION_TOKEN_CEILING
+
+
+NO_REASONING = ProbeExpectation()
+
+
+def probe_expectation(config: ExperimentConfig) -> ProbeExpectation:
+    """The ``ProbeExpectation`` the loaded config implies for the runner role."""
+    effort: str | None = None
+    if config.backends.runner.backend == "azure_foundry":
+        foundry = config.backends.azure_foundry
+        if foundry is not None:
+            effort = foundry.reasoning_effort
+    return ProbeExpectation(
+        expects_reasoning=effort not in (None, "none"),
+        effort=effort,
+        max_output_tokens=config.decoding.max_output_tokens,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -280,16 +397,19 @@ class SmokeError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def live_config() -> ExperimentConfig:
-    """The shipped ``[smoke]`` profile with live-smoke caps and counts (R2).
+def live_config(path: Path | str = CONFIG_PATH) -> ExperimentConfig:
+    """A config file's ``[smoke]`` profile with live-smoke caps and counts (R2).
 
-    Semantics -- decoding, promotion rule, environments, backends, loop shape
-    -- are byte-identical to the smoke profile; only spend caps and instance
-    counts move (see the module docstring's "Live scale" section). Caps and
-    split sizes are identity keys (R3), so this config refuses to resume an
-    experiment directory the plain smoke profile created, and vice versa.
+    ``path`` defaults to the shipped ``configs/experiment.toml``; ``--config``
+    threads any other experiment TOML (e.g. the gpt-oss profile) through the
+    same shrink. Semantics -- decoding, promotion rule, environments,
+    backends, loop shape -- are byte-identical to that file's smoke profile;
+    only spend caps and instance counts move (see the module docstring's
+    "Live scale" section). Caps and split sizes are identity keys (R3), so
+    this config refuses to resume an experiment directory the plain smoke
+    profile created, and vice versa.
     """
-    config = load_config("smoke")
+    config = load_config("smoke", path)
     return replace(
         config,
         caps=replace(
@@ -326,13 +446,22 @@ def breaker_count(config: ExperimentConfig, conditions: int = len(DEFAULT_CONDIT
     return config.loop.t * per_round + conditions
 
 
-def ungoverned_call_count(config: ExperimentConfig) -> int:
-    """Every paid model call that no ``CandidateSpendBreaker`` governs.
+def probe_call_count(config: ExperimentConfig) -> int:
+    """Paid calls one probe invocation issues under this config.
 
-    The probe's two calls, one attribution attempt per mining run (worst case:
-    every run fails and every attempt is retried to its bound), and the
-    proposal batch's attempts, both per round.
+    Two for a config that expects no reasoning (the raw completion plus the
+    client-path one); eight for a reasoning config (the seven-call gpt-oss
+    sequence plus the client-path one).
     """
+    if probe_expectation(config).expects_reasoning:
+        return REASONING_PROBE_CALLS
+    return PROBE_CALLS
+
+
+def stage_call_count(config: ExperimentConfig) -> int:
+    """Ungoverned attributor/proposer calls: one attribution attempt per mining
+    run (worst case: every run fails and every attempt is retried to its
+    bound) plus the proposal batch's attempts, both per round."""
     attribution = (
         config.loop.t
         * config.splits.n_in
@@ -341,7 +470,14 @@ def ungoverned_call_count(config: ExperimentConfig) -> int:
         * ATTRIBUTION_TRANSPORT_RETRIES
     )
     proposal = config.loop.t * PROPOSAL_MAX_ATTEMPTS * PROPOSAL_TRANSPORT_RETRIES
-    return PROBE_CALLS + attribution + proposal
+    return attribution + proposal
+
+
+def ungoverned_call_count(config: ExperimentConfig) -> int:
+    """Every paid model call that no ``CandidateSpendBreaker`` governs: the
+    probe's calls (config-dependent, ``probe_call_count``) plus the
+    attributor/proposer stage calls."""
+    return probe_call_count(config) + stage_call_count(config)
 
 
 def ungoverned_call_ceiling(config: ExperimentConfig) -> float:
@@ -373,17 +509,35 @@ def spend_ceiling(config: ExperimentConfig, conditions: int = len(DEFAULT_CONDIT
     """
     per_breaker = config.caps.candidate_budget + config.caps.max_budget
     governed = breaker_count(config, conditions) * per_breaker
-    ungoverned = ungoverned_call_count(config) * ungoverned_call_ceiling(config)
-    return governed + ungoverned
+    ungoverned = stage_call_count(config) * ungoverned_call_ceiling(config)
+    return governed + ungoverned + probe_spend_bound_usd(config)
+
+
+def probe_spend_bound_usd(config: ExperimentConfig) -> float:
+    """The most one probe invocation can cost, in USD.
+
+    Every probe call is bounded by ``PROBE_INPUT_TOKENS`` of input (the probe
+    prompts are file-local constants; see the constant's comment) plus
+    ``decoding.max_output_tokens`` of output, at the configured *list* rates.
+    A reasoning config's eight calls price seven at that bound and the
+    deliberate 16-token exhaustion call at its own
+    ``LENGTH_PROBE_OUTPUT_TOKENS`` output cap.
+    """
+    price = config.pricing.list_price
+    input_usd = PROBE_INPUT_TOKENS * price.input_per_million / 1_000_000
+    full_call = input_usd + config.decoding.max_output_tokens * price.output_per_million / 1_000_000
+    if not probe_expectation(config).expects_reasoning:
+        return PROBE_CALLS * full_call
+    capped_call = input_usd + LENGTH_PROBE_OUTPUT_TOKENS * price.output_per_million / 1_000_000
+    return (REASONING_PROBE_CALLS - 1) * full_call + capped_call
 
 
 def standalone_probe_reserve_usd(config: ExperimentConfig) -> float:
     """Reserved for one standalone ``--probe`` invocation (run FIRST, per the
-    usage block): its ``PROBE_CALLS`` calls are a separate spend from the
+    usage block): its ``probe_call_count`` calls are a separate spend from the
     ``--live`` invocation's own probe (already inside ``spend_ceiling``), so
-    the cumulative proof reserves them explicitly -- 2 x the per-call
-    ungoverned bound, ~$0.0836 at the shipped pricing."""
-    return PROBE_CALLS * ungoverned_call_ceiling(config)
+    the cumulative proof reserves one whole ``probe_spend_bound_usd`` on top."""
+    return probe_spend_bound_usd(config)
 
 
 def check_budget_arithmetic(config: ExperimentConfig) -> float:
@@ -400,9 +554,10 @@ def check_budget_arithmetic(config: ExperimentConfig) -> float:
         raise SmokeError(
             f"the configured budgets admit up to ${cumulative:.2f} cumulatively "
             f"({breaker_count(config)} breakers x (${config.caps.candidate_budget} + "
-            f"${config.caps.max_budget}) + {ungoverned_call_count(config)} ungoverned call(s) "
-            f"x ${ungoverned_call_ceiling(config):.4f} + the ${probe_reserve:.4f} standalone "
-            f"probe reserve + the ${PYTEST_LIVE_RESERVE_USD:.2f} "
+            f"${config.caps.max_budget}) + {stage_call_count(config)} ungoverned stage call(s) "
+            f"x ${ungoverned_call_ceiling(config):.4f} + the "
+            f"${probe_spend_bound_usd(config):.4f} probe bound + the ${probe_reserve:.4f} "
+            f"standalone probe reserve + the ${PYTEST_LIVE_RESERVE_USD:.2f} "
             f"U4 pytest live reserve), which does not clear the ${SPEND_CEILING_USD} "
             "ceiling; lower caps.candidate_budget (raising caps.max_budget is what the KTD6 "
             "long runs need, so cut the cumulative budget first) before running live."
@@ -420,49 +575,134 @@ def runner_client(config: ExperimentConfig) -> BaseLM:
     return get_client(config.backends.runner.backend, backend_kwargs_for(config, "runner"))
 
 
-def raw_completion(lm: Any, config: ExperimentConfig, prompt: str) -> Any:
+def raw_completion(
+    lm: Any,
+    config: ExperimentConfig,
+    prompt: str,
+    *,
+    reasoning_effort: str | None = None,
+    max_completion_tokens: int | None = None,
+    extra_body: dict[str, Any] | None = None,
+) -> Any:
     """One chat completion built exactly as ``OpenAIClient.completion`` builds it.
 
     The client returns only the message content, but the probe must read the
     response's ``usage.cost`` and ``provider`` fields, so it issues the request
     through the client's own request builders rather than reconstructing (and
-    drifting from) the parameter shape by hand.
+    drifting from) the parameter shape by hand. The keyword overrides are the
+    reasoning probe sequence's per-call knobs; each replaces (or, for
+    ``extra_body``, merges under) the configured value for this one call.
     """
     args = sampling_args(config, "runner")
+    if reasoning_effort is not None:
+        args["reasoning_effort"] = reasoning_effort
+    if max_completion_tokens is not None:
+        args["max_tokens"] = max_completion_tokens
     return lm.client.chat.completions.create(
         model=config.backends.runner.model,
         messages=[{"role": "user", "content": prompt}],
-        extra_body=_merge_extra_body({}, args),
+        extra_body=_merge_extra_body(dict(extra_body or {}), args),
         **_normalize_sampling_args(args),
     )
 
 
-def check_probe_reasoning(payload: dict[str, Any]) -> None:
-    """FAIL (never record) on any reasoning signal in the probe response (R10).
-
-    The decoding config requests instant (non-thinking) mode via
-    ``chat_template_kwargs``; a route that ignores it changes cost and
-    REPL-output parsing materially, which is the KTD6 contingency -- surfaced
-    here, before anything larger spends. Detected signals: ``<think>`` markup
-    in content, a non-empty ``reasoning_content``/``reasoning`` field on the
-    message (``model_extra`` fields appear inline in ``model_dump``), a
-    nonzero reasoning-token count in usage details, or completion tokens
-    grossly exceeding what the trivial probe prompt warrants.
-    """
+def _probe_message(payload: dict[str, Any]) -> dict[str, Any]:
     choices = payload.get("choices") or [{}]
-    message = choices[0].get("message") or {}
+    return choices[0].get("message") or {}
+
+
+def _reasoning_token_count(payload: dict[str, Any]) -> int | None:
+    """``completion_tokens_details.reasoning_tokens`` when reported, else None."""
+    usage = payload.get("usage") or {}
+    details = usage.get("completion_tokens_details") or {}
+    if isinstance(details, dict):
+        reasoning_tokens = details.get("reasoning_tokens")
+        if isinstance(reasoning_tokens, int):
+            return reasoning_tokens
+    return None
+
+
+def check_content_markers(name: str, payload: dict[str, Any]) -> None:
+    """No ``<think>`` or harmony control marker may leak into ``content``.
+
+    The probe reads the RAW response on purpose (the client strips these on
+    the run path), so a leak fails here -- named by marker and by call --
+    instead of being repaired silently.
+    """
+    content = _probe_message(payload).get("content") or ""
+    leaked = _leaked_content_markers(content)
+    if leaked:
+        raise SmokeError(
+            f"the {name!r} probe response's content carries forbidden marker(s) "
+            f"{leaked}: reasoning markup is leaking into the visible answer text. "
+            "Stop and surface before running anything larger (KTD6 contingency)."
+        )
+
+
+def check_probe_reasoning(
+    payload: dict[str, Any], expectation: ProbeExpectation = NO_REASONING
+) -> None:
+    """FAIL (never record) when the response contradicts the config (R10).
+
+    Default (``expectation.expects_reasoning`` False, today's behavior): the
+    decoding config requests instant (non-thinking) mode, so ANY reasoning
+    signal fails -- ``<think>`` markup in content, a non-empty
+    ``reasoning_content``/``reasoning`` field on the message (``model_extra``
+    fields appear inline in ``model_dump``), a nonzero reasoning-token count
+    in usage details, or completion tokens grossly exceeding what the trivial
+    probe prompt warrants.
+
+    With reasoning expected (a config whose ``reasoning_effort`` is a real
+    level), the checks invert: the response MUST show a reasoning signal (a
+    non-empty ``message.reasoning*`` field or a nonzero
+    ``completion_tokens_details.reasoning_tokens``), ``<think>`` and harmony
+    control markers stay forbidden in ``content``, and the 64-token ceiling is
+    replaced by ``completion_tokens <= expectation.max_output_tokens``
+    (reasoning tokens bill as completion tokens, so the trivial-prompt ceiling
+    would misfire by design).
+    """
+    message = _probe_message(payload)
     content = message.get("content") or ""
-    signals: list[str] = []
+    usage = payload.get("usage") or {}
+    details = usage.get("completion_tokens_details") or {}
+    completion_tokens = usage.get("completion_tokens")
+
+    if expectation.expects_reasoning:
+        signals: list[str] = []
+        leaked = _leaked_content_markers(content)
+        if leaked:
+            signals.append(f"content carries forbidden marker(s) {leaked}")
+        reasoning_fields = sorted(
+            key for key, value in message.items() if "reasoning" in key and value
+        )
+        reasoning_tokens = _reasoning_token_count(payload)
+        if not reasoning_fields and not reasoning_tokens:
+            signals.append(
+                "no reasoning signal: every message.reasoning* field is empty and usage "
+                "reports no reasoning_tokens, but the config sets reasoning_effort = "
+                f"{expectation.effort!r}"
+            )
+        if isinstance(completion_tokens, int) and completion_tokens > expectation.max_output_tokens:
+            signals.append(
+                f"{completion_tokens} completion tokens exceed the configured "
+                f"max_output_tokens ({expectation.max_output_tokens})"
+            )
+        if signals:
+            raise SmokeError(
+                "the probe response contradicts the configured reasoning contract: "
+                + "; ".join(signals)
+                + ". Stop and surface before running anything larger (KTD6 contingency)."
+            )
+        return
+
+    signals = []
     if "<think>" in content:
         signals.append("content carries <think> markup")
     for key, value in message.items():
         if "reasoning" in key and value:
             signals.append(f"message.{key} is non-empty")
-    usage = payload.get("usage") or {}
-    details = usage.get("completion_tokens_details") or {}
     if isinstance(details, dict) and details.get("reasoning_tokens"):
         signals.append(f"usage reports {details['reasoning_tokens']} reasoning token(s)")
-    completion_tokens = usage.get("completion_tokens")
     if isinstance(completion_tokens, int) and completion_tokens > PROBE_COMPLETION_TOKEN_CEILING:
         signals.append(
             f"{completion_tokens} completion tokens for a trivial prompt "
@@ -478,13 +718,144 @@ def check_probe_reasoning(payload: dict[str, Any]) -> None:
         )
 
 
-def probe(config: ExperimentConfig) -> dict[str, Any]:
-    """Two tiny live calls: cost usable, sampling args accepted, no reasoning.
+def _probe_record(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """One persisted probe payload with its headline token counts pulled up."""
+    usage = payload.get("usage") or {}
+    return {
+        "name": name,
+        "status": "ok",
+        "completion_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": _reasoning_token_count(payload),
+        "payload": payload,
+    }
 
-    The raw completion is issued through the client's own request builders, so
-    a rejected decoding argument surfaces as an HTTP error right here; the
-    second call travels the client's own ``completion`` path -- the path every
-    persisted run's cost actually travels.
+
+# The three INFORMATIONAL probe calls: their status codes / error codes and
+# token counts are recorded in probe.json, never asserted -- they map the
+# route's behavior at the knob's edges (an unsupported effort, the Kimi
+# instant-mode switch) for the operator's go/no-go read.
+INFORMATIONAL_PROBE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("none", {"reasoning_effort": "none"}),
+    ("xhigh", {"reasoning_effort": "xhigh"}),
+    ("thinking_false", {"extra_body": {"chat_template_kwargs": {"thinking": False}}}),
+)
+
+
+def probe_reasoning_sequence(
+    lm: Any, config: ExperimentConfig, expectation: ProbeExpectation
+) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+    """The seven-call gpt-oss probe: prove the reasoning contract before spending more.
+
+    One call each, all on the client's raw request path (``raw_completion``
+    does not travel ``_validate_response``, so every check reads the raw
+    payload): the configured effort on the trivial prompt; ``low`` and
+    ``high`` on the same HARD prompt as the 16-token case;
+    ``max_completion_tokens=16`` on that prompt expecting ``finish_reason ==
+    "length"`` with empty content (billed -- usage must be present); then the
+    three informational calls whose outcomes are recorded, never asserted.
+
+    Hard gates (SmokeError): ``high > low`` on
+    ``completion_tokens_details.reasoning_tokens`` when both report it,
+    otherwise on ``completion_tokens`` (the fired branch is returned and
+    persisted; equality is "inconclusive" -- rerun the probe once, then
+    surface); no harmony markers or ``<think>`` in any content; the 16-token
+    length case.
+
+    Returns:
+        The configured-effort payload (the verdict's headline numbers), the
+        seven payload records for probe.json, and the branch the high>low
+        gate fired on.
+    """
+    records: list[dict[str, Any]] = []
+
+    configured = raw_completion(lm, config, PROBE_PROMPT).model_dump()
+    check_probe_reasoning(configured, expectation)
+    records.append(_probe_record("configured", configured))
+
+    low = raw_completion(lm, config, HARD_PROBE_PROMPT, reasoning_effort="low").model_dump()
+    check_content_markers("low", low)
+    records.append(_probe_record("low", low))
+    high = raw_completion(lm, config, HARD_PROBE_PROMPT, reasoning_effort="high").model_dump()
+    check_content_markers("high", high)
+    records.append(_probe_record("high", high))
+
+    length = raw_completion(lm, config, HARD_PROBE_PROMPT, max_completion_tokens=16).model_dump()
+    finish_reason = (length.get("choices") or [{}])[0].get("finish_reason")
+    length_content = _probe_message(length).get("content") or ""
+    length_usage = length.get("usage") or {}
+    if finish_reason != "length" or length_content:
+        raise SmokeError(
+            f"the 16-token probe call returned finish_reason={finish_reason!r} with "
+            f"{len(length_content)} content character(s); a reasoning model whose whole "
+            "output budget goes to reasoning must return empty content with "
+            "finish_reason='length' (the exhaustion the client maps to "
+            "TokenLimitExceededError). Stop and surface before running anything larger."
+        )
+    if not isinstance(length_usage.get("completion_tokens"), int):
+        raise SmokeError(
+            "the 16-token probe call reports no usage.completion_tokens; the call was "
+            "billed, so absent usage means cost synthesis (and the spend breaker) would "
+            "be blind to exhausted runs. Stop and surface before running anything larger."
+        )
+    records.append(_probe_record("length_16", length))
+
+    for name, overrides in INFORMATIONAL_PROBE_CALLS:
+        try:
+            payload = raw_completion(lm, config, PROBE_PROMPT, **overrides).model_dump()
+            check_content_markers(name, payload)
+            records.append(_probe_record(name, payload))
+        except APIStatusError as exc:
+            records.append(
+                {
+                    "name": name,
+                    "status": "error",
+                    "status_code": getattr(exc, "status_code", None),
+                    "error_code": getattr(exc, "code", None),
+                    "message": str(exc),
+                }
+            )
+
+    low_reasoning = _reasoning_token_count(low)
+    high_reasoning = _reasoning_token_count(high)
+    if low_reasoning is not None and high_reasoning is not None:
+        branch = "reasoning_tokens"
+        low_count, high_count = low_reasoning, high_reasoning
+    else:
+        branch = "completion_tokens"
+        low_count = (low.get("usage") or {}).get("completion_tokens")
+        high_count = (high.get("usage") or {}).get("completion_tokens")
+    if low_count is None or high_count is None:
+        raise SmokeError(
+            f"the low/high probe calls report no {branch} to compare "
+            f"(low={low_count!r}, high={high_count!r}); the effort ladder is unverifiable."
+        )
+    if high_count == low_count:
+        raise SmokeError(
+            f"reasoning-effort probe is INCONCLUSIVE: high == low on {branch} "
+            f"({high_count} == {low_count}), so the configured effort levels are "
+            "indistinguishable on this draw. Rerun the probe once; if it is still "
+            "inconclusive, stop and surface -- do not run anything larger."
+        )
+    if high_count < low_count:
+        raise SmokeError(
+            f"reasoning-effort probe FAILED: high ({high_count}) < low ({low_count}) on "
+            f"{branch}; the route is not honoring reasoning_effort. Stop and surface "
+            "before running anything larger."
+        )
+    return configured, records, branch
+
+
+def probe(config: ExperimentConfig) -> dict[str, Any]:
+    """The live probe: cost usable, sampling args accepted, reasoning as configured.
+
+    Two tiny calls for a config that expects no reasoning; the seven-call
+    ``probe_reasoning_sequence`` plus the client-path call for one that does
+    (KTD6: the expectation derives from the config, not the provider name).
+    The raw completions are issued through the client's own request builders,
+    so a rejected decoding argument surfaces as an HTTP error right here; the
+    final call travels the client's own ``completion`` path -- the path every
+    persisted run's cost actually travels -- and its ``<think>`` check stays
+    for both modes.
 
     Raises:
         SmokeError: No usable cost -- the spend breaker, the cost band, and
@@ -493,13 +864,20 @@ def probe(config: ExperimentConfig) -> dict[str, Any]:
             non-null raw ``usage.cost``; for azure_foundry it means the
             client's own synthesized cost (positive ``total_cost`` with
             ``cost_source == "synthesized"``). Also raised on any reasoning
-            signal (``check_probe_reasoning``).
+            contradiction (``check_probe_reasoning``) or failed hard gate of
+            the reasoning sequence.
     """
+    expectation = probe_expectation(config)
     backend = config.backends.runner.backend
     lm = runner_client(config)
-    response = raw_completion(lm, config, PROBE_PROMPT)
-    payload = response.model_dump()
-    check_probe_reasoning(payload)
+    branch: str | None = None
+    if expectation.expects_reasoning:
+        payload, records, branch = probe_reasoning_sequence(lm, config, expectation)
+    else:
+        response = raw_completion(lm, config, PROBE_PROMPT)
+        payload = response.model_dump()
+        check_probe_reasoning(payload, expectation)
+        records = [_probe_record("instant", payload)]
     usage = payload.get("usage") or {}
     cost = usage.get("cost")
     provider = payload.get("provider")
@@ -534,7 +912,7 @@ def probe(config: ExperimentConfig) -> dict[str, Any]:
             "(BYOK and zero-cost routes do not report one). Stop and re-route before "
             "running anything larger."
         )
-    return {
+    verdict = {
         "provider": provider,
         "usage_cost": float(cost) if cost is not None else None,
         "client_cost": float(client_cost),
@@ -542,7 +920,21 @@ def probe(config: ExperimentConfig) -> dict[str, Any]:
         "input_tokens": usage.get("prompt_tokens"),
         "output_tokens": usage.get("completion_tokens"),
         "sampling_args": sampling_args(config, "runner"),
+        "expects_reasoning": expectation.expects_reasoning,
+        "effort": expectation.effort,
+        "payloads": records,
     }
+    if branch is not None:
+        verdict["high_low_branch"] = branch
+    return verdict
+
+
+def write_probe_json(out_dir: Path, verdict: dict[str, Any]) -> Path:
+    """Persist the probe verdict (payloads included) to ``<out-dir>/probe.json``."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / PROBE_JSON_FILENAME
+    path.write_text(json.dumps(verdict, indent=2, sort_keys=True, default=str) + "\n")
+    return path
 
 
 def check_provider(config: ExperimentConfig, provider: str | None) -> str:
@@ -837,7 +1229,7 @@ def measured_spend(out_dir: Path) -> float:
 # ---------------------------------------------------------------------------
 
 
-def run_probe(config: ExperimentConfig) -> int:
+def run_probe(config: ExperimentConfig, out_dir: Path) -> int:
     print(f"Probing {config.backends.runner.model} on {config.backends.runner.backend}...")
     result = probe(config)
     raw_cost = "n/a" if result["usage_cost"] is None else f"${result['usage_cost']:.6f}"
@@ -848,9 +1240,16 @@ def run_probe(config: ExperimentConfig) -> int:
     )
     print(f"  tokens:      {result['input_tokens']} in / {result['output_tokens']} out")
     print(f"  {check_provider(config, result['provider'])}")
+    if result.get("expects_reasoning"):
+        print(
+            f"  reasoning:   effort {result.get('effort')!r} confirmed; high > low "
+            f"decided on {result.get('high_low_branch')}"
+        )
+    path = write_probe_json(out_dir, result)
+    print(f"  wrote {path}")
     print(
-        "PROBE PASSED: a usable cost is reported, no reasoning signal, and the configured "
-        "sampling args are accepted."
+        "PROBE PASSED: a usable cost is reported, reasoning matches the config, and the "
+        "configured sampling args are accepted."
     )
     return 0
 
@@ -861,14 +1260,16 @@ def run_live(config: ExperimentConfig, out_dir: Path) -> int:
         f"Live smoke: profile {config.profile}, model {config.backends.runner.model}, "
         f"cumulative worst case ${ceiling:.2f} = {breaker_count(config)} breaker(s) x "
         f"${config.caps.candidate_budget + config.caps.max_budget:.2f} + "
-        f"{ungoverned_call_count(config)} ungoverned call(s) x "
+        f"{stage_call_count(config)} ungoverned stage call(s) x "
         f"${ungoverned_call_ceiling(config):.4f} + "
+        f"${probe_spend_bound_usd(config):.4f} probe bound + "
         f"${standalone_probe_reserve_usd(config):.4f} standalone probe reserve + "
         f"${PYTEST_LIVE_RESERVE_USD:.2f} U4 reserve "
         f"(ceiling ${SPEND_CEILING_USD:.2f})."
     )
 
     probed = probe(config)
+    write_probe_json(out_dir, probed)
     print(
         f"Probe: client cost ${probed['client_cost']:.6f} "
         f"(source {probed['cost_source']!r}); {check_provider(config, probed['provider'])}"
@@ -959,6 +1360,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--out-dir", default="./experiment_smoke", help="where the experiment artifacts land"
     )
+    parser.add_argument(
+        "--config",
+        default=str(CONFIG_PATH),
+        help="path to the experiment TOML whose [smoke] profile the smoke runs "
+        "(default: configs/experiment.toml); env gating, the pricing "
+        "attestation, and the probe expectation all derive from it",
+    )
     args = parser.parse_args(argv)
 
     if not (args.live or args.probe):
@@ -969,7 +1377,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    config = live_config()
+    config = live_config(args.config)
     required = sorted(
         {
             env_key
@@ -1004,7 +1412,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.probe and not args.live:
-        return run_probe(config)
+        return run_probe(config, Path(args.out_dir))
     return run_live(config, Path(args.out_dir))
 
 

@@ -113,6 +113,11 @@ from typing import TYPE_CHECKING, Any
 from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
 from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier
+from shrlm.environments.oolong import (
+    OolongSubVerifier,
+    OolongVerifier,
+    continuous_score,
+)
 from shrlm.experiment.config import (
     GOVERNED_ROUND_KEYS,
     ExperimentConfig,
@@ -149,10 +154,21 @@ from shrlm.optimization.costs import (
     governed_limits,
     run_governed_round,
 )
-from shrlm.optimization.driver import RoundConfig, load_manifest, mine_round
+from shrlm.optimization.driver import (
+    RoundConfig,
+    build_round_rlm,
+    execute_run,
+    load_manifest,
+    mine_round,
+)
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.promotion import DECISION_PROMOTED, PromotionConfig
-from shrlm.optimization.proposal import ProposalCache, load_passing_behaviors, propose_round
+from shrlm.optimization.proposal import (
+    ProposalBudgetExhausted,
+    ProposalCache,
+    load_passing_behaviors,
+    propose_round,
+)
 from shrlm.optimization.types import SubVerifier, Verifier
 from shrlm.optimization.validation import (
     SPLIT_HELDIN,
@@ -199,15 +215,82 @@ STOP_PATIENCE = "patience"
 # condition stays bound to this constant so B1 always means the H0 floor.
 INITIAL_INCUMBENT = "H0"
 
-# The optimization loop mines and validates the source-short splits.
-SPLIT_ENVIRONMENT = "graphwalks"
+# The optimization loop mines and validates one environment's held-in/held-out
+# splits. Which environment (and its verifier pair) is ``config.loop.environment``
+# -- ``graphwalks`` (default) or ``oolong_synth`` -- resolved by
+# ``resolve_env_binding``. The length label is ``short`` for both (OOLONG-synth's
+# held-in/held-out/test partition is one length-diverse pool, not a short/long
+# pair).
 SPLIT_LENGTH = "short"
 ROLE_HELD_IN = "held_in"
 ROLE_HELD_OUT = "held_out"
 
+# The default source environment. The loop itself reads
+# ``resolve_env_binding(config).name`` (``config.loop.environment``); this
+# constant is the fallback the report/analysis pipeline
+# (``shrlm.experiment.report``) uses to locate the optimization split bucket,
+# and it stays "graphwalks" -- the shipped default and the environment those
+# analyses were written for.
+SPLIT_ENVIRONMENT = "graphwalks"
 
-# The default verifier's dotted path, handed to validation subject workers.
+# OOLONG-real generalization check (non-gated): its split role and metering
+# stage. Written under ``opt/round_NN/real_check/`` and, for the final
+# incumbent, ``real_check/final/``.
+REAL_CHECK_DIR = "real_check"
+REAL_CHECK_ENVIRONMENT = "oolong_real"
+REAL_CHECK_LENGTH = "short"
+ROLE_REAL_CHECK = "check"
+REAL_CHECK_SUMMARY_FILENAME = "summary.json"
+REAL_CHECK_SUMMARY_FORMAT = "shrlm-oolong-real-check/v1"
+STAGE_REAL_CHECK = "real_check"
+
+
+# The verifier dotted paths handed to validation subject workers, per environment.
 GRAPHWALKS_VERIFIER_FACTORY = "shrlm.environments.graphwalks:GraphWalksVerifier"
+OOLONG_SYNTH_VERIFIER_FACTORY = "shrlm.environments.oolong:make_synth_verifier"
+
+
+@dataclass(frozen=True)
+class EnvBinding:
+    """Which environment the optimization loop mines and validates this run.
+
+    ``name`` / ``length`` locate the held-in/held-out/test split files;
+    ``verifier`` / ``sub_verifier`` are the defaults ``run_experiment`` installs
+    when the caller passes neither; ``verifier_factory`` is the dotted path a
+    parallel validation stage rebuilds the verifier from in its child processes.
+    """
+
+    name: str
+    length: str
+    verifier: Verifier
+    sub_verifier: SubVerifier | None
+    verifier_factory: str
+
+
+def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
+    """The ``EnvBinding`` for ``config.loop.environment``.
+
+    ``config.load_config`` has already validated the value against
+    ``SELECTABLE_ENVIRONMENTS``; an unexpected value here is a programming error.
+    """
+    environment = config.loop.environment
+    if environment == "graphwalks":
+        return EnvBinding(
+            name="graphwalks",
+            length=SPLIT_LENGTH,
+            verifier=GraphWalksVerifier(),
+            sub_verifier=GraphWalksSubVerifier(),
+            verifier_factory=GRAPHWALKS_VERIFIER_FACTORY,
+        )
+    if environment == "oolong_synth":
+        return EnvBinding(
+            name="oolong_synth",
+            length=SPLIT_LENGTH,
+            verifier=OolongVerifier(task_set="synth"),
+            sub_verifier=OolongSubVerifier(),
+            verifier_factory=OOLONG_SYNTH_VERIFIER_FACTORY,
+        )
+    raise ValueError(f"resolve_env_binding: unsupported loop.environment {environment!r}")
 
 
 class ExperimentPersistenceError(ExperimentError):
@@ -366,8 +449,8 @@ def _operational_path(out_dir: Path, raw: str) -> Path:
     return path if path.is_absolute() else out_dir / path
 
 
-def _read_split(splits_dir: Path, role: str) -> list[dict[str, Any]]:
-    path = splits_dir / split_file_name(SPLIT_ENVIRONMENT, SPLIT_LENGTH, role)
+def _read_split(splits_dir: Path, environment: str, length: str, role: str) -> list[dict[str, Any]]:
+    path = splits_dir / split_file_name(environment, length, role)
     instances = read_jsonl(path)
     if not instances:
         raise ExperimentPersistenceError(f"{path} holds no instances; cannot run a round on it")
@@ -516,13 +599,16 @@ class _Experiment:
     client_factory: tuple[str, dict[str, Any]] | None = None
     caps: ValidationCaps = field(init=False)
     pconfig: PromotionConfig = field(init=False)
+    binding: EnvBinding = field(init=False)
     splits: ValidationSplits = field(init=False)
+    splits_dir: Path = field(init=False)
     usage_path: Path = field(init=False)
     prior_history: list[tuple[list[dict[str, Any]], dict[str, Any]]] = field(init=False)
 
     def __post_init__(self) -> None:
         self.caps = validation_caps(self.config)
         self.pconfig = promotion_config(self.config)
+        self.binding = resolve_env_binding(self.config)
         self.usage_path = self.out_dir / STAGE_USAGE_FILE
         self.prior_history = []
         self.verifier_factory = self._resolve_verifier_factory()
@@ -531,10 +617,11 @@ class _Experiment:
         """The dotted path validation children rebuild the verifier from (KTD6).
 
         Only a parallel validation stage (``operational.validation_workers > 1``)
-        needs one. The default ``GraphWalksVerifier`` maps to its own path; an
-        injected verifier must come with an explicit ``verifier_factory``, and
-        the mismatch is a configuration error raised here -- before any
-        directory is created or any run executes -- not deep inside stage 4.
+        needs one. A verifier that is the selected environment's default type
+        maps to that environment's factory path; an injected verifier must come
+        with an explicit ``verifier_factory``, and the mismatch is a
+        configuration error raised here -- before any directory is created or any
+        run executes -- not deep inside stage 4.
         """
         if self.verifier_factory is not None:
             return self.verifier_factory
@@ -542,6 +629,8 @@ class _Experiment:
             return None
         if type(self.verifier) is GraphWalksVerifier:
             return GRAPHWALKS_VERIFIER_FACTORY
+        if isinstance(self.verifier, OolongVerifier) and self.verifier.task_set == "synth":
+            return OOLONG_SYNTH_VERIFIER_FACTORY
         raise ValueError(
             f"operational.validation_workers={self.config.operational.validation_workers} "
             "evaluates validation subjects in child processes, which rebuild the verifier "
@@ -572,9 +661,10 @@ class _Experiment:
     def run(self) -> ExperimentResult:
         check_identity(self.config, self.out_dir)
         splits_dir = materialize_splits(self.config, self.out_dir, loaders=self.loaders)
+        self.splits_dir = splits_dir
         self.splits = ValidationSplits(
-            heldin=_read_split(splits_dir, ROLE_HELD_IN),
-            heldout=_read_split(splits_dir, ROLE_HELD_OUT),
+            heldin=_read_split(splits_dir, self.binding.name, self.binding.length, ROLE_HELD_IN),
+            heldout=_read_split(splits_dir, self.binding.name, self.binding.length, ROLE_HELD_OUT),
         )
 
         incumbent: Harness = HARNESSES[self.config.loop.initial_harness]
@@ -609,6 +699,11 @@ class _Experiment:
             if outcome.has_ledger:
                 validation_round_path = round_dir(round_path / VALIDATION_DIR, round_index)
                 self.prior_history.append(load_promotion_ledger(validation_round_path))
+            # Non-gated OOLONG-real generalization check on the round-end
+            # incumbent (after any promotion is applied). Never touches the
+            # outcome, the ledger, or the patience counter.
+            if not replayed and self._real_check_due(round_index):
+                self._real_generalization_check(round_index, f"round_{round_index:02d}", incumbent)
             if without_promotion >= self.config.loop.patience:
                 stopped = STOP_PATIENCE
                 break
@@ -618,6 +713,9 @@ class _Experiment:
         # gets its one catch-up refresh here.
         if replay_unanalyzed:
             _run_post_round_analysis(self.out_dir)
+
+        if self._real_check_enabled():
+            self._real_generalization_check(self.config.loop.t + 1, "final", incumbent)
 
         frozen_path = _freeze_harness(incumbent, self.out_dir)
         return ExperimentResult(
@@ -778,7 +876,7 @@ class _Experiment:
                 round_index,
                 miner,
                 split_id=split_file_name(
-                    SPLIT_ENVIRONMENT, SPLIT_LENGTH, ROLE_HELD_IN
+                    self.binding.name, self.binding.length, ROLE_HELD_IN
                 ).removesuffix(".jsonl"),
                 created_at=_interrupted_bundle_created_at(bundle_path),
             )
@@ -833,28 +931,56 @@ class _Experiment:
         ) as meter:
             proposer_lm = self._proposer()
             meter.watch(proposer_lm)
-            result = propose_round(
-                bundle,
-                incumbent,
-                proposer_lm,
-                proposals_dir,
-                round_index=round_index,
-                passing_behaviors=load_passing_behaviors(mining_round_path),
-                prior_history=self.prior_history,
-                config=proposer_config(self.config),
-                cache=ProposalCache(path=str(cache_path)),
-                workdir=round_path / WORK_DIR,
-            )
+            try:
+                result = propose_round(
+                    bundle,
+                    incumbent,
+                    proposer_lm,
+                    proposals_dir,
+                    round_index=round_index,
+                    passing_behaviors=load_passing_behaviors(mining_round_path),
+                    prior_history=self.prior_history,
+                    config=proposer_config(self.config),
+                    cache=ProposalCache(path=str(cache_path)),
+                    workdir=round_path / WORK_DIR,
+                )
+            except ProposalBudgetExhausted as exc:
+                # The proposer spent its output budget on reasoning (R6/KTD3):
+                # deterministic for the prompt, so re-asking only re-bills it,
+                # and letting it escape would re-ask on every resume. Seal the
+                # stage as a failure with zero candidates; validation then sees
+                # an empty proposals directory and the round closes unpromoted,
+                # exactly as a round whose proposer wrote nothing.
+                print(
+                    f"round {round_index}: proposal stage failed with zero candidates "
+                    f"({exc}); sealing {marker_path.name} and continuing",
+                    file=sys.stderr,
+                )
+                payload = {
+                    "format": PROPOSALS_MARKER_FORMAT,
+                    "round": round_index,
+                    "candidate_ids": [],
+                    "prompt_sha256": None,
+                    "skipped_patterns": [],
+                    "n_materialization_failures": 0,
+                    "stage_failure": {
+                        "kind": "budget_exhausted",
+                        "error": str(exc),
+                        "n_attempts": len(exc.attempts),
+                    },
+                }
+            else:
+                payload = {
+                    "format": PROPOSALS_MARKER_FORMAT,
+                    "round": round_index,
+                    "candidate_ids": sorted(written.candidate_id for written in result.written),
+                    "prompt_sha256": result.prompt_sha256,
+                    "skipped_patterns": list(result.skipped_patterns),
+                    "n_materialization_failures": len(result.materialization_failures),
+                }
         _persist_once(
             marker_path,
-            {
-                "format": PROPOSALS_MARKER_FORMAT,
-                "round": round_index,
-                "candidate_ids": sorted(written.candidate_id for written in result.written),
-                "prompt_sha256": result.prompt_sha256,
-                "skipped_patterns": list(result.skipped_patterns),
-                "n_materialization_failures": len(result.materialization_failures),
-            },
+            payload,
             f"{marker_path} already seals a diverging candidate set for round "
             f"{round_index}; the persisted proposal cache should have made this "
             "impossible -- refusing to mix two proposal outcomes.",
@@ -902,6 +1028,146 @@ class _Experiment:
                 # every run its manifests hold; charge the delta either way.
                 meter.add(_validation_usage(validation_round_path) - before)
         return validation
+
+    # -- OOLONG-real generalization check (non-gated, never feeds promotion) --
+
+    def _real_check_enabled(self) -> bool:
+        return (
+            self.binding.name == "oolong_synth"
+            and self.config.operational.real_check_every_n_rounds > 0
+        )
+
+    def _real_check_due(self, round_index: int) -> bool:
+        if not self._real_check_enabled():
+            return False
+        return round_index % self.config.operational.real_check_every_n_rounds == 0
+
+    def _real_generalization_check(
+        self, round_index: int, tag: str, incumbent: Harness
+    ) -> None:
+        """Evaluate the current incumbent on the OOLONG-real check set.
+
+        A generalization probe, deliberately outside the promotion machinery:
+        real D&D transcripts are not cleanly decomposable and would add a second
+        uncontrolled noise source on top of the gate's known sensitivity. The
+        summary it writes is never read by the loop -- not by ``RoundOutcome``,
+        the promotion ledger, ``prior_history``, ``tau_*``, or the patience
+        counter. Crash-safe (skips a completed ``summary.json``) and fully
+        guarded: any failure is a stderr warning and a return, never a round
+        failure -- same contract as ``_run_post_round_analysis``.
+        """
+        check_dir = self.out_dir / OPT_DIR / REAL_CHECK_DIR / tag
+        summary_path = check_dir / REAL_CHECK_SUMMARY_FILENAME
+        if summary_path.exists():
+            return
+        try:
+            instances = _read_split(
+                self.splits_dir,
+                REAL_CHECK_ENVIRONMENT,
+                REAL_CHECK_LENGTH,
+                ROLE_REAL_CHECK,
+            )
+        except Exception as error:  # noqa: BLE001 -- isolation from the loop is the point
+            sys.stderr.write(
+                f"OOLONG-real check skipped for {tag}: no check split ({error})\n"
+            )
+            return
+
+        verifier = OolongVerifier(task_set="real")
+        model_name = self.config.backends.runner.model
+        kwargs = round_config_kwargs(self.config)
+        kwargs.pop("attempts", None)
+        round_config = RoundConfig(
+            round_index=round_index,
+            harness=incumbent,
+            instances=instances,
+            verifier=verifier,
+            out_dir=check_dir,
+            **kwargs,
+        )
+        check_dir.mkdir(parents=True, exist_ok=True)
+        rows: list[dict[str, Any]] = []
+        with StageMeter(
+            stage=STAGE_REAL_CHECK,
+            stage_work_id=f"{REAL_CHECK_DIR}/{tag}",
+            round_index=round_index,
+            out_path=self.usage_path,
+        ) as meter:
+            try:
+                harnessed = build_round_rlm(round_config)
+                for instance in instances:
+                    outcome = execute_run(
+                        harnessed, instance, model_name=model_name, verifier=verifier
+                    )
+                    summary = outcome.completion.usage_summary
+                    cost = summary.total_cost
+                    meter.add(
+                        UsageTotals(
+                            input_tokens=int(summary.total_input_tokens),
+                            output_tokens=int(summary.total_output_tokens),
+                            cost=float(cost) if cost is not None else 0.0,
+                            lower_bound=bool(outcome.usage_lower_bound),
+                        )
+                    )
+                    verdict = outcome.verdict
+                    rows.append(
+                        {
+                            "instance_id": instance["id"],
+                            "answer_kind": instance["answer_kind"],
+                            "question_type": instance.get("question_type"),
+                            "n_episodes": instance.get("n_episodes"),
+                            "passed": bool(verdict.passed) if verdict else None,
+                            "score": continuous_score(instance, outcome.completion.response),
+                            "cost_usd": cost,
+                        }
+                    )
+            except Exception as error:  # noqa: BLE001 -- must never break the round
+                sys.stderr.write(
+                    f"OOLONG-real check failed for {tag}: {type(error).__name__}: {error}\n"
+                )
+                return
+        _write_real_check_summary(summary_path, tag, round_index, harness_hash(incumbent), rows)
+
+
+def _write_real_check_summary(
+    summary_path: Path,
+    tag: str,
+    round_index: int,
+    incumbent_hash: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Persist the per-answer-kind aggregate of one OOLONG-real check pass."""
+    by_kind: dict[str, dict[str, float]] = {}
+    for row in rows:
+        bucket = by_kind.setdefault(row["answer_kind"], {"n": 0, "score_sum": 0.0, "passed": 0})
+        bucket["n"] += 1
+        bucket["score_sum"] += float(row["score"])
+        bucket["passed"] += 1 if row["passed"] else 0
+    per_kind = {
+        kind: {
+            "n": int(bucket["n"]),
+            "mean_score": bucket["score_sum"] / bucket["n"] if bucket["n"] else 0.0,
+            "pass_rate": bucket["passed"] / bucket["n"] if bucket["n"] else 0.0,
+        }
+        for kind, bucket in sorted(by_kind.items())
+    }
+    n_total = len(rows)
+    payload = {
+        "format": REAL_CHECK_SUMMARY_FORMAT,
+        "tag": tag,
+        "round_index": round_index,
+        "incumbent_hash": incumbent_hash,
+        "n": n_total,
+        "mean_score": sum(float(row["score"]) for row in rows) / n_total if n_total else 0.0,
+        "pass_rate": sum(1 for row in rows if row["passed"]) / n_total if n_total else 0.0,
+        "per_answer_kind": per_kind,
+        "rows": rows,
+    }
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    tmp_path = summary_path.with_name(summary_path.name + ".tmp")
+    tmp_path.write_text(text)
+    os.replace(tmp_path, summary_path)
 
 
 def _validation_usage(validation_round_path: Path) -> UsageTotals:
@@ -1200,14 +1466,18 @@ def run_experiment(
             configuration.
     """
     # The sub-verifier pairs with the verifier: when the caller takes the
-    # GraphWalks default for one, it gets the GraphWalks default for the other.
-    # experiment_kimi ran with neither passed and therefore no grounding at all
-    # (bundle config sub_verifier_enabled=False). The ablation is still one
-    # call away -- pass verifier=GraphWalksVerifier() with sub_verifier=None.
+    # selected environment's default for one, it gets that environment's default
+    # for the other (``resolve_env_binding`` keyed on ``config.loop.environment``
+    # -- GraphWalksVerifier/GraphWalksSubVerifier for "graphwalks",
+    # OolongVerifier/OolongSubVerifier for "oolong_synth"). experiment_kimi ran
+    # with neither passed and therefore no grounding at all (bundle config
+    # sub_verifier_enabled=False). The ablation is still one call away -- pass
+    # the environment's verifier with sub_verifier=None.
     if verifier is None:
-        verifier = GraphWalksVerifier()
+        binding = resolve_env_binding(config)
+        verifier = binding.verifier
         if sub_verifier is None:
-            sub_verifier = GraphWalksSubVerifier()
+            sub_verifier = binding.sub_verifier
     experiment = _Experiment(
         config=config,
         out_dir=Path(out_dir),

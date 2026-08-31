@@ -54,9 +54,25 @@ class ScriptedCreate:
         return self.responses.pop(0)
 
 
-def make_client() -> OpenAIClient:
+def make_client(response: Any = None, sampling_args: dict[str, Any] | None = None) -> OpenAIClient:
+    """An OpenRouter-shaped OpenAIClient with the SDK construction patched out.
+
+    ``response``, when given, is what the mocked ``chat.completions.create``
+    returns; ``sampling_args`` are forwarded to the constructor.
+    """
+    kwargs: dict[str, Any] = {}
+    if sampling_args is not None:
+        kwargs["sampling_args"] = sampling_args
     with patch("rlm.clients.openai.openai.OpenAI"), patch("rlm.clients.openai.openai.AsyncOpenAI"):
-        return OpenAIClient(api_key="test-key", model_name="test-model")
+        client = OpenAIClient(
+            api_key="test-key",
+            model_name="test-model",
+            base_url="https://openrouter.ai/api/v1",
+            **kwargs,
+        )
+    if response is not None:
+        client.client.chat.completions.create.return_value = response
+    return client
 
 
 class TestResponseDeficiency:

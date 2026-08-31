@@ -3,6 +3,7 @@ experiment parameter, its fail-fast loader, the identity hash, and the
 factory helpers that feed the existing optimization constructors."""
 
 import dataclasses
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,6 +29,7 @@ from shrlm.optimization.driver import RoundConfig
 from shrlm.optimization.promotion import Band, PromotionConfig
 from shrlm.optimization.proposal import ProposerConfig
 from shrlm.optimization.validation import EvaluationConfig, ValidationSplits
+from tests.conftest import AZURE_KIMI, OPENROUTER_QWEN, ProviderCase
 
 DUMMY_VERIFIER = cast(Any, lambda *args, **kwargs: None)
 
@@ -165,6 +167,45 @@ def test_smoke_may_override_validation_workers(tmp_path: Path) -> None:
     assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
 
 
+def test_environment_selector_defaults_to_graphwalks_and_is_identity_covered(
+    tmp_path: Path,
+) -> None:
+    config = load_config()
+    assert config.loop.environment == "graphwalks"
+    switched = dataclasses.replace(config.loop, environment="oolong_synth")
+    assert identity_hash(dataclasses.replace(config, loop=switched)) != identity_hash(config)
+
+
+def test_unknown_environment_selector_is_rejected(tmp_path: Path) -> None:
+    text = shipped_text().replace('environment = "graphwalks"', 'environment = "oolong_pairs"')
+    with pytest.raises(ValueError, match=r"\[loop\] environment must be one of"):
+        load_config(path=write_config(tmp_path, text))
+
+
+def test_oolong_environment_table_parses() -> None:
+    oolong = load_config("full", path=Path("configs/experiment_oolong.toml")).environments.oolong
+    assert oolong.synth.dataset_repo == "oolongbench/oolong-synth"
+    assert 131072 in oolong.synth.context_lengths
+    assert oolong.real.config_name == "dnd"
+    assert oolong.real.n_check == 20
+
+
+def test_real_check_cadence_is_identity_exempt() -> None:
+    config = load_config()
+    assert config.operational.real_check_every_n_rounds == 0
+    base = identity_hash(config)
+    with_check = dataclasses.replace(config.operational, real_check_every_n_rounds=3)
+    assert identity_hash(dataclasses.replace(config, operational=with_check)) == base
+
+
+def test_real_check_cadence_must_be_a_non_negative_integer() -> None:
+    operational = load_config().operational
+    with pytest.raises(ValueError, match="real_check_every_n_rounds"):
+        dataclasses.replace(operational, real_check_every_n_rounds=-1)
+    with pytest.raises(ValueError, match="real_check_every_n_rounds"):
+        dataclasses.replace(operational, real_check_every_n_rounds=cast(int, 1.5))
+
+
 def test_validation_run_workers_defaults_to_one_and_is_identity_exempt() -> None:
     """Run-level fan-out changes wall clock and request rate, never behavior.
 
@@ -284,10 +325,98 @@ def test_unknown_key_inside_a_table_raises(tmp_path: Path) -> None:
 
 
 def test_unknown_key_inside_azure_foundry_table_raises(tmp_path: Path) -> None:
-    text = shipped_text().replace("\nthinking = false\n", "\nthinking = false\nreasoning = 1\n")
+    text = shipped_text().replace("\nthinking = false\n", "\nthinking = false\neffort_level = 1\n")
     path = write_config(tmp_path, text)
-    with pytest.raises(ValueError, match="reasoning"):
+    with pytest.raises(ValueError, match="effort_level"):
         load_config(path=path)
+
+
+def with_azure_table(text: str, *, thinking: bool, reasoning_effort: str | None) -> str:
+    """``text`` with the shipped ``[backends.azure_foundry]`` table rewritten."""
+    anchor = "\nthinking = false\n"
+    assert anchor in text
+    lines = [f"thinking = {'true' if thinking else 'false'}"]
+    if reasoning_effort is not None:
+        lines.append(f'reasoning_effort = "{reasoning_effort}"')
+    return text.replace(anchor, "\n" + "\n".join(lines) + "\n")
+
+
+class TestReasoningEffort:
+    """[backends.azure_foundry] reasoning_effort (R3-R5, KTD1-KTD2)."""
+
+    def test_effort_reaches_sampling_args_top_level_without_chat_template_kwargs(
+        self, tmp_path: Path
+    ) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=True, reasoning_effort="medium")
+        config = load_config(path=write_config(tmp_path, text))
+        assert config.backends.azure_foundry is not None
+        assert config.backends.azure_foundry.reasoning_effort == "medium"
+        args = sampling_args(config, "runner")
+        assert args["reasoning_effort"] == "medium"
+        assert "chat_template_kwargs" not in args["extra_body"]
+        assert "reasoning_effort" not in args["extra_body"]
+
+    def test_thinking_true_without_effort_emits_neither_knob(self, tmp_path: Path) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=True, reasoning_effort=None)
+        config = load_config(path=write_config(tmp_path, text))
+        args = sampling_args(config, "runner")
+        assert "reasoning_effort" not in args
+        assert "chat_template_kwargs" not in args["extra_body"]
+
+    def test_thinking_false_without_effort_keeps_instant_mode(self, tmp_path: Path) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=False, reasoning_effort=None)
+        config = load_config(path=write_config(tmp_path, text))
+        args = sampling_args(config, "runner")
+        assert args["extra_body"]["chat_template_kwargs"] == {"thinking": False}
+        assert "reasoning_effort" not in args
+
+    def test_thinking_false_with_effort_is_refused_naming_both_keys(self, tmp_path: Path) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=False, reasoning_effort="low")
+        with pytest.raises(ValueError, match="thinking = false.*reasoning_effort"):
+            load_config(path=write_config(tmp_path, text))
+
+    def test_effort_outside_the_enum_is_refused_listing_the_values(self, tmp_path: Path) -> None:
+        text = with_azure_table(all_azure_roles_text(), thinking=True, reasoning_effort="xhigh")
+        with pytest.raises(ValueError, match="low.*medium.*high.*none.*xhigh"):
+            load_config(path=write_config(tmp_path, text))
+
+    def test_openrouter_roles_never_carry_the_effort(self, tmp_path: Path) -> None:
+        # Shipped config: every role openrouter; the dormant azure table sets an effort.
+        text = with_azure_table(shipped_text(), thinking=True, reasoning_effort="high")
+        config = load_config(path=write_config(tmp_path, text))
+        for role in CLIENT_ROLES:
+            assert "reasoning_effort" not in sampling_args(config, role)
+
+    def test_explicit_none_hashes_identically_to_absent(self, tmp_path: Path) -> None:
+        base = load_config(path=write_config(tmp_path, all_azure_roles_text()))
+        explicit = dataclasses.replace(
+            base,
+            backends=dataclasses.replace(
+                base.backends,
+                azure_foundry=dataclasses.replace(
+                    cast(Any, base.backends.azure_foundry), reasoning_effort=None
+                ),
+            ),
+        )
+        assert identity_hash(explicit) == identity_hash(base)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "configs/experiment.toml",
+        "configs/experiment_kimiK25.toml",
+        "configs/experiment_ox.toml",
+        "configs/experiment_oolong.toml",
+        "configs/experiment_oolong_gptoss.toml",
+    ],
+)
+@pytest.mark.parametrize("profile", ["full", "smoke"])
+def test_every_shipped_config_loads_under_the_current_schema(
+    config_path: str, profile: str
+) -> None:
+    config = load_config(profile, path=Path(config_path))
+    assert len(identity_hash(config)) == 64
 
 
 # ---------------------------------------------------------------------------
@@ -295,22 +424,136 @@ def test_unknown_key_inside_azure_foundry_table_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def azure_role_text(text: str, role: str) -> str:
-    """``text`` with one role's table switched to the azure_foundry backend."""
-    before = (
-        f'[backends.{role}]\nbackend = "openrouter"\nmodel = "qwen/qwen3-30b-a3b-instruct-2507"'
-    )
-    after = f'[backends.{role}]\nbackend = "azure_foundry"\nmodel = "Kimi-K2.5"'
+def role_text(text: str, role: str, provider: ProviderCase) -> str:
+    """``text`` with one role's shipped (openrouter Qwen) table switched to
+    ``provider``'s table."""
+    before = OPENROUTER_QWEN.role_table_text(role)
     assert before in text, f"no openrouter table found for role {role!r}"
-    return text.replace(before, after)
+    return text.replace(before, provider.role_table_text(role))
+
+
+def azure_role_text(text: str, role: str) -> str:
+    """``text`` with one role's table switched to the azure_foundry backend
+    (the Kimi row of the provider matrix)."""
+    return role_text(text, role, AZURE_KIMI)
+
+
+def all_roles_text(provider: ProviderCase) -> str:
+    """Shipped text with every role switched to ``provider``'s table, plus the
+    row's ``[backends.azure_foundry]`` overrides (``azure_table``) when it has
+    any. The shipped ``[decoding]`` is untouched, so every row sends the same
+    decoding knobs and differs only in its provider contract."""
+    text = shipped_text()
+    for role in CLIENT_ROLES:
+        text = role_text(text, role, provider)
+    if provider.azure_table:
+        text = with_azure_table(text, **provider.azure_table)
+    return text
 
 
 def all_azure_roles_text() -> str:
     """Shipped text with every role switched to the azure_foundry backend."""
+    return all_roles_text(AZURE_KIMI)
+
+
+def test_matrix_row_table_text_is_the_shipped_openrouter_table() -> None:
+    """The Qwen row's table text IS the shipped role table, so the matrix
+    surgery replaces exactly what ships (an edit to either side fails here)."""
     text = shipped_text()
-    for role in ("runner", "attributor", "proposer"):
-        text = azure_role_text(text, role)
-    return text
+    for role in CLIENT_ROLES:
+        assert OPENROUTER_QWEN.role_table_text(role) in text
+    assert all_roles_text(OPENROUTER_QWEN) == text
+
+
+def test_matrix_row_roles_load_and_route(provider: ProviderCase, tmp_path: Path) -> None:
+    """Provider matrix (KTD5): every role switched to the row loads, selects
+    the row's backend and model, carries pricing exactly when the row says
+    so, and sends the row's ``extra_body``."""
+    config = load_config(path=write_config(tmp_path, all_roles_text(provider)))
+    for role in CLIENT_ROLES:
+        endpoint = getattr(config.backends, role)
+        assert (endpoint.backend, endpoint.model) == (provider.backend, provider.model)
+        kwargs = backend_kwargs_for(config, role)
+        assert kwargs["model_name"] == provider.model
+        assert ("pricing" in kwargs) == (provider.pricing is not None)
+        if provider.pricing is not None:
+            assert set(kwargs["pricing"]) == set(provider.pricing)
+        assert kwargs["sampling_args"]["extra_body"] == provider.expected_extra_body
+
+
+def test_matrix_row_shipped_config_selects_the_row(provider: ProviderCase) -> None:
+    """Each row's ``config_path`` is a shipped config whose runner is the row."""
+    config = load_config(path=provider.config_path)
+    assert (config.backends.runner.backend, config.backends.runner.model) == (
+        provider.backend,
+        provider.model,
+    )
+    kwargs = backend_kwargs_for(config, "runner")
+    assert ("pricing" in kwargs) == (provider.pricing is not None)
+
+
+def test_matrix_response_factory_yields_fresh_plain_objects(provider: ProviderCase) -> None:
+    first, second = provider.response(), provider.response()
+    assert first is not second
+    assert first.usage is not second.usage
+    # Reasoning-model fields exist exactly on the rows that declare them.
+    message, usage = first.choices[0].message, first.usage
+    assert hasattr(message, "reasoning_content") == provider.expects_reasoning_fields
+    assert hasattr(usage, "completion_tokens_details") == provider.expects_reasoning_fields
+    if provider.expects_reasoning_fields:
+        assert isinstance(message.reasoning_content, str)
+        assert isinstance(usage.completion_tokens_details.reasoning_tokens, int)
+    assert provider.response(content="x").choices[0].message.content == "x"
+
+
+def test_matrix_row_azure_table_overrides_reach_sampling_args(
+    provider: ProviderCase, tmp_path: Path
+) -> None:
+    """The row's ``azure_table`` overrides (thinking / reasoning_effort) land in
+    the loaded config and its sampling args: ``reasoning_effort`` rides
+    top-level exactly when the row expects it, ``chat_template_kwargs`` appears
+    exactly when the row's ``extra_body`` says so, and ``max_tokens`` is the
+    shipped decoding cap."""
+    config = load_config(path=write_config(tmp_path, all_roles_text(provider)))
+    foundry = config.backends.azure_foundry
+    assert foundry is not None
+    for key, value in provider.azure_table.items():
+        assert getattr(foundry, key) == value
+    args = sampling_args(config, "runner")
+    assert ("reasoning_effort" in args) == ("reasoning_effort" in provider.expected_sampling_keys)
+    assert ("reasoning_effort" in args) != ("reasoning_effort" in provider.forbidden_sampling_keys)
+    assert "reasoning_effort" not in args["extra_body"]
+    assert args["extra_body"] == provider.expected_extra_body
+    assert args["max_tokens"] == config.decoding.max_output_tokens
+
+
+def test_matrix_row_shipped_config_decoding_cap(provider: ProviderCase) -> None:
+    """``config_path``'s decoding cap is the row's declared one and reaches
+    ``sampling_args["max_tokens"]`` (the client renames it on the wire)."""
+    config = load_config(path=provider.config_path)
+    assert config.decoding.max_output_tokens == provider.config_max_output_tokens
+    args = sampling_args(config, "runner")
+    assert args["max_tokens"] == provider.config_max_output_tokens
+    assert ("reasoning_effort" in args) == ("reasoning_effort" in provider.expected_sampling_keys)
+    assert "reasoning_effort" not in args["extra_body"]
+    # Loader invariant: reasoning_effort never travels with chat_template_kwargs.
+    assert not ("reasoning_effort" in args and "chat_template_kwargs" in args["extra_body"])
+
+
+_BRANCH_ON_PROVIDER = re.compile(r"if\s+provider" + r"\.id\b")
+
+
+def test_no_test_body_branches_on_the_provider_id() -> None:
+    """Divergence lives in matrix row fields or collection-time xfails (KTD5),
+    never in a test body."""
+    tests_dir = Path(__file__).resolve().parent.parent
+    hits = [
+        f"{path.relative_to(tests_dir.parent)}:{number}"
+        for path in sorted(tests_dir.rglob("*.py"))
+        for number, line in enumerate(path.read_text().splitlines(), start=1)
+        if _BRANCH_ON_PROVIDER.search(line)
+    ]
+    assert hits == [], f"test bodies branch on provider.id: {hits}"
 
 
 def test_absent_openrouter_table_loads_when_roles_use_azure_foundry(tmp_path: Path) -> None:
@@ -402,6 +645,15 @@ def test_identity_hash_changes_with_behavior_changing_values() -> None:
                 config.backends,
                 azure_foundry=dataclasses.replace(
                     cast(Any, config.backends.azure_foundry), thinking=True
+                ),
+            ),
+        ),
+        dataclasses.replace(
+            config,
+            backends=dataclasses.replace(
+                config.backends,
+                azure_foundry=dataclasses.replace(
+                    cast(Any, config.backends.azure_foundry), reasoning_effort="high"
                 ),
             ),
         ),
@@ -637,6 +889,48 @@ def _with_initial_harness(text: str, value: str) -> str:
 def test_initial_harness_defaults_to_h0() -> None:
     assert load_config().loop.initial_harness == "H0"
     assert load_config("smoke").loop.initial_harness == "H0"
+
+
+class TestGptOssOolongConfig:
+    """configs/experiment_oolong_gptoss.toml (U2: R1, R2)."""
+
+    PATH = Path("configs/experiment_oolong_gptoss.toml")
+    KIMI_PATH = Path("configs/experiment_oolong.toml")
+
+    @pytest.mark.parametrize("profile", ["full", "smoke"])
+    def test_loads_with_every_role_on_azure_gpt_oss(self, profile: str) -> None:
+        config = load_config(profile, path=self.PATH)
+        for role in CLIENT_ROLES:
+            endpoint = getattr(config.backends, role)
+            assert (endpoint.backend, endpoint.model) == ("azure_foundry", "gpt-oss-120b")
+
+    def test_every_role_carries_the_gpt_oss_rate_card(self) -> None:
+        config = load_config("full", path=self.PATH)
+        for role in CLIENT_ROLES:
+            kwargs = backend_kwargs_for(config, role)
+            assert kwargs["pricing"] == {"input_per_million": 0.15, "output_per_million": 0.60}
+        assert config.pricing.promo == config.pricing.list_price
+
+    def test_decoding_and_reasoning_knob_reach_sampling_args(self) -> None:
+        config = load_config("full", path=self.PATH)
+        args = sampling_args(config, "runner")
+        assert args["temperature"] == 0
+        assert args["top_p"] == 1.0
+        assert args["max_tokens"] == 16384
+        assert args["reasoning_effort"] == "medium"
+        assert "chat_template_kwargs" not in args["extra_body"]
+
+    def test_inherits_the_kimi_profile_except_the_swapped_tables(self) -> None:
+        gptoss = load_config("full", path=self.PATH)
+        kimi = load_config("full", path=self.KIMI_PATH)
+        for section in ("caps", "splits", "loop", "promotion", "environments"):
+            assert getattr(gptoss, section) == getattr(kimi, section)
+        assert gptoss.operational == kimi.operational
+
+    def test_identity_differs_from_the_kimi_profile(self) -> None:
+        gptoss = load_config("full", path=self.PATH)
+        kimi = load_config("full", path=self.KIMI_PATH)
+        assert identity_hash(gptoss) != identity_hash(kimi)
 
 
 def test_kimi_config_starts_from_h0_star() -> None:

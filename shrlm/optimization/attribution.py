@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rlm.clients.base_lm import BaseLM
+from rlm.utils.exceptions import TokenLimitExceededError
 from shrlm.optimization.digest import TraceDigest
 from shrlm.optimization.grounding import GroundingResult
 from shrlm.optimization.taxonomy import (
@@ -192,6 +193,22 @@ class AttributionContentFiltered(Exception):
     Observed 2026-08-27 on Azure AI Foundry: one round-5 digest was refused on
     every attempt, and the round-close integrity gate turned that into 100+
     restarts with zero forward progress.
+    """
+
+    def __init__(self, message: str, attempts: list["AttributionAttempt"] | None = None):
+        super().__init__(message)
+        self.attempts: list[AttributionAttempt] = attempts or []
+
+
+class AttributionBudgetExhausted(Exception):
+    """The client raised ``TokenLimitExceededError``: the model spent its whole
+    output budget on reasoning and returned no content (R6/KTD3).
+
+    Same containment axis as AttributionContentFiltered: the exhaustion is
+    deterministic for the prompt at temperature 0, so re-sending only bills
+    the same exhaustion again, and checkpointing routes it into the round-close
+    gate's unbounded restart loop. The caller records the failure and continues
+    the round.
     """
 
     def __init__(self, message: str, attempts: list["AttributionAttempt"] | None = None):
@@ -432,7 +449,10 @@ class LLMAttributor:
         AttributionContentFiltered. The client has already exhausted its own
         content-filter ladder by the time it raises, and the verdict is a
         function of the bytes sent, so the retries here can only re-send the
-        same refused prompt and re-collect the same refusal.
+        same refused prompt and re-collect the same refusal. So does a
+        ``TokenLimitExceededError`` (reasoning exhausted the output budget), as
+        AttributionBudgetExhausted: deterministic for the prompt, so a re-send
+        is a re-bill.
         """
         last_error: Exception | None = None
         for retry in range(self.config.transport_retries):
@@ -440,6 +460,11 @@ class LLMAttributor:
                 return self.lm.completion(messages)
             except NON_TRANSPORT_ERRORS:
                 raise
+            except TokenLimitExceededError as exc:
+                raise AttributionBudgetExhausted(
+                    f"output budget exhausted on the attributor response: {exc}",
+                    attempts=list(attempts),
+                ) from exc
             except Exception as exc:
                 if _is_content_filter_error(exc):
                     raise AttributionContentFiltered(

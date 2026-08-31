@@ -1,27 +1,16 @@
 """Tests for the Azure AI Foundry client.
 
-Two tiers live in this file:
-
-* the mocked tier (everything up to ``TestAzureFoundryLive``): zero network,
-  always runs;
-* the live tier (``TestAzureFoundryLive``): three tiny paid calls against the
-  REAL configured Kimi-K2.5 deployment, gated by KTD8 (see
-  ``shrlm/experiment/live_gates.py``) -- it runs only when the SHIPPED smoke
-  profile's runner backend is azure_foundry (this is an azure-specific tier;
-  with another backend shipped the gate would demand that backend's
-  credentials and then run azure code paths) AND both Azure credentials are
-  set AND ``SHRLM_RUN_LIVE=1``, and never in CI.
+Mocked tier only: zero network, always runs. The live tier (a handful of
+tiny paid calls against the real configured deployment, gated by KTD8) lives
+in ``test_azure_foundry_live.py``.
 """
 
 import asyncio
-import copy
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from shrlm.experiment.live_gates import live_skip_reason
 
 VALID_ENDPOINT = "https://my-resource.services.ai.azure.com"
 VALID_PRICING = {"input_per_million": 0.60, "output_per_million": 3.00}
@@ -34,10 +23,13 @@ def _make_response(
     finish_reason: str = "stop",
     content: str | None = "hello from foundry",
     usage: Any = "default",
+    reasoning_tokens: int | None = None,
 ) -> SimpleNamespace:
     """Build a fake chat.completions response using SimpleNamespace so that
     hasattr checks behave like real pydantic models (MagicMock would report
-    every attribute as present)."""
+    every attribute as present). ``completion_tokens_details`` is emitted only
+    when ``reasoning_tokens`` is set, mirroring a deployment that may or may
+    not report the detail block."""
     if usage == "default":
         usage_kwargs: dict[str, Any] = {
             "prompt_tokens": prompt_tokens,
@@ -46,6 +38,10 @@ def _make_response(
         }
         if cost is not None:
             usage_kwargs["cost"] = cost
+        if reasoning_tokens is not None:
+            usage_kwargs["completion_tokens_details"] = SimpleNamespace(
+                reasoning_tokens=reasoning_tokens
+            )
         usage = SimpleNamespace(**usage_kwargs)
     message = SimpleNamespace(content=content)
     choice = SimpleNamespace(finish_reason=finish_reason, message=message)
@@ -75,6 +71,30 @@ def _make_client(monkeypatch, response=None, pricing="default", **kwargs):
         else:
             client = AzureFoundryClient(model_name="kimi-k2.5", pricing=pricing, **kwargs)
     return client
+
+
+def _make_async_client(monkeypatch, response=None, create=None, **kwargs):
+    """An ``AzureFoundryClient`` whose async SDK returns ``response`` (or runs
+    ``create``); the sync SDK is patched inert. Mirrors ``_make_client``."""
+    from rlm.clients.azure_foundry import AzureFoundryClient
+
+    monkeypatch.setenv("AZURE_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
+    if create is None:
+
+        async def create(**_kwargs):
+            return response
+
+    with (
+        patch("rlm.clients.openai.openai.OpenAI"),
+        patch("rlm.clients.openai.openai.AsyncOpenAI") as mock_async_openai,
+    ):
+        mock_async = MagicMock()
+        mock_async.chat.completions.create = create
+        mock_async_openai.return_value = mock_async
+        kwargs.setdefault("model_name", "kimi-k2.5")
+        kwargs.setdefault("pricing", dict(VALID_PRICING))
+        return AzureFoundryClient(**kwargs)
 
 
 class TestConstructionValidation:
@@ -181,24 +201,8 @@ class TestCostSynthesis:
         assert summary.model_usage_summaries["kimi-k2.5"].cost_source == "synthesized"
 
     def test_acompletion_synthesizes_cost(self, monkeypatch):
-        from rlm.clients.azure_foundry import AzureFoundryClient
-
-        monkeypatch.setenv("AZURE_API_KEY", "test-key")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", VALID_ENDPOINT)
         response = _make_response(prompt_tokens=1000, completion_tokens=500)
-
-        with (
-            patch("rlm.clients.openai.openai.OpenAI"),
-            patch("rlm.clients.openai.openai.AsyncOpenAI") as mock_async_openai,
-        ):
-            mock_async = MagicMock()
-
-            async def _create(**kwargs):
-                return response
-
-            mock_async.chat.completions.create = _create
-            mock_async_openai.return_value = mock_async
-            client = AzureFoundryClient(model_name="kimi-k2.5", pricing=dict(VALID_PRICING))
+        client = _make_async_client(monkeypatch, response=response)
 
         result = asyncio.run(client.acompletion("hi"))
         assert result == "hello from foundry"
@@ -310,6 +314,278 @@ class TestResponseValidation:
             client.completion("hi")
 
 
+class TestReasoningExhaustion:
+    """An empty body with ``finish_reason='length'`` whose output budget went
+    to reasoning is a deterministic budget exhaustion (R6/KTD3): terminate
+    once as ``TokenLimitExceededError`` with the spend already banked, never
+    re-send it as a transient empty body."""
+
+    @staticmethod
+    def _no_sleep(monkeypatch):
+        def _boom(_seconds):  # pragma: no cover - failure reporting
+            raise AssertionError("retry backoff must not run for reasoning exhaustion")
+
+        monkeypatch.setattr("rlm.clients.openai.time.sleep", _boom)
+
+    def test_reasoning_dominated_length_terminates_once_with_spend(self, monkeypatch):
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        self._no_sleep(monkeypatch)
+        response = _make_response(
+            prompt_tokens=1000,
+            completion_tokens=500,
+            finish_reason="length",
+            content="",
+            reasoning_tokens=500,
+        )
+        client = _make_client(monkeypatch, response=response, sampling_args={"max_tokens": 500})
+        with pytest.raises(TokenLimitExceededError, match="reasoning") as excinfo:
+            client.completion("hi")
+
+        assert client.client.chat.completions.create.call_count == 1
+        assert excinfo.value.tokens_used == 500
+        assert excinfo.value.token_limit == 500
+        expected = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
+        summary = client.get_usage_summary()
+        assert summary.total_cost == pytest.approx(expected)
+        assert summary.model_usage_summaries["kimi-k2.5"].total_output_tokens == 500
+
+    def test_length_without_token_details_terminates_the_same_way(self, monkeypatch):
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        self._no_sleep(monkeypatch)
+        response = _make_response(completion_tokens=800, finish_reason="length", content=None)
+        client = _make_client(monkeypatch, response=response)
+        with pytest.raises(TokenLimitExceededError, match="reasoning") as excinfo:
+            client.completion("hi")
+        assert client.client.chat.completions.create.call_count == 1
+        # No max_tokens configured: the limit falls back to what was spent.
+        assert excinfo.value.tokens_used == 800
+        assert excinfo.value.token_limit == 800
+        assert client.get_usage_summary().total_cost > 0
+
+    def test_acompletion_terminates_the_same_way(self, monkeypatch):
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        monkeypatch.setattr(
+            "rlm.clients.openai.asyncio.sleep",
+            lambda _s: (_ for _ in ()).throw(AssertionError("no backoff")),
+            raising=False,
+        )
+        response = _make_response(
+            completion_tokens=500, finish_reason="length", content="", reasoning_tokens=480
+        )
+        calls = [0]
+
+        async def _create(**kwargs):
+            calls[0] += 1
+            return response
+
+        client = _make_async_client(monkeypatch, create=_create)
+
+        with pytest.raises(TokenLimitExceededError, match="reasoning"):
+            asyncio.run(client.acompletion("hi"))
+        assert calls[0] == 1
+        assert client.last_cost is not None and client.last_cost > 0
+
+    def test_empty_stop_is_still_retried_then_raises_runtime_error(self, monkeypatch):
+        """Kimi's transient empty body (finish_reason='stop') keeps its ladder."""
+        from rlm.clients.openai import EMPTY_CONTENT_ATTEMPTS
+
+        monkeypatch.setattr("rlm.clients.openai.time.sleep", lambda _s: None)
+        response = _make_response(content="", finish_reason="stop")
+        client = _make_client(monkeypatch, response=response)
+        with pytest.raises(RuntimeError, match="empty"):
+            client.completion("hi")
+        assert client.client.chat.completions.create.call_count == EMPTY_CONTENT_ATTEMPTS
+
+    def test_length_with_minor_reasoning_share_is_still_retried(self, monkeypatch):
+        """Reasoning did not dominate the budget: not the exhaustion signature."""
+        from rlm.clients.openai import EMPTY_CONTENT_ATTEMPTS
+
+        monkeypatch.setattr("rlm.clients.openai.time.sleep", lambda _s: None)
+        response = _make_response(
+            completion_tokens=500, finish_reason="length", content="", reasoning_tokens=100
+        )
+        client = _make_client(monkeypatch, response=response)
+        with pytest.raises(RuntimeError, match="empty"):
+            client.completion("hi")
+        assert client.client.chat.completions.create.call_count == EMPTY_CONTENT_ATTEMPTS
+
+    def test_classifier_is_pure(self):
+        from rlm.clients.azure_foundry import AzureFoundryClient
+
+        def classify(response):
+            return AzureFoundryClient._reasoning_exhausted(
+                response.choices[0], getattr(response, "usage", None)
+            )
+
+        exhausted = _make_response(
+            completion_tokens=500, finish_reason="length", content="", reasoning_tokens=450
+        )
+        assert classify(exhausted) is True
+        with_text = _make_response(
+            completion_tokens=500, finish_reason="length", content="x", reasoning_tokens=450
+        )
+        assert classify(with_text) is False
+        stopped = _make_response(completion_tokens=500, finish_reason="stop", content="")
+        assert classify(stopped) is False
+
+
+class TestHarmonyMarkerStripping:
+    """gpt-oss harmony control tokens never reach the REPL parser (R6a/KTD4):
+    with channel structure only the ``final`` body survives; bare markers are
+    stripped; every dropped marker is counted on the client."""
+
+    FINAL_ONLY = "<|channel|>final<|message|>42<|return|>"
+    ANALYSIS_THEN_FINAL = (
+        "<|channel|>analysis<|message|>think think<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>42<|return|>"
+    )
+
+    def test_final_channel_body_is_kept(self):
+        from rlm.clients.azure_foundry import strip_harmony_markers
+
+        assert strip_harmony_markers(self.FINAL_ONLY) == ("42", 3)
+
+    def test_analysis_body_is_dropped_with_its_markers(self):
+        from rlm.clients.azure_foundry import strip_harmony_markers
+
+        text, dropped = strip_harmony_markers(self.ANALYSIS_THEN_FINAL)
+        assert text == "42"
+        assert "think" not in text
+        assert dropped == 7  # channel, message, end, start, channel, message, return
+
+    def test_bare_markers_are_stripped_without_channel_structure(self):
+        from rlm.clients.azure_foundry import strip_harmony_markers
+
+        text, dropped = strip_harmony_markers("answer<|return|>")
+        assert text == "answer"
+        assert dropped == 1
+        text, dropped = strip_harmony_markers("<|start|>a<|end|><|constrain|>json<|call|>")
+        assert text == "ajson"
+        assert dropped == 4
+
+    def test_plain_content_is_byte_identical(self):
+        from rlm.clients.azure_foundry import strip_harmony_markers
+
+        plain = "Plan first.\n```repl\nprint('<|not a marker')\n```\n"
+        text, dropped = strip_harmony_markers(plain)
+        assert text is plain
+        assert dropped == 0
+
+    def test_client_completion_returns_the_final_body_and_counts(self, monkeypatch):
+        client = _make_client(monkeypatch, response=_make_response(content=self.FINAL_ONLY))
+        assert client.completion("hi") == "42"
+        assert client.harmony_markers_dropped == 3
+
+    def test_client_completion_drops_the_analysis_channel(self, monkeypatch):
+        client = _make_client(
+            monkeypatch, response=_make_response(content=self.ANALYSIS_THEN_FINAL)
+        )
+        assert client.completion("hi") == "42"
+        assert client.harmony_markers_dropped == 7
+
+    def test_acompletion_strips_and_counts_too(self, monkeypatch):
+        response = _make_response(content=self.FINAL_ONLY)
+        client = _make_async_client(monkeypatch, response=response)
+
+        assert asyncio.run(client.acompletion("hi")) == "42"
+        assert client.harmony_markers_dropped == 3
+
+    def test_kimi_tool_call_translation_runs_before_harmony_stripping(self, monkeypatch):
+        leak = TestNativeToolCallTranslation.LEAK
+        content = "<|channel|>final<|message|>" + leak + "<|return|>"
+        client = _make_client(monkeypatch, response=_make_response(content=content))
+        out = client.completion("hi")
+        assert out == "```repl\nprint(type(context))\nprint(len(context))\n```"
+        assert client.harmony_markers_dropped == 3
+
+    def test_analysis_only_length_raises_token_limit_with_spend(self, monkeypatch):
+        """An analysis-only harmony body cut at the length cap (no ``final``
+        channel) has non-empty RAW content but normalizes to "": it must
+        terminate once as TokenLimitExceededError with the spend already
+        banked, never return a silent empty string."""
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        monkeypatch.setattr(
+            "rlm.clients.openai.time.sleep",
+            lambda _s: (_ for _ in ()).throw(AssertionError("no backoff for a budget limit")),
+        )
+        response = _make_response(
+            prompt_tokens=1000,
+            completion_tokens=500,
+            finish_reason="length",
+            content="<|channel|>analysis<|message|>think think think",
+        )
+        client = _make_client(monkeypatch, response=response, sampling_args={"max_tokens": 500})
+        with pytest.raises(TokenLimitExceededError, match="no final body") as excinfo:
+            client.completion("hi")
+
+        assert client.client.chat.completions.create.call_count == 1
+        assert excinfo.value.tokens_used == 500
+        assert excinfo.value.token_limit == 500
+        expected = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
+        summary = client.get_usage_summary()
+        assert summary.total_cost == pytest.approx(expected)
+        assert summary.model_usage_summaries["kimi-k2.5"].total_output_tokens == 500
+
+    def test_analysis_only_stop_is_retried_then_raises_runtime_error(self, monkeypatch):
+        """Same shape with finish_reason='stop': behaves exactly like the raw
+        empty body -- retried on the empty-content ladder, then raises."""
+        from rlm.clients.openai import EMPTY_CONTENT_ATTEMPTS
+
+        monkeypatch.setattr("rlm.clients.openai.time.sleep", lambda _s: None)
+        response = _make_response(
+            content="<|channel|>analysis<|message|>only reasoning<|end|>",
+            finish_reason="stop",
+        )
+        client = _make_client(monkeypatch, response=response)
+        with pytest.raises(RuntimeError, match="empty"):
+            client.completion("hi")
+        assert client.client.chat.completions.create.call_count == EMPTY_CONTENT_ATTEMPTS
+
+    def test_plain_content_round_trips_byte_identical_and_counts_nothing(self, monkeypatch):
+        plain = "Plan first.\n```repl\nprint(1)\n```"
+        client = _make_client(monkeypatch, response=_make_response(content=plain))
+        assert client.completion("hi") == plain
+        assert client.harmony_markers_dropped == 0
+
+    def test_concurrent_mixed_responses_count_exactly_the_marker_total(self, monkeypatch):
+        import threading
+
+        responses = {
+            "harmony": _make_response(content=self.ANALYSIS_THEN_FINAL),  # 7 markers
+            "plain": _make_response(content="plain answer"),  # 0 markers
+            "bare": _make_response(content="answer<|return|>"),  # 1 marker
+        }
+
+        def create(**kwargs):
+            return responses[kwargs["messages"][0]["content"]]
+
+        client = _make_client(monkeypatch)
+        client.client.chat.completions.create = create
+        calls_per_thread = 50
+        errors: list[BaseException] = []
+        outputs: dict[str, set[str]] = {key: set() for key in responses}
+
+        def run(prompt: str) -> None:
+            try:
+                for _ in range(calls_per_thread):
+                    outputs[prompt].add(client.completion(prompt))
+            except BaseException as exc:  # pragma: no cover - failure reporting
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run, args=(key,)) for key in responses]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not errors
+        assert outputs == {"harmony": {"42"}, "plain": {"plain answer"}, "bare": {"answer"}}
+        assert client.harmony_markers_dropped == calls_per_thread * (7 + 0 + 1)
+
+
 class TestThreadSafety:
     def test_concurrent_completions_accumulate_exactly_the_sum(self, monkeypatch):
         """Two threads on ONE shared client (the lm_handler ThreadingTCPServer
@@ -373,6 +649,59 @@ class TestSamplingArgsFidelity:
         assert call_kwargs["temperature"] == 0.7
         assert call_kwargs["max_completion_tokens"] == 128
         assert "max_tokens" not in call_kwargs
+
+    def test_shipped_decoding_reaches_the_wire_per_provider(self, provider, tmp_path, monkeypatch):
+        """Provider matrix (KTD5): the shipped ``[decoding]`` table, routed
+        through a runner role switched to ``provider``, reaches the mocked
+        ``chat.completions.create`` with exactly the row's contract -- the
+        expected top-level keys present, the forbidden ones absent, and the
+        row's ``extra_body`` byte-for-byte."""
+        from shrlm.experiment.config import backend_kwargs_for, load_config
+        from tests.experiment.test_config import all_roles_text, write_config
+
+        config = load_config(path=write_config(tmp_path, all_roles_text(provider)))
+        backend_kwargs = backend_kwargs_for(config, "runner")
+        assert ("pricing" in backend_kwargs) == (provider.pricing is not None)
+
+        client = provider.make_client(
+            monkeypatch,
+            response=provider.response(),
+            sampling_args=backend_kwargs["sampling_args"],
+        )
+        client.completion("hi")
+        call_kwargs = client.client.chat.completions.create.call_args.kwargs
+        assert provider.expected_sampling_keys <= set(call_kwargs)
+        assert provider.forbidden_sampling_keys.isdisjoint(call_kwargs)
+        assert call_kwargs["temperature"] == config.decoding.temperature
+        assert call_kwargs["top_p"] == config.decoding.top_p
+        assert call_kwargs["max_completion_tokens"] == config.decoding.max_output_tokens
+        assert call_kwargs["extra_body"] == provider.expected_extra_body
+
+    def test_row_config_path_decoding_reaches_the_wire(self, provider, monkeypatch):
+        """The row's shipped ``config_path`` (not the surgered default) builds
+        a client whose ``create`` call carries the row's key contract and the
+        file's own output cap as ``max_completion_tokens`` (16384 for gpt-oss);
+        ``reasoning_effort`` never hides inside ``extra_body`` and never
+        travels with ``chat_template_kwargs``."""
+        from shrlm.experiment.config import backend_kwargs_for, load_config
+
+        config = load_config(path=provider.config_path)
+        backend_kwargs = backend_kwargs_for(config, "runner")
+        client = provider.make_client(
+            monkeypatch,
+            response=provider.response(),
+            sampling_args=backend_kwargs["sampling_args"],
+        )
+        client.completion("hi")
+        call_kwargs = client.client.chat.completions.create.call_args.kwargs
+        assert provider.expected_sampling_keys <= set(call_kwargs)
+        assert provider.forbidden_sampling_keys.isdisjoint(call_kwargs)
+        assert call_kwargs["max_completion_tokens"] == provider.config_max_output_tokens
+        extra_body = call_kwargs["extra_body"]
+        assert "reasoning_effort" not in extra_body
+        # Loader invariant: a reasoning-effort request never carries Kimi's
+        # instant-mode chat_template_kwargs (the Foundry route rejects it).
+        assert not ("reasoning_effort" in call_kwargs and "chat_template_kwargs" in extra_body)
 
 
 class TestModelUsageSummaryCostSource:
@@ -439,140 +768,6 @@ class TestGetClientRegistration:
 
         with pytest.raises(ValueError, match="azure_foundry"):
             get_client("nonexistent_backend", {})
-
-
-# ---------------------------------------------------------------------------
-# Live tier (U4): three tiny paid calls against the real deployment (KTD8)
-# ---------------------------------------------------------------------------
-
-
-def _azure_live_skip() -> str | None:
-    """Skip reason for the azure-specific live tier, or ``None`` to run it.
-
-    ``live_skip_reason`` gates on the CONFIGURED runner backend, so with a
-    non-azure backend shipped an open gate would demand that backend's
-    credentials and then run this module's azure code paths (backend_kwargs
-    without pricing -> constructor error). The azure live tier therefore also
-    requires the shipped smoke config to select azure_foundry.
-    """
-    from shrlm.experiment.config import load_config
-
-    if load_config(profile="smoke").backends.runner.backend != "azure_foundry":
-        return (
-            "shipped runner backend is not azure_foundry -- azure live tier requires "
-            "the azure config"
-        )
-    return live_skip_reason()
-
-
-_LIVE_SKIP = _azure_live_skip()
-
-# Output caps for the live calls. Trivial prompts under these caps keep the
-# whole class well under $0.10 at the configured $0.60/$3.00-per-1M pricing.
-LIVE_TRIVIAL_MAX_TOKENS = 64
-LIVE_CAP_MAX_TOKENS = 16
-# Some gateways report a couple of tokens beyond max_completion_tokens (e.g.
-# a stop token); the cap test tolerates that without tolerating a busted cap.
-LIVE_CAP_SLACK_TOKENS = 8
-
-LIVE_TRIVIAL_PROMPT = "Reply with the single word: ok"
-
-
-def _live_runner_kwargs(max_tokens: int) -> dict[str, Any]:
-    """The REAL configured runner backend_kwargs (smoke profile) with only the
-    output cap lowered for these tiny calls.
-
-    ``backend_kwargs_for`` builds fresh dicts on every call, and the result is
-    deep-copied anyway before the override, so no shared config object is ever
-    mutated. Everything else -- temperature, top_p, the instant-mode
-    ``chat_template_kwargs`` extra_body, and the nested ``pricing`` -- is
-    exactly what a real experiment round sends.
-    """
-    from shrlm.experiment.config import backend_kwargs_for, load_config
-
-    kwargs = copy.deepcopy(backend_kwargs_for(load_config(profile="smoke"), "runner"))
-    kwargs["sampling_args"]["max_tokens"] = max_tokens
-    return kwargs
-
-
-def _raw_live_completion(lm: Any, prompt: str) -> Any:
-    """One paid chat completion through the client's own request builders.
-
-    This is ``OpenAIClient.completion`` taken apart into its two halves --
-    the exact ``chat.completions.create`` parameter shape, then the client's
-    own ``_track_cost`` (the azure_foundry override that validates usage and
-    synthesizes the cost) -- so the test can inspect the raw response
-    (finish_reason, reasoning fields, usage details) while the cost path
-    exercised is byte-for-byte the one every persisted run travels.
-    """
-    from rlm.clients.openai import _merge_extra_body, _normalize_sampling_args
-
-    response = lm.client.chat.completions.create(
-        model=lm.model_name,
-        messages=[{"role": "user", "content": prompt}],
-        extra_body=_merge_extra_body({}, lm.sampling_args),
-        **_normalize_sampling_args(lm.sampling_args),
-    )
-    lm._track_cost(response, lm.model_name)
-    return response
-
-
-@pytest.mark.skipif(_LIVE_SKIP is not None, reason=_LIVE_SKIP or "live gates satisfied")
-class TestAzureFoundryLive:
-    def test_trivial_call_synthesizes_cost_and_shows_no_reasoning(self):
-        """One trivial call: non-empty content, positive token counts, a
-        positive synthesized cost, and NO reasoning signal of any kind."""
-        from rlm.clients import get_client
-
-        lm = get_client("azure_foundry", _live_runner_kwargs(LIVE_TRIVIAL_MAX_TOKENS))
-        response = _raw_live_completion(lm, LIVE_TRIVIAL_PROMPT)
-        payload = response.model_dump()
-
-        content = payload["choices"][0]["message"]["content"]
-        assert content and content.strip()
-
-        last = lm.get_last_usage()
-        assert last.total_input_tokens > 0
-        assert last.total_output_tokens > 0
-        # A trivial "ok" must come nowhere near the cap; near-cap output on
-        # this prompt would itself be a hidden-reasoning smell.
-        assert last.total_output_tokens < LIVE_TRIVIAL_MAX_TOKENS
-        assert last.total_cost is not None and last.total_cost > 0
-        assert last.cost_source == "synthesized"
-
-        # R10/KTD6: fail on ANY reasoning signal -- <think> markup in content,
-        # non-empty reasoning_content/model_extra reasoning fields, nonzero
-        # reasoning-token details, or absurd completion-token counts. The
-        # detector is the very one the tier-2 smoke probe uses; it raises
-        # SmokeError naming each signal it found.
-        from examples.experiment_smoke import check_probe_reasoning
-
-        check_probe_reasoning(payload)
-
-    def test_output_cap_is_honored_not_merely_tolerated(self):
-        """A verbose prompt under max_tokens=16 must be TRUNCATED: the route
-        proves it enforces the cap (finish_reason 'length', completion tokens
-        at the cap), not that it merely accepted the parameter."""
-        from rlm.clients import get_client
-
-        lm = get_client("azure_foundry", _live_runner_kwargs(LIVE_CAP_MAX_TOKENS))
-        response = _raw_live_completion(lm, "Count from 1 to 500, one number per line.")
-
-        assert response.choices[0].finish_reason == "length"
-        completion_tokens = response.usage.completion_tokens
-        assert completion_tokens <= LIVE_CAP_MAX_TOKENS + LIVE_CAP_SLACK_TOKENS
-
-    def test_configured_decoding_args_are_accepted_on_the_client_path(self):
-        """The client's own ``completion`` path with the real configured
-        sampling args (temperature / top_p / max_completion_tokens /
-        chat_template_kwargs all ride this request): a deployment that
-        rejects any of them surfaces as an HTTP 400 -> exception here."""
-        from rlm.clients import get_client
-
-        lm = get_client("azure_foundry", _live_runner_kwargs(LIVE_TRIVIAL_MAX_TOKENS))
-        content = lm.completion(LIVE_TRIVIAL_PROMPT)
-        assert content and content.strip()
-        assert "<think>" not in content
 
 
 class TestNativeToolCallTranslation:

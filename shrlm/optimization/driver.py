@@ -72,6 +72,8 @@ from rlm.core.types import ModelUsageSummary, RLMChatCompletion, UsageSummary
 from rlm.utils.exceptions import (
     BudgetExceededError,
     ErrorThresholdExceededError,
+    HardDeadlineExceeded,
+    HardDeadlineSignal,
     TimeoutExceededError,
     TokenLimitExceededError,
 )
@@ -859,12 +861,8 @@ def execute_run(
     """
     prompt = instance["prompt"]
     run_started = time.perf_counter()
-    try:
-        run = harnessed.completion(prompt)
-        completion = run.completion
-        verdict = verifier(instance, completion.response) if verifier is not None else None
-        return RunOutcome(completion=completion, verdict=verdict, usage_lower_bound=False)
-    except ROOT_LIMIT_EXCEPTIONS as error:
+
+    def _terminated(error: Exception, cause: VerifierCause) -> RunOutcome:
         completion = _partial_completion(
             prompt=prompt,
             trajectory=harnessed.logger.get_trajectory(),
@@ -877,13 +875,27 @@ def execute_run(
             completion=completion,
             verdict=Verdict(
                 passed=False,
-                cause=VerifierCause.RESOURCE_TERMINATED,
+                cause=cause,
                 gold="",
                 produced=completion.response,
                 detail=f"{type(error).__name__}: {error}",
             ),
             usage_lower_bound=True,
         )
+
+    try:
+        run = harnessed.completion(prompt)
+        completion = run.completion
+        verdict = verifier(instance, completion.response) if verifier is not None else None
+        return RunOutcome(completion=completion, verdict=verdict, usage_lower_bound=False)
+    except ROOT_LIMIT_EXCEPTIONS as error:
+        return _terminated(error, VerifierCause.RESOURCE_TERMINATED)
+    except HardDeadlineSignal as signal_:
+        # The wall-clock backstop (a BaseException so no inner ``except
+        # Exception`` can swallow it) is persisted exactly like the runtime's
+        # own timeout: partial completion, recorded usage, RESOURCE_TERMINATED.
+        error = HardDeadlineExceeded(signal_.deadline, message=str(signal_))
+        return _terminated(error, VerifierCause.RESOURCE_TERMINATED)
     except Exception as error:
         # A content filter that survived the client's CONTENT_FILTER_ATTEMPTS
         # retries is deterministic for this prompt, so re-running it will never
@@ -902,27 +914,16 @@ def execute_run(
 
         from rlm.clients.openai import is_content_filter_error
 
+        if isinstance(error, openai.RateLimitError):
+            # The client already retried RATE_LIMIT_ATTEMPTS times with backoff;
+            # a 429 that still escapes is the provider refusing this run, not a
+            # bug. Persisting it here keeps the usage the run did record: a
+            # child that instead crashed left no trace and was charged the flat
+            # per-run ceiling (observed 2026-08-30: nine phantom $1.00 charges).
+            return _terminated(error, VerifierCause.RESOURCE_TERMINATED)
         if not isinstance(error, openai.BadRequestError) or not is_content_filter_error(error):
             raise
-        completion = _partial_completion(
-            prompt=prompt,
-            trajectory=harnessed.logger.get_trajectory(),
-            model_name=model_name,
-            error=error,
-            elapsed_seconds=time.perf_counter() - run_started,
-            published_usage=harnessed.rlm.last_completion_usage,
-        )
-        return RunOutcome(
-            completion=completion,
-            verdict=Verdict(
-                passed=False,
-                cause=VerifierCause.CONTENT_FILTERED,
-                gold="",
-                produced=completion.response,
-                detail=f"{type(error).__name__}: {error}",
-            ),
-            usage_lower_bound=True,
-        )
+        return _terminated(error, VerifierCause.CONTENT_FILTERED)
 
 
 def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dict[str, Any]]:

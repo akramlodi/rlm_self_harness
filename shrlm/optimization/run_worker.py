@@ -54,7 +54,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from rlm.utils.exceptions import TimeoutExceededError
+from rlm.utils.exceptions import HardDeadlineSignal
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.candidates import assemble_harness
 from shrlm.optimization.types import Verdict
@@ -141,13 +141,15 @@ def _arm_deadline(seconds: float | None) -> None:
     process. It is the child's own backstop; the parent holds an independent
     deadline for the case where a child ignores or swallows the signal.
 
-    It raises the runtime's ``TimeoutExceededError``, not the builtin
-    ``TimeoutError``. The two are unrelated types, and only the former is in
-    ``driver.ROOT_LIMIT_EXCEPTIONS``: raising the builtin would sail straight
-    past ``execute_run``'s limit handler, so the run would publish no partial
-    completion and no usage, and the parent would charge it the flat per-run
-    ceiling instead of the spend the runtime actually recorded. That is exactly
-    the undercounting this accounting exists to remove.
+    It raises ``HardDeadlineSignal`` -- a ``BaseException`` -- rather than the
+    runtime's ``TimeoutExceededError``. The alarm usually lands while the main
+    thread is inside model code or a sub-call wrapper, both of which catch
+    ``Exception`` and turn it into an in-band error string; a plain exception
+    was swallowed there and the run continued past its deadline (observed
+    2026-08-29: 3790s and 5011s against an 1800s cap). ``execute_run`` catches
+    the signal explicitly and persists the run as a timeout with the partial
+    completion and recorded usage, so the parent charges what was spent rather
+    than the flat per-run ceiling.
     """
     if seconds is None or seconds <= 0:
         return
@@ -155,9 +157,13 @@ def _arm_deadline(seconds: float | None) -> None:
         return
 
     def _fire(_signum: int, _frame: Any) -> None:
-        raise TimeoutExceededError(
-            elapsed=seconds,
-            timeout=seconds,
+        # A BaseException: ``except Exception`` scopes inside the REPL and the
+        # sub-call wrappers would otherwise swallow the alarm as an in-band
+        # error string and the run would continue past its deadline. The
+        # driver's limit handler turns it into the usual TimeoutExceededError
+        # persistence (partial completion, recorded usage).
+        raise HardDeadlineSignal(
+            seconds,
             message=(
                 f"run worker exceeded its {seconds:.1f}s hard deadline; candidate code "
                 "likely hung inside a live call"
