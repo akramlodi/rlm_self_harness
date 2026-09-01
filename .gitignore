@@ -226,3 +226,5 @@ CLAUDE.md
 experiment_*/
 
 !experiment_kimi/analysis/20260826T022243Z/*
+# OOLONG opt round outputs; traces exceed GitHub's 100 MB limit. Keep local only (never force-add).
+experiment_oolong_dsv4f/opt/round_01/
