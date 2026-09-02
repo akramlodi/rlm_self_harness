@@ -555,9 +555,10 @@ harness's own text or policy plausibly caused. A failure whose evidence points t
 the environment, the provider, or the run's resource limits is not a harness gap; \
 skip it, or address only the harness-side handling of it. One exception cuts the \
 other way: a pattern whose verifier cause is resource_terminated reflects a run \
-that exhausted its time limit -- that IS harness-addressable, and the remedy is \
-efficiency (fewer iterations, less redundant work, tighter decomposition per \
-answer), not more checking.
+that exhausted a resource limit -- its evidence names whether time or spend ran \
+out -- and that IS harness-addressable: the remedy is efficiency (fewer \
+iterations, less redundant work, tighter decomposition per answer), not more \
+checking.
 
 A pattern whose support is below the floor is a hypothesis, not evidence. Spend a \
 candidate on it only when the edit would be harmless even if the pattern is \

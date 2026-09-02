@@ -255,7 +255,11 @@ class TestEnvironmentCausedRouting:
         assert lm._call_count == 0  # the attributor LM was never invoked
         assert outcome.raw["attempts"] == []
 
-    def test_budget_termination_is_environment_skipped(self):
+    def test_budget_termination_is_attributed(self):
+        """A spend-cap termination is an efficiency signal exactly like a
+        timeout: the run did too much work for its budget, and the verdict
+        detail names the exhausted resource so the proposer can hypothesize
+        efficiency edits against it."""
         verdict = Verdict(
             passed=False,
             cause=VerifierCause.RESOURCE_TERMINATED,
@@ -264,10 +268,10 @@ class TestEnvironmentCausedRouting:
             detail="BudgetExceededError: run spent $2.01 of $2.00",
         )
         outcome, lm, kind = self._mine(verdict)
-        assert outcome.record.attribution_failed is True
-        assert outcome.record.attribution_error_kind is kind.ENVIRONMENT
-        assert "spend caps" in outcome.record.attribution_error
-        assert lm._call_count == 0
+        assert outcome.record.attribution_failed is False
+        assert outcome.record.signature is not None
+        assert outcome.record.signature.verifier_cause is VerifierCause.RESOURCE_TERMINATED
+        assert lm._call_count >= 1
 
     def test_empty_detail_termination_is_environment_skipped(self):
         """Ambiguous terminations default to environment-owned: feeding them
