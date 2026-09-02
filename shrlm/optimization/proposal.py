@@ -115,6 +115,10 @@ PROPOSAL_FORMAT = "shrlm-proposal/v1"
 # declaration site) and re-exported here for the proposal writer.
 PROPOSAL_FILENAME = "proposal.json"
 
+# 1.8.0: environment-summary patterns (synthetic, mechanism OTHER) are named
+# and scoped -- informational counts of environment-terminated runs; the
+# proposer may, at its own judgment, propose harness-side handling against
+# one, with skipping as the expected default.
 # 1.7.0: proposal-quality guidance from the 2026-09-01 dsv4f round-1 postmortem
 # (all three candidates rejected): causal-reach triage, recoverable-over-veto,
 # the zero-regression promotion contract, resource cost as a regression axis,
@@ -124,7 +128,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # pattern targets S10, and the S10 pattern block carries a full-library
 # inventory line. 1.3.0: S10 edit is one skill added or replaced by name
 # (S8-style), not a whole-list rewrite.
-PROMPT_VERSION = "1.7.0"
+PROMPT_VERSION = "1.8.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -563,6 +567,16 @@ checking.
 A pattern whose support is below the floor is a hypothesis, not evidence. Spend a \
 candidate on it only when the edit would be harmless even if the pattern is \
 spurious.
+
+A pattern whose symptoms begin with "environment summary (synthetic)" is not a \
+mined failure mechanism: it is a count of runs the environment terminated \
+(provider refusals and the like), with no agent behavior recorded. The \
+terminations themselves cannot be addressed by any harness edit. Such a pattern \
+exists only so you can see how often the environment intervened; the expected \
+default is to skip it. Propose a candidate against it only when, in your own \
+judgment, a harness-side handling edit is worthwhile -- for example, changing how \
+sub-call errors are treated during recovery -- and hold that candidate to the \
+same no-harm bar as any other.
 """
 
 PROPOSER_QUALITY = """\

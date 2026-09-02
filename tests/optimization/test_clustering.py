@@ -267,3 +267,116 @@ class TestAnswerShapeSymptoms:
         assert "produced answer list carried quoted items in 1/3 runs" in lines
         assert "no bracketed answer list on the last produced line in 1/3 runs" in lines
         assert "produced answer was the empty list in 1/3 runs" in lines
+
+
+class TestEnvironmentSummaryPatterns:
+    """Environment-skipped records become one low-actionability synthetic
+    summary pattern per verifier cause, appended after every real pattern."""
+
+    @staticmethod
+    def _env_record(instance_id, cause, reason):
+        from shrlm.optimization.types import AttributionErrorKind, Verdict
+
+        record = make_record(
+            instance_id,
+            attribution_failed=True,
+            verdict=Verdict(passed=False, cause=cause, gold="", produced="", detail=reason),
+        )
+        record.attribution_error = reason
+        record.attribution_error_kind = AttributionErrorKind.ENVIRONMENT
+        return record
+
+    def test_summary_pattern_shape_and_placement(self):
+        from shrlm.optimization.clustering import (
+            ENVIRONMENT_SUMMARY_MARKER,
+            cluster_failures,
+        )
+        from shrlm.optimization.taxonomy import (
+            AgentMechanism,
+            CausalStatus,
+            FailingLevel,
+            VerifierCause,
+        )
+
+        records = [
+            make_record("inst-real"),  # ordinary attributed record
+            self._env_record(
+                "inst-cf-1",
+                VerifierCause.CONTENT_FILTERED,
+                "environment caused: provider content filter refused the response",
+            ),
+            self._env_record(
+                "inst-cf-2",
+                VerifierCause.CONTENT_FILTERED,
+                "environment caused: provider content filter refused the response",
+            ),
+        ]
+        patterns = cluster_failures(records)
+        assert len(patterns) == 2
+        synthetic = patterns[-1]  # always appended last, after ranked real patterns
+        assert synthetic.signature.agent_mechanism is AgentMechanism.OTHER
+        assert synthetic.signature.causal_status is CausalStatus.UNATTRIBUTED
+        assert synthetic.signature.failing_level is FailingLevel.UNDETERMINED
+        assert synthetic.signature.verifier_cause is VerifierCause.CONTENT_FILTERED
+        assert synthetic.support == 2
+        assert synthetic.instance_support == 2
+        assert synthetic.actionability == 0.0
+        assert synthetic.below_support_floor is True
+        assert synthetic.shared_symptoms[0].startswith(ENVIRONMENT_SUMMARY_MARKER)
+        assert "2 run(s)" in synthetic.shared_symptoms[0]
+
+    def test_one_summary_per_cause(self):
+        from shrlm.optimization.clustering import cluster_failures
+        from shrlm.optimization.taxonomy import VerifierCause
+
+        records = [
+            self._env_record(
+                "inst-cf",
+                VerifierCause.CONTENT_FILTERED,
+                "environment caused: provider content filter refused the response",
+            ),
+            self._env_record(
+                "inst-rt",
+                VerifierCause.RESOURCE_TERMINATED,
+                "environment caused: run terminated with no recognizable "
+                "resource-exhaustion cause in its detail",
+            ),
+        ]
+        patterns = cluster_failures(records)
+        assert len(patterns) == 2
+        causes = {pattern.signature.verifier_cause for pattern in patterns}
+        assert causes == {VerifierCause.CONTENT_FILTERED, VerifierCause.RESOURCE_TERMINATED}
+
+    def test_no_environment_records_no_summary(self):
+        from shrlm.optimization.clustering import cluster_failures
+
+        patterns = cluster_failures([make_record("inst-real")])
+        assert len(patterns) == 1
+
+    def test_ordinary_unattributed_records_produce_no_summary(self):
+        """A rejection-unattributed record (no ENVIRONMENT kind) stays out."""
+        from shrlm.optimization.clustering import environment_summary_patterns
+
+        record = make_record("inst-rej", attribution_failed=True)
+        assert environment_summary_patterns([record]) == []
+
+    def test_summary_survives_the_prescription_lint(self):
+        from shrlm.optimization.bundle import assert_no_prescription
+        from shrlm.optimization.clustering import cluster_failures
+        from shrlm.optimization.taxonomy import VerifierCause
+
+        records = [
+            self._env_record(
+                "inst-cf",
+                VerifierCause.CONTENT_FILTERED,
+                "environment caused: provider content filter refused the response",
+            )
+        ]
+        patterns = cluster_failures(records)
+
+        class _Bundle:
+            pass
+
+        bundle = _Bundle()
+        bundle.patterns = patterns
+        assert_no_prescription(bundle)  # must not raise
