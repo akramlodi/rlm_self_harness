@@ -66,12 +66,14 @@ class AttributionErrorKind(str, Enum):
     # prompt at temperature 0, so it is routed exactly like CONTENT_FILTERED.
     TOKEN_LIMIT = "token_limit"
     # The run's failure is owned by the environment or substrate, not by the
-    # agent's behavior: a provider content-filter verdict, or a spend-budget
-    # termination. Skipped BEFORE any attributor call (no attempts exist), so
-    # these never cluster into agent mechanisms and never reach the proposer
-    # as harness weaknesses. A TIME-caused termination is deliberately NOT
-    # routed here: a run that exhausts its wall-clock limit did too much work
-    # for the limit, which IS a minable harness weakness (efficiency).
+    # agent's behavior: a provider content-filter verdict, or a termination
+    # whose detail names no exhausted resource. Skipped BEFORE any attributor
+    # call (no attempts exist), so these never cluster into agent mechanisms
+    # and never reach the proposer as harness weaknesses. Time- and
+    # budget-caused terminations are deliberately NOT routed here: a run that
+    # exhausts its wall-clock limit or its spend cap did too much work for the
+    # limit, which IS a minable harness weakness (efficiency), and the verdict
+    # detail names which resource ran out.
     ENVIRONMENT = "environment_caused"
 
 
