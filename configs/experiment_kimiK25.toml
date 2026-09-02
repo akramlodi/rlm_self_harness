@@ -147,6 +147,19 @@ episode_counts = [1, 2, 3]
 max_scan = 40000
 n_check = 20
 
+[environments.mrcrv2]
+# MRCRv2 (synthetic long multi-turn needle retrieval). Inert unless [loop]
+# environment = "mrcrv2" -- present so the schema is uniform across profiles
+# (same convention as [environments.oolong] staying present when environment
+# = "graphwalks"). No dataset_repo/dataset_revision: purely generated
+# in-process; generator_version stands in for that provenance role.
+generator_version = "mrcrv2-v1"
+short_target_tokens = 65536
+short_n_needles = 2
+long_target_tokens = 2000000
+long_n_needles = 8
+chars_per_token = 4.0
+
 # All three roles run azure_foundry / Kimi-K2.5 in its default thinking mode.
 # To switch to the OpenRouter Qwen3-30B-A3B-Instruct-2507 comparison backbone,
 # edit these three role tables plus [decoding] and [pricing].

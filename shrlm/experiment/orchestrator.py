@@ -113,6 +113,7 @@ from typing import TYPE_CHECKING, Any
 from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
 from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier
+from shrlm.environments.mrcrv2 import Mrcrv2SubVerifier, Mrcrv2Verifier
 from shrlm.environments.oolong import (
     OolongSubVerifier,
     OolongVerifier,
@@ -248,6 +249,7 @@ STAGE_REAL_CHECK = "real_check"
 # The verifier dotted paths handed to validation subject workers, per environment.
 GRAPHWALKS_VERIFIER_FACTORY = "shrlm.environments.graphwalks:GraphWalksVerifier"
 OOLONG_SYNTH_VERIFIER_FACTORY = "shrlm.environments.oolong:make_synth_verifier"
+MRCRV2_VERIFIER_FACTORY = "shrlm.environments.mrcrv2:make_mrcrv2_verifier"
 
 
 @dataclass(frozen=True)
@@ -289,6 +291,14 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
             verifier=OolongVerifier(task_set="synth"),
             sub_verifier=OolongSubVerifier(),
             verifier_factory=OOLONG_SYNTH_VERIFIER_FACTORY,
+        )
+    if environment == "mrcrv2":
+        return EnvBinding(
+            name="mrcrv2",
+            length=SPLIT_LENGTH,
+            verifier=Mrcrv2Verifier(),
+            sub_verifier=Mrcrv2SubVerifier(),
+            verifier_factory=MRCRV2_VERIFIER_FACTORY,
         )
     raise ValueError(f"resolve_env_binding: unsupported loop.environment {environment!r}")
 
@@ -631,6 +641,8 @@ class _Experiment:
             return GRAPHWALKS_VERIFIER_FACTORY
         if isinstance(self.verifier, OolongVerifier) and self.verifier.task_set == "synth":
             return OOLONG_SYNTH_VERIFIER_FACTORY
+        if type(self.verifier) is Mrcrv2Verifier:
+            return MRCRV2_VERIFIER_FACTORY
         raise ValueError(
             f"operational.validation_workers={self.config.operational.validation_workers} "
             "evaluates validation subjects in child processes, which rebuild the verifier "

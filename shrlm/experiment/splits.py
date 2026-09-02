@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.environments.graphwalks import load_graphwalks
+from shrlm.environments.mrcrv2 import load_mrcrv2_from_config
 from shrlm.environments.oolong import (
     load_oolong_real_from_config,
     load_oolong_synth_from_config,
@@ -123,11 +124,26 @@ def load_oolong_real_split(
     return load_oolong_real_from_config(config, n=limit, seed=seed)
 
 
+def load_mrcrv2_split(
+    config: ExperimentConfig, length: str, limit: int, seed: int
+) -> list[dict[str, Any]]:
+    """MRCRv2 loader wiring: config -> ``load_mrcrv2_from_config`` arguments.
+
+    Short and long both apply (unlike ``oolong_synth``): MRCRv2 mirrors
+    GraphWalks' split shape, short mined/validated and long eval-only, each
+    with its own target-tokens/n-needles pair.
+    """
+    if length not in LENGTHS:
+        raise ValueError(f"unknown split length {length!r}; expected one of {LENGTHS}")
+    return load_mrcrv2_from_config(config, n=limit, seed=seed, length=length)
+
+
 DEFAULT_LOADERS: dict[str, LoaderFn] = {
     "graphwalks": load_graphwalks_split,
     "oolong_pairs": load_oolong_pairs_split,
     "oolong_synth": load_oolong_synth_split,
     "oolong_real": load_oolong_real_split,
+    "mrcrv2": load_mrcrv2_split,
 }
 
 
@@ -177,6 +193,17 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "short": {"check": config.environments.oolong.real.n_check},
             }
         return plan
+    if config.loop.environment == "mrcrv2":
+        return {
+            "mrcrv2": {
+                "short": {
+                    "held_in": splits.n_in,
+                    "held_out": splits.n_ho,
+                    "test": splits.test_short,
+                },
+                "long": {"test": splits.test_long},
+            },
+        }
     raise ValueError(f"unsupported loop.environment {config.loop.environment!r} in split_plan")
 
 
@@ -198,6 +225,10 @@ def dataset_revision_for(config: ExperimentConfig, environment: str) -> str:
         return str(config.environments.oolong.synth.dataset_revision)
     if environment == "oolong_real":
         return str(config.environments.oolong.real.dataset_revision)
+    if environment == "mrcrv2":
+        # No external dataset to pin a revision against; the generator's own
+        # version stands in for that provenance role.
+        return str(config.environments.mrcrv2.generator_version)
     if not hasattr(config.environments, environment):
         raise ValueError(
             f"unknown environment {environment!r} in loaders; the config defines "

@@ -1,0 +1,243 @@
+# =============================================================================
+# configs/experiment_mrcrv2.toml -- the MRCRv2 profile of the Self-Harness
+# experiment. Identical machinery to configs/experiment.toml; the loop mines
+# and validates MRCRv2 instead of GraphWalks/OOLONG-synth ([loop] environment
+# = "mrcrv2"). MRCRv2 has no external dataset (every instance is generated
+# in-process, see shrlm/environments/mrcrv2.py), so unlike GraphWalks/OOLONG
+# there is no dataset_repo/revision to pin -- [environments.mrcrv2] carries
+# generator parameters instead.
+#
+# Run separately from GraphWalks/OOLONG -- its own --out-dir, its own identity:
+#   uv run python examples/run_experiment.py \
+#       --config configs/experiment_mrcrv2.toml --out-dir ./experiment_mrcrv2
+#
+# Load with load_config(profile="full" | "smoke", path=".../experiment_mrcrv2.toml").
+#
+# Sizes below target a 1-2 round pilot (held-in ~24, held-out ~12, t=2) to
+# measure real cost/promotion behavior before committing to the full run this
+# profile is a placeholder for -- see docs/mrcrv2_pilot_summary.md.
+# =============================================================================
+
+[decoding]
+# Kimi-K2.5 model-card defaults, identical to configs/experiment_kimiK25.toml
+# -- see that file's comments for the rationale (thinking mode, unset top_k/
+# min_p, max_output_tokens sized for reasoning-token spend).
+temperature = 0.6
+top_p = 0.95
+max_output_tokens = 8192
+
+[splits]
+# MRCRv2 short-split partition (the mined/validated pool). Pilot-sized per the
+# task's "1-2 round pilot" ask: held-in ~24, held-out ~12. test_long is the
+# eval-only long-split size (2M tokens, 8 needles) -- frozen-harness eval,
+# never seen during optimization.
+n_in = 24 # held-in: weakness mining + one arm of validation
+n_ho = 12 # held-out: validation only, never mined
+test_short = 0 # short-split test set; unused pre-freeze (KTD: freeze not in this pass's scope)
+test_long = 10 # long-split eval-only test set
+seed = 0 # seeded partition of the short pool
+
+[loop]
+m = 2 # mining repetitions per held-in instance
+v = 3 # validation repetitions per instance per subject
+k = 4 # candidate edits proposed per round
+t = 2 # 1-2 round pilot; raise once cost/promotion behavior looks reasonable
+patience = 3
+environment = "mrcrv2" # this profile mines/validates MRCRv2 (identity key)
+initial_harness = "H0*" # shipped reference prompt plus orchestrator addendum
+
+[promotion]
+# Preregistered promotion rule -- see configs/experiment_kimiK25.toml for the
+# rationale behind the zero thresholds and the 1.25x cost-band ceiling.
+tau_regression = 0.0
+tau_improvement = 0.0
+cost_band = [0.5, 1.25]
+
+[caps]
+# MRCRv2's short split (64K tokens ~ 256K chars) runs a longer context than
+# GraphWalks-short (<=128K chars), so max_budget/max_timeout start above the
+# Kimi-K2.5 GraphWalks profile's values -- pilot-tuning starting points, not
+# measured; the smoke run should inform whether they need adjusting before
+# the 1-2 round pilot spends against them.
+attempts = 1
+max_iterations = 30
+max_depth = 3
+max_budget = 1.0 # USD per run
+max_timeout = 1800.0 # seconds per run
+candidate_budget = 60.0 # USD across all of one candidate's runs
+
+[environments.graphwalks]
+# Inert unless [loop] environment = "graphwalks" -- present so the schema is
+# uniform across profiles (same convention experiment_oolong.toml already
+# follows for this table).
+dataset_repo = "openai/graphwalks"
+dataset_file_short = "graphwalks_128k_and_shorter.parquet"
+dataset_file_long = "graphwalks_256k_to_1mil.parquet"
+dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead"
+max_chars = 128000
+min_chars = 0
+problem_types = ["bfs", "parents"]
+
+[environments.oolong_pairs]
+# Inert for this profile (evaluation-only environment, never selected by
+# [loop] environment); present so the schema is uniform.
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192
+context_length_long = 262144
+max_scan = 50000
+n_short = 40
+n_long = 40
+
+[environments.oolong]
+# Inert unless [loop] environment = "oolong_synth"; present so the schema is
+# uniform.
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+subsets = []
+task_groups = ["counting", "user", "timeline"]
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd"
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb"
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
+
+[environments.mrcrv2]
+# The active environment for this profile. Short: mining/validation pool.
+# Long: frozen-harness eval only, never seen during optimization.
+generator_version = "mrcrv2-v1"
+short_target_tokens = 65536
+short_n_needles = 2
+long_target_tokens = 2000000
+long_n_needles = 8
+chars_per_token = 4.0 # approximation used to size the synthetic conversation; no tokenizer dependency
+
+# All three roles run azure_foundry / Kimi-K2.5 in its default thinking mode.
+# To switch to the OpenRouter Qwen3-30B-A3B-Instruct-2507 comparison backbone,
+# edit these three role tables plus [decoding] and [pricing].
+
+[backends.runner]
+backend = "azure_foundry"
+model = "Kimi-K2.5" # must equal YOUR Foundry deployment name (catalog default: Kimi-K2.5)
+
+[backends.attributor]
+backend = "azure_foundry"
+model = "Kimi-K2.5"
+
+[backends.proposer]
+backend = "azure_foundry"
+model = "Kimi-K2.5"
+
+[backends.openrouter]
+provider_order = []
+allow_fallbacks = true
+
+[backends.azure_foundry]
+# See configs/experiment_kimiK25.toml for the full rationale (thinking=true
+# is required against Azure; do not set false, the route rejects the resulting
+# chat_template_kwargs).
+thinking = true
+
+[pricing.promo]
+input_per_million = 0.60
+output_per_million = 3.00
+
+[pricing.list_price]
+input_per_million = 0.60
+output_per_million = 3.00
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true
+sensitivity_range = [1.99, 3.49]
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2400.0
+long = 700.0
+
+[[gpu_scenarios]]
+name = "2x_a100_tp2_rented"
+hourly_rate_usd = 2.58
+provenance = "Unvalidated estimate from A100 80GB marketplace rates 2026-08"
+provenance_validated = false
+sensitivity_range = [0.94, 4.12]
+precision_note = "bf16 weights, tensor-parallel 2, vLLM serving"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2000.0
+long = 500.0
+
+[[gpu_scenarios]]
+name = "1x_a100_int4"
+hourly_rate_usd = 1.29
+provenance = "Unvalidated estimate; AWQ/GPTQ-INT4 weights ~17GB fit 262k KV on one A100 80GB"
+provenance_validated = false
+sensitivity_range = [0.47, 2.06]
+precision_note = "INT4 quantized weights change model numerics; measurements and comparability do not transfer"
+changes_numerics = true
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 1800.0
+long = 450.0
+
+[report]
+p_merge = 0.5
+eval_conditions = 3
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution_mrcrv2.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_mrcrv2.jsonl"
+eval_repetitions = 3
+validation_workers = 5
+validation_run_workers = 3
+
+# No OOLONG-real check applies to this profile's source env.
+real_check_every_n_rounds = 0
+
+
+# -----------------------------------------------------------------------------
+# Smoke profile: scale counts only, for a near-$0 structural dry run before
+# the real pilot.
+# -----------------------------------------------------------------------------
+
+[smoke.splits]
+n_in = 3
+n_ho = 3
+test_short = 0
+test_long = 2
+
+[smoke.loop]
+m = 1
+v = 1
+k = 2
+t = 1
+
+[smoke.caps]
+max_budget = 1.0
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+
+[smoke.environments.oolong_pairs]
+n_short = 4
+n_long = 2

@@ -231,6 +231,14 @@ episode_counts = [1, 2]
 max_scan = 100
 n_check = 2
 
+[environments.mrcrv2]
+generator_version = "mrcrv2-v1"
+short_target_tokens = 500
+short_n_needles = 2
+long_target_tokens = 1000
+long_n_needles = 4
+chars_per_token = 4.0
+
 [backends.runner]
 backend = "openai"
 model = "runner-test"

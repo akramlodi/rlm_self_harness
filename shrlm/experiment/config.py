@@ -192,10 +192,10 @@ class LoopConfig:
     patience: int
     initial_harness: str = "H0"
     # Which environment the loop mines and validates: ``graphwalks`` (default,
-    # unchanged) or ``oolong_synth``. Identity key like the counts -- which
-    # environment round 1 mines decides every run that lands on disk -- so a run
-    # against a different environment gets a distinct experiment identity and
-    # its own out-dir. ``load_config`` validates it before any spend.
+    # unchanged), ``oolong_synth``, or ``mrcrv2``. Identity key like the counts
+    # -- which environment round 1 mines decides every run that lands on disk --
+    # so a run against a different environment gets a distinct experiment
+    # identity and its own out-dir. ``load_config`` validates it before any spend.
     environment: str = "graphwalks"
 
 
@@ -301,10 +301,29 @@ class OolongConfig:
 
 
 @dataclass(frozen=True)
+class Mrcrv2Config:
+    """MRCRv2 (synthetic long multi-turn needle-retrieval): the mining/
+    validation pool when ``loop.environment == "mrcrv2"``. Purely generated
+    in-process -- no external dataset, so no ``dataset_repo``/``dataset_revision``
+    pin; ``generator_version`` stands in for that provenance role instead.
+    Short (mined/validated) and long (eval-only) each get their own
+    target-tokens/n-needles pair, mirroring GraphWalks' short/long split shape
+    rather than OOLONG-synth's single length-diverse pool."""
+
+    generator_version: str
+    short_target_tokens: int
+    short_n_needles: int
+    long_target_tokens: int
+    long_n_needles: int
+    chars_per_token: float
+
+
+@dataclass(frozen=True)
 class EnvironmentsConfig:
     graphwalks: GraphWalksConfig
     oolong_pairs: OolongPairsConfig
     oolong: OolongConfig
+    mrcrv2: Mrcrv2Config
 
 
 @dataclass(frozen=True)
@@ -548,15 +567,16 @@ def _validate_initial_harness(loop: LoopConfig) -> LoopConfig:
     return loop
 
 
-SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_synth")
+SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_synth", "mrcrv2")
 
 
 def _validate_environment(loop: LoopConfig) -> LoopConfig:
     """Reject a ``[loop] environment`` the orchestrator cannot mine/validate.
 
-    ``graphwalks`` (default) and ``oolong_synth`` are the two environments the
-    optimization loop supports as its mined/validated pool; ``oolong_pairs`` and
-    the OOLONG-real check are evaluation-only and never named here.
+    ``graphwalks`` (default), ``oolong_synth``, and ``mrcrv2`` are the
+    environments the optimization loop supports as its mined/validated pool;
+    ``oolong_pairs`` and the OOLONG-real check are evaluation-only and never
+    named here.
     """
     if loop.environment not in SELECTABLE_ENVIRONMENTS:
         raise ValueError(
@@ -650,11 +670,12 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     tuplify(promotion_table, "sub_call_band")
 
     env_table = raw["environments"]
-    check_keys(env_table, ("graphwalks", "oolong_pairs", "oolong"), "environments")
+    check_keys(env_table, ("graphwalks", "oolong_pairs", "oolong", "mrcrv2"), "environments")
     graphwalks_table = dict(env_table["graphwalks"])
     tuplify(graphwalks_table, "problem_types")
     oolong_pairs_table = dict(env_table["oolong_pairs"])
     tuplify(oolong_pairs_table, "task_ids")
+    mrcrv2_table = dict(env_table["mrcrv2"])
 
     oolong_env_table = env_table["oolong"]
     check_keys(oolong_env_table, ("synth", "real"), "environments.oolong")
@@ -737,6 +758,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
                 ),
                 real=build_section(OolongRealConfig, oolong_real_table, "environments.oolong.real"),
             ),
+            mrcrv2=build_section(Mrcrv2Config, mrcrv2_table, "environments.mrcrv2"),
         ),
         backends=BackendsConfig(
             runner=build_section(EndpointConfig, backends_table["runner"], "backends.runner"),

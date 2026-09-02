@@ -66,6 +66,7 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.environments.graphwalks import GraphWalksVerifier
+from shrlm.environments.mrcrv2 import Mrcrv2Verifier
 from shrlm.environments.oolong import OolongVerifier
 from shrlm.environments.oolong_pairs import OolongPairsVerifier
 from shrlm.experiment.config import (
@@ -207,6 +208,7 @@ DEFAULT_VERIFIERS: dict[str, Verifier] = {
     "oolong_pairs": OolongPairsVerifier(),
     "oolong_synth": OolongVerifier(task_set="synth"),
     "oolong_real": OolongVerifier(task_set="real"),
+    "mrcrv2": Mrcrv2Verifier(),
 }
 
 
