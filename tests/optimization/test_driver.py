@@ -1107,6 +1107,11 @@ class TestMineRound:
         assert result.bundle.config.round_index == config.round_index
 
     def test_terminated_run_is_attributed_from_its_partial_trace(self, tmp_path, monkeypatch):
+        """A budget-cap termination names its exhausted resource in the
+        verdict detail, so it stays attributable as an efficiency signal;
+        only terminations with no recognizable resource-exhaustion cause are
+        environment-skipped (tests/optimization/test_mining.py,
+        TestEnvironmentCausedRouting)."""
         config = run_full_round(tmp_path, monkeypatch)
         result = mine_round(
             out_dir=config.out_dir,

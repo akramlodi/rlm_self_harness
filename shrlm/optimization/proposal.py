@@ -115,11 +115,20 @@ PROPOSAL_FORMAT = "shrlm-proposal/v1"
 # declaration site) and re-exported here for the proposal writer.
 PROPOSAL_FILENAME = "proposal.json"
 
-# 1.4.0: the S10 removal form is documented, the S10 bullet is compact with the
-# pedagogy appended only when a pattern targets S10, and the S10 pattern block
-# carries a full-library inventory line. 1.3.0: S10 edit is one skill added or
-# replaced by name (S8-style), not a whole-list rewrite.
-PROMPT_VERSION = "1.6.0"
+# 1.8.0: environment-summary patterns (synthetic, mechanism OTHER) are named
+# and scoped -- informational counts of environment-terminated runs; the
+# proposer may, at its own judgment, propose harness-side handling against
+# one, with skipping as the expected default.
+# 1.7.0: proposal-quality guidance from the 2026-09-01 dsv4f round-1 postmortem
+# (all three candidates rejected): causal-reach triage, recoverable-over-veto,
+# the zero-regression promotion contract, resource cost as a regression axis,
+# below-floor patterns as hypotheses, candidate diversity, and the
+# resource_terminated-means-efficiency note. 1.4.0: the S10 removal form is
+# documented, the S10 bullet is compact with the pedagogy appended only when a
+# pattern targets S10, and the S10 pattern block carries a full-library
+# inventory line. 1.3.0: S10 edit is one skill added or replaced by name
+# (S8-style), not a whole-list rewrite.
+PROMPT_VERSION = "1.8.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -544,6 +553,50 @@ change only what is needed to address that specific mechanism, never a broad rew
 minimal edit plausibly addresses it (weak support, or the failure looks like a \
 model-capability limit rather than a harness gap). Do not invent a mechanism or a \
 surface; only cite patterns from the list below by their bracketed index.
+
+Before proposing against a pattern, ask whether its mechanism is something the \
+harness's own text or policy plausibly caused. A failure whose evidence points to \
+the environment, the provider, or the run's resource limits is not a harness gap; \
+skip it, or address only the harness-side handling of it. One exception cuts the \
+other way: a pattern whose verifier cause is resource_terminated reflects a run \
+that exhausted a resource limit -- its evidence names whether time or spend ran \
+out -- and that IS harness-addressable: the remedy is efficiency (fewer \
+iterations, less redundant work, tighter decomposition per answer), not more \
+checking.
+
+A pattern whose support is below the floor is a hypothesis, not evidence. Spend a \
+candidate on it only when the edit would be harmless even if the pattern is \
+spurious.
+
+A pattern whose symptoms begin with "environment summary (synthetic)" is not a \
+mined failure mechanism: it is a count of runs the environment terminated \
+(provider refusals and the like), with no agent behavior recorded. The \
+terminations themselves cannot be addressed by any harness edit. Such a pattern \
+exists only so you can see how often the environment intervened; the expected \
+default is to skip it. Propose a candidate against it only when, in your own \
+judgment, a harness-side handling edit is worthwhile -- for example, changing how \
+sub-call errors are treated during recovery -- and hold that candidate to the \
+same no-harm bar as any other.
+"""
+
+PROPOSER_QUALITY = """\
+Candidate quality rules:
+- Promotion tolerates zero net regression on either validation split. For each \
+candidate, predicted_effect must also state which currently-passing behaviors the \
+edit deliberately leaves untouched and why the edit cannot plausibly harm them. An \
+edit whose upside on the failing pattern is bought with plausible harm to passing \
+runs will be rejected in validation; no-harm comes first.
+- Prefer edits that guide behavior toward recovery over hard accept/reject rules. \
+Any edit that can veto or discard an output must state the path by which a correct \
+output still gets through; a rule with no escape path usually trades one failure \
+class for another.
+- Runs operate under fixed time and spend limits, and some already end by \
+exhausting them. An edit that increases iterations, sub-calls, or output length \
+spends from that same budget; treat added work as a regression risk to justify, \
+and prefer edits that are work-neutral or work-reducing.
+- When multiple candidates are proposed, prefer candidates that differ in \
+mechanism family and in risk profile, rather than variants of the same kind of \
+intervention.
 """
 
 # EDIT_FORMATS and SKILLS_PEDAGOGY are ``%``-interpolated (never ``str.format``)
@@ -658,6 +711,7 @@ def render_prompt(
     sections = [
         PROPOSER_INTRO + render_surface_block(),
         PROPOSER_TASK,
+        PROPOSER_QUALITY,
         _render_verifier_contract(verifier_config),
         "Failure patterns:\n" + pattern_text,
         "Passing behavior to preserve:\n" + _render_passing_block(passing_behaviors),

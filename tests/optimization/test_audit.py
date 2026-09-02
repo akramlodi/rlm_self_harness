@@ -80,7 +80,9 @@ class TestHappyPath:
         assert stats.n_passed == 1
         assert stats.pass_rate == pytest.approx(1 / 3)
         assert stats.n_records == len(result.records) == 2
-        # WRONG_VALUE and RESOURCE_TERMINATED give two distinct signatures.
+        # WRONG_VALUE and RESOURCE_TERMINATED give two distinct signatures:
+        # the budget-cap termination names its exhausted resource, so it stays
+        # attributable as an efficiency signal.
         assert stats.n_patterns == 2
         # No sub-verifier ran, so no record carries a checkable child verdict.
         assert stats.grounding_coverage == pytest.approx(0.0)

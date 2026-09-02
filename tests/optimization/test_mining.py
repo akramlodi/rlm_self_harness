@@ -225,5 +225,103 @@ class TestVerdictRoundTrip:
             Verdict.from_dict({"passed": False, "cause": "not_a_cause", "gold": "", "produced": ""})
 
 
+class TestEnvironmentCausedRouting:
+    """Environment-owned verdict causes are skipped before the attributor is
+    called; time-caused terminations stay attributable (efficiency signal)."""
+
+    @staticmethod
+    def _mine(verdict: Verdict):
+        from shrlm.optimization.types import AttributionErrorKind
+
+        verifier = CountingVerifier()
+        lm = MockLM(responses=[CANNED_ATTRIBUTION] * 8)
+        miner = WeaknessMiner(verifier=verifier, attributor=LLMAttributor(lm))
+        instance, completion = failing_run()
+        outcome = miner.record_failure(instance, completion, verdict=verdict)
+        return outcome, lm, AttributionErrorKind
+
+    def test_content_filtered_never_reaches_the_attributor(self):
+        verdict = Verdict(
+            passed=False,
+            cause=VerifierCause.CONTENT_FILTERED,
+            gold="",
+            produced="",
+            detail="BadRequestError: content_filter",
+        )
+        outcome, lm, kind = self._mine(verdict)
+        assert outcome.record.attribution_failed is True
+        assert outcome.record.attribution_error_kind is kind.ENVIRONMENT
+        assert outcome.record.signature is None
+        assert lm._call_count == 0  # the attributor LM was never invoked
+        assert outcome.raw["attempts"] == []
+
+    def test_budget_termination_is_attributed(self):
+        """A spend-cap termination is an efficiency signal exactly like a
+        timeout: the run did too much work for its budget, and the verdict
+        detail names the exhausted resource so the proposer can hypothesize
+        efficiency edits against it."""
+        verdict = Verdict(
+            passed=False,
+            cause=VerifierCause.RESOURCE_TERMINATED,
+            gold="",
+            produced="",
+            detail="BudgetExceededError: run spent $2.01 of $2.00",
+        )
+        outcome, lm, kind = self._mine(verdict)
+        assert outcome.record.attribution_failed is False
+        assert outcome.record.signature is not None
+        assert outcome.record.signature.verifier_cause is VerifierCause.RESOURCE_TERMINATED
+        assert lm._call_count >= 1
+
+    def test_empty_detail_termination_is_environment_skipped(self):
+        """Ambiguous terminations default to environment-owned: feeding them
+        to the attributor is how platform noise clusters into mechanisms."""
+        verdict = Verdict(
+            passed=False,
+            cause=VerifierCause.RESOURCE_TERMINATED,
+            gold="",
+            produced="",
+            detail="",
+        )
+        outcome, lm, kind = self._mine(verdict)
+        assert outcome.record.attribution_error_kind is kind.ENVIRONMENT
+        assert lm._call_count == 0
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "TimeoutExceededError: Timeout exceeded after iteration 14: 3633.7s of 3600.0s limit",
+            "HardDeadlineExceeded: hard deadline of 3600.0s reached",
+        ],
+    )
+    def test_time_termination_is_attributed(self, detail):
+        """A timeout IS a minable harness weakness: the run did too much work
+        for its wall-clock limit, so it keeps flowing to the attributor."""
+        verdict = Verdict(
+            passed=False,
+            cause=VerifierCause.RESOURCE_TERMINATED,
+            gold="",
+            produced="",
+            detail=detail,
+        )
+        outcome, lm, kind = self._mine(verdict)
+        assert outcome.record.attribution_failed is False
+        assert outcome.record.signature is not None
+        assert outcome.record.signature.verifier_cause is VerifierCause.RESOURCE_TERMINATED
+        assert lm._call_count >= 1
+
+    def test_wrong_value_still_attributed(self):
+        verdict = Verdict(
+            passed=False,
+            cause=VerifierCause.WRONG_VALUE,
+            gold="4",
+            produced="5",
+        )
+        outcome, lm, kind = self._mine(verdict)
+        assert outcome.record.attribution_failed is False
+        assert outcome.record.signature is not None
+
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

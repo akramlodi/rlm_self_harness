@@ -38,7 +38,7 @@ from shrlm.optimization.clustering import (
 )
 from shrlm.optimization.digest import DIGEST_VERSION, DigestConfig, build_digest
 from shrlm.optimization.grounding import apply_sub_verifier
-from shrlm.optimization.taxonomy import TAXONOMY_VERSION
+from shrlm.optimization.taxonomy import TAXONOMY_VERSION, VerifierCause
 from shrlm.optimization.types import (
     AttributionErrorKind,
     EvidenceBundle,
@@ -51,6 +51,43 @@ from shrlm.optimization.types import (
     Verifier,
 )
 from shrlm.optimization.walker import walk
+
+# Markers that identify a RESOURCE-EXHAUSTION-caused RESOURCE_TERMINATED
+# verdict from its detail string: time ("TimeoutExceededError: ... 3633.7s of
+# 3600.0s limit", "HardDeadlineExceeded: ...") or spend
+# ("BudgetExceededError: ..."). Both stay attributable -- a run that overruns
+# its wall-clock limit OR its spend cap did too much work for the limit, and
+# the detail string names which resource ran out, so the attributor and the
+# proposer can hypothesize efficiency edits against it. Only a RESOURCE_TERMINATED
+# verdict whose detail identifies NEITHER (an empty or unrecognizable detail)
+# is environment-owned and skipped before the attributor is ever called.
+_RESOURCE_EXHAUSTION_MARKERS = ("timeout", "deadline", "budget")
+
+
+def environment_caused(verdict: Verdict) -> str | None:
+    """Why this failed verdict is environment-owned, or None when the agent's
+    own behavior is a legitimate attribution target.
+
+    CONTENT_FILTERED is always environment-owned: the provider refused its own
+    sampled response; no harness text can address that. RESOURCE_TERMINATED
+    stays attributable when its detail names the exhausted resource -- a
+    timeout/deadline or a spend-budget termination both reflect run behavior
+    (too much work per answer), and the detail says which, so efficiency edits
+    can be proposed against either. An empty or unrecognizable detail is
+    treated as environment-owned -- feeding ambiguous terminations to the
+    attributor is how platform noise gets clustered into agent mechanisms.
+    """
+    if verdict.cause is VerifierCause.CONTENT_FILTERED:
+        return "environment caused: provider content filter refused the response"
+    if verdict.cause is VerifierCause.RESOURCE_TERMINATED:
+        lowered = verdict.detail.lower()
+        if any(marker in lowered for marker in _RESOURCE_EXHAUSTION_MARKERS):
+            return None
+        return (
+            "environment caused: run terminated with no recognizable resource-"
+            "exhaustion cause in its detail"
+        )
+    return None
 
 
 @dataclass
@@ -186,6 +223,30 @@ class WeaknessMiner:
             prompt_text=prompt_text,
             prompt_sha256=prompt_sha,
         )
+
+        # Environment-owned failures (provider content filter; terminations
+        # with no recognizable resource-exhaustion cause) are skipped BEFORE
+        # the attributor is called: attributing them clusters platform noise
+        # into agent mechanisms and spends proposal candidates on failures no
+        # harness edit can reach (2026-09-01 dsv4f round 1: 2 of 3 candidates
+        # targeted content_filtered verdicts). Time- and budget-caused
+        # terminations pass through -- see ``environment_caused``. The record
+        # stays visible with its own error kind, counted in n_unattributed,
+        # never gate-held.
+        skip_reason = environment_caused(verdict)
+        if skip_reason is not None:
+            record.attribution_failed = True
+            record.attribution_error = skip_reason
+            record.attribution_error_kind = AttributionErrorKind.ENVIRONMENT
+            raw.update(
+                signature=None,
+                detail=None,
+                attributed=False,
+                error=skip_reason,
+                attribution_error_kind=record.attribution_error_kind.value,
+                attempts=[],
+            )
+            return outcome
 
         # The only try/except over attribution in this package. One unusable
         # attribution must not abort a mining round, but it must remain visible
