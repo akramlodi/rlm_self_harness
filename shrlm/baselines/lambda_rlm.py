@@ -1,4 +1,4 @@
-"""Experiment adapter for the pinned upstream λ-RLM baseline."""
+"""Experiment adapter for the paper-faithful λ-RLM reconstruction."""
 
 import hashlib
 import json
@@ -8,14 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from rlm.core.types import ClientBackend
-from shrlm.baselines.upstream.lambda_rlm import LambdaRLM
+from shrlm.baselines.paper_lambda_rlm import (
+    PAPER_RECONSTRUCTION_VERSION,
+    PaperLambdaRLM,
+)
 
 LAMBDA_RLM_UPSTREAM_REPOSITORY = "https://github.com/lambda-calculus-LLM/lambda-RLM"
 LAMBDA_RLM_UPSTREAM_REVISION = "c70c6db2cf8498eaf05fa6999dc41088827158f4"
 LAMBDA_RLM_SOURCE_SHA256 = "3f0e0521f92e1e124e76aa4f717a7bf29c95386ff42b3faf6057d4fa320f42e6"
-LAMBDA_RLM_METHOD_FORMAT = "shrlm-method/v1"
-LAMBDA_RLM_METHOD_KIND = "lambda_rlm"
-LAMBDA_RLM_DISPLAY_NAME = "λ-RLM"
+LAMBDA_RLM_METHOD_FORMAT = "shrlm-method/v2"
+LAMBDA_RLM_METHOD_KIND = "lambda_rlm_paper_reconstruction"
+LAMBDA_RLM_DISPLAY_NAME = "λ-RLM (paper reconstruction)"
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,7 @@ class LambdaInput:
 
     prompt: str
     query: str
+    task_id: int | None
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,10 @@ class LambdaBaselineConfig:
     accuracy_target: float = 0.80
     a_leaf: float = 0.95
     a_compose: float = 0.90
+    pairwise_max_batch_records: int = 256
+    pairwise_max_batch_chars: int = 80_000
+    pairwise_max_concurrency: int = 8
+    pairwise_max_attempts: int = 3
 
     def build(
         self,
@@ -41,12 +49,13 @@ class LambdaBaselineConfig:
         backend: ClientBackend,
         backend_kwargs: dict[str, Any],
         query: str,
-    ) -> LambdaRLM:
-        """Construct the upstream method with experiment-supplied model settings."""
+        task_id: int | None = None,
+    ) -> PaperLambdaRLM:
+        """Construct the reconstructed method with experiment-supplied model settings."""
         if not query.strip():
             raise ValueError("λ-RLM requires a non-empty query")
 
-        return LambdaRLM(
+        return PaperLambdaRLM(
             backend=backend,
             backend_kwargs=dict(backend_kwargs),
             environment="local",
@@ -55,6 +64,11 @@ class LambdaBaselineConfig:
             a_leaf=self.a_leaf,
             a_compose=self.a_compose,
             query=query,
+            task_id=task_id,
+            pairwise_max_batch_records=self.pairwise_max_batch_records,
+            pairwise_max_batch_chars=self.pairwise_max_batch_chars,
+            pairwise_max_concurrency=self.pairwise_max_concurrency,
+            pairwise_max_attempts=self.pairwise_max_attempts,
         )
 
 
@@ -67,6 +81,10 @@ def serialize_lambda_method(config: LambdaBaselineConfig) -> dict[str, Any]:
             "repository": LAMBDA_RLM_UPSTREAM_REPOSITORY,
             "revision": LAMBDA_RLM_UPSTREAM_REVISION,
             "source_sha256": LAMBDA_RLM_SOURCE_SHA256,
+        },
+        "reconstruction": {
+            "version": PAPER_RECONSTRUCTION_VERSION,
+            "scope": "OOLONG-Pairs Algorithm 5: SPLIT-MAP-PARSE-FILTER-CROSS",
         },
         "runtime": {"environment": "local"},
         "configuration": asdict(config),
@@ -108,9 +126,10 @@ def write_lambda_method_json(
 
 
 def lambda_input(instance: Mapping[str, Any]) -> LambdaInput:
-    """Read only prompt and question fields from a persisted instance."""
+    """Read only non-gold method inputs from a persisted instance."""
     prompt = instance["prompt"]
     query = instance["question"]
+    task_id = instance.get("task_id")
 
     if not isinstance(prompt, str):
         raise TypeError("λ-RLM instance prompt must be a string")
@@ -120,10 +139,14 @@ def lambda_input(instance: Mapping[str, Any]) -> LambdaInput:
         raise ValueError("λ-RLM instance has an empty prompt")
     if not query.strip():
         raise ValueError("λ-RLM instance has an empty question")
+    if task_id is not None and (
+        isinstance(task_id, bool) or not isinstance(task_id, int) or task_id not in range(1, 21)
+    ):
+        raise ValueError("λ-RLM OOLONG-Pairs task_id must be an integer in 1-20")
 
     # Preserve the persisted strings exactly. Validation uses strip only to
     # detect empty values; it does not rewrite the model input.
-    return LambdaInput(prompt=prompt, query=query)
+    return LambdaInput(prompt=prompt, query=query, task_id=task_id)
 
 
 __all__ = [
@@ -133,6 +156,7 @@ __all__ = [
     "LAMBDA_RLM_SOURCE_SHA256",
     "LAMBDA_RLM_UPSTREAM_REPOSITORY",
     "LAMBDA_RLM_UPSTREAM_REVISION",
+    "PAPER_RECONSTRUCTION_VERSION",
     "LambdaBaselineConfig",
     "LambdaInput",
     "lambda_method_envelope",

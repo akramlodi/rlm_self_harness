@@ -18,8 +18,16 @@ Implementation: `shrlm/rlm_harness.py`
 ## λ-RLM
 
 A separate hand-designed inference method using a typed functional runtime.
+For OOLONG-Pairs, the released source is missing the paper's specialized
+Algorithm 5, so the local implementation reconstructs its bounded
+SPLIT→MAP→PARSE→FILTER→CROSS path and identifies it explicitly as a paper
+reconstruction. Other tasks continue through the pinned upstream runtime.
+Each pairwise run persists its raw batch responses, retry rejections, parsed
+record labels, label counts, and bounded call totals under
+`metadata.pairwise_audit` in the run trace.
 
-- Upstream implementation: `shrlm/baselines/vendor/lambda_rlm.py`
+- Byte-identical upstream implementation: `shrlm/baselines/upstream/lambda_rlm.py`
+- OOLONG-Pairs paper reconstruction: `shrlm/baselines/paper_lambda_rlm.py`
 - Local evaluation adapter: `shrlm/baselines/lambda_rlm.py`
 - License and provenance: `third_party/lambda-RLM/`
 

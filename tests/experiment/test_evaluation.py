@@ -28,6 +28,7 @@ from shrlm.baselines.lambda_rlm import (
     LAMBDA_RLM_SOURCE_SHA256,
     LAMBDA_RLM_UPSTREAM_REPOSITORY,
     LAMBDA_RLM_UPSTREAM_REVISION,
+    PAPER_RECONSTRUCTION_VERSION,
     LambdaBaselineConfig,
     lambda_method_hash,
 )
@@ -247,8 +248,9 @@ class TestConditionGrid:
         assert condition.method_kind == LAMBDA_RLM_METHOD_KIND
         assert condition.method_hash == lambda_method_hash(LambdaBaselineConfig())
         assert result.summary["conditions"][CONDITION_LAMBDA_RLM]["source"] == {
-            "kind": "pinned_upstream",
+            "kind": "paper_reconstruction",
             "method_kind": LAMBDA_RLM_METHOD_KIND,
+            "reconstruction_version": PAPER_RECONSTRUCTION_VERSION,
             "repository": LAMBDA_RLM_UPSTREAM_REPOSITORY,
             "revision": LAMBDA_RLM_UPSTREAM_REVISION,
             "source_sha256": LAMBDA_RLM_SOURCE_SHA256,

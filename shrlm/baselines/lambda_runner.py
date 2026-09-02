@@ -372,6 +372,7 @@ def run_lambda_round(
                     backend=config.backend,
                     backend_kwargs=dict(config.backend_kwargs),
                     query=model_input.query,
+                    task_id=model_input.task_id,
                 )
                 completion = method.completion(model_input.prompt)
                 if guard.budget_error is not None:

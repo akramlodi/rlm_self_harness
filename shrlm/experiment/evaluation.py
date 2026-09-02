@@ -73,6 +73,7 @@ from shrlm.baselines.lambda_rlm import (
     LAMBDA_RLM_SOURCE_SHA256,
     LAMBDA_RLM_UPSTREAM_REPOSITORY,
     LAMBDA_RLM_UPSTREAM_REVISION,
+    PAPER_RECONSTRUCTION_VERSION,
     LambdaBaselineConfig,
     lambda_method_hash,
 )
@@ -260,7 +261,7 @@ class HarnessEvaluationMethod:
 
 @dataclass(frozen=True)
 class LambdaEvaluationMethod:
-    """Evaluation adapter for the pinned, non-harness λ-RLM baseline."""
+    """Evaluation adapter for the paper-faithful, non-harness λ-RLM baseline."""
 
     method: LambdaBaselineConfig = field(default_factory=LambdaBaselineConfig)
 
@@ -399,14 +400,15 @@ class FrozenHarnessSource:
 
 @dataclass(frozen=True)
 class LambdaMethodSource:
-    """The pinned upstream λ-RLM method and its complete source provenance."""
+    """The λ-RLM paper reconstruction and its complete source provenance."""
 
     method: LambdaBaselineConfig = field(default_factory=LambdaBaselineConfig)
 
     def describe(self) -> dict[str, str]:
         return {
-            "kind": "pinned_upstream",
+            "kind": "paper_reconstruction",
             "method_kind": LAMBDA_RLM_METHOD_KIND,
+            "reconstruction_version": PAPER_RECONSTRUCTION_VERSION,
             "repository": LAMBDA_RLM_UPSTREAM_REPOSITORY,
             "revision": LAMBDA_RLM_UPSTREAM_REVISION,
             "source_sha256": LAMBDA_RLM_SOURCE_SHA256,

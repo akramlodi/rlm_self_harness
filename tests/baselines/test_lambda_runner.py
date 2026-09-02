@@ -1,5 +1,6 @@
 import json
 from dataclasses import dataclass, replace
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from shrlm.baselines.lambda_runner import (
     run_lambda_round,
     validate_lambda_round,
 )
+from shrlm.environments.oolong_pairs import TASK_TEXTS, OolongEntry, build_prompt
 from shrlm.optimization.bundle import round_dir
 from shrlm.optimization.driver import RoundPersistenceError, load_manifest
 from shrlm.optimization.taxonomy import VerifierCause
@@ -138,6 +140,51 @@ def test_refuses_a_modified_recorded_trace(
 
     with pytest.raises(RoundPersistenceError, match="was modified"):
         run_lambda_round(config)
+
+
+def test_persists_pairwise_batch_audit_in_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompt = build_prompt(
+        [
+            OolongEntry(
+                user_id=7,
+                date=date(2023, 2, 2),
+                instance="How many moons does Mars have ?",
+                label=None,
+            )
+        ],
+        TASK_TEXTS[1],
+    )
+    config = make_config(
+        tmp_path,
+        instances=[
+            {
+                "id": "oolong-audit",
+                "prompt": prompt,
+                "question": TASK_TEXTS[1],
+                "task_id": 1,
+                "gold": "No valid pairs found.",
+            }
+        ],
+    )
+    factory = ClientFactory(["0|N"])
+    monkeypatch.setattr(upstream_lambda, "get_client", factory)
+
+    entry = run_lambda_round(config)[0]
+    trace = json.loads((round_dir(tmp_path, 1) / entry["trace_path"]).read_text())
+
+    audit = trace["metadata"]["pairwise_audit"]
+    assert audit["actual_model_calls"] == 1
+    assert audit["batches"] == [
+        {
+            "attempts": [{"attempt": 1, "rejection": None, "response": "0|N"}],
+            "batch_index": 0,
+            "global_indices": [0],
+            "predictions": {"0": "numeric value"},
+        }
+    ]
 
 
 def test_validates_credentials_before_a_pending_paid_run(

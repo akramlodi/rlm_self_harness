@@ -12,6 +12,7 @@ from shrlm.baselines.lambda_rlm import (
     LAMBDA_RLM_METHOD_KIND,
     LAMBDA_RLM_SOURCE_SHA256,
     LAMBDA_RLM_UPSTREAM_REVISION,
+    PAPER_RECONSTRUCTION_VERSION,
     LambdaBaselineConfig,
     lambda_input,
     lambda_method_hash,
@@ -39,6 +40,7 @@ def test_uses_upstream_defaults() -> None:
     assert config.accuracy_target == 0.80
     assert config.a_leaf == 0.95
     assert config.a_compose == 0.90
+    assert config.pairwise_max_attempts == 3
 
 
 def test_extracts_only_non_gold_input() -> None:
@@ -112,12 +114,20 @@ def test_serializes_complete_method_identity() -> None:
             "revision": LAMBDA_RLM_UPSTREAM_REVISION,
             "source_sha256": LAMBDA_RLM_SOURCE_SHA256,
         },
+        "reconstruction": {
+            "version": PAPER_RECONSTRUCTION_VERSION,
+            "scope": "OOLONG-Pairs Algorithm 5: SPLIT-MAP-PARSE-FILTER-CROSS",
+        },
         "runtime": {"environment": "local"},
         "configuration": {
             "context_window_chars": 100_000,
             "accuracy_target": 0.80,
             "a_leaf": 0.95,
             "a_compose": 0.90,
+            "pairwise_max_batch_records": 256,
+            "pairwise_max_batch_chars": 80_000,
+            "pairwise_max_concurrency": 8,
+            "pairwise_max_attempts": 3,
         },
     }
 
@@ -129,6 +139,9 @@ def test_method_hash_is_stable_and_configuration_sensitive() -> None:
     assert len(lambda_method_hash(config)) == 64
     assert lambda_method_hash(config) != lambda_method_hash(
         replace(config, context_window_chars=200_000)
+    )
+    assert lambda_method_hash(config) != lambda_method_hash(
+        replace(config, pairwise_max_attempts=2)
     )
 
 
