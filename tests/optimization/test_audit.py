@@ -80,11 +80,8 @@ class TestHappyPath:
         assert stats.n_passed == 1
         assert stats.pass_rate == pytest.approx(1 / 3)
         assert stats.n_records == len(result.records) == 2
-        # Only WRONG_VALUE clusters: the budget-cap RESOURCE_TERMINATED record
-        # is environment-skipped before attribution (no timeout in its detail),
-        # so it carries no signature and forms no pattern.
-        assert stats.n_patterns == 1
-        assert stats.n_unattributed == 1
+        # WRONG_VALUE and RESOURCE_TERMINATED give two distinct signatures.
+        assert stats.n_patterns == 2
         # No sub-verifier ran, so no record carries a checkable child verdict.
         assert stats.grounding_coverage == pytest.approx(0.0)
 
@@ -434,26 +431,20 @@ class TestPipelineSeams:
         assert report.stats.n_records == 2
         assert report.stats.n_patterns == 0
         assert report.stats.n_unattributed == 2
-        # The budget-cap termination never reaches the (down) attributor -- it
-        # is environment-skipped first -- so only the WRONG_VALUE record's
-        # attribution hits transport.
-        assert report.stats.n_transport_errors == 1
-        assert len(result.errors) == 1
+        assert report.stats.n_transport_errors == 2
+        assert len(result.errors) == 2
         assert result.bundle.patterns == []
 
         exit_code = main([str(config.out_dir), "1"])
         out = capsys.readouterr().out
         assert exit_code == 0
         assert "n_unattributed=2" in out
-        assert "n_transport_errors=1" in out
+        assert "n_transport_errors=2" in out
         assert "every failure record is unattributed" in out
 
     def test_clean_round_reports_zero_unattributed(self, audited):
-        """The budget-cap termination is environment-skipped (unattributed by
-        design, no attributor call), so a clean round reports exactly that one
-        unattributed record and no transport errors."""
         _, _, report = audited
-        assert report.stats.n_unattributed == 1
+        assert report.stats.n_unattributed == 0
         assert report.stats.n_transport_errors == 0
 
     def test_all_pass_round_with_file_backed_cache_audits_clean(self, tmp_path, monkeypatch):

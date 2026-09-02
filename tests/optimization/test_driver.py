@@ -1106,16 +1106,7 @@ class TestMineRound:
         assert result.bundle.config.harness_version == harness_hash(H0)
         assert result.bundle.config.round_index == config.round_index
 
-    def test_budget_terminated_run_is_environment_skipped_not_attributed(
-        self, tmp_path, monkeypatch
-    ):
-        """A budget-cap termination is environment-owned: it is recorded (its
-        partial trace and verdict persist) but never reaches the attributor,
-        so it cannot cluster into an agent mechanism. Time-caused terminations
-        remain attributable -- pinned in tests/optimization/test_mining.py
-        (TestEnvironmentCausedRouting)."""
-        from shrlm.optimization.types import AttributionErrorKind
-
+    def test_terminated_run_is_attributed_from_its_partial_trace(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)
         result = mine_round(
             out_dir=config.out_dir,
@@ -1126,9 +1117,8 @@ class TestMineRound:
         by_id = {record.instance_id: record for record in result.records}
         terminated = by_id["inst-term"]
         assert terminated.verdict.cause is VerifierCause.RESOURCE_TERMINATED
-        assert terminated.attribution_failed
-        assert terminated.attribution_error_kind is AttributionErrorKind.ENVIRONMENT
-        assert terminated.signature is None
+        assert not terminated.attribution_failed
+        assert terminated.signature is not None
 
     def test_unparseable_attribution_stays_visible_as_unattributed(self, tmp_path, monkeypatch):
         config = run_full_round(tmp_path, monkeypatch)
