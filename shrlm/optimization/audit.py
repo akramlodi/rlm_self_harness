@@ -547,6 +547,7 @@ def _audit_attributions(path: Path, entries: list[dict[str, Any]], walk: _Walk) 
                     AttributionErrorKind.TRANSPORT.value,
                     AttributionErrorKind.CONTENT_FILTERED.value,
                     AttributionErrorKind.TOKEN_LIMIT.value,
+                    AttributionErrorKind.ENVIRONMENT.value,
                 )
                 if kind is not None
                 else str(entry.get("error", "")).startswith(_TRANSPORT_ERROR_PREFIX)
