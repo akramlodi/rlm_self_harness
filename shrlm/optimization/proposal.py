@@ -80,7 +80,11 @@ from shrlm.optimization.candidates import (
     changed_surfaces,
     import_surface_module,
 )
-from shrlm.optimization.driver import INSTANCES_FILE, canonical_manifest_entries
+from shrlm.optimization.driver import (
+    INSTANCES_FILE,
+    MANIFEST_FILE,
+    canonical_manifest_entries,
+)
 from shrlm.optimization.skill_edit import (
     SKILLS_EDIT_FORMAT,
     SkillEditRejection,
@@ -1178,7 +1182,7 @@ def load_passing_behaviors(round_path: Path | str) -> list[dict[str, Any]]:
     Results follow persisted instance order, then attempt.
     """
     round_path = Path(round_path)
-    manifest_path = round_path / "runs.jsonl"
+    manifest_path = round_path / MANIFEST_FILE
     if not manifest_path.exists():
         return []
     instances = [

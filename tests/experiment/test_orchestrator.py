@@ -931,10 +931,7 @@ class TestParallelMiningStage:
                 (scrub_clock(entry) for entry in mining_manifest(out, 1)),
                 key=lambda entry: entry["run_id"],
             )
-            records = [
-                scrub_clock(json.loads(line))
-                for line in (mining_path / RECORDS_FILENAME).read_text().splitlines()
-            ]
+            records = [scrub_clock(record) for record in read_jsonl(mining_path / RECORDS_FILENAME)]
             proposal_marker = json.loads(
                 (experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text()
             )
@@ -943,12 +940,6 @@ class TestParallelMiningStage:
         sequential_outputs = outputs(sequential_out)
         parallel_outputs = outputs(parallel_out)
         assert parallel_outputs == sequential_outputs
-        assert [entry["run_id"] for entry in parallel_outputs[0]] == [
-            entry["run_id"] for entry in sequential_outputs[0]
-        ]
-        assert [(entry["passed"], entry["cause"]) for entry in parallel_outputs[0]] == [
-            (entry["passed"], entry["cause"]) for entry in sequential_outputs[0]
-        ]
 
     def test_generated_code_incumbent_mines_in_children(self, tmp_path):
         config = make_config(tmp_path / "config", mining_run_workers=2)

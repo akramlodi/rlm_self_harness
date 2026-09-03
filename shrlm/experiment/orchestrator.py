@@ -836,7 +836,7 @@ class _Experiment:
             # Actual spend and reservation-gated skipped work are independent
             # outcomes. In particular, the final in-flight children can all
             # land and push spend over budget while leaving no skipped ids.
-            if result.spent > self.caps.candidate_budget:
+            if breaker.tripped:
                 raise MiningBudgetExceededError(
                     f"round {round_index} mining tripped the cumulative spend breaker at "
                     f"{result.spent:.6f} USD against candidate_budget "
