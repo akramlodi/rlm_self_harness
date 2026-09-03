@@ -134,6 +134,45 @@ class TestConcurrentEquivalence:
 
 
 class TestChildFailure:
+    def test_pid_marker_write_failure_terminates_and_reaps_spawned_child(
+        self, tmp_path, monkeypatch
+    ):
+        import shrlm.optimization.costs as costs_module
+
+        config = make_config(
+            tmp_path,
+            instances=[{"id": "inst-1", "prompt": "p", "gold": "RIGHT"}],
+            run_workers=2,
+            client_factory=(RUN_SCRIPTED_FACTORY, {"hang": True}),
+        )
+        spawned = []
+        popen = costs_module.subprocess.Popen
+        write_text = Path.write_text
+
+        def capture_popen(*args, **kwargs):
+            process = popen(*args, **kwargs)
+            spawned.append(process)
+            return process
+
+        def fail_pid_marker(path, *args, **kwargs):
+            if path.name == "worker.pid":
+                raise OSError("pid marker write failed")
+            return write_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(costs_module.subprocess, "Popen", capture_popen)
+        monkeypatch.setattr(Path, "write_text", fail_pid_marker)
+
+        with pytest.raises(OSError, match="pid marker write failed"):
+            run_governed_round(config, CandidateSpendBreaker(CAPS))
+
+        assert len(spawned) == 1
+        process = spawned[0]
+        assert process.returncode is not None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(process.pid, os.WNOHANG)
+        round_path = round_dir(config.out_dir, config.round_index)
+        assert list((round_path / "run_workers").glob("*/worker.pid")) == []
+
     def test_a_child_that_crashes_is_persisted_terminated_and_charged(self, tmp_path):
         config = make_config(
             tmp_path,

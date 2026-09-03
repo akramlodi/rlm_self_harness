@@ -705,11 +705,8 @@ def _dispatch_runs_concurrently(
                 except BaseException:
                     log.close()
                     raise
-                # Recorded before anything else can raise. A child that exists
-                # but is not in ``running`` is invisible to the cleanup handler
-                # below, so an interrupt landing in this window would leave it
-                # alive and still spending, with its log handle leaked too.
-                (run_path / RUN_PID_FILENAME).write_text(f"{process.pid}\n")
+                # Register before the pid marker write: once Popen succeeds,
+                # every later failure must flow through the cleanup handler.
                 running[run_id] = {
                     "process": process,
                     "log": log,
@@ -720,6 +717,7 @@ def _dispatch_runs_concurrently(
                     # a child that ignores or swallows SIGALRM is still reaped.
                     "expires": (time.monotonic() + deadline * 2) if deadline else None,
                 }
+                (run_path / RUN_PID_FILENAME).write_text(f"{process.pid}\n")
 
             if not running:
                 # Nothing in flight and the fill loop above placed nothing.

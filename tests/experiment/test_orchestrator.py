@@ -973,7 +973,7 @@ class TestParallelMiningStage:
         assert len(manifest) == 2
         assert (round_dir(out / "mining", 2) / "run_workers").is_dir()
 
-    def test_under_budget_reservation_stop_is_resumable_without_a_second_dispatch(
+    def test_under_budget_reservation_stop_resumes_only_tail_with_worker_one(
         self, tmp_path, monkeypatch
     ):
         # One reservation is 2x max_budget. At exactly that budget the first
@@ -1006,10 +1006,65 @@ class TestParallelMiningStage:
         assert len(mining_manifest(out, 1)) == 1
         message = str(excinfo.value)
         assert "1 run(s)" in message
-        assert "mining_run_workers" in message
+        assert "operational.mining_run_workers = 1" in message
+        assert "sequential path has no reservation gate" in message
         assert "resume" in message.lower()
         usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/mining"]
         assert usage.cost == pytest.approx(0.001)
+
+        # The worker count is identity-exempt, so the same output directory can
+        # resume sequentially. Only the unpersisted tail executes; the evidence
+        # and proposal stages then finish normally from the complete manifest.
+        sequential_config = make_config(
+            tmp_path / "resume-config", mining_run_workers=1, candidate_budget=0.02
+        )
+        tail = patch_runner(monkeypatch, [final("WRONG")])
+        result = run_experiment(
+            sequential_config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders=LOADERS,
+        )
+
+        assert dispatches == 2
+        assert tail.total_calls == 1
+        assert len(mining_manifest(out, 1)) == 2
+        assert [outcome.promoted for outcome in result.rounds] == [False]
+        round_path = experiment_round_dir(out, 1)
+        assert (mining_round_path(out, 1) / EVIDENCE_MARKER_FILENAME).exists()
+        assert (round_path / PROPOSALS_MARKER_FILENAME).exists()
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/mining"]
+        assert usage.cost == pytest.approx(0.002)
+
+    def test_actual_overspend_wins_when_a_tail_run_is_also_skipped(self, tmp_path):
+        config = make_config(tmp_path / "config", mining_run_workers=2, candidate_budget=0.04)
+        out = tmp_path / "exp"
+        experiment = orchestrator_module._Experiment(
+            config=config,
+            out_dir=out,
+            verifier=GoldVerifier(),
+            sub_verifier=None,
+            attributor_lm=None,
+            proposer_lm=None,
+            loaders=LOADERS,
+            client_factory=mining_client_factory(tmp_path, [final("WRONG")], cost_per_call=0.03),
+        )
+        experiment.splits = orchestrator_module.ValidationSplits(
+            heldin=fake_loader("graphwalks")(config, "short", 3, config.splits.seed),
+            heldout=fake_loader("graphwalks-heldout")(config, "short", 1, config.splits.seed),
+        )
+
+        with pytest.raises(MiningBudgetExceededError, match=r"1 run\(s\) were skipped"):
+            experiment._mine_runs(out / "mining", 1, H0)
+
+        manifest = load_manifest(out / "mining", 1)
+        assert len(manifest) == 2
+        assert sorted(entry["instance_id"] for entry in manifest) == [
+            "graphwalks-short-0",
+            "graphwalks-short-1",
+        ]
 
     def test_actual_overspend_raises_even_when_every_run_completed(self, tmp_path, monkeypatch):
         config = make_config(tmp_path / "config", mining_run_workers=2, candidate_budget=0.04)

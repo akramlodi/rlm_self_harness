@@ -857,8 +857,9 @@ class _Experiment:
                     f"{len(result.skipped_run_ids)} run(s) left to resume after spending "
                     f"{result.spent:.6f} USD of candidate_budget "
                     f"{self.caps.candidate_budget:.6f}. Re-run this output directory with "
-                    "a lower operational.mining_run_workers value; every completed run is "
-                    "persisted and no sequential fallback was dispatched."
+                    "operational.mining_run_workers = 1; the sequential path has no "
+                    "reservation gate, every completed run is persisted, and no automatic "
+                    "sequential fallback was dispatched."
                 )
 
     def _evidence_bundle(
