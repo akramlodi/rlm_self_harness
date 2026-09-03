@@ -287,6 +287,7 @@ validation_workers = 5
 # saturated the deployment (4,557 RateLimitError retries in one validation
 # stage; runs spent their whole max_timeout in 429 backoff). Identity-exempt.
 validation_run_workers = 1
+mining_run_workers = 3
 
 # OOLONG-real generalization-check cadence in executed rounds. This profile
 # runs it after every 2nd executed round plus once for the final incumbent. It
