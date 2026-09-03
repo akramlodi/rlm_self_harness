@@ -62,6 +62,7 @@ from shrlm.experiment.orchestrator import (
     ExperimentPersistenceError,
     IdentityMismatchError,
     MiningBudgetExceededError,
+    MiningDispatchStoppedError,
     check_identity,
     experiment_round_dir,
     resolve_env_binding,
@@ -92,6 +93,11 @@ from shrlm.optimization.proposal import _import_candidate_function
 from shrlm.optimization.validation import SPLIT_HELDIN, load_promotion_ledger
 from shrlm.rlm_harness import H0, H0_STAR
 from tests.mock_lm import MockLM
+from tests.optimization.run_worker_support import (
+    RUN_SCRIPTED_FACTORY,
+    observed_peak_concurrency,
+    write_script,
+)
 from tests.optimization.test_driver import ClientFactory, GoldVerifier, final
 
 # ---------------------------------------------------------------------------
@@ -279,6 +285,7 @@ def make_config(
     candidate_budget: float = 1.0,
     graphwalks_revision: str = "rev-gw",
     proposer_model: str = "proposer-test",
+    mining_run_workers: int = 1,
     validation_workers: int = 1,
     initial_harness: str | None = None,
 ) -> ExperimentConfig:
@@ -292,7 +299,9 @@ def make_config(
         proposer_model=proposer_model,
     ).replace(
         "eval_repetitions = 1\n",
-        f"eval_repetitions = 1\nvalidation_workers = {validation_workers}\n",
+        "eval_repetitions = 1\n"
+        f"mining_run_workers = {mining_run_workers}\n"
+        f"validation_workers = {validation_workers}\n",
         1,
     )
     if initial_harness is not None:
@@ -371,6 +380,17 @@ def patch_runner(monkeypatch: pytest.MonkeyPatch, script: list[str]) -> ClientFa
     factory = ClientFactory(script)
     monkeypatch.setattr(rlm_module, "get_client", factory)
     return factory
+
+
+def mining_client_factory(
+    tmp_path: Path, script: list[str], **extra: Any
+) -> tuple[str, dict[str, Any]]:
+    """A run-child factory spec under the orchestrator's reserved mining key."""
+    script_path = write_script(tmp_path / "scripts" / "mining.json", script)
+    return (
+        RUN_SCRIPTED_FACTORY,
+        {"mining": {"script_path": str(script_path), **extra}},
+    )
 
 
 def run(
@@ -809,6 +829,217 @@ class TestMiningSpendBreaker:
         assert "identity-protected" in message
         assert "FRESH out_dir" in message
         assert "lower the scale" in message
+
+
+# ---------------------------------------------------------------------------
+# Parallel mining inside the loop (parallel-mining U4)
+# ---------------------------------------------------------------------------
+
+
+class TestParallelMiningStage:
+    def test_two_workers_use_children_reach_two_live_runs_and_complete_the_round(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path / "config", mining_run_workers=2)
+        out = tmp_path / "exp"
+        witness = tmp_path / "witness"
+        # Mining runs in children. The parent script is therefore validation only.
+        parent = patch_runner(monkeypatch, SUBJECT_FAIL + SUBJECT_PASS)
+
+        result = run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))]),
+            loaders=LOADERS,
+            client_factory=mining_client_factory(
+                tmp_path,
+                [final("WRONG")],
+                witness_dir=str(witness),
+                hold=0.3,
+            ),
+        )
+
+        assert parent.total_calls == 8
+        assert observed_peak_concurrency(witness) == 2
+        assert [outcome.promoted for outcome in result.rounds] == [True]
+        manifest = mining_manifest(out, 1)
+        assert len(manifest) == 2
+        mining_path = mining_round_path(out, 1)
+        assert sorted(path.name for path in (mining_path / "run_workers").iterdir()) == sorted(
+            entry["run_id"] for entry in manifest
+        )
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/mining"]
+        assert usage.cost == pytest.approx(0.002)
+        assert usage.lower_bound is False
+
+    def test_one_worker_stays_in_process_and_creates_no_child_artifacts(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path / "config", mining_run_workers=1)
+        out = tmp_path / "exp"
+        parent = patch_runner(monkeypatch, MINING_FAIL)
+
+        run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders=LOADERS,
+            # If the worker-1 path consulted this child seam, it would crash.
+            client_factory=(RUN_SCRIPTED_FACTORY, {"mining": {"crash": True}}),
+        )
+
+        assert parent.total_calls == 2
+        assert not (mining_round_path(out, 1) / "run_workers").exists()
+
+    def test_workers_one_and_two_preserve_mining_evidence_and_proposal_prompt(
+        self, tmp_path, monkeypatch
+    ):
+        sequential_config = make_config(tmp_path / "seq-config", mining_run_workers=1)
+        parallel_config = make_config(tmp_path / "par-config", mining_run_workers=2)
+        sequential_out = tmp_path / "sequential"
+        parallel_out = tmp_path / "parallel"
+
+        patch_runner(monkeypatch, MINING_FAIL)
+        run_experiment(
+            sequential_config,
+            sequential_out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders=LOADERS,
+        )
+
+        parent = patch_runner(monkeypatch, [])
+        run_experiment(
+            parallel_config,
+            parallel_out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders=LOADERS,
+            client_factory=mining_client_factory(tmp_path, [final("WRONG")]),
+        )
+        assert parent.total_calls == 0
+
+        def outputs(out: Path) -> tuple[Any, Any, str]:
+            mining_path = mining_round_path(out, 1)
+            manifest = sorted(
+                (scrub_clock(entry) for entry in mining_manifest(out, 1)),
+                key=lambda entry: entry["run_id"],
+            )
+            records = [
+                scrub_clock(json.loads(line))
+                for line in (mining_path / RECORDS_FILENAME).read_text().splitlines()
+            ]
+            proposal_marker = json.loads(
+                (experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text()
+            )
+            return manifest, records, str(proposal_marker["prompt_sha256"])
+
+        sequential_outputs = outputs(sequential_out)
+        parallel_outputs = outputs(parallel_out)
+        assert parallel_outputs == sequential_outputs
+        assert [entry["run_id"] for entry in parallel_outputs[0]] == [
+            entry["run_id"] for entry in sequential_outputs[0]
+        ]
+        assert [(entry["passed"], entry["cause"]) for entry in parallel_outputs[0]] == [
+            (entry["passed"], entry["cause"]) for entry in sequential_outputs[0]
+        ]
+
+    def test_generated_code_incumbent_mines_in_children(self, tmp_path):
+        config = make_config(tmp_path / "config", mining_run_workers=2)
+        out = tmp_path / "exp"
+        middleware = _import_candidate_function(
+            S9_SOURCE, "redirect_empty", tmp_path / "generated", "S9"
+        )
+        promoted = replace(H0, name="r01-c01-s9", answer_middleware=middleware)
+        experiment = orchestrator_module._Experiment(
+            config=config,
+            out_dir=out,
+            verifier=GoldVerifier(),
+            sub_verifier=None,
+            attributor_lm=None,
+            proposer_lm=None,
+            loaders=LOADERS,
+            client_factory=mining_client_factory(tmp_path, [final("WRONG")]),
+        )
+        experiment.splits = orchestrator_module.ValidationSplits(
+            heldin=fake_loader("graphwalks")(
+                config, "short", config.splits.n_in, config.splits.seed
+            ),
+            heldout=fake_loader("graphwalks-heldout")(
+                config, "short", config.splits.n_ho, config.splits.seed
+            ),
+        )
+
+        experiment._mine_runs(out / "mining", 2, promoted)
+
+        manifest = load_manifest(out / "mining", 2)
+        assert len(manifest) == 2
+        assert (round_dir(out / "mining", 2) / "run_workers").is_dir()
+
+    def test_under_budget_reservation_stop_is_resumable_without_a_second_dispatch(
+        self, tmp_path, monkeypatch
+    ):
+        # One reservation is 2x max_budget. At exactly that budget the first
+        # child may run, but its realised spend leaves no room for the second.
+        config = make_config(tmp_path / "config", mining_run_workers=2, candidate_budget=0.02)
+        out = tmp_path / "exp"
+        parent = patch_runner(monkeypatch, [final("WRONG")])
+        dispatches = 0
+        real_dispatch = orchestrator_module.run_governed_round
+
+        def counted_dispatch(*args: Any, **kwargs: Any) -> Any:
+            nonlocal dispatches
+            dispatches += 1
+            return real_dispatch(*args, **kwargs)
+
+        monkeypatch.setattr(orchestrator_module, "run_governed_round", counted_dispatch)
+        with pytest.raises(MiningDispatchStoppedError) as excinfo:
+            run_experiment(
+                config,
+                out,
+                verifier=GoldVerifier(),
+                attributor_lm=MockLM(responses=[]),
+                proposer_lm=MockLM(responses=[]),
+                loaders=LOADERS,
+                client_factory=mining_client_factory(tmp_path, [final("WRONG")]),
+            )
+
+        assert dispatches == 1
+        assert parent.total_calls == 0
+        assert len(mining_manifest(out, 1)) == 1
+        message = str(excinfo.value)
+        assert "1 run(s)" in message
+        assert "mining_run_workers" in message
+        assert "resume" in message.lower()
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/mining"]
+        assert usage.cost == pytest.approx(0.001)
+
+    def test_actual_overspend_raises_even_when_every_run_completed(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path / "config", mining_run_workers=2, candidate_budget=0.04)
+        out = tmp_path / "exp"
+        parent = patch_runner(monkeypatch, [])
+
+        with pytest.raises(MiningBudgetExceededError):
+            run_experiment(
+                config,
+                out,
+                verifier=GoldVerifier(),
+                attributor_lm=MockLM(responses=[]),
+                proposer_lm=MockLM(responses=[]),
+                loaders=LOADERS,
+                client_factory=mining_client_factory(
+                    tmp_path, [final("WRONG")], cost_per_call=0.03
+                ),
+            )
+
+        assert parent.total_calls == 0
+        assert len(mining_manifest(out, 1)) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -225,6 +225,15 @@ in-process. Tests script the children through the request's test-only `client_fa
 
 ### `run_worker.py` — one run per child process, inside a subject
 
+The optimization loop also reuses this dispatcher for held-in mining when
+`operational.mining_run_workers > 1`; `1` keeps mining in the parent process. Mining children write
+only `mining/round_NN/run_workers/<run_id>/{request.json,run.log,result.json}` and their individual
+trace. The parent alone verifies results, appends `runs.jsonl`, and charges the round breaker. If
+the reservation gate leaves an under-budget tail, the loop raises `MiningDispatchStoppedError`:
+all completed work is resumable, and the remedy is to re-run the same output directory with a
+lower `mining_run_workers` value. It never starts a hidden sequential fallback. Actual cumulative
+overspend remains `MiningBudgetExceededError`, even when every dispatched run completed.
+
 Subject-level fan-out only helps when a round produces several candidates, and round 1 of both
 live experiments produced exactly one — so two subjects ran and most worker slots sat idle. The
 time that remains is all *inside* a subject: 256 runs at a mean of 83 s, about 5.9 h, executed one
@@ -323,4 +332,3 @@ RLMChatCompletion
   → cluster_failures() → FailurePattern[]  (ranked by support, then actionability)
   → build_evidence_bundle() → EvidenceBundle → round_NN/
 ```
-
