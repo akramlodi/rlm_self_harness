@@ -80,6 +80,7 @@ from shrlm.optimization.candidates import (
     changed_surfaces,
     import_surface_module,
 )
+from shrlm.optimization.driver import INSTANCES_FILE, canonical_manifest_entries
 from shrlm.optimization.skill_edit import (
     SKILLS_EDIT_FORMAT,
     SkillEditRejection,
@@ -1174,12 +1175,19 @@ def load_passing_behaviors(round_path: Path | str) -> list[dict[str, Any]]:
     Returns ``[]`` when the file is missing or every run failed (the
     committed example round is 0/8) -- the prompt renderer turns that into an
     explicit "nothing to preserve yet" line rather than an empty section.
+    Results follow persisted instance order, then attempt.
     """
-    path = Path(round_path) / "runs.jsonl"
-    if not path.exists():
+    round_path = Path(round_path)
+    manifest_path = round_path / "runs.jsonl"
+    if not manifest_path.exists():
         return []
-    runs = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    return [run for run in runs if run.get("passed")]
+    instances = [
+        json.loads(line)
+        for line in (round_path / INSTANCES_FILE).read_text().splitlines()
+        if line.strip()
+    ]
+    runs = [json.loads(line) for line in manifest_path.read_text().splitlines() if line.strip()]
+    return [run for run in canonical_manifest_entries(runs, instances) if run.get("passed")]
 
 
 def config_material(config: ProposerConfig, lm: BaseLM) -> dict[str, Any]:

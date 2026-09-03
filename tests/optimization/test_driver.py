@@ -808,6 +808,85 @@ class TestManifestBackwardCompatibility:
         assert all("input_tokens" not in entry for entry in entries)
 
 
+class TestCanonicalManifestReads:
+    def test_load_round_sorts_reversed_multi_attempt_manifest(self, tmp_path, monkeypatch):
+        instances = make_instances()[:2]
+        factory = ClientFactory([final("WRONG")] * 4)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, instances=instances, attempts=2)
+        run_round(config)
+        round_path = round_dir(config.out_dir, config.round_index)
+        persisted = read_manifest(round_path)
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in reversed(persisted))
+        )
+
+        runs, verdicts, _envelope, entries = load_round(config.out_dir, config.round_index)
+
+        expected_run_ids = [
+            run_id_for(str(instance["id"]), attempt) for instance in instances for attempt in (1, 2)
+        ]
+        assert [entry["run_id"] for entry in entries] == expected_run_ids
+        assert [str(instance["id"]) for instance, _completion in runs] == [
+            "inst-pass",
+            "inst-pass",
+            "inst-fail",
+            "inst-fail",
+        ]
+        assert len(verdicts) == 4
+
+    def test_reordered_manifest_produces_byte_identical_evidence(self, tmp_path, monkeypatch):
+        instances = make_instances()[:2]
+        factory = ClientFactory([final("WRONG")] * 4)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, instances=instances, attempts=2)
+        run_round(config)
+        round_path = round_dir(config.out_dir, config.round_index)
+        canonical_manifest = read_manifest(round_path)
+
+        def evidence_bytes(label: str) -> tuple[bytes, bytes, bytes]:
+            result = mine_round(
+                out_dir=config.out_dir,
+                round_index=config.round_index,
+                miner=make_miner(BoomVerifier()),
+                split_id="held_in_v1",
+                created_at="2026-09-02T00:00:00",
+            )
+            destination = tmp_path / label
+            write_bundle(
+                result.bundle,
+                result.records,
+                str(tmp_path),
+                raw_attributions=result.raw_attributions,
+                bundle_dir=str(destination),
+            )
+            return tuple(
+                (destination / name).read_bytes()
+                for name in ("bundle.json", "records.jsonl", "attributions.jsonl")
+            )
+
+        expected = evidence_bytes("canonical-evidence")
+        (round_path / "runs.jsonl").write_text(
+            "".join(
+                json.dumps(entry, sort_keys=True) + "\n" for entry in reversed(canonical_manifest)
+            )
+        )
+
+        assert evidence_bytes("reordered-evidence") == expected
+
+    def test_load_round_rejects_an_unknown_instance_id(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        round_path = round_dir(config.out_dir, config.round_index)
+        entries = read_manifest(round_path)
+        entries[0]["instance_id"] = "not-in-instances"
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries)
+        )
+
+        with pytest.raises(RoundPersistenceError, match="not-in-instances"):
+            load_round(config.out_dir, config.round_index)
+
+
 # ---------------------------------------------------------------------------
 # Round identity: harness.json and instances.jsonl
 # ---------------------------------------------------------------------------

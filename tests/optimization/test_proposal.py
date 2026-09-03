@@ -16,6 +16,7 @@ import pytest
 
 from shrlm.harness_identity import serialize_harness
 from shrlm.optimization.candidates import LoadedCandidate, changed_surfaces, load_candidates
+from shrlm.optimization.driver import RoundPersistenceError
 from shrlm.optimization.proposal import (
     SKILL_BODY_MAX_CHARS,
     SKILL_DESCRIPTION_MAX_CHARS,
@@ -427,13 +428,64 @@ def test_render_prompt_truncates_huge_verifier_evidence_but_never_the_pattern():
 
 
 def test_load_passing_behaviors_filters_passed(tmp_path):
+    instances = [{"id": "a"}, {"id": "b"}]
     runs = [
-        {"instance_id": "a", "passed": True},
-        {"instance_id": "b", "passed": False},
+        {"run_id": "b__a02", "instance_id": "b", "attempt": 2, "passed": True},
+        {"run_id": "b__a01", "instance_id": "b", "attempt": 1, "passed": False},
+        {"run_id": "a__a02", "instance_id": "a", "attempt": 2, "passed": True},
+        {"run_id": "a__a01", "instance_id": "a", "attempt": 1, "passed": True},
     ]
+    (tmp_path / "instances.jsonl").write_text(
+        "".join(json.dumps(instance) + "\n" for instance in instances)
+    )
     (tmp_path / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in runs) + "\n")
     result = load_passing_behaviors(tmp_path)
-    assert result == [{"instance_id": "a", "passed": True}]
+    assert [run["run_id"] for run in result] == ["a__a01", "a__a02", "b__a02"]
+
+
+def test_load_passing_behaviors_stabilizes_the_proposal_prompt_hash(tmp_path):
+    instances = [{"id": "a"}, {"id": "b"}]
+    runs = [
+        {"run_id": "a__a01", "instance_id": "a", "attempt": 1, "passed": True},
+        {"run_id": "a__a02", "instance_id": "a", "attempt": 2, "passed": True},
+        {"run_id": "b__a01", "instance_id": "b", "attempt": 1, "passed": True},
+        {"run_id": "b__a02", "instance_id": "b", "attempt": 2, "passed": True},
+    ]
+    (tmp_path / "instances.jsonl").write_text(
+        "".join(json.dumps(instance) + "\n" for instance in instances)
+    )
+
+    def proposed_hash(entries, label):
+        (tmp_path / "runs.jsonl").write_text("".join(json.dumps(run) + "\n" for run in entries))
+        result = propose_round(
+            BUNDLE,
+            H0,
+            MockLM(responses=[canned_batch(TEXT_ITEM)]),
+            tmp_path / label,
+            passing_behaviors=load_passing_behaviors(tmp_path),
+            workdir=tmp_path / f"{label}-work",
+        )
+        return result.prompt_sha256
+
+    assert proposed_hash(list(reversed(runs)), "reversed") == proposed_hash(runs, "canonical")
+
+
+def test_load_passing_behaviors_rejects_an_unknown_instance_id(tmp_path):
+    (tmp_path / "instances.jsonl").write_text(json.dumps({"id": "known"}) + "\n")
+    (tmp_path / "runs.jsonl").write_text(
+        json.dumps(
+            {
+                "run_id": "unknown__a01",
+                "instance_id": "unknown",
+                "attempt": 1,
+                "passed": True,
+            }
+        )
+        + "\n"
+    )
+
+    with pytest.raises(RoundPersistenceError, match="unknown"):
+        load_passing_behaviors(tmp_path)
 
 
 def test_load_passing_behaviors_missing_file_returns_empty(tmp_path):
