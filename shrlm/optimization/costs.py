@@ -601,29 +601,27 @@ def _adopt_orphan_traces(
 def _dispatch_runs_concurrently(
     config: RoundConfig,
     breaker: CandidateSpendBreaker,
-    round_path: Path,
+    path: Path,
+    entries: list[dict[str, Any]],
+    pending: list[tuple[dict[str, Any], int]],
 ) -> GovernedRoundResult:
     """Execute this round's pending runs in bounded, concurrent child processes.
 
-    The parent owns every byte that is shared within the split: it prepares the
-    round, writes the one surface module every child imports, verifies the
-    persisted traces once, and appends every manifest line itself on reap
-    (KTD4, KTD6). A child's only footprint is its own per-run directory.
+    The parent owns every byte that is shared within the split: it writes the
+    one surface module every child imports, verifies persisted traces once,
+    and appends every manifest line itself on reap (KTD4, KTD6). A child's
+    only footprint is its own per-run directory. Common preparation and orphan
+    adoption happen before this branch is selected.
 
     Dispatch order is the pending list's order -- instance-major, attempt-minor
     -- and the reservation gate below is the only thing that stops it, so a
     round that stops early stops on a contiguous tail, the same shape the
     sequential path produces (R7).
     """
-    path, existing, pending = prepare_round(config)
-    namespace = str(round_path)
-    for entry in existing:
-        breaker.charge(entry, namespace=namespace)
-
-    entries = list(existing)
     if not pending:
         return _governed_result(config, breaker, entries)
 
+    namespace = str(path)
     require_backend_credential(config)
 
     # One surface module, written once by the parent. Letting each child
@@ -633,18 +631,6 @@ def _dispatch_runs_concurrently(
     expected_hash = harness_hash(config.harness)
     module_path = path / f"run_module_{expected_hash[:16]}.py"
     write_surface_module(serialization, module_path)
-
-    orphaned = _live_run_children(path)
-    if orphaned:
-        # The split claim alone is not enough: it names the parent, and a
-        # crashed parent's children outlive it by up to one watchdog interval.
-        # Dispatching now would put two live children on the same run id,
-        # both spending, both writing the same trace path.
-        raise SplitClaimedError(
-            f"{path} still has {len(orphaned)} run worker(s) alive from an earlier "
-            f"invocation (pids {sorted(orphaned)}); they are still paying for runs this "
-            "round would repeat. Wait for them to exit, or terminate them, then re-run."
-        )
 
     reservation = _run_reservation(breaker.caps)
     if reservation > breaker.caps.candidate_budget:
@@ -658,16 +644,11 @@ def _dispatch_runs_concurrently(
             f"candidate_budget ${breaker.caps.candidate_budget:.6f} cannot reserve even one "
             f"concurrent run (reservation ${reservation:.6f} = {RUN_RESERVATION_FACTOR:g} x "
             f"max_budget ${breaker.caps.max_budget:.6f}). Raise candidate_budget, lower "
-            "max_budget, or set validation_run_workers=1 to run this subject sequentially."
+            "max_budget, or set the applicable run-worker setting to 1 to run this "
+            "subject sequentially."
         )
 
-    adopted, claimed = _adopt_orphan_traces(path, pending, config, breaker, namespace)
-    entries.extend(adopted)
-    queue = deque(
-        (instance, attempt)
-        for instance, attempt in pending
-        if run_id_for(str(instance["id"]), attempt) not in claimed
-    )
+    queue = deque(pending)
 
     limits = {
         name: getattr(config, name)
@@ -950,19 +931,43 @@ def _run_governed_round_claimed(
     config: RoundConfig, breaker: CandidateSpendBreaker, round_path: Path
 ) -> GovernedRoundResult:
     """``run_governed_round``'s body, with this split's claim already held."""
+    orphaned = _live_run_children(round_path)
+    if orphaned:
+        # The split claim names only the parent. A crashed parent's children
+        # can outlive it, so every execution branch must refuse them before
+        # prepare_round rewrites the execution sidecar or any run is repeated.
+        raise SplitClaimedError(
+            f"{round_path} still has {len(orphaned)} run worker(s) alive from an earlier "
+            f"invocation (pids {sorted(orphaned)}); they are still paying for runs this "
+            "round would repeat. Wait for them to exit, or terminate them, then re-run."
+        )
+
+    path, existing, pending = prepare_round(config)
+    namespace = str(path)
+    for entry in existing:
+        breaker.charge(entry, namespace=namespace)
+    adopted, claimed = _adopt_orphan_traces(path, pending, config, breaker, namespace)
+    entries = [*existing, *adopted]
+    pending = [
+        (instance, attempt)
+        for instance, attempt in pending
+        if run_id_for(str(instance["id"]), attempt) not in claimed
+    ]
+
     if config.run_workers > 1:
-        return _dispatch_runs_concurrently(config, breaker, round_path)
-    namespace = str(round_path)
+        return _dispatch_runs_concurrently(config, breaker, path, entries, pending)
+
     deadline = hard_deadline_seconds(config.max_timeout)
     # The stop_after=0 slice executes no runs but does build the harness when
     # runs are pending -- candidate code that can itself hang, hence the guard.
+    known = len(entries)
     entries = _run_slice(
         config,
         stop_after=0,
         deadline=deadline,
-        known=len(load_manifest(config.out_dir, config.round_index)),
+        known=known,
     )
-    for entry in entries:
+    for entry in entries[known:]:
         breaker.charge(entry, namespace=namespace)
 
     while not breaker.tripped:

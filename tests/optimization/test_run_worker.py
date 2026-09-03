@@ -203,6 +203,36 @@ class TestOrphanAdoption:
         # No child was dispatched for the adopted run at all.
         assert not child_dir.exists()
 
+    def test_a_parallel_orphan_resumed_sequentially_is_adopted_once(self, tmp_path, monkeypatch):
+        """Changing worker count must not turn an existing trace into another paid run."""
+        parallel = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
+        first = run_governed_round(parallel, CandidateSpendBreaker(CAPS))
+        round_path = round_dir(parallel.out_dir, parallel.round_index)
+        entries = read_manifest(round_path)
+        orphan = entries[0]
+        (round_path / "runs.jsonl").write_text(
+            "".join(
+                json.dumps(entry, sort_keys=True) + "\n"
+                for entry in entries
+                if entry["run_id"] != orphan["run_id"]
+            )
+        )
+        orphan_trace = trace_path_for(round_path, str(orphan["run_id"]))
+        trace_bytes_before = orphan_trace.read_bytes()
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        sequential = replace(parallel, run_workers=1)
+        breaker = CandidateSpendBreaker(CAPS)
+
+        resumed = run_governed_round(sequential, breaker)
+
+        assert idle.total_calls == 0
+        assert orphan_trace.read_bytes() == trace_bytes_before
+        assert [entry["run_id"] for entry in resumed.entries].count(orphan["run_id"]) == 1
+        assert resumed.spent == pytest.approx(first.spent)
+        assert breaker.spent == pytest.approx(first.spent)
+
 
 class TestBudget:
     def test_a_breaker_trip_leaves_a_contiguous_tail_and_reports_over_budget(self, tmp_path):
@@ -381,7 +411,8 @@ class TestMisconfiguredBudget:
             run_governed_round(config, CandidateSpendBreaker(caps))
 
         assert "cannot reserve even one concurrent run" in str(excinfo.value)
-        assert "validation_run_workers=1" in str(excinfo.value)
+        assert "run-worker setting to 1" in str(excinfo.value)
+        assert "validation_run_workers" not in str(excinfo.value)
 
     def test_the_sequential_path_accepts_that_same_budget(self, tmp_path, monkeypatch):
         """The reservation is a dispatch mechanism; sequential has no gate."""
@@ -416,6 +447,22 @@ class TestOrphanedChildrenBlockANewParent:
         assert "run worker(s) alive" in str(excinfo.value)
         assert str(os.getppid()) in str(excinfo.value)
 
+    def test_a_live_parallel_child_blocks_a_sequential_resume_before_sidecar_rewrite(
+        self, tmp_path
+    ):
+        parallel = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
+        run_governed_round(parallel, CandidateSpendBreaker(CAPS))
+        round_path = round_dir(parallel.out_dir, parallel.round_index)
+        sidecar = round_path / "execution.json"
+        sidecar_bytes = sidecar.read_bytes()
+        run_path = round_path / "run_workers" / run_id_for("inst-1", 1)
+        (run_path / "worker.pid").write_text(f"{os.getppid()}\n")
+
+        with pytest.raises(SplitClaimedError):
+            run_governed_round(replace(parallel, run_workers=1), CandidateSpendBreaker(CAPS))
+
+        assert sidecar.read_bytes() == sidecar_bytes
+
     def test_a_dead_pid_marker_does_not_block(self, tmp_path):
         config = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
         round_path = round_dir(config.out_dir, config.round_index)
@@ -427,6 +474,21 @@ class TestOrphanedChildrenBlockANewParent:
 
         assert result.outcome == OUTCOME_COMPLETED
         assert len(result.entries) == 3
+
+    def test_a_dead_parallel_child_does_not_block_a_sequential_resume(self, tmp_path, monkeypatch):
+        parallel = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
+        run_governed_round(parallel, CandidateSpendBreaker(CAPS))
+        round_path = round_dir(parallel.out_dir, parallel.round_index)
+        run_path = round_path / "run_workers" / run_id_for("inst-1", 1)
+        (run_path / "worker.pid").write_text("999999999\n")
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+
+        result = run_governed_round(replace(parallel, run_workers=1), CandidateSpendBreaker(CAPS))
+
+        assert result.outcome == OUTCOME_COMPLETED
+        assert len(result.entries) == 3
+        assert idle.total_calls == 0
 
     def test_a_completed_round_leaves_no_pid_markers_behind(self, tmp_path):
         config = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
