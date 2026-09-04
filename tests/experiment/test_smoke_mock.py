@@ -32,6 +32,7 @@ import json
 import shutil
 import socket
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -249,6 +250,10 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
 
     out_dir = tmp_path_factory.mktemp("smoke") / "exp"
     config = load_config("smoke")
+    config = replace(
+        config,
+        operational=replace(config.operational, mining_run_workers=1),
+    )
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setenv("OPENROUTER_API_KEY", OPENROUTER_KEY_SENTINEL)
         block_network(monkeypatch)
@@ -698,8 +703,6 @@ class TestLiveSmokeGuards:
 
     def test_the_ceiling_scales_with_the_round_count(self):
         """Every per-round breaker and per-round LM call is armed t times."""
-        from dataclasses import replace
-
         config = experiment_smoke.live_config()
         three_rounds = replace(config, loop=replace(config.loop, t=3))
 
@@ -791,4 +794,3 @@ class TestLiveSmokeGuards:
         # Only the configured backend's credentials are demanded.
         assert "AZURE_API_KEY" not in out
         assert "Nothing was spent" in out
-

@@ -233,6 +233,8 @@ the reservation gate leaves an under-budget tail, the loop raises `MiningDispatc
 all completed work is resumable, and the remedy is to re-run the same output directory with a
 lower `mining_run_workers` value. It never starts a hidden sequential fallback. Actual cumulative
 overspend remains `MiningBudgetExceededError`, even when every dispatched run completed.
+All shipped experiment configs start mining at five workers. If the provider returns 429s, reduce
+the setting to three and then one; one restores the sequential path.
 
 Subject-level fan-out only helps when a round produces several candidates, and round 1 of both
 live experiments produced exactly one — so two subjects ran and most worker slots sat idle. The

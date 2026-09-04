@@ -300,6 +300,10 @@ validation_workers = 5
 # stage; runs spent their whole max_timeout in 429 backoff). Identity-exempt.
 validation_run_workers = 1
 
+# Held-in mining runs fan out independently. Start at 5; if provider 429s
+# appear, reduce to 3, then 1.
+mining_run_workers = 5
+
 # OOLONG-real generalization-check cadence in executed rounds. This profile
 # runs it after every 2nd executed round plus once for the final incumbent. It
 # evaluates only the incumbent, is metered under stage "real_check", and NEVER

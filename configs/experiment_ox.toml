@@ -279,6 +279,10 @@ validation_workers = 5
 # supplies the pass-rate evidence that concurrency did not move the results.
 validation_run_workers = 4
 
+# Held-in mining runs fan out independently. Start at 5; if provider 429s
+# appear, reduce to 3, then 1.
+mining_run_workers = 5
+
 # OOLONG-real generalization-check cadence in executed rounds. 0 disables (default;
 # this profile's source env is GraphWalks). Never feeds the promotion gate;
 # identity-exempt like the worker counts.

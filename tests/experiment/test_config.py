@@ -232,13 +232,12 @@ def test_validation_run_workers_must_be_a_positive_integer(tmp_path: Path) -> No
         load_config(path=write_config(tmp_path, text))
 
 
-def test_mining_run_workers_defaults_to_one_and_is_identity_exempt() -> None:
-    config = load_config()
-    assert config.operational.mining_run_workers == 1
-    assert load_config("smoke").operational.mining_run_workers == 1
-    base = identity_hash(config)
-    wider = dataclasses.replace(config.operational, mining_run_workers=4)
-    assert identity_hash(dataclasses.replace(config, operational=wider)) == base
+def test_mining_run_workers_defaults_to_one_and_is_identity_exempt(tmp_path: Path) -> None:
+    configured = load_config()
+    text = shipped_text().replace("mining_run_workers = 5\n", "")
+    defaulted = load_config(path=write_config(tmp_path, text))
+    assert defaulted.operational.mining_run_workers == 1
+    assert identity_hash(defaulted) == identity_hash(configured)
 
 
 def test_mining_run_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
@@ -247,10 +246,7 @@ def test_mining_run_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
         dataclasses.replace(operational, mining_run_workers=0)
     with pytest.raises(ValueError, match="mining_run_workers"):
         dataclasses.replace(operational, mining_run_workers=cast(int, True))
-    text = shipped_text().replace(
-        "validation_run_workers = 1",
-        "validation_run_workers = 1\nmining_run_workers = 0",
-    )
+    text = shipped_text().replace("mining_run_workers = 5", "mining_run_workers = 0")
     with pytest.raises(ValueError, match="mining_run_workers"):
         load_config(path=write_config(tmp_path, text))
 
@@ -262,17 +258,17 @@ def test_smoke_may_override_mining_run_workers(tmp_path: Path) -> None:
     )
     path = write_config(tmp_path, text)
     assert load_config("smoke", path=path).operational.mining_run_workers == 2
-    assert load_config("full", path=path).operational.mining_run_workers == 1
+    assert load_config("full", path=path).operational.mining_run_workers == 5
     assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
 
 
+@pytest.mark.parametrize(
+    "path",
+    sorted(Path("configs").glob("experiment*.toml")),
+)
 @pytest.mark.parametrize("profile", ["full", "smoke"])
-def test_deepseek_profile_sets_mining_run_workers_to_three(profile: str) -> None:
-    config = load_config(
-        profile,
-        path=Path("configs/experiment_oolong_DeepSeekV4Flash.toml"),
-    )
-    assert config.operational.mining_run_workers == 3
+def test_shipped_profiles_set_mining_run_workers_to_five(path: Path, profile: str) -> None:
+    assert load_config(profile, path=path).operational.mining_run_workers == 5
 
 
 def test_smoke_may_override_validation_run_workers(tmp_path: Path) -> None:
