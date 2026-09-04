@@ -302,7 +302,11 @@ class IdentityMismatchError(ExperimentPersistenceError):
 
 
 class MiningBudgetExceededError(ExperimentError):
-    """The mining spend breaker tripped; partial state is persisted and resumable."""
+    """Mining's actual cumulative spend exceeded the candidate budget."""
+
+
+class MiningDispatchStoppedError(ExperimentError):
+    """Mining's reservation gate left a resumable tail without overspending."""
 
 
 @dataclass(frozen=True)
@@ -793,6 +797,12 @@ class _Experiment:
         kwargs = round_config_kwargs(self.config)
         for governed_key in GOVERNED_ROUND_KEYS:
             kwargs.pop(governed_key)
+        mining_client_factory: tuple[str, dict[str, Any]] | None = None
+        if self.client_factory is not None:
+            dotted, factory_args = self.client_factory
+            mining_args = factory_args.get(STAGE_MINING)
+            if mining_args is not None:
+                mining_client_factory = (dotted, dict(mining_args))
         mining_config = RoundConfig(
             round_index=round_index,
             harness=incumbent,
@@ -800,6 +810,8 @@ class _Experiment:
             verifier=self.verifier,
             out_dir=mining_parent,
             attempts=self.config.loop.m,
+            run_workers=self.config.operational.mining_run_workers,
+            client_factory=mining_client_factory,
             **kwargs,
             **limits,
         )
@@ -821,7 +833,10 @@ class _Experiment:
                 meter.add(
                     aggregate_manifest_usage(load_manifest(mining_parent, round_index)[known:])
                 )
-            if result.over_budget:
+            # Actual spend and reservation-gated skipped work are independent
+            # outcomes. In particular, the final in-flight children can all
+            # land and push spend over budget while leaving no skipped ids.
+            if breaker.tripped:
                 raise MiningBudgetExceededError(
                     f"round {round_index} mining tripped the cumulative spend breaker at "
                     f"{result.spent:.6f} USD against candidate_budget "
@@ -835,6 +850,16 @@ class _Experiment:
                     "(b) lower the scale (splits.n_in, loop.m, caps.max_budget) and run in a "
                     "fresh out_dir. A resumable per-round budget allocation is a documented "
                     "deferral -- see this module's docstring."
+                )
+            if result.skipped_run_ids:
+                raise MiningDispatchStoppedError(
+                    f"round {round_index} mining stopped at the reservation gate with "
+                    f"{len(result.skipped_run_ids)} run(s) left to resume after spending "
+                    f"{result.spent:.6f} USD of candidate_budget "
+                    f"{self.caps.candidate_budget:.6f}. Re-run this output directory with "
+                    "operational.mining_run_workers = 1; the sequential path has no "
+                    "reservation gate, every completed run is persisted, and no automatic "
+                    "sequential fallback was dispatched."
                 )
 
     def _evidence_bundle(
@@ -1042,9 +1067,7 @@ class _Experiment:
             return False
         return round_index % self.config.operational.real_check_every_n_rounds == 0
 
-    def _real_generalization_check(
-        self, round_index: int, tag: str, incumbent: Harness
-    ) -> None:
+    def _real_generalization_check(self, round_index: int, tag: str, incumbent: Harness) -> None:
         """Evaluate the current incumbent on the OOLONG-real check set.
 
         A generalization probe, deliberately outside the promotion machinery:
@@ -1068,9 +1091,7 @@ class _Experiment:
                 ROLE_REAL_CHECK,
             )
         except Exception as error:  # noqa: BLE001 -- isolation from the loop is the point
-            sys.stderr.write(
-                f"OOLONG-real check skipped for {tag}: no check split ({error})\n"
-            )
+            sys.stderr.write(f"OOLONG-real check skipped for {tag}: no check split ({error})\n")
             return
 
         verifier = OolongVerifier(task_set="real")
@@ -1449,9 +1470,10 @@ def run_experiment(
             (``operational.validation_workers > 1``) spawns. Defaults to the
             ``GraphWalksVerifier`` path when ``verifier`` is the default; an
             injected verifier needs it whenever workers exceed 1.
-        client_factory: Test-only seam for those children: a dotted path plus
-            per-subject-id args the child installs on ``rlm.core.rlm.get_client``
-            (see ``shrlm.optimization.subject_worker``).
+        client_factory: Test-only seam for run children: a dotted path plus an
+            argument mapping. ``"mining"`` is reserved for mining children;
+            validation uses the existing per-subject-id entries. Each child
+            installs its selected args on ``rlm.core.rlm.get_client``.
 
     Returns:
         The ``ExperimentResult`` with every round's outcome and the frozen
@@ -1462,6 +1484,9 @@ def run_experiment(
             experiment's persisted one -- raised before any run executes.
         MiningBudgetExceededError: The mining spend breaker tripped; partial
             state is persisted and the invocation refuses to continue.
+        MiningDispatchStoppedError: Parallel mining's reservation gate left
+            an under-budget tail; completed state is persisted for a resume
+            with fewer workers.
         ExperimentPersistenceError: Persisted state contradicts itself or the
             configuration.
     """
@@ -1506,6 +1531,7 @@ __all__ = [
     "ExperimentResult",
     "IdentityMismatchError",
     "MiningBudgetExceededError",
+    "MiningDispatchStoppedError",
     "RoundOutcome",
     "check_identity",
     "experiment_round_dir",

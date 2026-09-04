@@ -124,6 +124,7 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
         "caps.max_timeout",
         "caps.candidate_budget",
         "operational.eval_repetitions",
+        "operational.mining_run_workers",
         "operational.validation_workers",
         "operational.validation_run_workers",
         "operational.real_check_every_n_rounds",
@@ -441,12 +442,17 @@ class OperationalConfig:
     so raising both at once raises the request rate by their product. Prefer
     run-level fan-out: it yields a two-level process tree and keeps each
     subject's breaker charging in a strict order.
+
+    ``mining_run_workers`` independently controls run-level fan-out during
+    mining. Like the validation worker counts, it changes wall clock and peak
+    request rate without changing experiment identity.
     """
 
     loader_timeout_seconds: float
     attribution_cache_path: str
     proposal_cache_path: str
     eval_repetitions: int
+    mining_run_workers: int = 1
     validation_workers: int = 1
     validation_run_workers: int = 1
     # How often (in executed rounds) the OOLONG-real generalization check runs
@@ -459,6 +465,7 @@ class OperationalConfig:
 
     def __post_init__(self) -> None:
         _require_positive_int("operational.eval_repetitions", self.eval_repetitions)
+        _require_positive_int("operational.mining_run_workers", self.mining_run_workers)
         _require_positive_int("operational.validation_workers", self.validation_workers)
         _require_positive_int("operational.validation_run_workers", self.validation_run_workers)
         if isinstance(self.real_check_every_n_rounds, bool) or not isinstance(

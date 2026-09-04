@@ -63,6 +63,7 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -397,6 +398,29 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
         entries.append(entry)
     _reject_mixed_accounting(manifest_path, entries)
     return entries
+
+
+def canonical_manifest_entries(
+    entries: Sequence[dict[str, Any]], instances: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Order manifest entries by persisted instance position, then attempt."""
+    instance_positions = {
+        str(instance["id"]): position for position, instance in enumerate(instances)
+    }
+    for entry in entries:
+        instance_id = str(entry["instance_id"])
+        if instance_id not in instance_positions:
+            raise RoundPersistenceError(
+                f"manifest run {entry['run_id']!r} references instance {instance_id!r}, "
+                f"which {INSTANCES_FILE} does not contain"
+            )
+    return sorted(
+        entries,
+        key=lambda entry: (
+            instance_positions[str(entry["instance_id"])],
+            int(entry["attempt"]),
+        ),
+    )
 
 
 def _accounting_version_of(entry: dict[str, Any]) -> str:
@@ -1009,27 +1033,23 @@ def load_round(
     verdicts, the harness envelope, and the aligned manifest entries (the
     source of each run's run_id / trace_path / trace_sha256). Every trace is
     sha-verified before it is trusted, so mining cannot silently consume a
-    modified file."""
+    modified file. Results follow persisted instance order, then attempt,
+    regardless of manifest append order."""
     path = round_dir(out_dir, round_index)
     envelope = json.loads((path / HARNESS_FILE).read_text())
-    instances = {
-        str(instance["id"]): instance
+    ordered_instances = [
+        json.loads(line)
         for line in (path / INSTANCES_FILE).read_text().splitlines()
         if line.strip()
-        for instance in [json.loads(line)]
-    }
+    ]
+    instances = {str(instance["id"]): instance for instance in ordered_instances}
 
     runs: list[tuple[dict[str, Any], RLMChatCompletion]] = []
     verdicts: list[Verdict] = []
     entries: list[dict[str, Any]] = []
-    for entry in _load_manifest(path):
+    for entry in canonical_manifest_entries(_load_manifest(path), ordered_instances):
         trace_path = _verify_trace(path, entry)
         instance_id = str(entry["instance_id"])
-        if instance_id not in instances:
-            raise RoundPersistenceError(
-                f"manifest run {entry['run_id']!r} references instance {instance_id!r}, "
-                f"which {INSTANCES_FILE} does not contain"
-            )
         completion = RLMChatCompletion.from_dict(json.loads(trace_path.read_text()))
         runs.append((instances[instance_id], completion))
         verdicts.append(Verdict.from_dict(entry["verdict"]))
@@ -1178,6 +1198,7 @@ __all__ = [
     "ROOT_LIMIT_EXCEPTIONS",
     "RoundConfig",
     "RoundPersistenceError",
+    "canonical_manifest_entries",
     "instance_lines",
     "load_manifest",
     "load_round",

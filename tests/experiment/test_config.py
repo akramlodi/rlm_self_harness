@@ -232,6 +232,45 @@ def test_validation_run_workers_must_be_a_positive_integer(tmp_path: Path) -> No
         load_config(path=write_config(tmp_path, text))
 
 
+def test_mining_run_workers_defaults_to_one_and_is_identity_exempt(tmp_path: Path) -> None:
+    configured = load_config()
+    text = shipped_text().replace("mining_run_workers = 5\n", "")
+    defaulted = load_config(path=write_config(tmp_path, text))
+    assert defaulted.operational.mining_run_workers == 1
+    assert identity_hash(defaulted) == identity_hash(configured)
+
+
+def test_mining_run_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
+    operational = load_config().operational
+    with pytest.raises(ValueError, match="mining_run_workers"):
+        dataclasses.replace(operational, mining_run_workers=0)
+    with pytest.raises(ValueError, match="mining_run_workers"):
+        dataclasses.replace(operational, mining_run_workers=cast(int, True))
+    text = shipped_text().replace("mining_run_workers = 5", "mining_run_workers = 0")
+    with pytest.raises(ValueError, match="mining_run_workers"):
+        load_config(path=write_config(tmp_path, text))
+
+
+def test_smoke_may_override_mining_run_workers(tmp_path: Path) -> None:
+    text = shipped_text().replace(
+        "[smoke.operational]\neval_repetitions = 1",
+        "[smoke.operational]\neval_repetitions = 1\nmining_run_workers = 2",
+    )
+    path = write_config(tmp_path, text)
+    assert load_config("smoke", path=path).operational.mining_run_workers == 2
+    assert load_config("full", path=path).operational.mining_run_workers == 5
+    assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted(Path("configs").glob("experiment*.toml")),
+)
+@pytest.mark.parametrize("profile", ["full", "smoke"])
+def test_shipped_profiles_set_mining_run_workers_to_five(path: Path, profile: str) -> None:
+    assert load_config(profile, path=path).operational.mining_run_workers == 5
+
+
 def test_smoke_may_override_validation_run_workers(tmp_path: Path) -> None:
     text = shipped_text().replace(
         "[smoke.operational]\neval_repetitions = 1",
@@ -849,6 +888,7 @@ def test_round_config_kwargs_accepted_by_round_config(tmp_path: Path) -> None:
     assert round_config.max_budget == 0.5
     assert round_config.max_timeout == 300.0
     assert round_config.backend_kwargs["model_name"] == config.backends.runner.model
+    assert "mining_run_workers" not in round_config_kwargs(config)
 
 
 def test_evaluation_config_kwargs_accepted_by_evaluation_config(tmp_path: Path) -> None:
