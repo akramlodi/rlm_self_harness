@@ -1,15 +1,13 @@
 # =============================================================================
-# configs/experiment_oolong.toml -- the OOLONG profile of the Self-Harness
-# experiment. Identical machinery to configs/experiment.toml; the loop mines
-# and validates OOLONG-synth instead of GraphWalks ([loop] environment =
-# "oolong_synth"), and OOLONG-real is run every N rounds as a generalization
-# check that never feeds the promotion gate.
+# configs/experiment_oolong_pairs_DeepSeekV4Flash.toml -- the OOLONG-Pairs
+# profile of the Self-Harness experiment. The loop mines and validates the
+# finite 8k OOLONG-Pairs pool; the independent 262k pool remains test-only.
 #
 # Run separately from GraphWalks -- its own --out-dir, its own identity:
 #   uv run python examples/run_experiment.py \
-#       --config configs/experiment_oolong.toml --out-dir ./experiment_oolong
+#       --config configs/experiment_oolong_pairs_DeepSeekV4Flash.toml --out-dir ./experiment_oolong_pairs_dsv4f
 #
-# Load with load_config(profile="full" | "smoke", path=".../experiment_oolong.toml").
+# Load with load_config(profile="full" | "smoke", path=".../experiment_oolong_pairs_DeepSeekV4Flash.toml").
 # =============================================================================
 
 [decoding]
@@ -22,26 +20,27 @@ top_p = 0.95
 max_output_tokens = 8192
 
 [splits]
-# OOLONG-synth split definitions. The held_in / held_out / test sets are a
-# seeded partition of ONE length-diverse pool (see [environments.oolong.synth]
-# context_lengths), so both mined and validated instances span the "solvable
-# without decomposing" and "aggregation breaks down" regimes.
-n_in = 10 # 24 # held-in: weakness mining + one arm of validation
-n_ho = 10 # 40 # held-out: validation only, never mined
-test_short = 10 # 40 # OOLONG-synth internal test, untouched until the harness is frozen
-test_long = 0 # unused when environment = "oolong_synth" (no separate long split); kept: [splits] key is mandatory
-seed = 0 # seeded partition of the OOLONG-synth pool
+# The pinned trec_coarse validation split has 2 distinct windows at each
+# selected length. With 20 pair tasks per window, that is exactly 40 usable
+# instances at 8k and 40 at 262k. Partition all 40 short instances disjointly
+# for optimization and its untouched test; reserve all 40 long instances for
+# frozen-harness evaluation.
+n_in = 10 # held-in: weakness mining + one arm of validation
+n_ho = 10 # held-out: validation only, never mined
+test_short = 20 # untouched short test; 10 + 10 + 20 exhausts the 40-instance pool
+test_long = 40 # untouched long test; exhausts its independent 40-instance pool
+seed = 0 # seeded partition of the OOLONG-Pairs pools
 
 [loop]
 # Optimization-loop counts, section 3.2.
 m = 2 # mining repetitions per held-in instance
 v = 3 # validation repetitions per instance per subject
 k = 4 # candidate edits proposed per round
-# Set to 3 for the 2026-08-23 Qwen comparison run (was 15, section 3.2). t is
-# an identity key (R3), so extending the run later needs a fresh out-dir.
+# Restored to the preregistered 15-round ceiling for this separate pair-task
+# identity. Changing it later requires a fresh out-dir (R3).
 t = 15 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
-environment = "oolong_synth" # this profile mines/validates OOLONG-synth (identity key)
+environment = "oolong_pairs" # this profile mines/validates OOLONG-Pairs (identity key)
 # Start from the shipped reference prompt plus the orchestrator addendum, so
 # the harness-comparison machinery (H0 / H0*) works unmodified for OOLONG too.
 initial_harness = "H0*R"
@@ -78,20 +77,21 @@ max_iterations = 30
 # max_budget; S6 may set a lower depth but may not exceed this cap.
 max_depth = 3
 # The one hard cost guarantee: the spend breaker terminates any run that
-# exceeds this, so total exposure is bounded by total_runs x max_budget
-# regardless of what the optimization loop does -- 24,270 x $0.50 = $12,135.
-# Raised from 0.1 alongside the Kimi-K2.5 switch (2026-08-23): output tokens
-# now cost ~10x the old Qwen rate, so the old cap risked censoring long runs
-# -- a cap that censors long runs defeats the KTD6 measurement it protects.
-# Prior OpenRouter smoke measurements put the mean run at $0.0024-$0.0134.
+# exceeds this, so run exposure is bounded by total_runs x max_budget.
+# With every round promoting, this profile schedules at most 6,240 runs:
+# 15 x (20 mining + 300 validation + 60 merge) + 540 final evaluation.
+# At $2/run, the corresponding run-stage ceiling is $12,480.
+# Keep enough headroom for long DeepSeek runs: a cap that censors them defeats
+# the KTD6 measurement it is intended to protect.
 max_budget = 2.0 # USD per run
 max_timeout = 3600.0 # seconds per run
 # Applies to EVERY validation subject, the baseline included: an over-budget
 # baseline makes the round unscorable (promotion.assess_round raises). The
 # 2026-08-29 H0* run spent $59.54 on the baseline at max_budget = 1.0 and lost
 # the round to the $2 dispatch reservation; the H0*R run averaged ~$0.30/run.
-# 192 validation runs x ~$0.30 = ~$58 nominal plus per-run-ceiling charges for
-# crashed children, so 100 leaves real headroom. Identity key (R3).
+# One subject uses 3 x (10 + 10) = 60 validation runs, or ~$18 nominal at
+# $0.30/run, plus per-run-ceiling charges for crashed children; 100 leaves
+# real headroom. Identity key (R3).
 candidate_budget = 100.0 # USD across all of one subject's runs
 
 [environments.graphwalks]
@@ -105,7 +105,7 @@ min_chars = 0 # inclusive lower bound on prompt_chars
 problem_types = ["bfs", "parents"]
 
 [environments.oolong_pairs]
-# Target environment, held out from optimization in its entirety, section 3.1.
+# Selected environment. The short pool is partitioned for optimization; long is test-only.
 dataset_repo = "oolongbench/oolong-synth"
 subset = "trec_coarse"
 dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-12
@@ -113,19 +113,19 @@ task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 2
 context_length_short = 8192 # tokens; 32x pairing per section 3.10 row 4
 context_length_long = 262144
 max_scan = 50000 # cap on raw dataset rows streamed while collecting windows
-n_short = 40 # target-short test size
-n_long = 40 # target-long test size; the upstream ceiling, not a choice:
+n_short = 40 # hard short-pool ceiling at the pinned revision
+n_long = 40 # hard long-pool ceiling at the pinned revision, not a choice:
 # the trec_coarse validation split ships only 2 distinct context windows per
 # context length, and the loader pairs each window with the 20 task_ids above,
-# so 2 x 20 = 40 is every instance that exists at 262,144. A larger value fails
-# the coverage gate in load_oolong_pairs before any spend.
+# so 2 x 20 = 40 is every instance at either selected length. A larger value
+# fails the coverage gate in load_oolong_pairs before any spend.
 
 [environments.oolong]
 # OOLONG (arXiv:2511.02817). `synth` is the mining/validation pool when
 # [loop] environment = "oolong_synth"; `real` is a periodic generalization
 # check that is run but NEVER fed into the promotion gate (cadence:
 # [operational] real_check_every_n_rounds). Both sub-tables are inert when
-# environment = "graphwalks" -- present so the schema is uniform.
+# this environment is not selected -- present so the schema is uniform.
 
 [environments.oolong.synth]
 dataset_repo = "oolongbench/oolong-synth"
@@ -172,16 +172,8 @@ allow_fallbacks = true
 [backends.azure_foundry]
 # Provider table for azure_foundry-backed roles. All three roles select
 # azure_foundry in this config, so the loader requires this table and its
-# value is live. thinking = true leaves the request unmodified,
-# so Kimi-K2.5 runs in its default thinking mode -- the model as its card
-# intends it, which is what the paper measures. Suppressing reasoning would
-# ablate core model functionality to save money and make the measurement a
-# study of a crippled configuration; the budget is the knob for cost, not this.
-#
-# Cost consequence, measured against this deployment 2026-08-25 on a trivial
-# 6-edge prompt: 1,242 completion tokens with thinking vs 174 with
-# reasoning_effort="none" (~7x). Reasoning tokens bill at the output rate, so
-# caps.max_budget and decoding.max_output_tokens must be sized for it.
+# value is live. thinking = true leaves the DeepSeek request unmodified so the
+# experiment measures the deployment's default reasoning behavior.
 #
 # Do NOT set this to false against Azure: the false branch emits
 # extra_body["chat_template_kwargs"], which the Foundry /openai/v1 route
@@ -190,11 +182,10 @@ allow_fallbacks = true
 thinking = true
 
 [pricing.promo]
-# Azure AI Foundry pay-as-you-go rate for Kimi-K2.5 (Global Standard), USD per
-# 1M tokens (catalog + aggregators, 2026-08). Azure has a single tier, so promo
-# deliberately equals list. Azure returns no per-response cost: the client
-# SYNTHESIZES cost from token counts x list_price, so these numbers arm the
-# spend breaker -- verify them in the portal before any live spend.
+# DeepSeek-V4-Flash deployment rates used by the completed calibration, USD per
+# 1M tokens. Promo deliberately equals list. Azure returns no per-response
+# cost: the client SYNTHESIZES cost from token counts x list_price, so these
+# numbers arm the spend breaker -- verify them in the portal before live spend.
 input_per_million = 0.19
 output_per_million = 0.51
 
@@ -249,8 +240,8 @@ eval_conditions = 3 # B1, H1, SH-RLM: the full-experiment evaluation grid (secti
 
 [operational]
 loader_timeout_seconds = 120.0
-attribution_cache_path = ".cache/shrlm/attribution_oolong.jsonl"
-proposal_cache_path = ".cache/shrlm/proposals_oolong.jsonl"
+attribution_cache_path = ".cache/shrlm/attribution_oolong_pairs.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_oolong_pairs.jsonl"
 eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
 validation_workers = 5
 
@@ -292,13 +283,9 @@ validation_run_workers = 1
 # appear, reduce to 3, then 1.
 mining_run_workers = 5
 
-# OOLONG-real generalization-check cadence in executed rounds. This profile
-# runs it after every 2nd executed round plus once for the final incumbent. It
-# evaluates only the incumbent, is metered under stage "real_check", and NEVER
-# feeds tau_regression/tau_improvement or the promotion ledger -- real
-# transcripts are less cleanly decomposable and would add a second uncontrolled
-# noise source on top of the gate's known sensitivity. Identity-exempt.
-real_check_every_n_rounds = 2
+# OOLONG-real is unrelated to the selected pair-task pool and stays disabled.
+# Identity-exempt.
+real_check_every_n_rounds = 0
 
 
 # -----------------------------------------------------------------------------
@@ -327,9 +314,6 @@ candidate_budget = 3.0
 eval_repetitions = 1
 real_check_every_n_rounds = 0 # smoke never spends on the OOLONG-real check
 
-[smoke.environments.oolong_pairs]
-n_short = 4
-n_long = 2
 
 [smoke.environments.oolong.synth]
 max_scan = 2000

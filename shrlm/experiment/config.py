@@ -192,8 +192,8 @@ class LoopConfig:
     t: int
     patience: int
     initial_harness: str = "H0"
-    # Which environment the loop mines and validates: ``graphwalks`` (default,
-    # unchanged) or ``oolong_synth``. Identity key like the counts -- which
+    # Which environment the loop mines and validates: ``graphwalks`` (default),
+    # ``oolong_synth``, or ``oolong_pairs``. Identity key like the counts -- which
     # environment round 1 mines decides every run that lands on disk -- so a run
     # against a different environment gets a distinct experiment identity and
     # its own out-dir. ``load_config`` validates it before any spend.
@@ -248,7 +248,7 @@ class GraphWalksConfig:
 
 @dataclass(frozen=True)
 class OolongPairsConfig:
-    """Target environment: tasks, context lengths, and test-set sizes."""
+    """Pair-task environment: tasks, context lengths, and pool-size ceilings."""
 
     dataset_repo: str
     subset: str
@@ -555,15 +555,14 @@ def _validate_initial_harness(loop: LoopConfig) -> LoopConfig:
     return loop
 
 
-SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_synth")
+SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_pairs", "oolong_synth")
 
 
 def _validate_environment(loop: LoopConfig) -> LoopConfig:
     """Reject a ``[loop] environment`` the orchestrator cannot mine/validate.
 
-    ``graphwalks`` (default) and ``oolong_synth`` are the two environments the
-    optimization loop supports as its mined/validated pool; ``oolong_pairs`` and
-    the OOLONG-real check are evaluation-only and never named here.
+    ``graphwalks``, ``oolong_pairs``, and ``oolong_synth`` are supported as the
+    mined/validated pool. The OOLONG-real check remains evaluation-only.
     """
     if loop.environment not in SELECTABLE_ENVIRONMENTS:
         raise ValueError(

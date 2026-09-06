@@ -394,3 +394,59 @@ class TestOolongSynthEnvironment:
         assert not (splits_dir / split_file_name("graphwalks", "short", "held_in")).exists()
         manifest = json.loads((splits_dir / MANIFEST_FILE).read_text())
         assert set(manifest["environments"]) == {"oolong_synth", "oolong_real"}
+
+
+class TestOolongPairsEnvironment:
+    def test_split_plan_partitions_the_finite_short_pool_and_keeps_long_for_test(self, config):
+        pairs_config = replace(
+            config,
+            loop=replace(config.loop, environment="oolong_pairs"),
+            splits=replace(config.splits, n_in=15, n_ho=15, test_short=10, test_long=40),
+        )
+
+        assert split_plan(pairs_config) == {
+            "oolong_pairs": {
+                "short": {"held_in": 15, "held_out": 15, "test": 10},
+                "long": {"test": 40},
+            }
+        }
+
+    def test_split_plan_rejects_counts_above_the_pinned_inventory(self, config):
+        short_overflow = replace(
+            config,
+            loop=replace(config.loop, environment="oolong_pairs"),
+            splits=replace(config.splits, n_in=15, n_ho=15, test_short=11, test_long=41),
+        )
+
+        with pytest.raises(ValueError, match=r"short roles require 41.*pool to 40"):
+            split_plan(short_overflow)
+
+        long_overflow = replace(
+            short_overflow,
+            splits=replace(short_overflow.splits, test_short=10),
+        )
+        with pytest.raises(ValueError, match=r"long test requires 41.*pool to 40"):
+            split_plan(long_overflow)
+
+    def test_materializes_only_the_selected_pair_pools(self, tmp_path):
+        config = load_config(
+            "full", path=Path("configs/experiment_oolong_pairs_DeepSeekV4Flash.toml")
+        )
+
+        splits_dir = materialize_splits(
+            config,
+            tmp_path,
+            loaders={
+                "oolong_pairs": lambda cfg, length, limit, seed: make_fake_instances(length, limit)
+            },
+        )
+
+        expected_counts = {
+            "oolong_pairs_short_held_in.jsonl": 10,
+            "oolong_pairs_short_held_out.jsonl": 10,
+            "oolong_pairs_short_test.jsonl": 20,
+            "oolong_pairs_long_test.jsonl": 40,
+        }
+        manifest = json.loads((splits_dir / MANIFEST_FILE).read_text())
+        files = manifest["environments"]["oolong_pairs"]["files"]
+        assert {name: details["count"] for name, details in files.items()} == expected_counts

@@ -172,12 +172,13 @@ def test_environment_selector_defaults_to_graphwalks_and_is_identity_covered(
 ) -> None:
     config = load_config()
     assert config.loop.environment == "graphwalks"
-    switched = dataclasses.replace(config.loop, environment="oolong_synth")
-    assert identity_hash(dataclasses.replace(config, loop=switched)) != identity_hash(config)
+    for environment in ("oolong_synth", "oolong_pairs"):
+        switched = dataclasses.replace(config.loop, environment=environment)
+        assert identity_hash(dataclasses.replace(config, loop=switched)) != identity_hash(config)
 
 
 def test_unknown_environment_selector_is_rejected(tmp_path: Path) -> None:
-    text = shipped_text().replace('environment = "graphwalks"', 'environment = "oolong_pairs"')
+    text = shipped_text().replace('environment = "graphwalks"', 'environment = "bogus"')
     with pytest.raises(ValueError, match=r"\[loop\] environment must be one of"):
         load_config(path=write_config(tmp_path, text))
 
@@ -447,6 +448,7 @@ class TestReasoningEffort:
         "configs/experiment_kimiK25.toml",
         "configs/experiment_ox.toml",
         "configs/experiment_oolong.toml",
+        "configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
         "configs/experiment_oolong_gptoss.toml",
     ],
 )
@@ -456,6 +458,18 @@ def test_every_shipped_config_loads_under_the_current_schema(
 ) -> None:
     config = load_config(profile, path=Path(config_path))
     assert len(identity_hash(config)) == 64
+
+
+def test_deepseek_oolong_pairs_config_uses_the_complete_finite_inventory() -> None:
+    config = load_config("full", path=Path("configs/experiment_oolong_pairs_DeepSeekV4Flash.toml"))
+
+    assert config.loop.environment == "oolong_pairs"
+    assert (config.splits.n_in, config.splits.n_ho, config.splits.test_short) == (10, 10, 20)
+    assert config.splits.test_long == 40
+    assert config.splits.n_in + config.splits.n_ho + config.splits.test_short == 40
+    assert config.environments.oolong_pairs.n_short == 40
+    assert config.environments.oolong_pairs.n_long == 40
+    assert config.operational.real_check_every_n_rounds == 0
 
 
 # ---------------------------------------------------------------------------
