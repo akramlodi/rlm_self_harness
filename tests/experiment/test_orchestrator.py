@@ -28,6 +28,7 @@ import shrlm.experiment.analysis_io as analysis_io_module
 import shrlm.experiment.incumbent_quality as incumbent_quality_module
 import shrlm.experiment.orchestrator as orchestrator_module
 from shrlm.environments.oolong import OolongSubVerifier, OolongVerifier
+from shrlm.environments.oolong_pairs import OolongPairsVerifier
 from shrlm.experiment.analysis_io import (
     ANALYSIS_DIR,
     PROVENANCE_FILENAME,
@@ -52,6 +53,7 @@ from shrlm.experiment.orchestrator import (
     EVIDENCE_MARKER_FILENAME,
     FROZEN_DIR,
     FROZEN_HARNESS_FILENAME,
+    OOLONG_PAIRS_VERIFIER_FACTORY,
     OOLONG_SYNTH_VERIFIER_FACTORY,
     POST_ROUND_BATCH_TOOL,
     PROPOSALS_MARKER_FILENAME,
@@ -1908,6 +1910,36 @@ class TestOolongEnvironment:
         assert isinstance(binding.verifier, OolongVerifier) and binding.verifier.task_set == "synth"
         assert isinstance(binding.sub_verifier, OolongSubVerifier)
         assert binding.verifier_factory == OOLONG_SYNTH_VERIFIER_FACTORY
+
+    def test_resolve_env_binding_selects_oolong_pairs(self, tmp_path):
+        config = make_config(tmp_path)
+        config = replace(config, loop=replace(config.loop, environment="oolong_pairs"))
+
+        binding = resolve_env_binding(config)
+
+        assert (binding.name, binding.length) == ("oolong_pairs", "short")
+        assert isinstance(binding.verifier, OolongPairsVerifier)
+        assert binding.sub_verifier is None
+        assert binding.verifier_factory == OOLONG_PAIRS_VERIFIER_FACTORY
+
+    def test_parallel_oolong_pairs_validation_resolves_the_default_factory(self, tmp_path):
+        config = load_config(
+            "full", path=Path("configs/experiment_oolong_pairs_DeepSeekV4Flash.toml")
+        )
+        binding = resolve_env_binding(config)
+
+        experiment = orchestrator_module._Experiment(
+            config=config,
+            out_dir=tmp_path / "exp",
+            verifier=binding.verifier,
+            sub_verifier=binding.sub_verifier,
+            attributor_lm=None,
+            proposer_lm=None,
+            loaders=None,
+        )
+
+        assert config.operational.validation_workers > 1
+        assert experiment.verifier_factory == OOLONG_PAIRS_VERIFIER_FACTORY
 
     def test_offline_round_mines_and_validates_oolong_synth_only(self, tmp_path, monkeypatch):
         config = _oolong_config(tmp_path, real_check=0, t=1)

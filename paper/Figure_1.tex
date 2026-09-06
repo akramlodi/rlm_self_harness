@@ -1,80 +1,93 @@
-% Figure 1: the initial harness H0 and its nine editable surfaces.
+% Figure 1: the initial harness H0 and its ten editable surfaces.
 % Body only; the `harness' listing style, its colours, and \hzero live in the
 % preamble of proposal.tex, matching how Figure_2.tex relies on the tikz styling
 % defined there.
 \begin{figure}[!tbp]
-\centering
-\begin{lstlisting}[style=harness]
-# shrlm/rlm_harness.py: the nine surfaces Self-Harness may edit (S1 to S9).
-
-MINIMAL_REPL_CONTRACT = """
-You are a Recursive Language Model (RLM): a language model whose prompt-related
-information lives in a Python REPL that you drive turn by turn.
-Available in the REPL:
-- `context`: the information related to the prompt (`str` or `list[str]`).
-- `llm_query(prompt, model=None) -> str`; `llm_query_batched(prompts, ...)`.
-- `rlm_query(...)` / `rlm_query_batched(...)`: recursive RLM sub-calls.
-- `SHOW_VARS() -> str`: list every variable currently in the REPL.
-- `answer`: dict {"content": "", "ready": False}; set both to submit.
-{custom_tools_section}
-Write code in ```repl``` blocks, one per turn; the REPL persists. Only
-`print(...)` output is shown back. Outputs over ~20K characters are truncated.
-"""
-
-def build_repl_contract() -> str:                                    # S1
-    return MINIMAL_REPL_CONTRACT
-
-def build_decomposition_instruction() -> str:                        # S2
-    return ("Start by probing `context` to understand what you have, "
-            "then decide how the task breaks into steps.")
-
-def build_execution_instruction() -> str:                            # S3
-    return ("On each turn, run one block of code, print what you need "
-            "to see, and build the result up in REPL variables.")
-
-def build_verification_instruction() -> str:                         # S4
-    return 'Check your answer before setting `answer["ready"] = True`.'
-
-def build_recovery_instruction() -> str:                             # S5
-    return ("If a sub-call errors or returns something you cannot use, "
-            "adjust the approach and try again.")
-
-def build_runtime_policy() -> dict[str, Any]:                        # S6
-    return {
-        "enabled": False,
-        "max_prompt_chars": None,
-        "max_batch_width": None,
-        "max_depth": None,
-        "retry_on_syntax_error": None,
-        "max_retries": None,
-        "validate_sub_output": None,
-    }
-
-def build_metadata(                                                  # S7
-    stdout: str,
-    repl_inventory: dict[str, tuple[str, int]],
-    max_character_length: int = DEFAULT_MAX_CHARACTER_LENGTH,
-) -> str:
-    return default_metadata_builder(stdout, repl_inventory,
-                                    max_character_length)
-
-def build_repl_helpers() -> dict[str, Any]:                          # S8
-    return {}
-
-def build_sub_repl_helpers() -> dict[str, Any]:                      # S8
-    return {}
-
-def build_answer_middleware() -> AnswerMiddlewareFn:                 # S9
-    return accept_answer
-\end{lstlisting}
-\caption{Initial harness \hzero{} and the editable interface used as the starting
-point for \sh{}: nine declared surfaces, one builder function each, keyed to phases
-of the \rlm{} turn loop. The harness is intentionally kept sparse, with seven of the
-nine returning nothing, a disabled policy, or a single generic line, so that the
-orchestration strategy a tuned harness carries is something the optimization loop
-must recover from its own execution traces. \sid{S6}, \sid{S7} and \sid{S9} required
-a runtime injection point in the reference implementation of \citet{zhang2025rlm};
-the rest are reached through its existing prompt and tool configuration. A proposal
-modifies exactly one surface.}
-\label{fig:edit-surfaces}
-\end{figure}
+    \centering
+    \begin{lstlisting}[style=harness]
+    # shrlm/rlm_harness.py: the ten surfaces Self-Harness may edit (S1 to S10).
+    
+    # Condensed for visibility; the full literal appears in the appendix.
+    MINIMAL_REPL_CONTRACT = """
+    You are an RLM operating through a persistent Python REPL.
+    Use `context`, flat or recursive LM calls, `SHOW_VARS()`, and `answer`.
+    Execute one ```repl``` block per turn; print inspections and mark the
+    answer ready only when complete. [Display-only condensation.]
+    """
+    
+    def build_repl_contract() -> str:                                    # S1
+        return MINIMAL_REPL_CONTRACT
+    
+    def build_decomposition_instruction() -> str:                        # S2
+        return ("Start by probing `context` to understand what you have, "
+                "then decide how the task breaks into steps.")
+    
+    def build_execution_instruction() -> str:                            # S3
+        return ("On each turn, run one block of code, print what you need "
+                "to see, and build the result up in REPL variables.")
+    
+    def build_verification_instruction() -> str:                         # S4
+        return 'Check your candidate answer before setting `answer["ready"] = True`.'
+    
+    def build_recovery_instruction() -> str:                             # S5
+        return ("If a sub-call errors or returns something you cannot use, "
+                "adjust the approach and try again.")
+    
+    def build_runtime_policy() -> dict[str, Any]:                        # S6
+        return {
+            "enabled": False,
+            "max_prompt_chars": None,
+            "max_batch_width": None,
+            "max_depth": None,
+            "retry_on_syntax_error": None,
+            "max_retries": None,
+            "validate_sub_output": None,
+        }
+    
+    def build_metadata(                                                  # S7
+        stdout: str,
+        repl_inventory: dict[str, tuple[str, int]],
+        max_character_length: int = DEFAULT_MAX_CHARACTER_LENGTH,
+    ) -> str:
+        return default_metadata_builder(stdout, repl_inventory,
+                                        max_character_length)
+    build_metadata.declared_bound = DEFAULT_MAX_CHARACTER_LENGTH        # S7
+    
+    def build_repl_helpers() -> dict[str, Any]:                          # S8
+        return {}
+    
+    def build_sub_repl_helpers() -> dict[str, Any]:                      # S8
+        return {}
+    
+    def build_answer_middleware() -> AnswerMiddlewareFn:                 # S9
+        return accept_answer
+    
+    @dataclass(frozen=True)
+    class SkillEntry:                                                    # S10
+        name: str          # REPL-safe identifier; index label
+        description: str   # one line: when to consult it; enters the prompt
+        body: str          # ordered steps; served verbatim by `load_skill(name)`
+    
+    def build_skills() -> list[SkillEntry]:                              # S10
+        return []
+    \end{lstlisting}
+    \caption{Initial harness \hzero{}, the starting point for \sh{}: ten declared
+    surfaces, one builder function each, keyed to phases of the \rlm{} turn loop.
+    Eight of the ten return nothing, a disabled policy, or a single generic line, so
+    the orchestration strategy a tuned harness carries must be recovered by the
+    optimization loop from its own execution traces. The \sid{S1} contract is
+    condensed here only to keep the complete interface visible on one page;
+    \cref{fig:full-repl-contract} reproduces the exact initial prompt. \sid{S10} is the skill library:
+    named procedures, each a \texttt{name}, a one-line \texttt{description} of when to
+    consult it, and a \texttt{body} of ordered steps. Only the name/description index
+    enters the system prompt, after \sid{S5}; a body is returned verbatim by
+    \texttt{load\_skill(name)}, which the runner installs in the root and child REPLs
+    when the list is non-empty, so a procedure costs tokens only on the turn that loads
+    it. At most eight entries; \hzero{} carries none. \sid{S6}, \sid{S7} and \sid{S9}
+    required a runtime injection point in the reference implementation of
+    \citet{zhang2025rlm}; \sid{S10} adds one hook to record skill loads in the trace;
+    the rest use its existing prompt and tool configuration. A proposal modifies
+    exactly one surface.}
+    \label{fig:edit-surfaces}
+    \end{figure}
+    

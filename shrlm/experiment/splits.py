@@ -140,7 +140,9 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
     The plan holds only the environments a run actually uses:
     ``loop.environment == "graphwalks"`` (the default) materializes GraphWalks
     (the mined/validated source) plus OOLONG-Pairs (evaluation-only), exactly as
-    before; ``"oolong_synth"`` materializes the OOLONG-synth pool and -- when
+    before; ``"oolong_pairs"`` partitions its finite short pool for optimization
+    and keeps its long pool test-only; ``"oolong_synth"`` materializes the
+    OOLONG-synth pool and -- when
     ``operational.real_check_every_n_rounds > 0`` -- the OOLONG-real check set,
     and nothing else. ``materialize_splits`` skips any registered loader absent
     from the plan, so an OOLONG run never touches the GraphWalks dataset.
@@ -177,6 +179,31 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "short": {"check": config.environments.oolong.real.n_check},
             }
         return plan
+    if config.loop.environment == "oolong_pairs":
+        oolong_pairs = config.environments.oolong_pairs
+        short_total = splits.n_in + splits.n_ho + splits.test_short
+        if short_total > oolong_pairs.n_short:
+            raise ValueError(
+                "oolong_pairs short roles require "
+                f"{short_total} instances, but environments.oolong_pairs.n_short "
+                f"limits the pinned pool to {oolong_pairs.n_short}"
+            )
+        if splits.test_long > oolong_pairs.n_long:
+            raise ValueError(
+                "oolong_pairs long test requires "
+                f"{splits.test_long} instances, but environments.oolong_pairs.n_long "
+                f"limits the pinned pool to {oolong_pairs.n_long}"
+            )
+        return {
+            "oolong_pairs": {
+                "short": {
+                    "held_in": splits.n_in,
+                    "held_out": splits.n_ho,
+                    "test": splits.test_short,
+                },
+                "long": {"test": splits.test_long},
+            }
+        }
     raise ValueError(f"unsupported loop.environment {config.loop.environment!r} in split_plan")
 
 

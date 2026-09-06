@@ -118,6 +118,7 @@ from shrlm.environments.oolong import (
     OolongVerifier,
     continuous_score,
 )
+from shrlm.environments.oolong_pairs import OolongPairsVerifier
 from shrlm.experiment.config import (
     GOVERNED_ROUND_KEYS,
     ExperimentConfig,
@@ -217,7 +218,7 @@ INITIAL_INCUMBENT = "H0"
 
 # The optimization loop mines and validates one environment's held-in/held-out
 # splits. Which environment (and its verifier pair) is ``config.loop.environment``
-# -- ``graphwalks`` (default) or ``oolong_synth`` -- resolved by
+# -- ``graphwalks`` (default), ``oolong_pairs``, or ``oolong_synth`` -- resolved by
 # ``resolve_env_binding``. The length label is ``short`` for both (OOLONG-synth's
 # held-in/held-out/test partition is one length-diverse pool, not a short/long
 # pair).
@@ -247,6 +248,7 @@ STAGE_REAL_CHECK = "real_check"
 
 # The verifier dotted paths handed to validation subject workers, per environment.
 GRAPHWALKS_VERIFIER_FACTORY = "shrlm.environments.graphwalks:GraphWalksVerifier"
+OOLONG_PAIRS_VERIFIER_FACTORY = "shrlm.environments.oolong_pairs:OolongPairsVerifier"
 OOLONG_SYNTH_VERIFIER_FACTORY = "shrlm.environments.oolong:make_synth_verifier"
 
 
@@ -289,6 +291,14 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
             verifier=OolongVerifier(task_set="synth"),
             sub_verifier=OolongSubVerifier(),
             verifier_factory=OOLONG_SYNTH_VERIFIER_FACTORY,
+        )
+    if environment == "oolong_pairs":
+        return EnvBinding(
+            name="oolong_pairs",
+            length=SPLIT_LENGTH,
+            verifier=OolongPairsVerifier(),
+            sub_verifier=None,
+            verifier_factory=OOLONG_PAIRS_VERIFIER_FACTORY,
         )
     raise ValueError(f"resolve_env_binding: unsupported loop.environment {environment!r}")
 
@@ -633,6 +643,8 @@ class _Experiment:
             return None
         if type(self.verifier) is GraphWalksVerifier:
             return GRAPHWALKS_VERIFIER_FACTORY
+        if type(self.verifier) is OolongPairsVerifier:
+            return OOLONG_PAIRS_VERIFIER_FACTORY
         if isinstance(self.verifier, OolongVerifier) and self.verifier.task_set == "synth":
             return OOLONG_SYNTH_VERIFIER_FACTORY
         raise ValueError(
@@ -1494,7 +1506,8 @@ def run_experiment(
     # selected environment's default for one, it gets that environment's default
     # for the other (``resolve_env_binding`` keyed on ``config.loop.environment``
     # -- GraphWalksVerifier/GraphWalksSubVerifier for "graphwalks",
-    # OolongVerifier/OolongSubVerifier for "oolong_synth"). experiment_kimi ran
+    # OolongVerifier/OolongSubVerifier for "oolong_synth", or
+    # OolongPairsVerifier/no sub-verifier for "oolong_pairs"). experiment_kimi ran
     # with neither passed and therefore no grounding at all (bundle config
     # sub_verifier_enabled=False). The ablation is still one call away -- pass
     # the environment's verifier with sub_verifier=None.
@@ -1532,6 +1545,7 @@ __all__ = [
     "IdentityMismatchError",
     "MiningBudgetExceededError",
     "MiningDispatchStoppedError",
+    "OOLONG_PAIRS_VERIFIER_FACTORY",
     "RoundOutcome",
     "check_identity",
     "experiment_round_dir",
