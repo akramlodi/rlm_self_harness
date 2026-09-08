@@ -1,0 +1,26 @@
+{
+  "environments": {
+    "mrcrv2": {
+      "files": {
+        "mrcrv2_long_test.jsonl": {
+          "count": 2,
+          "sha256": "d3dbfbffafe254dc8b045b6aac63675fef8b532fd51ee67efd40c2eec849cc4f"
+        },
+        "mrcrv2_short_held_in.jsonl": {
+          "count": 3,
+          "sha256": "0ac28c2bf3d2f0d51acda6bc102107b672209e0fb9b9507d72d590d3ebb643c9"
+        },
+        "mrcrv2_short_held_out.jsonl": {
+          "count": 3,
+          "sha256": "408d8377cd33dd8c310a903b8a9acab5aedbcaec297653268bc9058593b7ca18"
+        },
+        "mrcrv2_short_test.jsonl": {
+          "count": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "revision": "mrcrv2-v1"
+    }
+  },
+  "sample_seed": 0
+}

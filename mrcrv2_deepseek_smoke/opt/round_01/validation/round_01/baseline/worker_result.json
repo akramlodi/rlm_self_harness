@@ -1,0 +1,6 @@
+{
+  "format": "shrlm-subject-worker-result/v1",
+  "ok": true,
+  "subject_id": "baseline",
+  "summary_path": "mrcrv2_deepseek_smoke/opt/round_01/validation/round_01/baseline/summary.json"
+}

@@ -19,10 +19,8 @@
 # =============================================================================
 
 [decoding]
-# Kimi-K2.5 model-card defaults, identical to configs/experiment_kimiK25.toml
-# -- see that file's comments for the rationale (thinking mode, unset top_k/
-# min_p, max_output_tokens sized for reasoning-token spend).
-temperature = 0.6
+# DeepSeek-V4-Flash settings, matching the dedicated DeepSeek profile.
+temperature = 0
 top_p = 0.95
 max_output_tokens = 8192
 
@@ -124,39 +122,41 @@ long_target_tokens = 2000000
 long_n_needles = 8
 chars_per_token = 4.0 # approximation used to size the synthetic conversation; no tokenizer dependency
 
-# All three roles run azure_foundry / Kimi-K2.5 in its default thinking mode.
-# To switch to the OpenRouter Qwen3-30B-A3B-Instruct-2507 comparison backbone,
-# edit these three role tables plus [decoding] and [pricing].
+# All three roles run azure_foundry / DeepSeek-V4-Flash in its default thinking
+# mode. The model name must equal your Azure AI Foundry deployment name.
 
 [backends.runner]
 backend = "azure_foundry"
-model = "Kimi-K2.5" # must equal YOUR Foundry deployment name (catalog default: Kimi-K2.5)
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
 
 [backends.attributor]
 backend = "azure_foundry"
-model = "Kimi-K2.5"
+model = "DeepSeek-V4-Flash"
 
 [backends.proposer]
 backend = "azure_foundry"
-model = "Kimi-K2.5"
+model = "DeepSeek-V4-Flash"
 
 [backends.openrouter]
 provider_order = []
 allow_fallbacks = true
 
 [backends.azure_foundry]
-# See configs/experiment_kimiK25.toml for the full rationale (thinking=true
-# is required against Azure; do not set false, the route rejects the resulting
-# chat_template_kwargs).
+# thinking=true leaves the DeepSeek request unmodified so the deployment's
+# default reasoning behavior is measured. Do not set this to false against
+# Azure; the route rejects the resulting chat_template_kwargs.
 thinking = true
 
 [pricing.promo]
-input_per_million = 0.60
-output_per_million = 3.00
+# DeepSeek-V4-Flash deployment rates, USD per 1M tokens. Verify these against
+# the rates for your Azure deployment before live spend.
+input_per_million = 0.19
+output_per_million = 0.51
 
 [pricing.list_price]
-input_per_million = 0.60
-output_per_million = 3.00
+# The cost synthesizer and spend breaker use this table.
+input_per_million = 0.19
+output_per_million = 0.51
 
 [[gpu_scenarios]]
 name = "h100_sxm_rented"

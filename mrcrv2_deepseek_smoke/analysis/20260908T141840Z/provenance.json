@@ -1,0 +1,82 @@
+{
+  "analysis_revision": "9145523a66ece3336de9ebab9c05b58243653ddd",
+  "created_at": "2026-09-08T14:18:40.415107+00:00",
+  "eval_sets": [],
+  "format": "shrlm-analysis-provenance/v1",
+  "identity_hash": "cc396a1268d7bf0d495eb7915150d7c01fca8492dfded148db7754db5ec07b06",
+  "identity_source": "config",
+  "legacy_derived": false,
+  "rounds": [
+    1
+  ],
+  "sources": [
+    {
+      "kind": "file",
+      "path": "config.json",
+      "sha256": "0430857f7a1c009a5c0ffc6bf3e887b620650e665309d109aaa33c339126ac71"
+    },
+    {
+      "kind": "file",
+      "path": "configs/experiment.toml",
+      "sha256": "66ff2104b2d42e28d4d90d320301a50b1431da57f31e5f6a277f5e2478c7d11b"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/mining/round_01/bundle.json",
+      "sha256": "d3e47245dbddc59a8c7a3416abddb2624201f603da7fccaec434b8598082bd52"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/mining/round_01/evidence_complete.json",
+      "sha256": "19a26d15fe378b354017f46489762105536a45f0e2028f05aa1f2e86d8e1c255"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/mining/round_01/instances.jsonl",
+      "sha256": "0ac28c2bf3d2f0d51acda6bc102107b672209e0fb9b9507d72d590d3ebb643c9"
+    },
+    {
+      "kind": "directory",
+      "n_files": 3,
+      "path": "opt/round_01/mining/round_01/runs",
+      "sha256": "77a97e60d58251a100b78a4ab97a018443a1cc77f60d304e3cec144a050194cb"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/mining/round_01/runs.jsonl",
+      "sha256": "e1aa4e6f307103ba961eb84051332f8f6e0d94e863c99c44c1e7bc5b6bdfc08a"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/round.json",
+      "sha256": "c279e31268a5d0685266b41025cf2df9cd5ef248bfbb1bd64981adb20d5a468b"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/validation/round_01/decision.json",
+      "sha256": "deaf34169d1ed57a5b47407c556752c4b99026309264230e8cd4f320dc8d4980"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/validation/round_01/promotions.jsonl",
+      "sha256": "a4ee85866ce8bd2299de9cebc5fa9104b0e2fda406f7710d4ecfcd83f4121639"
+    }
+  ],
+  "tools": [
+    {
+      "error": null,
+      "name": "collapse_and_attribution_optimization",
+      "ok": true
+    },
+    {
+      "error": null,
+      "name": "incumbent_quality",
+      "ok": true
+    },
+    {
+      "error": null,
+      "name": "surface_activity",
+      "ok": true
+    }
+  ]
+}
