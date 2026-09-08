@@ -1,0 +1,11 @@
+{
+  "candidate_ids": [
+    "r01-c01-s2",
+    "r01-c02-s4"
+  ],
+  "format": "shrlm-proposals-complete/v1",
+  "n_materialization_failures": 0,
+  "prompt_sha256": "1967d28315a75aada80fb2421e8968d18a11c6cb9c0b7b3aaa435d28e9a06bd6",
+  "round": 1,
+  "skipped_patterns": []
+}

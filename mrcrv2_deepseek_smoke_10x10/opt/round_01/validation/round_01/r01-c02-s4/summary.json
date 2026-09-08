@@ -1,0 +1,49 @@
+{
+  "accounting_version": "shrlm-accounting/v2",
+  "format": "shrlm-validation-summary/v1",
+  "harness_hash": "58d26841921e33f24eabe80a624a77c04d0f07138e495795c59fc7dba5138c91",
+  "outcome": "completed",
+  "repetitions": 1,
+  "spent": 0.08762815999999998,
+  "splits": {
+    "heldin": {
+      "accounting_version": "shrlm-accounting/v2",
+      "harness_hash": "58d26841921e33f24eabe80a624a77c04d0f07138e495795c59fc7dba5138c91",
+      "mean_cost": 0.005918877999999999,
+      "mean_skill_loads": 0.0,
+      "mean_sub_calls": 0.3,
+      "n_instances": 10,
+      "n_resource_terminated": 0,
+      "n_runs": 10,
+      "outcome": "completed",
+      "pass_count": 10,
+      "pass_rate": 1.0,
+      "round_path": "heldin/round_00",
+      "run_workers": 3,
+      "skipped_run_ids": [],
+      "total_cost": 0.05918877999999999,
+      "total_skill_loads": 0,
+      "total_sub_calls": 3
+    },
+    "heldout": {
+      "accounting_version": "shrlm-accounting/v2",
+      "harness_hash": "58d26841921e33f24eabe80a624a77c04d0f07138e495795c59fc7dba5138c91",
+      "mean_cost": 0.002843938,
+      "mean_skill_loads": 0.0,
+      "mean_sub_calls": 0.0,
+      "n_instances": 10,
+      "n_resource_terminated": 0,
+      "n_runs": 10,
+      "outcome": "completed",
+      "pass_count": 8,
+      "pass_rate": 0.8,
+      "round_path": "heldout/round_00",
+      "run_workers": 3,
+      "skipped_run_ids": [],
+      "total_cost": 0.028439379999999997,
+      "total_skill_loads": 0,
+      "total_sub_calls": 0
+    }
+  },
+  "subject_id": "r01-c02-s4"
+}

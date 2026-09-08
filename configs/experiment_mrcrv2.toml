@@ -219,8 +219,8 @@ real_check_every_n_rounds = 0
 # -----------------------------------------------------------------------------
 
 [smoke.splits]
-n_in = 3
-n_ho = 3
+n_in = 10
+n_ho = 10
 test_short = 0
 test_long = 2
 

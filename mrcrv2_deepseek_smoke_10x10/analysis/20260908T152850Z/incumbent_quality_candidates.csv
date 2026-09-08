@@ -1,0 +1,3 @@
+round_index,subject_id,decision,surface,surface_source,heldin_pass_rate,heldout_pass_rate
+1,r01-c01-s2,rejected,S2,ledger,0.8,0.8
+1,r01-c02-s4,rejected,S4,ledger,1.0,0.8
