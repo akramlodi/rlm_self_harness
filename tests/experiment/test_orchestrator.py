@@ -92,7 +92,7 @@ from shrlm.optimization.bundle import (
 from shrlm.optimization.candidates import materialize_harness
 from shrlm.optimization.driver import TRACES_DIR, load_manifest
 from shrlm.optimization.proposal import _import_candidate_function
-from shrlm.optimization.validation import SPLIT_HELDIN, load_promotion_ledger
+from shrlm.optimization.validation import SPLIT_HELDOUT, load_promotion_ledger
 from shrlm.rlm_harness import H0, H0_STAR
 from tests.mock_lm import MockLM
 from tests.optimization.run_worker_support import (
@@ -374,8 +374,8 @@ MERGE_TEXT = "Cover every input chunk and verify before answering. [merge]"
 # mining is 2 runs, each evaluated subject is (2 + 2) * 1 = 4 runs.
 MINING_FAIL = [final("WRONG"), final("WRONG")]
 MINING_FAIL_V2 = [final("WRONG-2"), final("WRONG-2")]
-SUBJECT_FAIL = [final("WRONG")] * 4
-SUBJECT_PASS = [final("RIGHT")] * 4
+SUBJECT_FAIL = [final("WRONG")] * 2
+SUBJECT_PASS = [final("RIGHT")] * 2
 
 
 def patch_runner(monkeypatch: pytest.MonkeyPatch, script: list[str]) -> ClientFactory:
@@ -456,7 +456,7 @@ class TestFullExperiment:
         out = tmp_path / "exp"
         result, factory = self.run_two_promoted_rounds(config, out, monkeypatch)
 
-        assert factory.total_calls == 20  # (2 + 4 + 4) per round, nothing re-run
+        assert factory.total_calls == 12  # (2 + 4 + 4) per round, nothing re-run
         assert result.stopped == STOP_MAX_ROUNDS
         assert [outcome.promoted for outcome in result.rounds] == [True, True]
 
@@ -554,7 +554,7 @@ class TestPatience:
 
         assert result.stopped == STOP_PATIENCE
         assert [outcome.promoted for outcome in result.rounds] == [False, False]
-        assert factory.total_calls == 20  # two rounds ran, the third never started
+        assert factory.total_calls == 12  # two rounds ran, the third never started
         assert not experiment_round_dir(out, 3).exists()
         assert frozen_envelope(out)["hash"] == harness_hash(H0)
 
@@ -601,7 +601,7 @@ class TestResumeMidMining:
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
         result = run(config, out, attributor, proposer)
 
-        assert resumed.total_calls == 9  # 1 mining + 8 validation, run 1 never re-ran
+        assert resumed.total_calls == 5  # 1 mining + 8 validation, run 1 never re-ran
         entries = mining_manifest(out, 1)
         assert [entry["run_id"] for entry in entries] == [
             "graphwalks-short-0__a01",
@@ -667,7 +667,7 @@ class TestResumeAfterBundle:
         result = run(config, out, second_attributor, proposer)
 
         assert second_attributor._call_count == 0  # bundle.json read back, never re-mined
-        assert resumed.total_calls == 8  # validation only
+        assert resumed.total_calls == 4  # validation only
         marker = json.loads((round_path / PROPOSALS_MARKER_FILENAME).read_text())
         assert marker["candidate_ids"] == ["r01-c01-s4"]
         assert result.rounds[0].promoted
@@ -702,7 +702,7 @@ class TestResumeAfterBundle:
         resealed = json.loads((round_path / PROPOSALS_MARKER_FILENAME).read_text())
         assert resealed["candidate_ids"] == sealed["candidate_ids"]
         assert resealed["prompt_sha256"] == sealed["prompt_sha256"]
-        assert resumed.total_calls == 8
+        assert resumed.total_calls == 4
         assert result.rounds[0].promoted
 
 
@@ -717,9 +717,7 @@ class TestMergedPromotion:
             monkeypatch,
             MINING_FAIL  # two failures with distinct mechanisms -> two patterns
             + SUBJECT_FAIL  # baseline
-            + SUBJECT_PASS  # candidate 1
-            + SUBJECT_PASS  # candidate 2
-            + SUBJECT_PASS,  # merged re-evaluation
+            + SUBJECT_PASS,  # combined candidate
         )
         attributor = MockLM(
             responses=[attribution("incomplete_coverage"), attribution("skipped_verification")]
@@ -734,7 +732,7 @@ class TestMergedPromotion:
         out = tmp_path / "exp"
         result, factory = self.run_merged_round(config, out, monkeypatch)
 
-        assert factory.total_calls == 18  # 2 mining + 4 subjects x 4 runs
+        assert factory.total_calls == 6  # 2 mining + 4 subjects x 4 runs
         assert result.rounds[0].promoted
         _, decision = load_promotion_ledger(validation_round_path(out, 1))
         assert decision["promoted_subject_id"] == "merged"
@@ -863,7 +861,7 @@ class TestParallelMiningStage:
             ),
         )
 
-        assert parent.total_calls == 8
+        assert parent.total_calls == 4
         assert observed_peak_concurrency(witness) == 2
         assert [outcome.promoted for outcome in result.rounds] == [True]
         manifest = mining_manifest(out, 1)
@@ -1141,7 +1139,7 @@ class TestEvidenceCrashWindow:
         result = run(config, out, replay_attributor, proposer)
 
         assert replay_attributor._call_count == 0  # attributions replay from the cache
-        assert resumed.total_calls == 8  # validation only: mining runs stay persisted
+        assert resumed.total_calls == 4  # validation only: mining runs stay persisted
         assert len(read_jsonl(mining_round / RECORDS_FILENAME)) == 2
         assert len(read_jsonl(mining_round / ATTRIBUTIONS_FILENAME)) == 2
         marker = json.loads((mining_round / EVIDENCE_MARKER_FILENAME).read_text())
@@ -1214,7 +1212,6 @@ class TestParallelValidationStage:
     ):
         from shrlm.experiment.orchestrator import _validation_usage
         from tests.optimization.test_validation import (
-            GOLD_VERIFIER_FACTORY,
             parallel_client_factory,
         )
 
@@ -1236,7 +1233,7 @@ class TestParallelValidationStage:
             attributor_lm=attributor,
             proposer_lm=proposer,
             loaders=LOADERS,
-            verifier_factory=GOLD_VERIFIER_FACTORY,
+            verifier_factory="tests.optimization.test_driver:GoldVerifier",
             client_factory=client_factory,
         )
 
@@ -1247,7 +1244,7 @@ class TestParallelValidationStage:
 
         usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
         persisted = _validation_usage(validation_round_path(out, 1))
-        assert usage.input_tokens == persisted.input_tokens == 80  # 8 runs x 10 tokens
+        assert usage.input_tokens == persisted.input_tokens == 40  # 8 runs x 10 tokens
         assert usage.cost == persisted.cost
         assert usage.lower_bound is False
 
@@ -1257,7 +1254,6 @@ class TestParallelValidationStage:
         from shrlm.experiment.orchestrator import _validation_usage
         from shrlm.optimization.subject_worker import SubjectWorkerError
         from tests.optimization.test_validation import (
-            GOLD_VERIFIER_FACTORY,
             parallel_client_factory,
         )
 
@@ -1277,13 +1273,13 @@ class TestParallelValidationStage:
                 attributor_lm=attributor,
                 proposer_lm=proposer,
                 loaders=LOADERS,
-                verifier_factory=GOLD_VERIFIER_FACTORY,
+                verifier_factory="tests.optimization.test_driver:GoldVerifier",
                 client_factory=(factory_path, args),
             )
 
         usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
         persisted = _validation_usage(validation_round_path(out, 1))
-        assert usage.input_tokens == persisted.input_tokens == 40  # the baseline's 4 runs
+        assert usage.input_tokens == persisted.input_tokens == 20  # the baseline's 4 runs
         assert usage.lower_bound is True
 
     def test_injected_verifier_without_a_factory_is_refused_before_any_write(
@@ -1402,7 +1398,7 @@ class TestContradictoryPersistedState:
         records, _ = load_promotion_ledger(validation_path)
         promoted = [record for record in records if record["decision"] == "promoted"]
         envelope_path = validation_path / str(
-            promoted[0]["links"]["splits"][SPLIT_HELDIN]["harness"]
+            promoted[0]["links"]["splits"][SPLIT_HELDOUT]["harness"]
         )
         envelope = json.loads(envelope_path.read_text())
         envelope["harness"]["surfaces"]["S4_verification_instruction"] = "edited after the fact"
@@ -1483,7 +1479,7 @@ class TestZeroCandidateRound:
         proposer = MockLM(responses=[EMPTY_BATCH, proposer_batch((0, TEXT_ROUND_2))])
         result = run(config, out, attributor, proposer)
 
-        assert factory.total_calls == 12  # 2 + 2 mining runs, then 8 validation runs
+        assert factory.total_calls == 8  # 2 + 2 mining runs, then 8 validation runs
         first, second = result.rounds
         assert (first.has_ledger, first.promoted) == (False, False)
         assert (second.has_ledger, second.promoted) == (True, True)

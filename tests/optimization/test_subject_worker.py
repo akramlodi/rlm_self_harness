@@ -109,9 +109,9 @@ class TestHappyPath:
         summary = load_summary(subject_path)
         assert summary["subject_id"] == "cand-a"
         assert summary["harness_hash"] == harness_hash(H0)
-        assert summary["splits"][SPLIT_HELDIN]["pass_count"] == 3
-        assert summary["splits"][SPLIT_HELDOUT]["pass_count"] == 4
-        assert client_calls(subject_path) == 8
+        assert set(summary["splits"]) == {SPLIT_HELDOUT}
+        assert summary["splits"][SPLIT_HELDOUT]["pass_count"] == 3
+        assert client_calls(subject_path) == 4
         # The status line is echoed to stdout for the worker log.
         assert json.loads(completed.stdout.strip().splitlines()[-1])["ok"] is True
 
@@ -120,7 +120,7 @@ class TestHappyPath:
         request_path = request_for(tmp_path, "cand-b", script)
         assert run_child(request_path).returncode == 0
         first = load_summary(request_path.parent)
-        assert client_calls(request_path.parent) == 8
+        assert client_calls(request_path.parent) == 4
 
         # Re-run against the SAME script file: nothing is popped on resume.
         assert run_child(request_path).returncode == 0
@@ -214,3 +214,20 @@ class TestRunWorkerCountReachesTheChild:
         worker_module.run_subject_worker(request_path)
 
         assert seen["run_workers"] == 3
+
+
+def test_legacy_request_refuses_before_loading_harness(tmp_path, monkeypatch):
+    import shrlm.optimization.subject_worker as worker
+
+    path = request_for(tmp_path, "candidate", [])
+    request = json.loads(path.read_text())
+    request.pop("validation_protocol")
+    path.write_text(json.dumps(request))
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("legacy request must not materialize a harness")
+
+    monkeypatch.setattr(worker, "materialize_harness", refuse)
+    result = worker.run_subject_worker(path)
+    assert result["ok"] is False
+    assert "legacy validation protocol" in result["error"]

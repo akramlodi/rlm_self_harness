@@ -92,7 +92,7 @@ STAGES = ("mining", "attribution", "proposal", "validation", "eval")
 
 # Two distinct failure mechanisms across the three held-in mining runs give two
 # patterns, hence two candidates (the smoke profile's k=2) on two different
-# surfaces, hence a merged re-evaluation -- the widest round the profile allows.
+# surfaces, combined into the one candidate evaluated against the baseline.
 MECHANISMS = ("incomplete_coverage", "skipped_verification", "skipped_verification")
 MERGE_TEXT = "Cover every input chunk and verify before answering. [smoke]"
 
@@ -196,18 +196,15 @@ def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
 def optimization_script() -> list[str]:
     """Mining (all failing) then validation: baseline fails, every subject passes.
 
-    Validation order is baseline, candidate 1, candidate 2, merged; each
-    subject runs held-in then held-out at v=1. Pass/fail here is scripted only
-    to drive the round to its widest shape -- the smoke asserts no outcome.
+    Validation runs the baseline and combined candidate on held-out instances
+    at v=1. Pass/fail here drives the promotion path; this tests wiring only.
     """
     held_in = fixture_instances("graphwalks", "short", "held_in")
     held_out = fixture_instances("graphwalks", "short", "held_out")
-    subject_instances = held_in + held_out
 
     script = [final(WRONG_ANSWER) for _ in held_in]  # mining: 3 failures
-    script += [final(WRONG_ANSWER) for _ in subject_instances]  # baseline
-    for _ in range(3):  # candidate 1, candidate 2, merged
-        script += [final(gold_answer(instance)) for instance in subject_instances]
+    script += [final(WRONG_ANSWER) for _ in held_out]  # baseline
+    script += [final(gold_answer(instance)) for instance in held_out]  # combined candidate
     return script
 
 
@@ -659,38 +656,36 @@ class TestLiveSmokeGuards:
     def test_configured_live_budgets_stay_under_the_five_dollar_ceiling(self):
         config = experiment_smoke.live_config()
 
-        # Governed: t=1 x (1 mining + 2 fixed + k=2) + 2 conditions = 7 breakers,
-        # each admitting $0.24 cumulative + one $0.20 per-run overshoot = $3.08.
-        assert experiment_smoke.breaker_count(config) == 7
-        governed = 7 * (config.caps.candidate_budget + config.caps.max_budget)
-        assert governed == pytest.approx(3.08)
+        # One mining + two validation + three final-evaluation breakers.
+        assert experiment_smoke.breaker_count(config) == 6
+        governed = 6 * (config.caps.candidate_budget + config.caps.max_budget)
+        assert governed == pytest.approx(2.64)
 
-        # Ungoverned: 2 probe + (1 x 2 live instances x 1 attempt x 3 x 3)
-        # attribution + (1 x 3 x 3) proposal = 29 calls, each priced at the
-        # char-cap-derived input bound plus max_output_tokens out, at the
-        # configured LIST tier -- computed from the config so a pricing flip
-        # moves the assertions with it.
+        # Ungoverned: 18 attribution + 24 proposal calls, plus two probes.
+        # Stage calls use the char-cap input bound; probes have a smaller bound.
         price = config.pricing.list_price
         per_call = (
             experiment_smoke.UNGOVERNED_INPUT_TOKENS * price.input_per_million
             + config.decoding.max_output_tokens * price.output_per_million
         ) / 1_000_000
-        assert experiment_smoke.ungoverned_call_count(config) == 29
+        assert experiment_smoke.ungoverned_call_count(config) == 44
         assert experiment_smoke.ungoverned_call_ceiling(config) == pytest.approx(per_call)
         # Literal sanity pin at the shipped Qwen list rate ($0.10 / $0.30 per
         # 1M): (49,152 x 0.10 + 4,096 x 0.30) / 1e6 = $0.0061440 per call.
         assert per_call == pytest.approx(0.0061440)
-        ungoverned = 29 * experiment_smoke.ungoverned_call_ceiling(config)
-        assert ungoverned == pytest.approx(0.178176)
+        probe_spend = experiment_smoke.probe_spend_bound_usd(config)
+        assert probe_spend == pytest.approx(0.0026624)
+        ungoverned = 42 * experiment_smoke.ungoverned_call_ceiling(config) + probe_spend
+        assert ungoverned == pytest.approx(0.2607104)
 
         assert experiment_smoke.spend_ceiling(config) == pytest.approx(governed + ungoverned)
         # The standalone --probe invocation (run FIRST) spends two more
         # ungoverned calls on top of the --live run's own probe.
         probe_reserve = experiment_smoke.standalone_probe_reserve_usd(config)
-        assert probe_reserve == pytest.approx(2 * experiment_smoke.ungoverned_call_ceiling(config))
+        assert probe_reserve == pytest.approx(probe_spend)
         # The proven figure is cumulative: this invocation plus the standalone
         # probe reserve plus the $0.60 U4 pytest live reserve, under the one
-        # $5 ceiling. Literal sanity pin: 3.08 + 0.178176 + 0.012288 + 0.60.
+        # $5 ceiling. Literal sanity pin: 2.64 + 0.2607104 + 0.0026624 + 0.60.
         cumulative = (
             experiment_smoke.spend_ceiling(config)
             + probe_reserve
@@ -699,17 +694,19 @@ class TestLiveSmokeGuards:
         assert cumulative < 5.0
         assert cumulative < experiment_smoke.SPEND_CEILING_USD
         assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(cumulative)
-        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(3.870464)
+        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(3.5033728)
+        more_proposals = replace(config, loop=replace(config.loop, k=4))
+        assert experiment_smoke.breaker_count(more_proposals) == 6
 
     def test_the_ceiling_scales_with_the_round_count(self):
         """Every per-round breaker and per-round LM call is armed t times."""
         config = experiment_smoke.live_config()
         three_rounds = replace(config, loop=replace(config.loop, t=3))
 
-        # 3 x (1 mining + 2 fixed + k=2) + 2 conditions.
-        assert experiment_smoke.breaker_count(three_rounds) == 17
-        # 2 probe + 3 x (6 attribution + 3 proposal) x 3 transport retries.
-        assert experiment_smoke.ungoverned_call_count(three_rounds) == 2 + 3 * 27
+        # 3 x (1 mining + 2 validation subjects) + 3 evaluation conditions.
+        assert experiment_smoke.breaker_count(three_rounds) == 12
+        # 2 probe + 3 x (18 attribution + 24 proposal) calls.
+        assert experiment_smoke.ungoverned_call_count(three_rounds) == 2 + 3 * 42
         assert experiment_smoke.spend_ceiling(three_rounds) > experiment_smoke.spend_ceiling(config)
         # A three-round smoke is not affordable under the $5 ceiling, and the
         # arithmetic says so rather than discovering it while spending.

@@ -24,11 +24,9 @@ from shrlm.optimization.candidates import (
 from shrlm.optimization.costs import OUTCOME_COMPLETED, OUTCOME_OVER_BUDGET
 from shrlm.optimization.promotion import (
     DECISION_ACCEPTED,
-    DECISION_MERGED_FAILED,
     DECISION_OVER_BUDGET,
     DECISION_PROMOTED,
     DECISION_REJECTED,
-    MERGED_SUBJECT_ID,
     PLAN_MERGE,
     PLAN_NONE,
     PLAN_SINGLE,
@@ -36,11 +34,9 @@ from shrlm.optimization.promotion import (
     Band,
     CandidateDecision,
     PromotionConfig,
-    apply_merge_verdict,
     assess_round,
-    decide_subject,
     merge_harnesses,
-    plan_promotion,
+    plan_batch,
     promote_decision,
     score_candidate,
 )
@@ -95,7 +91,8 @@ def make_summary(
     heldout_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
-        "format": "shrlm-validation-summary/v1",
+        "format": "shrlm-validation-summary/v2",
+        "validation_protocol": "heldout-batch/v1",
         "subject_id": subject_id,
         "harness_hash": f"hash-{subject_id}",
         "repetitions": 2,
@@ -191,7 +188,7 @@ class TestAcceptanceRule:
         decision = score(3, 4)
         assert decision.decision == DECISION_ACCEPTED
         assert decision.reasons == ()
-        assert decision.rule[SPLIT_HELDIN]["delta"] == 1
+        assert SPLIT_HELDIN not in decision.rule
         assert decision.rule[SPLIT_HELDOUT]["delta"] == 2
 
     def test_improving_one_split_while_flat_on_the_other_accepts(self):
@@ -212,32 +209,33 @@ class TestAcceptanceRule:
     def test_regressing_both_splits_rejects_with_both_reasons(self):
         decision = score(1, 1)
         assert decision.decision == DECISION_REJECTED
-        assert sum("tau_regression" in reason for reason in decision.reasons) == 2
+        assert sum("tau_regression" in reason for reason in decision.reasons) == 1
 
     def test_zero_thresholds_reproduce_the_strict_paper_rule(self):
         # Any single-run regression rejects; any single-run improvement with a
         # flat other split accepts.
         assert score(3, 1).decision == DECISION_REJECTED
-        assert score(3, 2).decision == DECISION_ACCEPTED
+        assert score(3, 2).decision == DECISION_REJECTED
+        assert score(0, 3).decision == DECISION_ACCEPTED
 
 
 class TestNoiseMargins:
-    def test_single_run_regression_within_tau_reg_still_accepts(self):
+    def test_heldin_improvement_cannot_rescue_heldout_regression(self):
         config = PromotionConfig(tau_regression=1)
         decision = score(4, 1, config)
-        assert decision.decision == DECISION_ACCEPTED
+        assert decision.decision == DECISION_REJECTED
 
     def test_regression_boundary_is_inclusive(self):
         # Delta exactly -tau_reg passes the non-regression check (>= -tau).
         config = PromotionConfig(tau_regression=1)
-        assert score(4, 1, config).decision == DECISION_ACCEPTED
+        assert not any("tau_regression" in reason for reason in score(4, 1, config).reasons)
         assert score(4, 0, config).decision == DECISION_REJECTED
 
     def test_sub_margin_improvement_rejects(self):
         config = PromotionConfig(tau_improvement=1)
         # Improvement boundary is strict: delta exactly tau_imp is not enough.
         assert score(3, 3, config).decision == DECISION_REJECTED
-        assert score(4, 2, config).decision == DECISION_ACCEPTED
+        assert score(2, 4, config).decision == DECISION_ACCEPTED
 
     def test_thresholds_are_recorded_on_every_decision(self):
         config = PromotionConfig(tau_regression=1, tau_improvement=2)
@@ -260,17 +258,17 @@ class TestNoiseMargins:
 class TestBand:
     def test_cost_outside_the_band_rejects_a_rule_passing_candidate(self):
         config = PromotionConfig(cost_band=Band(0.0, 1.5))
-        decision = score(4, 4, config, heldin_kwargs={"mean_cost": 8.0})
+        decision = score(4, 4, config, heldout_kwargs={"mean_cost": 8.0})
         assert decision.decision == DECISION_REJECTED
         assert any("mean_cost" in reason and "band" in reason for reason in decision.reasons)
         assert decision.band["mean_cost"]["within"] is False
 
-    def test_cost_band_aggregates_across_both_splits(self):
+    def test_cost_band_ignores_heldin_measurements(self):
         # One split doubles its cost, the other stays flat: the overall mean is
         # 3.0 against a baseline of 2.0, exactly the 1.5x bound -- within.
         config = PromotionConfig(cost_band=Band(0.0, 1.5))
         decision = score(4, 4, config, heldin_kwargs={"mean_cost": 4.0})
-        assert decision.band["mean_cost"]["candidate"] == 3.0
+        assert decision.band["mean_cost"]["candidate"] == 2.0
         assert decision.decision == DECISION_ACCEPTED
 
     def test_band_upper_boundary_is_inclusive(self):
@@ -325,8 +323,8 @@ class TestBand:
             "cand-a",
             4,
             4,
-            heldin_kwargs={"mean_sub_calls": 1.0},
-            heldout_kwargs={"mean_sub_calls": 0.0},
+            heldin_kwargs={"mean_sub_calls": 0.0},
+            heldout_kwargs={"mean_sub_calls": 1.0},
         )
         assert score_candidate(baseline, grew, config).decision == DECISION_REJECTED
         # The default (infinite) band tolerates growth from a zero baseline.
@@ -334,7 +332,7 @@ class TestBand:
 
     def test_rule_and_band_failures_are_both_reported(self):
         config = PromotionConfig(cost_band=Band(0.0, 1.5))
-        decision = score(4, 1, config, heldin_kwargs={"mean_cost": 10.0})
+        decision = score(4, 1, config, heldout_kwargs={"mean_cost": 10.0})
         assert decision.decision == DECISION_REJECTED
         assert any("tau_regression" in reason for reason in decision.reasons)
         assert any("mean_cost" in reason for reason in decision.reasons)
@@ -385,7 +383,7 @@ class TestScoringGuards:
             score_candidate(baseline, make_summary("cand-a", 4, 4), PromotionConfig())
 
     def test_mismatched_run_counts_are_refused(self):
-        candidate = make_summary("cand-a", 4, 4, heldin_kwargs={"n_runs": 8})
+        candidate = make_summary("cand-a", 4, 4, heldout_kwargs={"n_runs": 8})
         with pytest.raises(ValueError, match="n_runs"):
             score_candidate(BASELINE, candidate, PromotionConfig())
 
@@ -450,7 +448,7 @@ class TestAssessRound:
         assert payload["reasons"] == []
         assert payload["tau_regression"] == 0.0
         assert payload["tau_improvement"] == 0.0
-        assert payload["rule"][SPLIT_HELDIN]["delta"] == 1
+        assert SPLIT_HELDIN not in payload["rule"]
         assert payload["band"]["mean_cost"]["within"] is True
         assert payload["harness_hash"] == "hash-cand-a"
         assert payload["upstream"] is None
@@ -564,33 +562,11 @@ class TestMergeConstruction:
         with pytest.raises(ValueError, match="S10"):
             merge_harnesses(H0, [fake_candidate("cand-a", "S10"), fake_candidate("cand-b", "S10")])
 
-    def test_plan_promotion_selects_one_winner_per_surface_with_s10_in_the_set(self):
-        candidates = [
-            fake_candidate("cand-a", "S10"),
-            fake_candidate("cand-b", "S10"),
-            fake_candidate("cand-c", "S3"),
-        ]
-        decisions = [
-            accepted_decision("cand-a", 3, 4),
-            accepted_decision("cand-b", 3, 3),
-            accepted_decision("cand-c", 4, 4),
-        ]
-
-        plan = plan_promotion(H0, decisions, candidates)
-
-        assert plan.kind == PLAN_MERGE
-        assert plan.constituent_ids == ("cand-a", "cand-c")
-        assert "cand-b" in plan.excluded
-        assert "S10" in plan.excluded["cand-b"]
-        assert plan.harness.skills == candidates[0].harness.skills
-        assert plan.harness.execution_instruction == candidates[2].harness.execution_instruction
-
     def test_two_disjoint_accepted_candidates_yield_a_merged_plan(self):
         cand_a = fake_candidate("cand-a", "S2")
         cand_b = fake_candidate("cand-b", "S3")
-        decisions = [accepted_decision("cand-a", 3, 3), accepted_decision("cand-b", 4, 4)]
 
-        plan = plan_promotion(H0, decisions, [cand_a, cand_b])
+        plan = plan_batch(H0, [cand_a, cand_b])
 
         assert plan.kind == PLAN_MERGE
         assert plan.constituent_ids == ("cand-a", "cand-b")
@@ -603,83 +579,24 @@ class TestMergeConstruction:
     def test_merge_is_order_independent(self):
         cand_a = fake_candidate("cand-a", "S2")
         cand_b = fake_candidate("cand-b", "S3")
-        decisions = [accepted_decision("cand-a", 3, 3), accepted_decision("cand-b", 4, 4)]
-        forward = plan_promotion(H0, decisions, [cand_a, cand_b])
-        backward = plan_promotion(H0, list(reversed(decisions)), [cand_b, cand_a])
+        forward = plan_batch(H0, [cand_a, cand_b])
+        backward = plan_batch(H0, [cand_b, cand_a])
         assert forward.harness_hash == backward.harness_hash
         assert forward.constituent_ids == backward.constituent_ids
 
-    def test_same_surface_pair_is_not_merged_higher_heldout_delta_wins(self):
-        cand_a = fake_candidate("cand-a", "S2")
-        cand_b = fake_candidate("cand-b", "S2")
-        decisions = [accepted_decision("cand-a", 4, 3), accepted_decision("cand-b", 3, 4)]
-
-        plan = plan_promotion(H0, decisions, [cand_a, cand_b])
-
-        assert plan.kind == PLAN_SINGLE
-        assert plan.constituent_ids == ("cand-b",)
-        assert plan.harness is cand_b.harness
-        assert plan.harness_hash == cand_b.harness_hash
-        assert "cand-a" in plan.excluded
-        assert "cand-b" in plan.excluded["cand-a"]
-
-    def test_same_surface_tiebreak_falls_to_heldin_then_candidate_id(self):
-        candidates = [fake_candidate("cand-a", "S2"), fake_candidate("cand-b", "S2")]
-        # Held-out tied, held-in decides.
-        by_heldin = plan_promotion(
-            H0,
-            [accepted_decision("cand-a", 3, 4), accepted_decision("cand-b", 4, 4)],
-            candidates,
-        )
-        assert by_heldin.constituent_ids == ("cand-b",)
-        # Both tied: the lexicographically smaller candidate id wins.
-        by_id = plan_promotion(
-            H0,
-            [accepted_decision("cand-b", 4, 4), accepted_decision("cand-a", 4, 4)],
-            candidates,
-        )
-        assert by_id.constituent_ids == ("cand-a",)
-
-    def test_same_surface_group_still_merges_with_a_disjoint_winner(self):
-        candidates = [
-            fake_candidate("cand-a", "S2"),
-            fake_candidate("cand-b", "S2"),
-            fake_candidate("cand-c", "S4"),
-        ]
-        decisions = [
-            accepted_decision("cand-a", 3, 4),
-            accepted_decision("cand-b", 3, 3),
-            accepted_decision("cand-c", 4, 4),
-        ]
-
-        plan = plan_promotion(H0, decisions, candidates)
-
-        assert plan.kind == PLAN_MERGE
-        assert plan.constituent_ids == ("cand-a", "cand-c")
-        assert "cand-b" in plan.excluded
-
     def test_single_accepted_candidate_promotes_alone(self):
         cand_a = fake_candidate("cand-a", "S2")
-        decisions = [
-            accepted_decision("cand-a", 3, 3),
-            score_candidate(BASELINE, make_summary("cand-bad", 1, 1), PromotionConfig()),
-        ]
-        plan = plan_promotion(H0, decisions, [cand_a, fake_candidate("cand-bad", "S3")])
+        plan = plan_batch(H0, [cand_a])
         assert plan.kind == PLAN_SINGLE
         assert plan.constituent_ids == ("cand-a",)
         assert plan.harness_hash == cand_a.harness_hash
 
     def test_no_accepted_candidates_plans_nothing(self):
-        decisions = [score_candidate(BASELINE, make_summary("cand-bad", 1, 1), PromotionConfig())]
-        plan = plan_promotion(H0, decisions, [fake_candidate("cand-bad", "S2")])
+        plan = plan_batch(H0, [])
         assert plan.kind == PLAN_NONE
         assert plan.constituent_ids == ()
         assert plan.harness is None
         assert plan.harness_hash is None
-
-    def test_accepted_decision_without_a_loaded_candidate_is_refused(self):
-        with pytest.raises(ValueError, match="cand-a"):
-            plan_promotion(H0, [accepted_decision("cand-a", 3, 3)], [])
 
     def test_merge_harnesses_refuses_overlapping_surfaces(self):
         with pytest.raises(ValueError, match="S2"):
@@ -689,85 +606,6 @@ class TestMergeConstruction:
 # ---------------------------------------------------------------------------
 # The merge verdict: promoted on its own pass, promotes-nothing on failure
 # ---------------------------------------------------------------------------
-
-
-def merged_plan() -> tuple[Any, list[CandidateDecision]]:
-    candidates = [fake_candidate("cand-a", "S2"), fake_candidate("cand-b", "S3")]
-    decisions = [accepted_decision("cand-a", 3, 3), accepted_decision("cand-b", 4, 4)]
-    return plan_promotion(H0, decisions, candidates), decisions
-
-
-def merge_summary(heldin_pass: int, heldout_pass: int, plan: Any, **kwargs: Any) -> dict[str, Any]:
-    summary = make_summary(MERGED_SUBJECT_ID, heldin_pass, heldout_pass, **kwargs)
-    summary["harness_hash"] = plan.harness_hash
-    return summary
-
-
-class TestMergeVerdict:
-    def test_passing_merge_is_promoted_and_constituents_stay_accepted(self):
-        plan, decisions = merged_plan()
-        merge_decision = score_candidate(BASELINE, merge_summary(4, 4, plan), PromotionConfig())
-
-        final_merge, final_decisions = apply_merge_verdict(plan, merge_decision, decisions)
-
-        assert final_merge.decision == DECISION_PROMOTED
-        assert final_merge.harness_hash == plan.harness_hash
-        assert [decision.decision for decision in final_decisions] == [
-            DECISION_ACCEPTED,
-            DECISION_ACCEPTED,
-        ]
-
-    def test_failing_merge_promotes_nothing_and_ledgers_merged_failed(self):
-        plan, decisions = merged_plan()
-        merge_decision = score_candidate(BASELINE, merge_summary(2, 1, plan), PromotionConfig())
-        assert merge_decision.decision == DECISION_REJECTED
-
-        final_merge, final_decisions = apply_merge_verdict(plan, merge_decision, decisions)
-
-        assert final_merge.decision == DECISION_REJECTED
-        assert all(decision.decision == DECISION_MERGED_FAILED for decision in final_decisions)
-        for decision in final_decisions:
-            assert any("promotes nothing" in reason for reason in decision.reasons)
-        # The originals are untouched values; nothing was promoted post hoc.
-        assert all(decision.decision == DECISION_ACCEPTED for decision in decisions)
-
-    def test_over_budget_merge_also_promotes_nothing(self):
-        plan, decisions = merged_plan()
-        over_budget = fake_evaluation(merge_summary(0, 0, plan, outcome=OUTCOME_OVER_BUDGET))
-        merge_decision = decide_subject(BASELINE, over_budget, PromotionConfig())
-        assert merge_decision.decision == DECISION_OVER_BUDGET
-
-        final_merge, final_decisions = apply_merge_verdict(plan, merge_decision, decisions)
-
-        assert final_merge.decision == DECISION_OVER_BUDGET
-        assert all(decision.decision == DECISION_MERGED_FAILED for decision in final_decisions)
-
-    def test_non_constituent_decisions_pass_through_untouched(self):
-        plan, decisions = merged_plan()
-        loser = score_candidate(BASELINE, make_summary("cand-flat", 2, 2), PromotionConfig())
-        merge_decision = score_candidate(BASELINE, merge_summary(2, 1, plan), PromotionConfig())
-
-        _, final_decisions = apply_merge_verdict(plan, merge_decision, [*decisions, loser])
-
-        assert final_decisions[-1] is loser
-
-    def test_merge_verdict_demands_a_merge_plan(self):
-        cand_a = fake_candidate("cand-a", "S2")
-        decisions = [accepted_decision("cand-a", 3, 3)]
-        single = plan_promotion(H0, decisions, [cand_a])
-        merge_decision = score_candidate(
-            BASELINE, make_summary(MERGED_SUBJECT_ID, 4, 4), PromotionConfig()
-        )
-        with pytest.raises(ValueError, match="merge"):
-            apply_merge_verdict(single, merge_decision, decisions)
-
-    def test_merge_verdict_demands_the_planned_harness(self):
-        plan, decisions = merged_plan()
-        stranger = score_candidate(
-            BASELINE, make_summary(MERGED_SUBJECT_ID, 4, 4), PromotionConfig()
-        )
-        with pytest.raises(ValueError, match="hash"):
-            apply_merge_verdict(plan, stranger, decisions)
 
 
 class TestPromoteDecision:

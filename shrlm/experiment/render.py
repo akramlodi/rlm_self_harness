@@ -101,7 +101,7 @@ def render_markdown(report: CostReport) -> str:
         "## Extrapolation",
         "",
         f"Runs/round = {count(report.run_counts.runs_per_round)} "
-        f"(m*n_in + v(K+1)(n_in+n_ho) + p_merge*v(n_in+n_ho)); "
+        f"(m*n_in + 2*v*n_ho (nonempty valid batch)); "
         f"{report.run_counts.rounds} round(s) = "
         f"{count(report.run_counts.optimization_runs)} optimization runs. "
         f"Eval grid = {report.run_counts.eval_conditions} condition(s) x "

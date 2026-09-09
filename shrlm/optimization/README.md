@@ -14,7 +14,7 @@ three stages (§3.3 of the proposal):
 |---|---|---|
 | **1. Weakness Mining** | Run the current harness on short held-in instances. Record verifier outcomes and recursive traces. Score each sub-call with the environment's synthesized sub-verifier. Convert failures to structured records and cluster them by signature → an **evidence bundle** `B_t`. | **implemented** (`shrlm/optimization/`) |
 | **2. Harness Proposal** | Give the model the mined patterns, behaviors to preserve, and prior edit history; get back several minimal candidate edits, each targeting one pattern on one declared surface. | not implemented |
-| **3. Proposal Validation** | Evaluate candidates on held-in plus a disjoint held-out split never shown to the proposer. Promote only on no meaningful accuracy regression with sub-call/cost in a preregistered band. Merged compatible edits are re-evaluated before promotion. | `validation.py`, `subject_worker.py`, `run_worker.py` |
+| **3. Proposal Validation** | Compose all admitted edits before evaluation. Compare the batch against the incumbent on held-out instances only; promote the whole batch only if held-out accuracy improves and cost/sub-calls meet the configured bands. | `validation.py`, `subject_worker.py`, `run_worker.py` |
 
 The ten editable surfaces declared by the harness (`shrlm/rlm_harness.py`, `SURFACES`) are
 enumerated in code as `EditableSurface` ([taxonomy.py:51](optimization/taxonomy.py#L51)), keyed by
@@ -189,9 +189,10 @@ without a live model. It also holds the package's only `try` — one bad attribu
 round.
 
 ### `validation.py` + `subject_worker.py` — stage-3 evaluation, optionally in parallel
-`validate_round` is the whole validation stage (loader → evaluation → promotion → merged
-re-evaluation → ledger). `evaluate_validation_round` evaluates the baseline and every loaded
-candidate; with `operational.validation_workers > 1` (`configs/experiment.toml`) it does so
+`validate_round` runs loader → batch composition → held-out evaluation → decision → ledger.
+Each round admits at most one proposal per surface; `k` is a maximum, never a quota. If only
+one surface has a justified edit, propose one edit. All admitted edits form one candidate
+before any validation results are observed. Baseline and that candidate are the only subjects; with `operational.validation_workers > 1` (`configs/experiment.toml`) it does so
 concurrently, one **child process per subject**, at most that many alive at once:
 
 ```
@@ -219,9 +220,27 @@ its log; re-running the same command resumes only the missing runs. Each subject
 carries `worker.pid` while its child is alive: a resume that finds a live pid refuses to spawn
 (`SubjectWorkerBusyError`) rather than pay for the same runs twice, and every child exits on its
 own when its parent disappears (a SIGKILLed parent cannot terminate anyone). The caps gate runs in the
-parent, so a rejected candidate never gets a child, and the merged re-evaluation stays sequential
-in-process. Tests script the children through the request's test-only `client_factory` seam
+parent, so a rejected candidate never gets a child. The combined candidate uses the same
+worker path as the baseline. Tests script the children through the request's test-only `client_factory` seam
 (`tests/optimization/subject_worker_support.py`).
+
+The DeepSeekV4Flash OOLONG-pairs profile uses `v = 1`, `n_in = 10` for mining only,
+and `n_ho = 10` for validation only. Other profiles retain their configured repetition counts.
+A full nonempty optimization round projects `m*n_in + 2*v*n_ho` runs regardless of `k`;
+`report.p_merge` is a legacy input and does not affect this estimate. Empty rounds require
+no validation calls. Final evaluation repetitions are separate.
+
+New summaries, promotion records, and decisions use v2 formats with protocol
+`heldout-batch/v1`. A multi-edit batch records each constituent as `bundled` with no rule,
+band, or evaluation links, and a `batch_subject_id` pointing to `merged`. Only that shared
+subject receives a measured verdict. A rejected or over-budget batch promotes nothing.
+Analysis leaves missing held-in validation accuracy blank and counts bundled participation
+separately from individual promotion.
+
+Resume checks the protocol, held-out sample, repetitions, caps, backend, incumbent, and batch
+before model calls. Use a fresh output directory for legacy validation evidence or changed
+inputs; old v1 artifacts remain readable for analysis. Identical current-protocol inputs
+reuse completed runs, including after changing worker concurrency.
 
 ### `run_worker.py` — one run per child process, inside a subject
 
@@ -236,10 +255,8 @@ overspend remains `MiningBudgetExceededError`, even when every dispatched run co
 All shipped experiment configs start mining at five workers. If the provider returns 429s, reduce
 the setting to three and then one; one restores the sequential path.
 
-Subject-level fan-out only helps when a round produces several candidates, and round 1 of both
-live experiments produced exactly one — so two subjects ran and most worker slots sat idle. The
-time that remains is all *inside* a subject: 256 runs at a mean of 83 s, about 5.9 h, executed one
-at a time. `operational.validation_run_workers > 1` fans those out:
+A round has at most two validation subjects. `operational.validation_run_workers > 1`
+fans out the held-out runs within each subject:
 
 ```
 python -m shrlm.optimization.run_worker <round>/run_workers/<run_id>/request.json

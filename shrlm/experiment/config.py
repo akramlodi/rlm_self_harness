@@ -65,6 +65,7 @@ from shrlm.harness_identity import canonical_json_sha256
 from shrlm.optimization.costs import ValidationCaps
 from shrlm.optimization.promotion import Band, PromotionConfig
 from shrlm.optimization.proposal import ProposerConfig
+from shrlm.optimization.validation import VALIDATION_PROTOCOL
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "experiment.toml"
 
@@ -778,6 +779,7 @@ def identity_hash(config: ExperimentConfig) -> str:
     the remaining operational keys are excluded.
     """
     subset: dict[str, Any] = {name: asdict(getattr(config, name)) for name in IDENTITY_SECTIONS}
+    subset["validation_protocol"] = VALIDATION_PROTOCOL
     subset["operational"] = {
         key: getattr(config.operational, key) for key in IDENTITY_OPERATIONAL_KEYS
     }

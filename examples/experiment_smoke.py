@@ -49,9 +49,9 @@ Spend control (KTD7; hard ceiling $5 across the smoke tiers)
                                     measured-profile long run (~$0.09, below)
                                     with ~2.2x
         per-breaker budget  $0.24   cumulative, per spend breaker
-        breakers            7       t x (1 mining + baseline + k candidates +
-                                    merged) + 1 per evaluation condition
-        governed ceiling    7 x ($0.24 + $0.20) = $3.08
+        breakers            6       t x (1 mining + baseline + combined
+                                    candidate) + 1 per evaluation condition
+        governed ceiling    6 x ($0.24 + $0.20) = $2.64
 
     A breaker trips only *after* a run pushes cumulative spend past its
     budget, so each breaker's true ceiling is its budget plus one per-run
@@ -269,10 +269,10 @@ LIVE_OOLONG_SHORT = 2  # environments.oolong_pairs.n_short: 4 -> 2
 LIVE_OOLONG_LONG = 1  # environments.oolong_pairs.n_long: 2 -> 1
 
 # Spend breakers armed per round: one for mining, one per validation subject
-# (baseline + k candidates + the merged harness). Evaluation arms one more per
+# (baseline + combined candidate). Evaluation arms one more per
 # condition, once for the whole invocation.
 MINING_BREAKERS = 1
-VALIDATION_FIXED_BREAKERS = 2  # baseline and the merged re-evaluation
+VALIDATION_FIXED_BREAKERS = 2  # baseline and the combined candidate
 
 # The ungoverned paid calls. ``probe`` issues two (the raw completion, then the
 # client's own) for a config that expects no reasoning, and neither the
@@ -438,11 +438,11 @@ def live_config(path: Path | str = CONFIG_PATH) -> ExperimentConfig:
 def breaker_count(config: ExperimentConfig, conditions: int = len(DEFAULT_CONDITIONS)) -> int:
     """How many independent spend breakers one smoke invocation arms.
 
-    Mining, the two fixed validation subjects, and the ``k`` candidates are
+    Mining and the two validation subjects are
     armed once per optimization round, so they carry the ``loop.t`` factor;
     the evaluation conditions are armed once for the whole invocation.
     """
-    per_round = MINING_BREAKERS + VALIDATION_FIXED_BREAKERS + config.loop.k
+    per_round = MINING_BREAKERS + VALIDATION_FIXED_BREAKERS
     return config.loop.t * per_round + conditions
 
 
