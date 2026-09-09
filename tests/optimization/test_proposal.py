@@ -1092,3 +1092,40 @@ def test_render_prompt_bounds_each_evidence_entry_separately():
     assert "a: produced '[1f0e3dad99]'" in rendered
     assert "b: produced '[2c7f9ccb5a]'" in rendered
     assert huge not in rendered
+
+
+def test_duplicate_surfaces_reask_before_materialization(tmp_path):
+    bundle = {"bundle_id": "same-surface", "patterns": [PATTERN_TEXT, PATTERN_TEXT]}
+    duplicate = {**TEXT_ITEM, "pattern_index": 1}
+    lm = MockLM(responses=[canned_batch(TEXT_ITEM, duplicate), canned_batch(TEXT_ITEM)])
+    result = propose_round(bundle, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert len(result.attempts) == 2
+    assert "surface S4" in result.attempts[0].violation
+    assert len(result.written) == 1
+    assert result.skipped_patterns == [1]
+
+
+def test_prompt_explains_batch_surface_limit():
+    prompt, _ = render_prompt([PATTERN_TEXT], serialize_harness(H0), [], [], 4)
+    assert "at most one edit per surface" in prompt
+    assert "one combined candidate" in prompt
+    assert "not a quota" in prompt
+
+
+def test_history_reports_one_shared_verdict_for_bundled_edits():
+    from shrlm.optimization.proposal import _render_history_block
+
+    records = [
+        {"subject_id": "a", "decision": "bundled", "surface": "S2"},
+        {"subject_id": "b", "decision": "bundled", "surface": "S3"},
+        {
+            "subject_id": "merged",
+            "decision": "rejected",
+            "reasons": ["heldout did not improve"],
+            "merge": {"role": "merged", "constituent_ids": ["a", "b"]},
+        },
+    ]
+    history = _render_history_block([(records, {"promoted": False})])
+    assert history.count("rejected") == 1
+    assert "S2, S3" in history
+    assert "bundled" not in history

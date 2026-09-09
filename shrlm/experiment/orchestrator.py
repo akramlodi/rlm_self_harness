@@ -172,7 +172,7 @@ from shrlm.optimization.proposal import (
 )
 from shrlm.optimization.types import SubVerifier, Verifier
 from shrlm.optimization.validation import (
-    SPLIT_HELDIN,
+    SPLIT_HELDOUT,
     EvaluationConfig,
     ValidationRound,
     ValidationSplits,
@@ -564,7 +564,7 @@ def _rematerialize_promoted(
     """Rebuild a completed round's promoted harness from its persisted envelope.
 
     The promoted subject's ``harness.json`` (written by ``run_round`` under its
-    held-in split directory) is located through the ledger record's audit
+    held-out split directory) is located through the ledger record's audit
     links, rematerialized via ``materialize_harness``, and hash-verified --
     the round-trip the gate test pins, covering merged promotions whose live
     harness exists nowhere else on disk.
@@ -583,7 +583,7 @@ def _rematerialize_promoted(
             f"{decision['promoted_harness_hash']}, but the round marker recorded "
             f"{promoted_hash}; the persisted round state contradicts itself"
         )
-    envelope_path = validation_round_path / str(record["links"]["splits"][SPLIT_HELDIN]["harness"])
+    envelope_path = validation_round_path / str(record["links"]["splits"][SPLIT_HELDOUT]["harness"])
     return rematerialize_harness_envelope(
         envelope_path,
         work_dir,

@@ -314,3 +314,26 @@ class TestSurfaceSourcesAreRecorded:
         sources = recorded_sources(snapshot)
         marker = f"opt/round_01/{ROUND_MARKER_FILENAME}"
         assert marker in sources, f"the round marker is missing from {sorted(sources)}"
+
+
+def test_batch_quality_has_no_heldin_score_and_skips_constituents(experiment):
+    from shrlm.experiment.incumbent_quality import incumbent_quality_over_rounds
+    from shrlm.experiment.surface_activity import surface_activity_over_rounds
+
+    constituent = ledger_record("a", decision="bundled", surface="S2")
+    constituent["rule"] = None
+    constituent["merge"] = {"role": "constituent", "constituent_ids": ["a", "b"]}
+    merged = ledger_record("merged", decision=DECISION_PROMOTED)
+    merged["rule"].pop("heldin")
+    merged["merge"] = {"role": "merged", "constituent_ids": ["a", "b"]}
+    write_round(experiment, 0, [constituent, merged])
+    quality = incumbent_quality_over_rounds(experiment)
+    assert quality[0].heldin_pass_rate is None
+    assert quality[0].heldout_pass_rate is not None
+    candidates = all_candidate_quality_over_rounds(experiment)
+    assert [row.subject_id for row in candidates] == ["merged"]
+    assert candidates[0].heldin_pass_rate is None
+    activity, _ = surface_activity_over_rounds(experiment)
+    row = next(row for row in activity if row.round_index == 0 and row.surface == "S2")
+    assert row.bundled_count == 1
+    assert row.promoted_count == 0

@@ -136,8 +136,8 @@ class _IncumbentState:
     def from_rule(cls, rule: dict[str, dict], *, key: str) -> "_IncumbentState":
         """Build from a decision's ``rule`` dict, reading ``<key>_pass_count``."""
         return cls(
-            heldin_pass_count=rule[SPLIT_HELDIN][f"{key}_pass_count"],
-            heldin_n_runs=rule[SPLIT_HELDIN]["n_runs"],
+            heldin_pass_count=rule.get(SPLIT_HELDIN, {}).get(f"{key}_pass_count", 0),
+            heldin_n_runs=rule.get(SPLIT_HELDIN, {}).get("n_runs", 0),
             heldout_pass_count=rule[SPLIT_HELDOUT][f"{key}_pass_count"],
             heldout_n_runs=rule[SPLIT_HELDOUT]["n_runs"],
         )

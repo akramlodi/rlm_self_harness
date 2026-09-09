@@ -1,92 +1,29 @@
-"""Stage-3 proposal validation, evaluation half: persisted, resumable, comparable rounds.
+"""Held-out validation of one fixed batch, with resumable evidence.
 
-Baseline and every candidate are evaluated on the held-in and the disjoint
-held-out split with a configurable repetition count (R5), by reusing the
-persist-first round infrastructure (KTD4): each (subject x split) evaluation is
-one ``run_round`` with its own directory and ``harness.json`` identity,
-executed through the cost governor's ``run_governed_round`` so the
-experiment-owned caps bind at the RLM constructor and one cumulative circuit
-breaker spans all of a subject's splits and repetitions (R3, R4).
-Resumability, sha-linked traces, and recomputable pass rates come for free; a
-crashed evaluation resumes by re-invoking with the same configuration, and
-only the missing runs are paid for again.
+``validate_round`` loads proposals, composes all admitted disjoint edits onto
+an incumbent, then evaluates baseline and candidate once each on held-out
+instances (with the configured repetitions). Held-in instances remain mining
+inputs only. The whole candidate is promoted or rejected as one unit.
 
-Directory layout under one validation round, ``<out_dir>/round_NN``::
+Artifacts under ``<out_dir>/round_NN``:
+    validation.json                       # protocol, inputs, batch, promotion parameters
+    baseline/evaluation.json              # subject contract
+    baseline/heldout/round_00/             # harness, instances, runs, sha-linked traces
+    baseline/summary.json
+    <candidate_id or merged>/...           # the same subject layout
+    promotions.jsonl                      # unscored constituents + measured candidate
+    decision.json
 
-    round_NN/
-        baseline/                     # the incumbent, evaluated once per round
-            heldin/                   # the out_dir handed to run_round, so its
-                round_00/             #   contents land under a nested round_00
-                    harness.json      # the subject's identity (KTD4)
-                    instances.jsonl
-                    runs.jsonl        # verdict, trace sha, cost per run
-                    runs/<run_id>.json
-            heldout/
-                round_00/...
-            summary.json              # the validation-owned aggregate
-        <candidate_id>/
-            heldin/round_00/...
-            heldout/round_00/...
-            summary.json
-
-Repetition uses the existing ``(instance, attempt)`` run ids: ``repetitions``
-becomes ``RoundConfig.attempts``, so rep ``v`` of instance ``i`` is run
-``<i>__aNN`` inside the split's single nested round. Anything the ledger cites
-links through this nesting: a split's round directory is
-``<subject_id>/<split_id>/round_00`` relative to ``round_NN`` (each summary
-records the ``<split_id>/round_00`` tail relative to its own subject
-directory).
-
-Aggregation is disk-only (KTD5's consume-not-execute stance): pass counts and
-costs come from ``runs.jsonl``, sub-call counts from rehydrating the persisted
-traces through ``load_round`` + ``run_metrics`` (sha-verified). Each subject's
-aggregate is then written exactly once as ``summary.json`` -- non-clobbering
-in the bundle style, byte-identical rewrites allowed, divergence refused -- so
-the band check (U4) and the ledger (U5) never re-read traces, and the shared
-mining manifest format is never extended.
-
-The promotion half (U4) lives in the sibling ``promotion`` module; the ledger
-writer (U5) lives here: ``write_promotion_ledger`` persists one
-``promotions.jsonl`` record per candidate (loader-rejected and over-budget ones
-included, with their structured reasons) plus one for a re-evaluated merged
-harness, and a ``decision.json`` naming the promoted harness hash or "no
-promotion" (R8). Every record links -- by paths relative to the round
-directory, in ``audit.py``'s walkable style -- to the subject's summary, split
-round directories, and ``harness.json`` identities, so an audit can walk ledger
--> round dirs -> sha-verified traces. Both files are non-clobbering in the
-bundle style: byte-identical rewrites are no-ops, divergence is refused.
-
-Subject parallelism: ``EvaluationConfig.workers`` above ``1`` evaluates the
-baseline and the candidates concurrently, each subject in its own child
-process (``shrlm.optimization.subject_worker``, which also owns the parent-side
-dispatcher), at most ``workers`` alive at once. Subjects share nothing -- directory, breaker, hard deadline, and
-manifests are all per subject -- so the persisted artifacts are byte-identical
-to the sequential path's; only the wall clock changes. The parent gates the
-caps before spawning (a rejection never gets a child), rebuilds each result
-from the child's persisted ``summary.json``, keeps results in loader order,
-and raises ``SubjectWorkerError`` only after every child has exited, so a
-failed subject never discards its siblings' persisted runs. The merged
-re-evaluation stays on the sequential in-process path.
-
-``validate_round`` (U6) is the stage as one call: loader -> evaluation ->
-promotion -> merged re-evaluation -> ledger. It gates a proposals directory
-with the U1 loader under the round's caps, evaluates the baseline and every
-loaded candidate, applies the U4 rule and band, re-evaluates a merged plan's
-harness through the same evaluation path and rule before promotion is final
-(R7), and persists the U5 ledger. A round with zero loadable candidates
-short-circuits before the baseline runs -- no model calls are ever made for a
-round with nothing to compare -- but R8 still demands every candidate's
-outcome on disk: when the loader rejected at least one candidate, the round
-directory gets a rejection-only ledger (upstream reasons, null ``links``, a
-``decision.json`` with plan "none" and a null ``baseline``). Only a proposals
-directory with zero candidates altogether stays a clean no-op that creates no
-round directory at all.
-"""
+Contracts are checked before model calls. Identical inputs replay saved runs;
+legacy or changed inputs require a fresh directory. v1 evidence remains readable
+for analysis. Empty rounds make no calls; loader-rejection-only rounds persist
+a ledger with no baseline. Subject workers evaluate baseline and batch in
+independent processes under the existing caps, breakers, and recovery rules."""
 
 import json
 import os
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -140,17 +77,18 @@ SPLIT_HELDOUT = "heldout"
 EVAL_ROUND_INDEX = 0
 
 SUMMARY_FILENAME = "summary.json"
-SUMMARY_FORMAT = "shrlm-validation-summary/v1"
+VALIDATION_PROTOCOL = "heldout-batch/v1"
+SUMMARY_FORMAT = "shrlm-validation-summary/v2"
 
 # The promotion ledger (U5): one JSONL record per candidate (and per merged
 # harness) under the round directory, plus the round's decision summary.
 PROMOTIONS_FILENAME = "promotions.jsonl"
 DECISION_FILENAME = "decision.json"
-LEDGER_RECORD_FORMAT = "shrlm-promotion-record/v1"
-DECISION_FORMAT = "shrlm-promotion-decision/v1"
+LEDGER_RECORD_FORMAT = "shrlm-promotion-record/v2"
+DECISION_FORMAT = "shrlm-promotion-decision/v2"
 
 # Merge participation roles a ledger record can carry: a constituent of the
-# round's merge plan, or the merged harness's own re-evaluation record.
+# round's merge plan, or the merged harness's evaluation record.
 ROLE_CONSTITUENT = "constituent"
 ROLE_MERGED = "merged"
 
@@ -161,7 +99,7 @@ def _canonical(instance: dict[str, Any]) -> str:
 
 @dataclass(frozen=True)
 class ValidationSplits:
-    """The held-in and held-out instance lists one validation round evaluates.
+    """Disjoint mining and held-out validation instance lists.
 
     Both splits must be non-empty and disjoint (R5): an instance appearing
     verbatim in both would leak the held-out measurement. Instance *ids* may
@@ -185,6 +123,10 @@ class ValidationSplits:
                 f"held-in and held-out splits share instance(s) {ids}; R5 demands disjoint "
                 "splits, so a shared instance is a held-out leak, not a coincidence."
             )
+
+    def evaluation_items(self) -> tuple[tuple[str, list[dict[str, Any]]], ...]:
+        """Only held-out instances contribute promotion evidence."""
+        return ((SPLIT_HELDOUT, self.heldout),)
 
     def items(self) -> tuple[tuple[str, list[dict[str, Any]]], ...]:
         """The (split_id, instances) pairs, in evaluation order."""
@@ -266,7 +208,7 @@ def split_dir(out_dir: Path | str, round_index: int, subject_id: str, split_id: 
 
 @dataclass(frozen=True)
 class SubjectEvaluation:
-    """One subject's completed (or budget-stopped) evaluation over both splits.
+    """One subject's completed (or budget-stopped) held-out evaluation.
 
     ``summary`` is exactly the persisted ``summary.json`` payload -- the
     aggregate shape the promotion module and the ledger consume.
@@ -374,7 +316,7 @@ def load_summary(subject_path: Path | str) -> dict[str, Any]:
     """Read one subject's persisted ``summary.json`` back, checking its format."""
     path = Path(subject_path) / SUMMARY_FILENAME
     payload = json.loads(path.read_text())
-    if payload.get("format") != SUMMARY_FORMAT:
+    if payload.get("format") not in (SUMMARY_FORMAT, "shrlm-validation-summary/v1"):
         raise ValueError(f"{path} is not a {SUMMARY_FORMAT} summary")
     return payload
 
@@ -440,31 +382,12 @@ def evaluate_subject(
     *,
     breaker: CandidateSpendBreaker | None = None,
 ) -> SubjectEvaluation | CandidateRejection:
-    """Evaluate one harness over both splits, persist-first and cost-governed.
+    """Evaluate one harness on held-out instances under the configured caps.
 
-    Each split is one ``run_governed_round`` into
-    ``<out_dir>/round_NN/<subject_id>/<split_id>/`` (nesting ``round_00``; see
-    the module docstring), under ONE spend breaker shared across the splits so
-    the candidate budget is truly cumulative (R4). Limits are merged
-    tighten-only by ``governed_limits``; an enabled S6 policy above the caps
-    comes back as a ``CandidateRejection`` before anything touches disk.
-
-    Idempotent over the round directory: persisted runs are skipped (after
-    trace re-verification), so a crashed evaluation resumes by re-invoking
-    with the same configuration and only the missing runs execute.
-
-    Args:
-        subject_id: ``BASELINE_ID`` or a candidate id; becomes the directory
-            name.
-        harness: The live harness to run.
-        config: The round's shared evaluation config.
-        breaker: Optional pre-charged breaker (tests, merged re-evaluations);
-            by default a fresh one per subject.
-
-    Returns:
-        The ``SubjectEvaluation`` with its persisted summary, or the
-        ``CandidateRejection`` from the caps gate.
-    """
+    A cumulative spend breaker covers every repetition. The subject contract is
+    checked before preparing runs; identical saved runs are verified and reused.
+    Caps violations return a structured rejection before any subject files exist.
+    An optional pre-charged breaker supports resuming governed execution."""
     limits = governed_limits(subject_id, harness.runtime_policy, config.caps)
     if isinstance(limits, CandidateRejection):
         return limits
@@ -472,8 +395,9 @@ def evaluate_subject(
         breaker = CandidateSpendBreaker(config.caps)
 
     subject_path = subject_dir(config.out_dir, config.round_index, subject_id)
+    check_subject_contract(subject_id, harness, config)
     split_summaries: dict[str, dict[str, Any]] = {}
-    for split_id, instances in config.splits.items():
+    for split_id, instances in config.splits.evaluation_items():
         split_path = split_dir(config.out_dir, config.round_index, subject_id, split_id)
         round_config = RoundConfig(
             round_index=EVAL_ROUND_INDEX,
@@ -497,7 +421,7 @@ def evaluate_subject(
             **split_aggregate(split_path),
         }
 
-    # Both splits' aggregates carry the hash their persisted harness.json
+    # The split aggregate carries the hash its persisted harness.json
     # recorded for this same harness, so reuse it rather than paying for a
     # second full serialization here.
     split_versions = {
@@ -508,12 +432,11 @@ def evaluate_subject(
     if len(split_versions) > 1:
         raise ValueError(
             f"subject {subject_id!r} mixes cost-accounting versions "
-            f"{sorted(split_versions)} across its splits; its held-in and held-out "
-            "figures are not comparable with each other, let alone with another "
-            "subject's."
+            f"{sorted(split_versions)}; its figures cannot anchor promotion"
         )
     summary = {
         "format": SUMMARY_FORMAT,
+        "validation_protocol": VALIDATION_PROTOCOL,
         # Which cost-accounting rules produced every figure below -- taken from
         # the runs, never assumed to be this build's. Stamping the current
         # version unconditionally would let a legacy round re-aggregated after
@@ -547,9 +470,57 @@ def evaluate_subject(
     )
 
 
+@dataclass(frozen=True)
+class ValidationSubject:
+    """The harness to measure, independent of one-surface proposal metadata."""
+
+    candidate_id: str
+    harness: Harness
+    harness_hash: str
+
+
+def evaluation_contract(config: EvaluationConfig) -> dict[str, Any]:
+    """Behavior-changing evaluation inputs, excluding operational concurrency."""
+    config_method = getattr(config.verifier, "config", None)
+    verifier_config = dict(config_method()) if callable(config_method) else {}
+    return {
+        "validation_protocol": VALIDATION_PROTOCOL,
+        "verifier_config": verifier_config,
+        "heldout": config.splits.heldout,
+        "repetitions": config.repetitions,
+        "caps": asdict(config.caps),
+        "backend": config.backend,
+        "backend_kwargs": config.backend_kwargs,
+        "verifier_type": f"{type(config.verifier).__module__}.{type(config.verifier).__qualname__}",
+    }
+
+
+def check_contract(path: Path, payload: dict[str, Any]) -> None:
+    """Refuse legacy or changed evidence before any paid evaluation work."""
+    if not path.exists() and path.parent.exists():
+        if any(path.parent.rglob("harness.json")) or any(path.parent.rglob(SUMMARY_FILENAME)):
+            raise ValueError(f"{path.parent} has legacy validation evidence; use a fresh directory")
+        if (path.parent / DECISION_FILENAME).exists():
+            raise ValueError(
+                f"{path.parent} has a legacy validation decision; use a fresh directory"
+            )
+    _persist_once(
+        path,
+        json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n",
+        f"{path} has a different validation contract; use a fresh directory",
+    )
+
+
+def check_subject_contract(subject_id: str, harness: Harness, config: EvaluationConfig) -> None:
+    check_contract(
+        subject_dir(config.out_dir, config.round_index, subject_id) / "evaluation.json",
+        {**evaluation_contract(config), "harness_hash": harness_hash(harness)},
+    )
+
+
 def evaluate_validation_round(
     incumbent: Harness,
-    candidates: Iterable[LoadedCandidate],
+    candidates: Iterable[LoadedCandidate | ValidationSubject],
     config: EvaluationConfig,
 ) -> RoundEvaluation:
     """Evaluate the baseline once, then every candidate against it (R5).
@@ -588,6 +559,15 @@ def evaluate_validation_round(
         baseline = outcomes[0]
         results = outcomes[1:]
     else:
+        for subject_id, harness in [(BASELINE_ID, incumbent)] + [
+            (candidate.candidate_id, candidate.harness) for candidate in candidates
+        ]:
+            limits = governed_limits(subject_id, harness.runtime_policy, config.caps)
+            if isinstance(limits, CandidateRejection):
+                if subject_id == BASELINE_ID:
+                    raise ValueError(BASELINE_REJECTED_MESSAGE.format(reason=limits.reason))
+                continue
+            check_subject_contract(subject_id, harness, config)
         baseline = evaluate_subject(BASELINE_ID, incumbent, config)
         if isinstance(baseline, CandidateRejection):
             raise ValueError(BASELINE_REJECTED_MESSAGE.format(reason=baseline.reason))
@@ -641,7 +621,7 @@ def _subject_links(evaluation: SubjectEvaluation) -> dict[str, Any]:
 
 def _ledger_record(
     decision: "CandidateDecision",
-    subject: SubjectEvaluation | CandidateRejection,
+    subject: SubjectEvaluation | CandidateRejection | LoadedCandidate,
     role: str | None,
     constituent_ids: tuple[str, ...],
     excluded_reason: str | None,
@@ -655,12 +635,14 @@ def _ledger_record(
     """
     return {
         "format": LEDGER_RECORD_FORMAT,
+        "validation_protocol": VALIDATION_PROTOCOL,
         **decision.to_dict(),
         "merge": {
             "role": role,
             "constituent_ids": list(constituent_ids) if role is not None else None,
         },
         "selection_excluded": excluded_reason,
+        "batch_subject_id": "merged" if role == ROLE_CONSTITUENT else None,
         "links": _subject_links(subject) if isinstance(subject, SubjectEvaluation) else None,
     }
 
@@ -672,57 +654,24 @@ def write_promotion_ledger(
     *,
     round_path: Path | None = None,
     loader_rejections: Iterable[CandidateRejection] = (),
-    merge_evaluation: "SubjectEvaluation | CandidateRejection | None" = None,
-    merge_decision: "CandidateDecision | None" = None,
+    constituents: Iterable[LoadedCandidate] = (),
 ) -> PromotionLedger:
-    """Persist one round's promotion ledger and decision summary (R8).
+    """Persist one record per rejected proposal, unscored constituent, and measured subject.
 
-    Writes ``promotions.jsonl`` (one record per candidate: loader rejections
-    first, then the round's candidates in evaluation order, then the merged
-    harness's record when the plan merged) and ``decision.json`` (the promoted
-    harness hash, or "no promotion") into the round directory. Both payloads
-    are pure functions of the inputs -- no timestamps -- so re-running the
-    same round rewrites identical bytes (a no-op), while a divergent rewrite
-    is refused in the bundle's non-clobbering style.
-
-    A round whose every candidate was rejected by the loader never evaluates
-    anything, but R8 still demands its outcomes on disk: pass
-    ``evaluation=None`` with an explicit ``round_path`` and the rejections,
-    and the ledger holds their records (upstream reasons, null ``links``)
-    plus a ``decision.json`` whose ``baseline`` is null -- there was no
-    evaluated incumbent to name or link.
-
-    Args:
-        evaluation: The round's evaluations (U3's ``RoundEvaluation``), or
-            None for a loader-rejection-only round.
-        decisions: One ``CandidateDecision`` per candidate -- covering every
-            loader rejection and every evaluated candidate exactly, with any
-            promotion / merge-failure re-marking already applied.
-        plan: The round's ``PromotionPlan``.
-        round_path: Where the ledger lands when ``evaluation`` is None; the
-            two are mutually exclusive (an evaluated round anchors its own
-            directory).
-        loader_rejections: Candidates the U1 loader refused; they never reached
-            evaluation, and are ledgered with their structured reasons.
-        merge_evaluation: The merged harness's evaluation (or its caps
-            rejection); required with ``merge_decision`` exactly when the plan
-            is a merge.
-        merge_decision: The merged harness's decision record, after
-            ``apply_merge_verdict``.
-
-    Returns:
-        The ``PromotionLedger`` with both persisted payloads.
-
-    Raises:
-        ValueError: If neither or both of ``evaluation`` and ``round_path``
-            are given, a rejection-only ledger holds no rejections or a plan
-            other than "none", decisions do not cover the candidates exactly,
-            the merge leg is missing or spurious for the plan kind, more than
-            one record is promoted, the promoted hash contradicts the plan, or
-            an existing ledger diverges from this one.
-    """
+    ``decisions`` must cover those subjects exactly. A multi-edit batch supplies
+    its admitted proposals as ``constituents``; their records have no measurements
+    or evaluation links. The combined subject alone may be promoted. Rejection-only
+    rounds supply ``round_path`` instead of an evaluation. Identical rewrites are
+    no-ops; divergent audit history is refused."""
     # promotion imports this module, so its vocabulary is imported at call time.
-    from shrlm.optimization.promotion import DECISION_PROMOTED, PLAN_MERGE, PLAN_NONE
+    from shrlm.optimization.promotion import (
+        DECISION_BUNDLED,
+        DECISION_PROMOTED,
+        MERGED_SUBJECT_ID,
+        PLAN_MERGE,
+        PLAN_NONE,
+        PLAN_SINGLE,
+    )
 
     if (evaluation is None) == (round_path is None):
         raise ValueError(
@@ -730,6 +679,7 @@ def write_promotion_ledger(
             "explicit round_path for a loader-rejection-only round"
         )
     rejections = list(loader_rejections)
+    admitted = list(constituents)
     if evaluation is None:
         if not rejections:
             raise ValueError(
@@ -744,8 +694,9 @@ def write_promotion_ledger(
     ledger_root = evaluation.round_path if evaluation is not None else round_path
     assert ledger_root is not None  # exactly one anchor, checked above
 
-    subjects: list[SubjectEvaluation | CandidateRejection] = [
+    subjects: list[SubjectEvaluation | CandidateRejection | LoadedCandidate] = [
         *rejections,
+        *admitted,
         *(evaluation.candidates if evaluation is not None else ()),
     ]
     subject_ids = [
@@ -767,31 +718,44 @@ def write_promotion_ledger(
             f"extra {extra}; the ledger records every candidate, never a subset"
         )
 
-    if (merge_decision is None) != (merge_evaluation is None):
-        raise ValueError("merge_decision and merge_evaluation must be given together")
-    if (plan.kind == PLAN_MERGE) != (merge_decision is not None):
-        raise ValueError(
-            f"a {PLAN_MERGE!r} plan requires the merge re-evaluation leg (and only a merge "
-            f"plan may carry one); plan kind is {plan.kind!r}"
-        )
+    if evaluation is not None:
+        if len(evaluation.candidates) != 1 or plan.kind not in (PLAN_SINGLE, PLAN_MERGE):
+            raise ValueError("a batch ledger requires exactly one evaluated candidate")
+        measured = evaluation.candidates[0]
+        expected_id = MERGED_SUBJECT_ID if plan.kind == PLAN_MERGE else plan.constituent_ids[0]
+        if not isinstance(measured, SubjectEvaluation) or (
+            measured.subject_id != expected_id or measured.harness_hash != plan.harness_hash
+        ):
+            raise ValueError("the evaluated subject must match the planned batch id and hash")
+        for subject in (evaluation.baseline, measured):
+            if subject.summary.get("validation_protocol") != VALIDATION_PROTOCOL:
+                raise ValueError("a batch ledger cannot use legacy validation evidence")
+        expected_constituents = set(plan.constituent_ids) if plan.kind == PLAN_MERGE else set()
+        if {candidate.candidate_id for candidate in admitted} != expected_constituents:
+            raise ValueError("a batch ledger requires every unscored constituent exactly once")
+        for candidate in admitted:
+            decision = by_id[candidate.candidate_id]
+            if (
+                decision.decision != DECISION_BUNDLED
+                or decision.rule is not None
+                or decision.band is not None
+                or decision.harness_hash != candidate.harness_hash
+            ):
+                raise ValueError("batch constituents must be bundled without individual scores")
 
-    constituents = set(plan.constituent_ids) if plan.kind == PLAN_MERGE else set()
+    constituent_ids = set(plan.constituent_ids) if plan.kind == PLAN_MERGE else set()
     records = [
         _ledger_record(
             by_id[subject_id],
             subject,
-            ROLE_CONSTITUENT if subject_id in constituents else None,
+            ROLE_CONSTITUENT
+            if subject_id in constituent_ids
+            else (ROLE_MERGED if subject_id == MERGED_SUBJECT_ID else None),
             plan.constituent_ids,
             plan.excluded.get(subject_id),
         )
         for subject_id, subject in zip(subject_ids, subjects, strict=True)
     ]
-    if merge_decision is not None and merge_evaluation is not None:
-        records.append(
-            _ledger_record(
-                merge_decision, merge_evaluation, ROLE_MERGED, plan.constituent_ids, None
-            )
-        )
 
     promoted = [record for record in records if record["decision"] == DECISION_PROMOTED]
     if len(promoted) > 1:
@@ -807,6 +771,7 @@ def write_promotion_ledger(
 
     decision_payload = {
         "format": DECISION_FORMAT,
+        "validation_protocol": VALIDATION_PROTOCOL,
         "plan": plan.kind,
         "constituent_ids": list(plan.constituent_ids),
         "excluded": dict(plan.excluded),
@@ -822,7 +787,7 @@ def write_promotion_ledger(
         }
         if evaluation is not None
         else None,
-        "n_candidates": len(subjects),
+        "n_candidates": len(subjects) - (1 if plan.kind == PLAN_MERGE else 0),
         "ledger": PROMOTIONS_FILENAME,
     }
 
@@ -865,14 +830,14 @@ def load_promotion_ledger(round_path: Path | str) -> tuple[list[dict[str, Any]],
     ledger_path = path / PROMOTIONS_FILENAME
     records = [json.loads(line) for line in ledger_path.read_text().splitlines() if line.strip()]
     for record in records:
-        if record.get("format") != LEDGER_RECORD_FORMAT:
+        if record.get("format") not in (LEDGER_RECORD_FORMAT, "shrlm-promotion-record/v1"):
             raise ValueError(
                 f"{ledger_path} holds a record for {record.get('subject_id')!r} that is not "
                 f"a {LEDGER_RECORD_FORMAT} record"
             )
     decision_path = path / DECISION_FILENAME
     decision = json.loads(decision_path.read_text())
-    if decision.get("format") != DECISION_FORMAT:
+    if decision.get("format") not in (DECISION_FORMAT, "shrlm-promotion-decision/v1"):
         raise ValueError(f"{decision_path} is not a {DECISION_FORMAT} decision summary")
     return records, decision
 
@@ -892,8 +857,7 @@ class ValidationRound:
     ledger when the loader rejected at least one candidate (R8); ``ledger`` is
     None only when the proposals directory held no candidates at all, in which
     case nothing exists on disk and ``round_path`` is where the round *would*
-    have lived. ``merge_evaluation``/``merge_decision`` are populated exactly
-    when the plan was a merge -- the R7 re-evaluation leg.
+    have lived. ``evaluation.candidates`` contains only the measured batch subject.
     """
 
     round_path: Path
@@ -901,13 +865,11 @@ class ValidationRound:
     evaluation: RoundEvaluation | None
     decisions: list["CandidateDecision"]
     plan: "PromotionPlan"
-    merge_evaluation: SubjectEvaluation | CandidateRejection | None
-    merge_decision: "CandidateDecision | None"
     ledger: PromotionLedger | None
 
     @property
     def promoted(self) -> bool:
-        """Whether this round promoted a harness (final, after any merge leg)."""
+        """Whether this round promoted the evaluated batch harness."""
         return self.ledger is not None and bool(self.ledger.decision["promoted"])
 
     @property
@@ -928,67 +890,21 @@ def validate_round(
     *,
     loader_timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
 ) -> ValidationRound:
-    """Run one whole validation round: load, evaluate, decide, ledger (R9).
+    """Load and freeze a disjoint proposal batch, evaluate it, then persist one verdict.
 
-    The composition, in order:
-
-    1. **Loader (U1).** Every candidate directory under ``proposals_dir`` is
-       gated against the incumbent (with the caps' S6 comparison); rejections
-       are carried through to the ledger, never dropped. When *nothing* loads,
-       the round short-circuits: the baseline is never evaluated (no model
-       calls) and no evaluation directories are created, but any loader
-       rejections still persist as a rejection-only ledger in the round
-       directory (R8) -- ``evaluation`` is None and ``ledger`` carries their
-       records with a null baseline. Only an empty proposals directory (zero
-       candidates, zero rejections) leaves nothing on disk, with ``ledger``
-       also None.
-    2. **Evaluation (U3).** The baseline and every loaded candidate run over
-       both splits under the caps and per-candidate breakers.
-    3. **Promotion (U4).** Loader rejections become decision records, the
-       evaluated candidates are scored by the rule and band, and the accepted
-       set resolves to a plan.
-    4. **The merge leg (R7).** A ``merge`` plan's harness is re-evaluated
-       through the same U3 path (under ``MERGED_SUBJECT_ID``) and the same
-       rule; ``apply_merge_verdict`` turns that into the round's outcome -- a
-       failed merge promotes nothing and re-marks its constituents
-       ``merged_failed``. A ``single`` plan promotes its already-evaluated
-       winner directly, never re-running it.
-    5. **Ledger (U5).** ``write_promotion_ledger`` persists every candidate's
-       record and the round decision, non-clobbering.
-
-    Idempotent end to end: re-invoking with the same inputs replays persisted
-    runs (zero new model calls), recomputes identical summaries and decisions,
-    and rewrites the ledger byte-identically (a no-op).
-
-    Args:
-        incumbent: The harness the round defends.
-        proposals_dir: Stage 2's candidate directories (``shrlm-proposal/v1``).
-        config: The round's evaluation config (splits, verifier, caps, out
-            dir, round index, repetitions, backend).
-        promotion: The preregistered thresholds and bands; defaults to the
-            paper's exact rule with unconstrained bands.
-        loader_timeout_seconds: Wall-clock bound on each candidate's
-            materialization/check subprocess.
-
-    Returns:
-        The ``ValidationRound`` with every intermediate the audit needs.
-
-    Raises:
-        ValueError: If a loaded candidate claims a reserved subject id
-            (``baseline``, ``merged``) -- a directory collision, not an
-            expected-invalid proposal.
-    """
+    Only baseline and the combined candidate run, on held-out instances. There
+    is no individual scoring, post-validation selection, or second merge leg.
+    Single edits keep their candidate id; multi-edit batches evaluate as ``merged``.
+    Duplicate surfaces or reserved ids fail before model calls. Loader rejections
+    remain visible in the ledger. Empty proposal directories create no artifacts."""
     from shrlm.optimization.promotion import (
+        DECISION_BUNDLED,
         MERGED_SUBJECT_ID,
         PLAN_MERGE,
-        PLAN_NONE,
-        PLAN_SINGLE,
+        CandidateDecision,
         PromotionConfig,
-        PromotionPlan,
-        apply_merge_verdict,
-        assess_round,
         decide_subject,
-        plan_promotion,
+        plan_batch,
         promote_decision,
     )
 
@@ -998,80 +914,91 @@ def validate_round(
         proposals_dir, incumbent, caps=config.caps.s6_caps(), timeout_seconds=loader_timeout_seconds
     )
     for candidate in loaded:
-        if candidate.candidate_id == MERGED_SUBJECT_ID:
+        if candidate.candidate_id in (BASELINE_ID, MERGED_SUBJECT_ID):
+            raise ValueError(f"candidate id {candidate.candidate_id!r} is reserved")
+    plan = plan_batch(incumbent, loaded)
+    decisions = [decide_subject({}, rejection, pconfig) for rejection in rejections]
+    evaluation = None
+    constituents = loaded if plan.kind == PLAN_MERGE else []
+
+    if loaded or rejections or (round_path / "validation.json").exists():
+        # Freeze the admitted batch and rejected inputs before the baseline runs.
+        check_contract(
+            round_path / "validation.json",
+            {
+                **evaluation_contract(config),
+                "incumbent_hash": harness_hash(incumbent),
+                "batch_hash": plan.harness_hash,
+                "constituents": [
+                    {"id": c.candidate_id, "surface": c.surface, "hash": c.harness_hash}
+                    for c in loaded
+                ],
+                "rejections": [r.to_dict() for r in rejections],
+                "promotion": {
+                    "tau_regression": pconfig.tau_regression,
+                    "tau_improvement": pconfig.tau_improvement,
+                    "cost_band": [pconfig.cost_band.lower, str(pconfig.cost_band.upper)],
+                    "sub_call_band": [
+                        pconfig.sub_call_band.lower,
+                        str(pconfig.sub_call_band.upper),
+                    ],
+                },
+            },
+        )
+    if loaded:
+        assert plan.harness is not None and plan.harness_hash is not None
+        subject_id = MERGED_SUBJECT_ID if constituents else loaded[0].candidate_id
+        subject = ValidationSubject(subject_id, plan.harness, plan.harness_hash)
+        limits = governed_limits(subject_id, plan.harness.runtime_policy, config.caps)
+        if isinstance(limits, CandidateRejection):
+            raise ValueError(f"combined candidate violates caps: {limits.reason}")
+        evaluation = evaluate_validation_round(incumbent, [subject], config)
+        if evaluation.baseline.over_budget:
             raise ValueError(
-                f"candidate id {MERGED_SUBJECT_ID!r} is reserved for the merged harness's "
-                "re-evaluation directory"
+                "the baseline evaluation ran over budget; a partial baseline cannot anchor promotion"
             )
-
-    if not loaded:
-        # Nothing to compare: never run the baseline, make zero model calls.
-        # R8 still demands every candidate's outcome in a persisted ledger, so
-        # a round with at least one loader rejection writes a rejection-only
-        # ledger (upstream reasons, null links, a null baseline) into the
-        # round directory. Only a truly empty proposals directory -- zero
-        # candidates, zero rejections -- stays a clean no-op that creates no
-        # round directory at all.
-        decisions = [decide_subject({}, rejection, pconfig) for rejection in rejections]
-        plan = PromotionPlan(kind=PLAN_NONE, constituent_ids=(), harness=None, harness_hash=None)
-        ledger = (
-            write_promotion_ledger(
-                None, decisions, plan, round_path=round_path, loader_rejections=rejections
-            )
-            if rejections
-            else None
+        verdict = decide_subject(
+            evaluation.baseline.summary,
+            evaluation.candidates[0],
+            pconfig,
+            surface=None if constituents else loaded[0].surface,
         )
-        return ValidationRound(
-            round_path=round_path,
+        if verdict.accepted:
+            verdict = promote_decision(verdict)
+        decisions.extend(
+            CandidateDecision(
+                subject_id=c.candidate_id,
+                decision=DECISION_BUNDLED,
+                reasons=(
+                    f"evaluated only as part of {subject_id}; shared decision: {verdict.decision}",
+                ),
+                tau_regression=pconfig.tau_regression,
+                tau_improvement=pconfig.tau_improvement,
+                harness_hash=c.harness_hash,
+                surface=c.surface,
+            )
+            for c in constituents
+        )
+        decisions.append(verdict)
+
+    ledger = (
+        write_promotion_ledger(
+            evaluation,
+            decisions,
+            plan,
+            round_path=round_path if evaluation is None else None,
             loader_rejections=rejections,
-            evaluation=None,
-            decisions=decisions,
-            plan=plan,
-            merge_evaluation=None,
-            merge_decision=None,
-            ledger=ledger,
+            constituents=constituents,
         )
-
-    evaluation = evaluate_validation_round(incumbent, loaded, config)
-    surface_by_id = {candidate.candidate_id: candidate.surface for candidate in loaded}
-    decisions = [
-        decide_subject(evaluation.baseline.summary, rejection, pconfig) for rejection in rejections
-    ]
-    decisions += assess_round(evaluation, pconfig, surfaces=surface_by_id)
-    plan = plan_promotion(incumbent, decisions, loaded)
-
-    merge_evaluation: SubjectEvaluation | CandidateRejection | None = None
-    merge_decision: CandidateDecision | None = None
-    if plan.kind == PLAN_SINGLE:
-        # The winner's own evaluation already is the evidence; single winners
-        # promote directly, never re-run (U4's contract).
-        winner_id = plan.constituent_ids[0]
-        decisions = [
-            promote_decision(decision) if decision.subject_id == winner_id else decision
-            for decision in decisions
-        ]
-    elif plan.kind == PLAN_MERGE:
-        assert plan.harness is not None  # a merge plan always carries its artifact
-        merge_evaluation = evaluate_subject(MERGED_SUBJECT_ID, plan.harness, config)
-        merge_decision = decide_subject(evaluation.baseline.summary, merge_evaluation, pconfig)
-        merge_decision, decisions = apply_merge_verdict(plan, merge_decision, decisions)
-
-    ledger = write_promotion_ledger(
-        evaluation,
-        decisions,
-        plan,
-        loader_rejections=rejections,
-        merge_evaluation=merge_evaluation,
-        merge_decision=merge_decision,
+        if (loaded or rejections)
+        else None
     )
     return ValidationRound(
-        round_path=evaluation.round_path,
+        round_path=round_path,
         loader_rejections=rejections,
         evaluation=evaluation,
         decisions=decisions,
         plan=plan,
-        merge_evaluation=merge_evaluation,
-        merge_decision=merge_decision,
         ledger=ledger,
     )
 
@@ -1089,14 +1016,19 @@ __all__ = [
     "SPLIT_HELDOUT",
     "SUMMARY_FILENAME",
     "SUMMARY_FORMAT",
+    "VALIDATION_PROTOCOL",
     "EvaluationConfig",
     "PromotionLedger",
     "RoundEvaluation",
     "SubjectEvaluation",
     "ValidationRound",
     "ValidationSplits",
+    "ValidationSubject",
+    "check_contract",
+    "check_subject_contract",
     "evaluate_subject",
     "evaluate_validation_round",
+    "evaluation_contract",
     "load_promotion_ledger",
     "load_summary",
     "split_aggregate",

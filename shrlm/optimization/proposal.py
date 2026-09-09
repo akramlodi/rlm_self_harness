@@ -522,6 +522,8 @@ def _render_history_block(
             f"promoted_harness_hash={decision.get('promoted_harness_hash')}"
         )
         for record in records:
+            if record.get("decision") == "bundled":
+                continue
             subject = record.get("subject_id")
             upstream = record.get("upstream")
             if upstream:
@@ -530,6 +532,12 @@ def _render_history_block(
                     f"{upstream.get('reason')}"
                 )
                 continue
+            constituent_ids = (record.get("merge") or {}).get("constituent_ids") or []
+            if constituent_ids:
+                surfaces = [
+                    r.get("surface") for r in records if r.get("subject_id") in constituent_ids
+                ]
+                subject = f"{subject} (combined edits: {', '.join(str(s) for s in surfaces)})"
             outcome = record.get("decision")
             reasons = "; ".join(record.get("reasons") or [])
             lines.append(f"  - {subject}: {outcome}" + (f" ({reasons})" if reasons else ""))
@@ -552,6 +560,13 @@ The ten editable surfaces:
 """
 
 PROPOSER_TASK = """\
+Propose at most one edit per surface in this round. All admitted edits will be \
+evaluated as one combined candidate, with one shared promotion decision. The \
+candidate limit is a maximum, not a quota. When patterns compete for a surface, \
+choose the best-supported minimal edit. Do not move an edit to a weaker surface \
+just to fill the batch. If only one surface warrants a change, propose one edit; \
+if none does, return an empty array.
+
 For each pattern you choose to address, propose exactly one minimal edit on one of \
 its eligible surfaces, naming that surface in the candidate's "surface" field -- \
 change only what is needed to address that specific mechanism, never a broad rewrite. You do not have to address every pattern: skip a pattern if no \
@@ -737,7 +752,8 @@ def render_prompt(
     ]
     if any("S10" in _pattern_surfaces(pattern) for _, pattern in addressable):
         sections.append(SKILLS_PEDAGOGY % {"skill_loader": SKILL_LOADER_NAME})
-    sections.append(RESPONSE_FORMAT % {"k": k})
+    eligible = {surface for _, pattern in addressable for surface in _pattern_surfaces(pattern)}
+    sections.append(RESPONSE_FORMAT % {"k": min(k, len(eligible))})
     return "\n\n".join(sections), addressable
 
 
@@ -1352,6 +1368,7 @@ def propose_round(
                 )
             batch = [validate_candidate_spec(item, patterns) for item in raw_items]
             seen: set[int] = set()
+            seen_surfaces: set[str] = set()
             for spec in batch:
                 if spec.pattern_index in seen:
                     raise ProposalRejection(
@@ -1359,6 +1376,11 @@ def propose_round(
                         "in the same batch"
                     )
                 seen.add(spec.pattern_index)
+                if spec.surface in seen_surfaces:
+                    raise ProposalRejection(
+                        f"surface {spec.surface} was proposed more than once in the same batch"
+                    )
+                seen_surfaces.add(spec.surface)
                 if spec.edit["kind"] == EDIT_KIND_SKILLS:
                     _dry_run_skill_merge(spec, incumbent)
         except ProposalRejection as exc:

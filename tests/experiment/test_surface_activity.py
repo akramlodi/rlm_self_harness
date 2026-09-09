@@ -513,13 +513,13 @@ class TestDeclaredVsUntouched:
                 MERGED_CATEGORY,
             }
 
-    def test_the_fieldnames_are_unchanged(self) -> None:
-        """Two new values in an existing column, not a new column."""
+    def test_the_fieldnames_include_unscored_batch_participation(self) -> None:
         assert SURFACE_ACTIVITY_FIELDNAMES == (
             "round_index",
             "surface",
             "surface_source",
             "attempted_count",
+            "bundled_count",
             "promoted_count",
             "cumulative_surfaces_attempted",
             "cumulative_surfaces_promoted",

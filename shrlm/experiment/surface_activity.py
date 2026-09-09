@@ -111,6 +111,7 @@ from shrlm.experiment.rounds import (
 )
 from shrlm.optimization.promotion import (
     DECISION_ACCEPTED,
+    DECISION_BUNDLED,
     DECISION_PROMOTED,
     SURFACE_HARNESS_FIELDS,
 )
@@ -143,6 +144,7 @@ SURFACE_ACTIVITY_FIELDNAMES = (
     "surface",
     "surface_source",
     "attempted_count",
+    "bundled_count",
     "promoted_count",
     "cumulative_surfaces_attempted",
     "cumulative_surfaces_promoted",
@@ -174,6 +176,7 @@ class SurfaceActivityRow:
     cumulative_surfaces_promoted: int
     round_complete: bool
     runs_complete: bool | None
+    bundled_count: int = 0
 
     def to_dict(self) -> dict[str, int | str]:
         return {
@@ -181,6 +184,7 @@ class SurfaceActivityRow:
             "surface": self.surface,
             "surface_source": self.surface_source,
             "attempted_count": self.attempted_count,
+            "bundled_count": self.bundled_count,
             "promoted_count": self.promoted_count,
             "cumulative_surfaces_attempted": self.cumulative_surfaces_attempted,
             "cumulative_surfaces_promoted": self.cumulative_surfaces_promoted,
@@ -216,7 +220,7 @@ def _is_promoted(record: dict) -> bool:
     ``decision`` only reads ``"promoted"`` on the single winner's record, or
     the merged harness's own re-evaluation record. A constituent surface that
     won its slot and joined a *successful* merge stays ``"accepted"`` forever
-    (``apply_merge_verdict`` never rewrites it) -- its promotion is visible
+    (the legacy merge verdict never rewrote it) -- its promotion is visible
     only through ``merge.role == "constituent"`` on that same record.
     """
     if record["decision"] == DECISION_PROMOTED:
@@ -308,9 +312,13 @@ def surface_activity_over_rounds(
                 unattributed_by_round[round_index] += 1
                 continue
             key = (round_index, attribution.category)
-            entry = counts.setdefault(key, {"attempted_count": 0, "promoted_count": 0})
+            entry = counts.setdefault(
+                key, {"attempted_count": 0, "promoted_count": 0, "bundled_count": 0}
+            )
             sources.setdefault(key, set()).add(attribution.source)
             entry["attempted_count"] += 1
+            if record["decision"] == DECISION_BUNDLED:
+                entry["bundled_count"] += 1
             if _is_promoted(record):
                 entry["promoted_count"] += 1
 
@@ -320,7 +328,8 @@ def surface_activity_over_rounds(
     for round_index in round_indices:
         round_entries = {
             category: counts.get(
-                (round_index, category), {"attempted_count": 0, "promoted_count": 0}
+                (round_index, category),
+                {"attempted_count": 0, "promoted_count": 0, "bundled_count": 0},
             )
             for category in ROW_CATEGORIES
         }
@@ -353,6 +362,7 @@ def surface_activity_over_rounds(
                         category, sources.get((round_index, category)), declared
                     ),
                     attempted_count=entry["attempted_count"],
+                    bundled_count=entry["bundled_count"],
                     promoted_count=entry["promoted_count"],
                     cumulative_surfaces_attempted=cumulative_attempted,
                     cumulative_surfaces_promoted=cumulative_promoted,

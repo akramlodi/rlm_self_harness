@@ -1,39 +1,10 @@
-"""Stage-3 proposal validation, promotion half: the pure offline decision (R6, R7).
+"""Pure composition and promotion decisions for held-out batch validation.
 
-Everything here is arithmetic over U3's persisted ``summary.json`` payloads and
-composition over live harnesses -- no model calls, no filesystem (KTD5). Three
-layers, in the order U6's ``validate_round`` will compose them:
-
-1. **The acceptance rule plus the band** (``score_candidate``). The paper's
-   rule on pass counts aggregated across repeats, with configurable noise
-   margins: delta_in >= -tau_reg and delta_ho >= -tau_reg and
-   max(delta_in, delta_ho) > tau_imp. Both thresholds default to 0, which
-   reproduces the paper's exact rule (delta >= 0 on both splits, max > 0);
-   the pilot's preregistered margins drop into ``PromotionConfig`` and both
-   values are recorded on every decision record. On top of the rule sits
-   proposal.tex 3.3.3's preregistered band: candidate mean cost and mean
-   sub-calls must fall within multiplier bounds relative to the baseline's
-   means (inclusive at both ends; the defaults are unconstrained, again
-   reproducing the paper). Both the rule and the band must pass.
-2. **Round assessment** (``assess_round`` / ``decide_subject``). Candidates
-   already rejected upstream -- at a loader gate or by the spend breaker --
-   enter as their structured rejections and are never re-scored; each becomes
-   a ``rejected`` or ``over_budget`` decision record with its reason.
-3. **Selection and merge construction** (``plan_promotion``,
-   ``merge_harnesses``). Among accepted candidates, edits are compatible when
-   their edited surfaces are pairwise disjoint. Same-surface accepted edits
-   cannot merge: the one with the higher held-out delta (tiebreak: held-in
-   delta, then lexicographically smaller candidate id) survives, the rest are
-   recorded as excluded. One survivor promotes alone; several survivors are
-   composed onto the incumbent -- each edit's surface value replacing the
-   incumbent's -- into the merged harness, which is the round's promotion
-   artifact. U6 re-evaluates that artifact through U3 and this same rule
-   before promotion is final; ``apply_merge_verdict`` turns the re-evaluation
-   into the round's outcome. When the merge fails, the round promotes
-   *nothing*: falling back to individually accepted candidates after seeing
-   merge results would be post-hoc selection the preregistered rule never
-   validated, so the constituents are ledgered as ``merged_failed`` instead.
-"""
+``plan_batch`` composes all admitted edits before validation and rejects any
+surface collision. ``score_candidate`` compares held-out pass counts and
+held-out cost/sub-call means against the incumbent. The batch must clear the
+configured improvement margin and resource bands. No constituent is scored
+individually, and a failed batch has no individual fallback."""
 
 import math
 from collections.abc import Iterable, Mapping
@@ -45,8 +16,8 @@ from shrlm.optimization.candidates import CandidateRejection, LoadedCandidate
 from shrlm.optimization.costs import OUTCOME_COMPLETED
 from shrlm.optimization.driver import ACCOUNTING_VERSION_KEY, LEGACY_ACCOUNTING_VERSION
 from shrlm.optimization.validation import (
-    SPLIT_HELDIN,
     SPLIT_HELDOUT,
+    VALIDATION_PROTOCOL,
     RoundEvaluation,
     SubjectEvaluation,
 )
@@ -54,8 +25,9 @@ from shrlm.rlm_harness import Harness
 
 # The decision vocabulary the promotion ledger (U5) records. ``accepted`` and
 # ``rejected`` come from the rule+band; ``over_budget`` from the breaker;
-# ``merged_failed`` marks accepted constituents of a merge that failed its own
-# re-evaluation; ``promoted`` is final and assigned only after any merge leg.
+# ``bundled`` constituents have no individual measurements. ``merged_failed``
+# is retained only as vocabulary for readers of legacy ledgers.
+DECISION_BUNDLED = "bundled"
 DECISION_ACCEPTED = "accepted"
 DECISION_REJECTED = "rejected"
 DECISION_OVER_BUDGET = "over_budget"
@@ -72,7 +44,7 @@ PLAN_MERGE = "merge"
 MERGED_SUBJECT_ID = "merged"
 
 # The two band-checked metrics: the recorded name (the overall per-run mean
-# across both splits), the summary's per-split total it is computed from, and
+# on held-out instances), the summary's per-split total it is computed from, and
 # the ``PromotionConfig`` field naming its band.
 _BAND_METRICS: tuple[tuple[str, str, str], ...] = (
     ("mean_cost", "total_cost", "cost_band"),
@@ -136,14 +108,11 @@ class Band:
 
 @dataclass(frozen=True)
 class PromotionConfig:
-    """The preregistered promotion parameters (R6).
+    """Promotion thresholds and resource multiplier bands.
 
-    ``tau_regression`` (noise tolerance on either split's pass-count delta)
-    and ``tau_improvement`` (the margin at least one split must clear) default
-    to 0, reproducing the paper's exact rule; the bands default to
-    unconstrained. The pilot's preregistered values drop in here, and every
-    decision record carries the thresholds it was decided under.
-    """
+    The held-out delta must exceed ``tau_improvement`` and must not fall below
+    ``-tau_regression``. Bands use held-out means only. Every decision records
+    these round-level parameters, including unscored constituent records."""
 
     tau_regression: float = 0.0
     tau_improvement: float = 0.0
@@ -170,7 +139,7 @@ class CandidateDecision:
     ledger row must be interpretable without the config that produced it.
     ``surface`` is the one S1-S10 surface the candidate's proposal edited
     (from its ``LoadedCandidate``); it is None for a loader rejection whose
-    surface was never resolved, and for the merged harness's own re-evaluation
+    surface was never resolved, and for the merged harness's evaluation
     record, which spans more than one surface by construction.
     """
 
@@ -212,14 +181,10 @@ class CandidateDecision:
 
 @dataclass(frozen=True)
 class PromotionPlan:
-    """What one round's accepted candidates resolve to (R7's pure half).
+    """The fixed candidate composition, constructed before any validation result.
 
-    ``harness`` is the promotion artifact: the single winner's own harness, or
-    the merged composition -- which U6 must re-evaluate through U3 and
-    ``score_candidate`` before promotion is final. ``excluded`` records
-    accepted candidates the selection dropped (same-surface losers) with the
-    reason, so the ledger never loses them.
-    """
+    ``harness`` is the sole candidate to evaluate. ``excluded`` remains an empty
+    legacy ledger field: no proposal is selected or excluded using measurements."""
 
     kind: str
     constituent_ids: tuple[str, ...]
@@ -235,6 +200,13 @@ class PromotionPlan:
 
 def _scoring_violation(baseline: dict[str, Any], candidate: dict[str, Any]) -> str | None:
     """Why these two summaries cannot be compared, or None when they can."""
+    if any(
+        summary.get("validation_protocol") != VALIDATION_PROTOCOL
+        for summary in (baseline, candidate)
+    ):
+        return (
+            "promotion requires the current validation protocol; legacy evidence cannot be scored"
+        )
     if baseline["outcome"] != OUTCOME_COMPLETED:
         return (
             f"the baseline summary is {baseline['outcome']!r}, not completed; a partial "
@@ -245,7 +217,7 @@ def _scoring_violation(baseline: dict[str, Any], candidate: dict[str, Any]) -> s
             f"candidate {candidate['subject_id']!r} is {candidate['outcome']!r}; over_budget "
             "candidates are ledgered as such, never scored"
         )
-    for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+    for split_id in (SPLIT_HELDOUT,):
         base_runs = baseline["splits"][split_id]["n_runs"]
         cand_runs = candidate["splits"][split_id]["n_runs"]
         if base_runs != cand_runs or base_runs == 0:
@@ -272,19 +244,9 @@ def _scoring_violation(baseline: dict[str, Any], candidate: dict[str, Any]) -> s
 
 
 def _overall_mean(summary: dict[str, Any], total_key: str) -> float:
-    """One metric's per-run mean across both splits, from the persisted totals.
-
-    The band compares whole evaluation footprints, so the figure aggregates
-    across splits (weighting each split by its run count) instead of banding
-    each split separately.
-    """
-    total = 0.0
-    runs = 0
-    for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
-        split = summary["splits"][split_id]
-        total += float(split[total_key])
-        runs += int(split["n_runs"])
-    return total / runs
+    """One metric's per-run held-out mean from persisted totals."""
+    split = summary["splits"][SPLIT_HELDOUT]
+    return float(split[total_key]) / int(split["n_runs"])
 
 
 def _recorded_bound(bound: float) -> float | None:
@@ -314,7 +276,7 @@ def score_candidate(
         candidate_summary: The candidate's (or merged harness's) summary.
         config: The preregistered thresholds and bands.
         surface: The candidate's edited surface (S1-S10), recorded on the
-            decision verbatim; None for the merged harness's re-evaluation.
+            decision verbatim; None for the merged harness's evaluation.
 
     Returns:
         An ``accepted`` or ``rejected`` decision with the rule and band
@@ -331,7 +293,7 @@ def score_candidate(
     reasons: list[str] = []
     rule: dict[str, Any] = {}
     deltas: dict[str, int] = {}
-    for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+    for split_id in (SPLIT_HELDOUT,):
         base_split = baseline_summary["splits"][split_id]
         cand_split = candidate_summary["splits"][split_id]
         delta = int(cand_split["pass_count"]) - int(base_split["pass_count"])
@@ -350,7 +312,7 @@ def score_candidate(
     if max(deltas.values()) <= config.tau_improvement:
         reasons.append(
             f"no split improves beyond tau_improvement={config.tau_improvement} "
-            f"(heldin {deltas[SPLIT_HELDIN]:+d}, heldout {deltas[SPLIT_HELDOUT]:+d})"
+            f"(heldout {deltas[SPLIT_HELDOUT]:+d})"
         )
 
     band: dict[str, Any] = {}
@@ -400,13 +362,12 @@ def decide_subject(
 
     A loader/caps ``CandidateRejection`` becomes a ``rejected`` record
     carrying the gate verdict verbatim; an over-budget evaluation becomes
-    ``over_budget``; only a completed evaluation is scored. This is also the
-    entry point U6's merge leg uses on the merged harness's evaluation.
+    ``over_budget``; only a completed evaluation is scored. This also handles the combined batch subject.
 
     Args:
         surface: The candidate's edited surface (S1-S10), when known -- a
             loader rejection whose surface never resolved, or the merged
-            harness's own re-evaluation, passes None.
+            harness's evaluation, passes None.
     """
     if isinstance(subject, CandidateRejection):
         return CandidateDecision(
@@ -488,7 +449,7 @@ def merge_harnesses(incumbent: Harness, edits: Iterable[LoadedCandidate]) -> Har
 
     Raises:
         ValueError: If two edits claim the same surface; same-surface edits
-            are incompatible by definition and must go through selection.
+            are incompatible and must be fixed before evaluation.
     """
     ordered = sorted(edits, key=lambda edit: edit.candidate_id)
     claimed: dict[str, str] = {}
@@ -506,86 +467,19 @@ def merge_harnesses(incumbent: Harness, edits: Iterable[LoadedCandidate]) -> Har
     return replace(incumbent, name=name, **fields)
 
 
-def plan_promotion(
-    incumbent: Harness,
-    decisions: Iterable[CandidateDecision],
-    candidates: Iterable[LoadedCandidate],
-) -> PromotionPlan:
-    """Resolve a round's accepted candidates into its promotion artifact (R7).
-
-    Accepted candidates are grouped by edited surface; within each group only
-    the best survives -- higher held-out delta, tiebreak: held-in delta, then
-    the lexicographically smaller candidate id -- because same-surface edits
-    cannot compose. Zero survivors plan nothing; one plans a single promotion
-    of that candidate's own (already evaluated) harness; several plan the
-    merged harness, which U6 must re-evaluate before promotion is final.
-
-    Args:
-        incumbent: The harness the round evaluated against.
-        decisions: The round's decision records (non-accepted ones are
-            ignored here; the ledger keeps them).
-        candidates: The loaded candidates, keyed by id; every accepted
-            decision must have one (its surface and live harness live there).
-
-    Returns:
-        The plan, with same-surface losers recorded in ``excluded``.
-
-    Raises:
-        ValueError: If an accepted decision has no loaded candidate to
-            promote.
-    """
-    by_id = {candidate.candidate_id: candidate for candidate in candidates}
-    accepted = [decision for decision in decisions if decision.accepted]
-    missing = [decision.subject_id for decision in accepted if decision.subject_id not in by_id]
-    if missing:
-        raise ValueError(
-            f"accepted decision(s) {', '.join(sorted(missing))} have no loaded candidate; "
-            "a decision cannot promote a harness it does not hold"
-        )
-
-    by_surface: dict[str, list[CandidateDecision]] = {}
-    for decision in accepted:
-        by_surface.setdefault(by_id[decision.subject_id].surface, []).append(decision)
-
-    winners: list[CandidateDecision] = []
-    excluded: dict[str, str] = {}
-    for surface in sorted(by_surface):
-        ranked = sorted(
-            by_surface[surface],
-            key=lambda decision: (
-                -decision.delta(SPLIT_HELDOUT),
-                -decision.delta(SPLIT_HELDIN),
-                decision.subject_id,
-            ),
-        )
-        winner = ranked[0]
-        winners.append(winner)
-        for loser in ranked[1:]:
-            excluded[loser.subject_id] = (
-                f"same-surface {surface}: {winner.subject_id} wins on held-out delta "
-                "(tiebreak: held-in delta, then candidate id); same-surface edits cannot merge"
-            )
-
-    if not winners:
+def plan_batch(incumbent: Harness, candidates: Iterable[LoadedCandidate]) -> PromotionPlan:
+    """Freeze all admitted, disjoint edits before observing validation outcomes."""
+    candidates = sorted(candidates, key=lambda candidate: candidate.candidate_id)
+    if not candidates:
+        return PromotionPlan(PLAN_NONE, (), None, None)
+    merged = merge_harnesses(incumbent, candidates)  # also rejects duplicate surfaces
+    if len(candidates) == 1:
+        candidate = candidates[0]
         return PromotionPlan(
-            kind=PLAN_NONE, constituent_ids=(), harness=None, harness_hash=None, excluded=excluded
+            PLAN_SINGLE, (candidate.candidate_id,), candidate.harness, candidate.harness_hash
         )
-    if len(winners) == 1:
-        winner = by_id[winners[0].subject_id]
-        return PromotionPlan(
-            kind=PLAN_SINGLE,
-            constituent_ids=(winner.candidate_id,),
-            harness=winner.harness,
-            harness_hash=winner.harness_hash,
-            excluded=excluded,
-        )
-    merged = merge_harnesses(incumbent, [by_id[winner.subject_id] for winner in winners])
     return PromotionPlan(
-        kind=PLAN_MERGE,
-        constituent_ids=tuple(sorted(winner.subject_id for winner in winners)),
-        harness=merged,
-        harness_hash=harness_hash(merged),
-        excluded=excluded,
+        PLAN_MERGE, tuple(c.candidate_id for c in candidates), merged, harness_hash(merged)
     )
 
 
@@ -609,68 +503,9 @@ def promote_decision(decision: CandidateDecision) -> CandidateDecision:
     return replace(decision, decision=DECISION_PROMOTED)
 
 
-def apply_merge_verdict(
-    plan: PromotionPlan,
-    merge_decision: CandidateDecision,
-    decisions: Iterable[CandidateDecision],
-) -> tuple[CandidateDecision, list[CandidateDecision]]:
-    """Turn the merged harness's re-evaluation into the round's outcome (R7).
-
-    When the merge passed the rule and the band on its own, it is promoted and
-    the constituents keep their ``accepted`` records. When it did not --
-    rejected by the rule/band, or over budget -- the round promotes nothing:
-    every constituent is re-ledgered as ``merged_failed``, because falling
-    back to an individually accepted candidate after seeing merge results is
-    post-hoc selection the preregistered rule never validated.
-
-    Args:
-        plan: The ``PLAN_MERGE`` plan whose harness was re-evaluated.
-        merge_decision: ``decide_subject``'s record for that re-evaluation.
-        decisions: The round's candidate decision records.
-
-    Returns:
-        ``(final_merge_decision, final_decisions)``: the merge's record
-        (``promoted`` on success, unchanged otherwise) and the candidate
-        records with constituents re-marked on failure. Inputs are never
-        mutated.
-
-    Raises:
-        ValueError: If the plan is not a merge, or the re-evaluated harness
-            hash is not the planned one -- the verdict must be about the
-            artifact this plan built.
-    """
-    if plan.kind != PLAN_MERGE:
-        raise ValueError(f"apply_merge_verdict needs a {PLAN_MERGE!r} plan, got {plan.kind!r}")
-    if merge_decision.harness_hash is not None and merge_decision.harness_hash != plan.harness_hash:
-        raise ValueError(
-            f"merge decision is about harness hash {merge_decision.harness_hash}, but the plan "
-            f"built {plan.harness_hash}; the verdict must re-evaluate the planned merge"
-        )
-
-    if merge_decision.accepted:
-        return promote_decision(merge_decision), list(decisions)
-
-    failure = (
-        f"constituent of merged harness {merge_decision.subject_id!r}, which failed its own "
-        "re-evaluation; the round promotes nothing (no post-hoc fallback to individual "
-        "candidates)"
-    )
-    constituents = set(plan.constituent_ids)
-    final_decisions = [
-        replace(
-            decision,
-            decision=DECISION_MERGED_FAILED,
-            reasons=(*decision.reasons, failure),
-        )
-        if decision.subject_id in constituents
-        else decision
-        for decision in decisions
-    ]
-    return merge_decision, final_decisions
-
-
 __all__ = [
     "DECISION_ACCEPTED",
+    "DECISION_BUNDLED",
     "DECISION_MERGED_FAILED",
     "DECISION_OVER_BUDGET",
     "DECISION_PROMOTED",
@@ -684,11 +519,10 @@ __all__ = [
     "CandidateDecision",
     "PromotionConfig",
     "PromotionPlan",
-    "apply_merge_verdict",
     "assess_round",
     "decide_subject",
     "merge_harnesses",
-    "plan_promotion",
+    "plan_batch",
     "promote_decision",
     "score_candidate",
 ]

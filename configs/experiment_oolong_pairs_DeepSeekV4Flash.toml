@@ -25,7 +25,7 @@ max_output_tokens = 8192
 # instances at 8k and 40 at 262k. Partition all 40 short instances disjointly
 # for optimization and its untouched test; reserve all 40 long instances for
 # frozen-harness evaluation.
-n_in = 10 # held-in: weakness mining + one arm of validation
+n_in = 10 # held-in: weakness mining only
 n_ho = 10 # held-out: validation only, never mined
 test_short = 20 # untouched short test; 10 + 10 + 20 exhausts the 40-instance pool
 test_long = 40 # untouched long test; exhausts its independent 40-instance pool
@@ -34,8 +34,8 @@ seed = 0 # seeded partition of the OOLONG-Pairs pools
 [loop]
 # Optimization-loop counts, section 3.2.
 m = 2 # mining repetitions per held-in instance
-v = 3 # validation repetitions per instance per subject
-k = 4 # candidate edits proposed per round
+v = 1 # validation repetitions per held-out instance per subject
+k = 4 # maximum candidate edits per round, at most one per surface
 # Restored to the preregistered 15-round ceiling for this separate pair-task
 # identity. Changing it later requires a fresh out-dir (R3).
 t = 15 # maximum optimization rounds
@@ -235,7 +235,7 @@ short = 1800.0
 long = 450.0
 
 [report]
-p_merge = 0.5 # assumed fraction of rounds ending in a promotion + merge re-evaluation
+p_merge = 0.5 # legacy input; unused by held-out batch validation projections
 eval_conditions = 3 # B1, H1, SH-RLM: the full-experiment evaluation grid (section 3.5)
 
 [operational]
