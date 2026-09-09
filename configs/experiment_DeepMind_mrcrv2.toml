@@ -1,0 +1,156 @@
+[decoding]
+temperature = 0
+top_p = 0.95
+max_output_tokens = 8192
+
+[splits]
+n_in = 10
+n_ho = 10
+test_short = 0
+test_long = 10 # verified: selected released bucket contains 310 rows
+seed = 0
+
+[loop]
+m = 2
+v = 3
+k = 4
+t = 1
+patience = 3
+environment = "DeepMind_mrcrv2"
+initial_harness = "H0*"
+
+[promotion]
+tau_regression = 0.0
+tau_improvement = 0.0
+cost_band = [0.5, 1.25]
+
+[caps]
+# Unverified starting points; correct from this round's observed real spend.
+attempts = 1
+max_iterations = 30
+max_depth = 3
+max_budget = 4.0
+max_timeout = 3600.0
+candidate_budget = 240.0
+
+[environments.graphwalks]
+dataset_repo = "openai/graphwalks"
+dataset_file_short = "graphwalks_128k_and_shorter.parquet"
+dataset_file_long = "graphwalks_256k_to_1mil.parquet"
+dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead"
+max_chars = 128000
+min_chars = 0
+problem_types = ["bfs", "parents"]
+
+[environments.oolong_pairs]
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+task_ids = [1]
+context_length_short = 8192
+context_length_long = 262144
+max_scan = 50000
+n_short = 40
+n_long = 40
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+subsets = []
+task_groups = ["counting"]
+context_lengths = [1024]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd"
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb"
+question_types = []
+episode_counts = [1]
+max_scan = 40000
+n_check = 20
+
+[environments.mrcrv2]
+generator_version = "mrcrv2-v1"
+short_target_tokens = 65536
+short_n_needles = 2
+long_target_tokens = 2000000
+long_n_needles = 8
+chars_per_token = 4.0
+
+[environments.DeepMind_mrcrv2]
+dataset_repo = "google-deepmind/eval_hub"
+dataset_subpath = "eval_hub/mrcr_v2"
+dataset_revision = "d5637d5cfb420a040ad550b2125c6aa23f71f9e4"
+dataset_base_url = "https://storage.googleapis.com/mrcr_v2"
+cache_path_short = ".cache/shrlm/DeepMind_mrcrv2/mrcr_v2p1_8needle_in_(1048576,2097152)_dynamic_fewshot_text_style_fast.csv"
+cache_path_long = ".cache/shrlm/DeepMind_mrcrv2/mrcr_v2p1_8needle_in_(1048576,2097152)_dynamic_fewshot_text_style_fast.csv"
+context_bucket_short = "in_(1048576,2097152)"
+context_bucket_long = "in_(1048576,2097152)"
+num_needles_short = 8
+num_needles_long = 8
+
+[backends.runner]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash"
+[backends.attributor]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash"
+[backends.proposer]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash"
+[backends.openrouter]
+provider_order = []
+allow_fallbacks = true
+[backends.azure_foundry]
+thinking = true
+
+[pricing.promo]
+input_per_million = 0.19
+output_per_million = 0.51
+[pricing.list_price]
+input_per_million = 0.19
+output_per_million = 0.51
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08"
+provenance_validated = true
+sensitivity_range = [1.99, 3.49]
+precision_note = "bf16"
+changes_numerics = false
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2400.0
+long = 700.0
+
+[report]
+p_merge = 0.5
+eval_conditions = 3
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution_deepmind_mrcrv2.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_deepmind_mrcrv2.jsonl"
+eval_repetitions = 3
+validation_workers = 5
+validation_run_workers = 3
+real_check_every_n_rounds = 0
+
+[smoke.splits]
+n_in = 1
+n_ho = 1
+test_short = 0
+test_long = 0
+[smoke.loop]
+m = 1
+v = 1
+k = 1
+t = 1
+[smoke.caps]
+max_budget = 4.0
+max_timeout = 3600.0
+candidate_budget = 12.0
+[smoke.operational]
+eval_repetitions = 1

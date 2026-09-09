@@ -112,6 +112,7 @@ from typing import TYPE_CHECKING, Any
 
 from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
+from shrlm.environments.deepmind_mrcrv2 import DeepMindMrcrv2SubVerifier, DeepMindMrcrv2Verifier
 from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier
 from shrlm.environments.mrcrv2 import Mrcrv2SubVerifier, Mrcrv2Verifier
 from shrlm.environments.oolong import (
@@ -250,6 +251,7 @@ STAGE_REAL_CHECK = "real_check"
 GRAPHWALKS_VERIFIER_FACTORY = "shrlm.environments.graphwalks:GraphWalksVerifier"
 OOLONG_SYNTH_VERIFIER_FACTORY = "shrlm.environments.oolong:make_synth_verifier"
 MRCRV2_VERIFIER_FACTORY = "shrlm.environments.mrcrv2:make_mrcrv2_verifier"
+DEEPMIND_MRCRV2_VERIFIER_FACTORY = "shrlm.environments.deepmind_mrcrv2:make_deepmind_mrcrv2_verifier"
 
 
 @dataclass(frozen=True)
@@ -300,6 +302,8 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
             sub_verifier=Mrcrv2SubVerifier(),
             verifier_factory=MRCRV2_VERIFIER_FACTORY,
         )
+    if environment == "DeepMind_mrcrv2":
+        return EnvBinding(name="DeepMind_mrcrv2", length=SPLIT_LENGTH, verifier=DeepMindMrcrv2Verifier(), sub_verifier=DeepMindMrcrv2SubVerifier(), verifier_factory=DEEPMIND_MRCRV2_VERIFIER_FACTORY)
     raise ValueError(f"resolve_env_binding: unsupported loop.environment {environment!r}")
 
 
@@ -1488,6 +1492,8 @@ def run_experiment(
     if verifier is None:
         binding = resolve_env_binding(config)
         verifier = binding.verifier
+        if verifier_factory is None:
+            verifier_factory = binding.verifier_factory
         if sub_verifier is None:
             sub_verifier = binding.sub_verifier
     experiment = _Experiment(

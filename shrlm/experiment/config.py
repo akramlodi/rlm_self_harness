@@ -319,11 +319,26 @@ class Mrcrv2Config:
 
 
 @dataclass(frozen=True)
+class DeepMindMrcrv2Config:
+    dataset_repo: str
+    dataset_subpath: str
+    dataset_revision: str
+    dataset_base_url: str
+    cache_path_short: str
+    cache_path_long: str
+    context_bucket_short: str
+    context_bucket_long: str
+    num_needles_short: int
+    num_needles_long: int
+
+
+@dataclass(frozen=True)
 class EnvironmentsConfig:
     graphwalks: GraphWalksConfig
     oolong_pairs: OolongPairsConfig
     oolong: OolongConfig
     mrcrv2: Mrcrv2Config
+    DeepMind_mrcrv2: DeepMindMrcrv2Config | None = None
 
 
 @dataclass(frozen=True)
@@ -567,7 +582,7 @@ def _validate_initial_harness(loop: LoopConfig) -> LoopConfig:
     return loop
 
 
-SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_synth", "mrcrv2")
+SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_synth", "mrcrv2", "DeepMind_mrcrv2")
 
 
 def _validate_environment(loop: LoopConfig) -> LoopConfig:
@@ -670,12 +685,13 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     tuplify(promotion_table, "sub_call_band")
 
     env_table = raw["environments"]
-    check_keys(env_table, ("graphwalks", "oolong_pairs", "oolong", "mrcrv2"), "environments")
+    check_keys(env_table, ("graphwalks", "oolong_pairs", "oolong", "mrcrv2"), "environments", optional=("DeepMind_mrcrv2",))
     graphwalks_table = dict(env_table["graphwalks"])
     tuplify(graphwalks_table, "problem_types")
     oolong_pairs_table = dict(env_table["oolong_pairs"])
     tuplify(oolong_pairs_table, "task_ids")
     mrcrv2_table = dict(env_table["mrcrv2"])
+    deepmind_mrcrv2_table = dict(env_table["DeepMind_mrcrv2"]) if "DeepMind_mrcrv2" in env_table else None
 
     oolong_env_table = env_table["oolong"]
     check_keys(oolong_env_table, ("synth", "real"), "environments.oolong")
@@ -759,6 +775,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
                 real=build_section(OolongRealConfig, oolong_real_table, "environments.oolong.real"),
             ),
             mrcrv2=build_section(Mrcrv2Config, mrcrv2_table, "environments.mrcrv2"),
+            DeepMind_mrcrv2=build_section(DeepMindMrcrv2Config, deepmind_mrcrv2_table, "environments.DeepMind_mrcrv2") if deepmind_mrcrv2_table is not None else None,
         ),
         backends=BackendsConfig(
             runner=build_section(EndpointConfig, backends_table["runner"], "backends.runner"),

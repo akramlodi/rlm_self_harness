@@ -78,15 +78,10 @@ _TRANSIENT_API_ERRORS = (
 # overriding _empty_content_retry_reason.
 EMPTY_CONTENT_ATTEMPTS = 6
 
-# A content filter fires on the SAMPLED RESPONSE, so it is probabilistic, not a
-# property of the prompt. Verified against Azure Foundry / Kimi-K2.5 on
-# 2026-08-26: one mining instance was blocked by label 'Jailbreak' on two
-# consecutive attempts (different request ids, 930 and 954 prompt tokens) and
-# then completed normally on the third. Treating the first block as fatal cost
-# the whole experiment a crash and two restart cycles for a run that was always
-# going to succeed. A prompt that trips the filter DETERMINISTICALLY still
-# exhausts these attempts and raises, and the caller decides what that means.
-CONTENT_FILTER_ATTEMPTS = 6
+# A content-filter refusal on a multi-million-token benchmark request can take
+# minutes. This evaluation treats the provider's refusal as a final result so
+# the driver can record it and proceed without re-sending identical bytes.
+CONTENT_FILTER_ATTEMPTS = 1
 _CONTENT_FILTER_MARKERS = ("content_filter", "responsibleai", "content management policy")
 
 
@@ -138,6 +133,15 @@ def _context_overflow_error(exc: openai.BadRequestError) -> TokenLimitExceededEr
 def is_content_filter_error(exc: openai.BadRequestError) -> bool:
     """Whether this 400 is a provider content-filter block rather than a bad request."""
     return any(marker in str(exc).lower() for marker in _CONTENT_FILTER_MARKERS)
+
+
+def log_content_filter_diagnostic(exc: openai.BadRequestError) -> None:
+    """Emit Azure's returned filter payload without logging the request body."""
+    body = getattr(exc, "body", None)
+    print(
+        f"Content filter diagnostic: body={body!r}; message={str(exc)[:1200]!r}",
+        file=sys.stderr,
+    )
 
 
 def _response_deficiency(response: Any) -> str | None:
@@ -276,6 +280,7 @@ class OpenAIClient(BaseLM):
                     raise overflow from exc
                 if is_content_filter_error(exc):
                     content_filter_attempt += 1
+                    log_content_filter_diagnostic(exc)
                     if content_filter_attempt >= CONTENT_FILTER_ATTEMPTS:
                         raise
                     print(
@@ -373,6 +378,7 @@ class OpenAIClient(BaseLM):
                     raise overflow from exc
                 if is_content_filter_error(exc):
                     content_filter_attempt += 1
+                    log_content_filter_diagnostic(exc)
                     if content_filter_attempt >= CONTENT_FILTER_ATTEMPTS:
                         raise
                     print(

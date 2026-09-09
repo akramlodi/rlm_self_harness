@@ -37,6 +37,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from shrlm.environments.deepmind_mrcrv2 import load_deepmind_mrcrv2_from_config
 from shrlm.environments.graphwalks import load_graphwalks
 from shrlm.environments.mrcrv2 import load_mrcrv2_from_config
 from shrlm.environments.oolong import (
@@ -138,12 +139,17 @@ def load_mrcrv2_split(
     return load_mrcrv2_from_config(config, n=limit, seed=seed, length=length)
 
 
+def load_deepmind_mrcrv2_split(config: ExperimentConfig, length: str, limit: int, seed: int) -> list[dict[str, Any]]:
+    return load_deepmind_mrcrv2_from_config(config, n=limit, seed=seed, length=length)
+
+
 DEFAULT_LOADERS: dict[str, LoaderFn] = {
     "graphwalks": load_graphwalks_split,
     "oolong_pairs": load_oolong_pairs_split,
     "oolong_synth": load_oolong_synth_split,
     "oolong_real": load_oolong_real_split,
     "mrcrv2": load_mrcrv2_split,
+    "DeepMind_mrcrv2": load_deepmind_mrcrv2_split,
 }
 
 
@@ -204,6 +210,8 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "long": {"test": splits.test_long},
             },
         }
+    if config.loop.environment == "DeepMind_mrcrv2":
+        return {"DeepMind_mrcrv2": {"short": {"held_in": splits.n_in, "held_out": splits.n_ho, "test": splits.test_short}, "long": {"test": splits.test_long}}}
     raise ValueError(f"unsupported loop.environment {config.loop.environment!r} in split_plan")
 
 
@@ -229,6 +237,8 @@ def dataset_revision_for(config: ExperimentConfig, environment: str) -> str:
         # No external dataset to pin a revision against; the generator's own
         # version stands in for that provenance role.
         return str(config.environments.mrcrv2.generator_version)
+    if environment == "DeepMind_mrcrv2":
+        return str(config.environments.DeepMind_mrcrv2.dataset_revision)
     if not hasattr(config.environments, environment):
         raise ValueError(
             f"unknown environment {environment!r} in loaders; the config defines "
