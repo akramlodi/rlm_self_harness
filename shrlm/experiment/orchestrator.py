@@ -170,6 +170,7 @@ from shrlm.optimization.proposal import (
     PROPOSAL_FORMAT,
     ProposalBudgetExhausted,
     ProposalCache,
+    ProposalRejection,
     load_passing_behaviors,
     propose_round,
 )
@@ -1052,13 +1053,22 @@ class _Experiment:
                     cache=ProposalCache(path=str(cache_path)),
                     workdir=round_path / WORK_DIR,
                 )
-            except ProposalBudgetExhausted as exc:
-                # The proposer spent its output budget on reasoning (R6/KTD3):
-                # deterministic for the prompt, so re-asking only re-bills it,
-                # and letting it escape would re-ask on every resume. Seal the
-                # stage as a failure with zero candidates; validation then sees
-                # an empty proposals directory and the round closes unpromoted,
-                # exactly as a round whose proposer wrote nothing.
+            except (ProposalBudgetExhausted, ProposalRejection) as exc:
+                # Two deterministic stage failures close the round with zero
+                # candidates instead of escaping. A proposer that spent its
+                # output budget on reasoning (R6/KTD3) would only be re-billed
+                # by a re-ask, and one that exhausted its attempts on parse or
+                # validation failures replays the same cached responses on
+                # every resume -- so letting either escape crashes the run and
+                # re-crashes it on resume. Seal the stage as a failure with zero
+                # candidates; validation then sees an empty proposals directory
+                # and the round closes unpromoted, exactly as a round whose
+                # proposer wrote nothing.
+                kind = (
+                    "budget_exhausted"
+                    if isinstance(exc, ProposalBudgetExhausted)
+                    else "validation_exhausted"
+                )
                 print(
                     f"round {round_index}: proposal stage failed with zero candidates "
                     f"({exc}); sealing {marker_path.name} and continuing",
@@ -1073,7 +1083,7 @@ class _Experiment:
                     "n_materialization_failures": 0,
                     "materialization_failures": [],
                     "stage_failure": {
-                        "kind": "budget_exhausted",
+                        "kind": kind,
                         "error": str(exc),
                         "n_attempts": len(exc.attempts),
                     },

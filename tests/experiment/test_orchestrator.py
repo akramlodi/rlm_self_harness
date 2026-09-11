@@ -647,6 +647,34 @@ class TestProposalBudgetExhaustion:
         assert marker["materialization_failures"] == []
         assert (round_path / ROUND_MARKER_FILENAME).exists()
 
+    def test_validation_exhausted_proposer_seals_a_zero_candidate_round(
+        self, tmp_path, monkeypatch
+    ):
+        """A proposer that exhausts its attempt budget on malformed responses
+        (review finding #2) is a deterministic stage failure too: rejected
+        attempts are cached, so an escaping ProposalRejection would crash the
+        run and re-crash it on every resume. The round seals with zero
+        candidates and continues instead."""
+        config = make_config(tmp_path, t=1)
+        out = tmp_path / "exp"
+        bound_proposer_attempts(monkeypatch, 2)
+        factory = patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=["not json at all", "still not json"])
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 2  # asked, re-asked, then exhausted
+        assert factory.total_calls == 2  # mining only: nothing to validate
+        [outcome] = result.rounds
+        assert (outcome.has_ledger, outcome.promoted) == (False, False)
+        round_path = experiment_round_dir(out, 1)
+        marker = json.loads((round_path / PROPOSALS_MARKER_FILENAME).read_text())
+        assert marker["candidate_ids"] == []
+        assert marker["stage_failure"]["kind"] == "validation_exhausted"
+        assert marker["stage_failure"]["n_attempts"] == 2
+        assert "after 2 attempts" in marker["stage_failure"]["error"]
+        assert (round_path / ROUND_MARKER_FILENAME).exists()
+
 
 class TestResumeAfterBundle:
     def test_crash_before_proposals_sealed_resumes_without_remining(self, tmp_path, monkeypatch):
