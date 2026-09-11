@@ -1488,7 +1488,7 @@ def propose_round(
         )
 
     written: list[WrittenProposal] = []
-    for position, (spec, serialization) in enumerate(materialized, start=1):
+    for position, spec, serialization in materialized:
         candidate_id = _candidate_id(round_index, position, spec.surface)
         path = write_proposal(
             proposals_dir,
@@ -1519,15 +1519,18 @@ def _materialize_batch(
     incumbent_serialization: dict[str, Any],
     batch: Sequence[CandidateSpec],
     workdir: Path,
-) -> tuple[list[tuple[CandidateSpec, dict[str, Any]]], list[MaterializationFailureRecord]]:
+) -> tuple[list[tuple[int, CandidateSpec, dict[str, Any]]], list[MaterializationFailureRecord]]:
     """Materialize every spec of one validated batch, keeping the survivors.
 
     A partially successful batch keeps its survivors and records the rest
     (R2); only the caller decides that an empty survivor list is a rejection.
+    Each survivor carries its 1-based position in the batch so a failed spec
+    still consumes a candidate-id slot: the id is hash material and a ledger
+    subject id, so it must not shift when an earlier sibling is refused.
     """
-    materialized: list[tuple[CandidateSpec, dict[str, Any]]] = []
+    materialized: list[tuple[int, CandidateSpec, dict[str, Any]]] = []
     failures: list[MaterializationFailureRecord] = []
-    for spec in batch:
+    for position, spec in enumerate(batch, start=1):
         try:
             _harness, serialization = build_candidate(
                 incumbent, incumbent_serialization, spec, workdir
@@ -1539,7 +1542,7 @@ def _materialize_batch(
                 )
             )
             continue
-        materialized.append((spec, serialization))
+        materialized.append((position, spec, serialization))
     return materialized, failures
 
 

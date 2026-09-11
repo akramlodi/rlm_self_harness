@@ -561,6 +561,19 @@ def test_propose_round_materialization_failure_does_not_drop_the_rest(tmp_path):
     assert result.materialization_failures[0].pattern_index == 1
 
 
+def test_propose_round_survivor_keeps_its_batch_position_after_a_failure(tmp_path):
+    """A refused candidate still consumes its position: the survivor behind a
+    failed first candidate is written as c02, not renumbered to c01, because
+    the candidate id is hash material and a ledger subject id."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    response = canned_batch(no_op_policy, TEXT_ITEM)
+    lm = MockLM(model_name="mock-proposer", responses=[response])
+    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert [w.candidate_id for w in result.written] == ["r00-c02-s4"]
+    assert len(result.materialization_failures) == 1
+    assert result.materialization_failures[0].pattern_index == 1
+
+
 def test_propose_round_reasks_when_the_whole_batch_fails_to_materialize(tmp_path):
     """A batch whose every candidate is a no-op is rejected with the reason and
     re-asked, exactly like a malformed batch (KTD1)."""
@@ -639,6 +652,27 @@ def test_propose_round_mixed_malformed_then_no_op_exhaustion_returns_empty(tmp_p
     assert result.written == []
     assert len(result.materialization_failures) == 1
     assert [a.accepted for a in result.attempts] == [False, False]
+
+
+def test_propose_round_mixed_no_op_then_malformed_exhaustion_raises(tmp_path):
+    """The exhaustion branch is classified by the FINAL attempt (KTD2): a
+    no-op first response followed by a malformed one raises ProposalRejection,
+    because the malformed attempt clears the earlier attempt's failure records
+    rather than letting them classify the round as a no-op close."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(
+        model_name="mock-proposer",
+        responses=[canned_batch(no_op_policy), "not json at all"],
+    )
+    with pytest.raises(ProposalRejection):
+        propose_round(
+            BUNDLE,
+            H0,
+            lm,
+            tmp_path / "proposals",
+            config=ProposerConfig(max_attempts=2),
+            workdir=tmp_path / "work",
+        )
 
 
 def test_propose_round_empty_bundle_no_crash(tmp_path):
