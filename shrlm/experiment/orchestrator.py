@@ -165,6 +165,9 @@ from shrlm.optimization.driver import (
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.promotion import DECISION_PROMOTED, PromotionConfig
 from shrlm.optimization.proposal import (
+    HISTORY_NOT_MATERIALIZED,
+    PROPOSAL_FILENAME,
+    PROPOSAL_FORMAT,
     ProposalBudgetExhausted,
     ProposalCache,
     load_passing_behaviors,
@@ -371,6 +374,74 @@ def _persist_once(path: Path, payload: dict[str, Any], diverging: str) -> None:
     tmp_path = path.with_name(path.name + ".tmp")
     tmp_path.write_text(text)
     os.replace(tmp_path, path)
+
+
+def load_round_history(
+    round_path: Path, round_index: int, *, has_ledger: bool
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """One completed round's entry in the proposer's prior-edit history (KTD3).
+
+    Built from persisted markers only, so the execute and replay paths of the
+    round loop hand the next proposer the same entry (R7). The decision is the
+    ``round.json`` payload: it carries the round index, ``promoted``, and the
+    promoted hash, which is everything the renderer reads (the validation
+    ``decision.json`` has no round index). Records come from two sources,
+    merged for every round:
+
+    * the validation ledger when the round has one -- it already persists
+      loader-gate rejections and promotion outcomes -- with each candidate's
+      predicted effect attached from its ``proposal.json`` where that file
+      exists (the baseline and the merged subject have none);
+    * the proposals marker's materialization failures, synthesized as
+      ``not_materialized`` records whether or not a ledger exists, so a
+      candidate refused for reproducing the incumbent still appears -- the
+      2026-09-10 OOLONG-Pairs run lost rounds 4-6 to exactly that edit being
+      re-proposed three times with no trace in the prompt.
+
+    A marker written before failure records were persisted has no such
+    list and contributes no synthesized records; the round still renders as
+    an entry with its outcome.
+    """
+    decision = _load_marker(round_path / ROUND_MARKER_FILENAME, ROUND_MARKER_FORMAT)
+    records: list[dict[str, Any]] = []
+    if has_ledger:
+        ledger_records, _ = load_promotion_ledger(
+            round_dir(round_path / VALIDATION_DIR, round_index)
+        )
+        proposals_dir = round_path / PROPOSALS_DIR
+        for record in ledger_records:
+            effect = _proposal_predicted_effect(proposals_dir, record.get("subject_id"))
+            records.append({**record, "predicted_effect": effect} if effect else dict(record))
+    marker = _load_marker(round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT)
+    for failure in marker.get("materialization_failures", []):
+        records.append(
+            {
+                "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
+                "surface": failure["surface"],
+                "decision": HISTORY_NOT_MATERIALIZED,
+                "reasons": [failure["reason"]],
+                "predicted_effect": failure.get("predicted_effect", ""),
+            }
+        )
+    return records, decision
+
+
+def _proposal_predicted_effect(proposals_dir: Path, candidate_id: Any) -> str | None:
+    """A written candidate's own predicted effect, or None when it has no
+    readable ``proposal.json`` (the baseline, the merged subject)."""
+    if not candidate_id:
+        return None
+    path = proposals_dir / str(candidate_id) / PROPOSAL_FILENAME
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("format") != PROPOSAL_FORMAT:
+        return None
+    effect = payload.get("predicted_effect")
+    return str(effect) if effect else None
 
 
 def _load_marker(path: Path, expected_format: str) -> dict[str, Any]:
@@ -712,9 +783,12 @@ class _Experiment:
                 without_promotion = 0
             else:
                 without_promotion += 1
-            if outcome.has_ledger:
-                validation_round_path = round_dir(round_path / VALIDATION_DIR, round_index)
-                self.prior_history.append(load_promotion_ledger(validation_round_path))
+            # Every completed round enters the next proposer's history (R5),
+            # rebuilt from persisted markers on both paths (R7); a round that
+            # reached no validation still reports what was refused and why.
+            self.prior_history.append(
+                load_round_history(round_path, round_index, has_ledger=outcome.has_ledger)
+            )
             # Non-gated OOLONG-real generalization check on the round-end
             # incumbent (after any promotion is applied). Never touches the
             # outcome, the ledger, or the patience counter.
@@ -1544,7 +1618,9 @@ __all__ = [
     "FROZEN_DIR",
     "FROZEN_HARNESS_FILENAME",
     "POST_ROUND_BATCH_TOOL",
+    "HISTORY_NOT_MATERIALIZED",
     "PROPOSALS_MARKER_FILENAME",
+    "load_round_history",
     "ROUND_MARKER_FILENAME",
     "STOP_MAX_ROUNDS",
     "STOP_PATIENCE",

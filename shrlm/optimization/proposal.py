@@ -133,7 +133,11 @@ PROPOSAL_FILENAME = "proposal.json"
 # pattern targets S10, and the S10 pattern block carries a full-library
 # inventory line. 1.3.0: S10 edit is one skill added or replaced by name
 # (S8-style), not a whole-list rewrite.
-PROMPT_VERSION = "1.8.0"
+# 1.9.0: the prior-edit history covers every completed round, not only rounds
+# that reached validation, renders each attempted edit's predicted effect, and
+# says that a candidate identical to the current surface is refused before
+# validation (the 2026-09-10 OOLONG-Pairs no-op loop).
+PROMPT_VERSION = "1.9.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -532,17 +536,37 @@ def _render_passing_block(passing_behaviors: Sequence[dict[str, Any]]) -> str:
     )
 
 
+# The history outcome of a candidate that validated but failed to materialize
+# (its edit reproduced the incumbent). Synthesized by the orchestrator from the
+# proposals marker; never written to a validation ledger.
+HISTORY_NOT_MATERIALIZED = "not_materialized"
+HISTORY_NO_RECORDS = "no per-edit record persisted"
+
+
 def _render_history_block(
     prior_history: Sequence[tuple[list[dict[str, Any]], dict[str, Any]]],
 ) -> str:
+    """One entry per completed prior round (R5), every attempted edit with its
+    outcome, predicted effect, and reasons (R6).
+
+    A round is labeled by its decision's ``round`` when the orchestrator
+    supplied one (the ``round.json`` payload), else by list position, which
+    keeps legacy callers that pass a bare promotion decision readable. A round
+    without records -- a proposer that offered nothing, or a marker written
+    before failure records were persisted -- says so rather than vanishing.
+    """
     if not prior_history:
-        return "No prior validation rounds exist yet; this is the first proposal round."
+        return "No prior rounds exist yet; this is the first proposal round."
     lines: list[str] = []
-    for round_number, (records, decision) in enumerate(prior_history):
+    for position, (records, decision) in enumerate(prior_history):
+        label = decision.get("round", position)
         lines.append(
-            f"Round {round_number}: promoted={decision.get('promoted')} "
+            f"Round {label}: promoted={decision.get('promoted')} "
             f"promoted_harness_hash={decision.get('promoted_harness_hash')}"
         )
+        if not records:
+            lines.append(f"  - {HISTORY_NO_RECORDS}")
+            continue
         for record in records:
             if record.get("decision") == "bundled":
                 continue
@@ -561,8 +585,14 @@ def _render_history_block(
                 ]
                 subject = f"{subject} (combined edits: {', '.join(str(s) for s in surfaces)})"
             outcome = record.get("decision")
+            effect = record.get("predicted_effect")
             reasons = "; ".join(record.get("reasons") or [])
-            lines.append(f"  - {subject}: {outcome}" + (f" ({reasons})" if reasons else ""))
+            line = f"  - {subject}: {outcome}"
+            if effect:
+                line += f' -- predicted "{effect}"'
+            if reasons:
+                line += f" ({reasons})"
+            lines.append(line)
     return "\n".join(lines)
 
 
@@ -757,8 +787,11 @@ def render_prompt(
         _render_verifier_contract(verifier_config),
         "Failure patterns:\n" + pattern_text,
         "Passing behavior to preserve:\n" + _render_passing_block(passing_behaviors),
-        "Prior edit history (previously attempted candidates and their outcomes; do "
-        "not repeat an approach already rejected for the same reason):\n"
+        "Prior edit history (every previously attempted candidate with its surface, "
+        "predicted effect, and outcome; do not repeat an approach already rejected "
+        "for the same reason). A candidate identical to the current surface is "
+        "refused before validation and must not be re-proposed: a not_materialized "
+        "entry below means the incumbent already contained that edit.\n"
         + _render_history_block(prior_history),
         EDIT_FORMATS
         % {

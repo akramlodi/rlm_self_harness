@@ -380,7 +380,7 @@ def test_render_prompt_includes_surfaces_patterns_and_fallbacks():
     assert "S1" in rendered and "S9" in rendered and "S10" in rendered  # render_surface_block()
     assert "skipped_verification" in rendered
     assert "no passing runs" in rendered.lower()
-    assert "no prior validation rounds" in rendered.lower()
+    assert "no prior rounds" in rendered.lower()
     # Taxonomy 3.1.0: every recognized mechanism is addressable, OTHER included,
     # and each pattern advertises its eligible surfaces with the primary first.
     assert [index for index, _ in addressable] == [0, 1, 2, 3, 4, 5, 6]
@@ -1210,3 +1210,72 @@ def test_history_reports_one_shared_verdict_for_bundled_edits():
     assert history.count("rejected") == 1
     assert "S2, S3" in history
     assert "bundled" not in history
+
+
+# ---------------------------------------------------------------------------
+# Cross-round history (R5-R7): every prior round renders, refused edits carry
+# their direction and reason, and the proposer is told a no-op is refused.
+# ---------------------------------------------------------------------------
+
+
+def test_history_renders_not_materialized_records_with_effect_and_reason():
+    from shrlm.optimization.proposal import HISTORY_NOT_MATERIALIZED, _render_history_block
+
+    records = [
+        {
+            "subject_id": "pattern 0 on S9",
+            "surface": "S9",
+            "decision": HISTORY_NOT_MATERIALIZED,
+            "reasons": ["declared surface S9 but the materialized harness changes no surface"],
+            "predicted_effect": "redirect on an incomplete pair set",
+        }
+    ]
+    history = _render_history_block([(records, {"round": 4, "promoted": False})])
+    assert "Round 4:" in history
+    [line] = [line for line in history.splitlines() if "pattern 0 on S9" in line]
+    assert "not_materialized" in line
+    assert "redirect on an incomplete pair set" in line
+    assert "changes no surface" in line
+
+
+def test_history_labels_rounds_by_position_when_the_decision_has_no_round():
+    from shrlm.optimization.proposal import _render_history_block
+
+    history = _render_history_block(
+        [
+            ([], {"promoted": False, "promoted_harness_hash": None}),
+            ([], {"round": 7, "promoted": True, "promoted_harness_hash": "abc"}),
+        ]
+    )
+    assert "Round 0:" in history and "Round 7:" in history
+
+
+def test_history_renders_predicted_effect_on_ledger_records_and_tolerates_absence():
+    from shrlm.optimization.proposal import _render_history_block
+
+    records = [
+        {
+            "subject_id": "r01-c01-s4",
+            "surface": "S4",
+            "decision": "rejected",
+            "reasons": ["heldout did not improve"],
+            "predicted_effect": "the root verifies before answering",
+        },
+        {"subject_id": "baseline", "decision": "rejected", "reasons": []},
+    ]
+    history = _render_history_block([(records, {"round": 1, "promoted": False})])
+    assert "the root verifies before answering" in history
+    assert "baseline: rejected" in history
+
+
+def test_history_renders_a_round_without_records_as_no_record_persisted():
+    from shrlm.optimization.proposal import _render_history_block
+
+    history = _render_history_block([([], {"round": 2, "promoted": False})])
+    assert "Round 2:" in history
+    assert "no per-edit record persisted" in history
+
+
+def test_render_prompt_history_preamble_names_the_no_op_refusal():
+    rendered, _ = render_prompt(ALL_PATTERNS, serialize_harness(H0), (), (), k=4)
+    assert "identical to the current surface" in rendered
