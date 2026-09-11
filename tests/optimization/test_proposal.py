@@ -561,6 +561,87 @@ def test_propose_round_materialization_failure_does_not_drop_the_rest(tmp_path):
     assert result.materialization_failures[0].pattern_index == 1
 
 
+def test_propose_round_reasks_when_the_whole_batch_fails_to_materialize(tmp_path):
+    """A batch whose every candidate is a no-op is rejected with the reason and
+    re-asked, exactly like a malformed batch (KTD1): the live 2026-09-10 run
+    lost three rounds to a proposer that re-emitted the incumbent's own S9."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(
+        model_name="mock-proposer",
+        responses=[canned_batch(no_op_policy), canned_batch(TEXT_ITEM)],
+    )
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=3),
+        workdir=tmp_path / "work",
+    )
+    assert len(result.attempts) == 2
+    first, second = result.attempts
+    assert first.accepted is False
+    assert "pattern 1" in first.violation and "S6" in first.violation
+    assert "already" in first.violation  # the surface already holds this text
+    assert second.accepted is True
+    assert [w.surface for w in result.written] == ["S4"]
+    # The failure that was re-asked away lives in the attempt trail, not in the
+    # round's failure records: those describe the accepted attempt only.
+    assert result.materialization_failures == []
+
+
+def test_propose_round_exhaustion_on_no_ops_returns_an_empty_result(tmp_path):
+    """Exhaustion whose final attempt validated but did not materialize is a
+    proposer-quality outcome, not an exception (KTD2): the round closes with
+    zero candidates and its failure records, and nothing escapes to crash a
+    resumable run."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(
+        model_name="mock-proposer",
+        responses=[canned_batch(no_op_policy), canned_batch(no_op_policy)],
+    )
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=2),
+        workdir=tmp_path / "work",
+    )
+    assert result.written == []
+    assert len(result.attempts) == 2
+    assert all(a.accepted is False for a in result.attempts)
+    assert len(result.materialization_failures) == 1
+    record = result.materialization_failures[0]
+    assert (record.pattern_index, record.surface) == (1, "S6")
+    assert "no surface" in record.reason
+    # The refused pattern was proposed, so it is not "skipped".
+    assert 1 not in result.skipped_patterns
+    assert list((tmp_path / "proposals").glob("r00-*")) == []
+
+
+def test_propose_round_mixed_malformed_then_no_op_exhaustion_returns_empty(tmp_path):
+    """The exhaustion branch is classified by the FINAL attempt (KTD2): a
+    malformed first response followed by a no-op does not fall through to the
+    ProposalRejection raise."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(
+        model_name="mock-proposer",
+        responses=["not json at all", canned_batch(no_op_policy)],
+    )
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=2),
+        workdir=tmp_path / "work",
+    )
+    assert result.written == []
+    assert len(result.materialization_failures) == 1
+    assert [a.accepted for a in result.attempts] == [False, False]
+
+
 def test_propose_round_empty_bundle_no_crash(tmp_path):
     empty_bundle = {"bundle_id": "empty", "patterns": []}
     lm = MockLM(model_name="mock-proposer", responses=["```json\n[]\n```"])
