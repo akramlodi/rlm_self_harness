@@ -394,9 +394,8 @@ def load_round_history(
       exists (the baseline and the merged subject have none);
     * the proposals marker's materialization failures, synthesized as
       ``not_materialized`` records whether or not a ledger exists, so a
-      candidate refused for reproducing the incumbent still appears -- the
-      2026-09-10 OOLONG-Pairs run lost rounds 4-6 to exactly that edit being
-      re-proposed three times with no trace in the prompt.
+      candidate refused for reproducing the incumbent still appears (the
+      failure behind ``VALIDATOR_VERSION`` 1.5.0 in ``proposal.py``).
 
     A marker written before failure records were persisted has no such
     list and contributes no synthesized records; the round still renders as
@@ -432,8 +431,6 @@ def _proposal_predicted_effect(proposals_dir: Path, candidate_id: Any) -> str | 
     if not candidate_id:
         return None
     path = proposals_dir / str(candidate_id) / PROPOSAL_FILENAME
-    if not path.exists():
-        return None
     try:
         payload = json.loads(path.read_text())
     except (OSError, ValueError):

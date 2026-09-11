@@ -563,8 +563,7 @@ def test_propose_round_materialization_failure_does_not_drop_the_rest(tmp_path):
 
 def test_propose_round_reasks_when_the_whole_batch_fails_to_materialize(tmp_path):
     """A batch whose every candidate is a no-op is rejected with the reason and
-    re-asked, exactly like a malformed batch (KTD1): the live 2026-09-10 run
-    lost three rounds to a proposer that re-emitted the incumbent's own S9."""
+    re-asked, exactly like a malformed batch (KTD1)."""
     no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
     lm = MockLM(
         model_name="mock-proposer",

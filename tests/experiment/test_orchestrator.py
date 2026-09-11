@@ -1509,14 +1509,6 @@ class TestZeroCandidateRound:
         out = tmp_path / "exp"
 
         captured = spy_prior_history(monkeypatch)
-        histories: list[int] = []
-        real_spy = orchestrator_module.propose_round
-
-        def count(*args: Any, **kwargs: Any) -> Any:
-            histories.append(len(kwargs["prior_history"]))
-            return real_spy(*args, **kwargs)
-
-        monkeypatch.setattr(orchestrator_module, "propose_round", count)
         factory = patch_runner(
             monkeypatch,
             MINING_FAIL  # round 1: mined, but the proposer offers nothing
@@ -1547,7 +1539,7 @@ class TestZeroCandidateRound:
         assert not validation_round_path(out, 1).exists()
         # ...but still contributes one history entry to the next round's
         # proposal (R5): no records, and the round's own outcome as decision.
-        assert histories == [0, 1]
+        assert [len(entry) for entry in captured] == [0, 1]
         [(records, decision)] = captured[1]
         assert records == []
         assert (decision["round"], decision["promoted"]) == (1, False)
@@ -1555,10 +1547,9 @@ class TestZeroCandidateRound:
     def test_a_no_op_only_proposer_seals_its_failure_records_in_the_marker(
         self, tmp_path, monkeypatch
     ):
-        """A proposer that only ever re-emits the incumbent (the 2026-09-10
-        OOLONG-Pairs rounds 4-6) is re-asked, then closes the round with zero
-        candidates -- and the marker keeps WHY (R4): surface, reason, and the
-        candidate's predicted effect, not just a count."""
+        """A proposer that only ever re-emits the incumbent is re-asked, then
+        closes the round with zero candidates -- and the marker keeps WHY (R4):
+        surface, reason, and the candidate's predicted effect, not just a count."""
         config = make_config(tmp_path, t=1)
         out = tmp_path / "exp"
         bound_proposer_attempts(monkeypatch, 2)

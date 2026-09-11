@@ -136,7 +136,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # 1.9.0: the prior-edit history covers every completed round, not only rounds
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
-# validation (the 2026-09-10 OOLONG-Pairs no-op loop).
+# validation (see VALIDATOR_VERSION 1.5.0).
 PROMPT_VERSION = "1.9.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
@@ -1397,7 +1397,6 @@ def propose_round(
     # rather than the round silently closing with zero candidates.
     materialized: list[tuple[CandidateSpec, dict[str, Any]]] = []
     materialization_failures: list[MaterializationFailureRecord] = []
-    last_failure_was_materialization = False
 
     for attempt in range(config.max_attempts):
         user = (
@@ -1448,7 +1447,7 @@ def propose_round(
                     _dry_run_skill_merge(spec, incumbent)
         except ProposalRejection as exc:
             rejection = str(exc)
-            last_failure_was_materialization = False
+            materialized, materialization_failures = [], []
             attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
             continue
 
@@ -1457,7 +1456,6 @@ def propose_round(
         )
         if batch and not materialized:
             rejection = _materialization_rejection(materialization_failures)
-            last_failure_was_materialization = True
             attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
             continue
 
@@ -1465,7 +1463,10 @@ def propose_round(
         specs = batch
         break
     else:
-        if not last_failure_was_materialization:
+        # The failure lists describe the final attempt only: a parse or
+        # validation rejection clears them, a materialization rejection fills
+        # them.
+        if not materialization_failures:
             raise ProposalRejection(
                 f"no valid proposal batch after {config.max_attempts} attempts: {rejection}",
                 attempts=attempts,
