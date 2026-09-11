@@ -641,6 +641,7 @@ class TestProposalBudgetExhaustion:
         assert marker["candidate_ids"] == []
         assert marker["stage_failure"]["kind"] == "budget_exhausted"
         assert "reasoning" in marker["stage_failure"]["error"]
+        assert marker["materialization_failures"] == []
         assert (round_path / ROUND_MARKER_FILENAME).exists()
 
 
@@ -1451,6 +1452,22 @@ class TestContradictoryPersistedState:
 # ---------------------------------------------------------------------------
 
 EMPTY_BATCH = "```json\n[]\n```"
+# A policy edit that sets nothing: the merged runtime policy is byte-identical
+# to the incumbent's, so the candidate fails materialization as a no-op.
+NO_OP_POLICY_BATCH = (
+    "```json\n"
+    + json.dumps(
+        [
+            {
+                "pattern_index": 0,
+                "edit": {"kind": "policy", "runtime_policy": {}},
+                "predicted_effect": "the root double-checks before answering",
+                "regression_risks": ["one extra turn per run"],
+            }
+        ]
+    )
+    + "\n```"
+)
 
 
 class TestZeroCandidateRound:
@@ -1498,6 +1515,43 @@ class TestZeroCandidateRound:
         assert not validation_round_path(out, 1).exists()
         # ...and contributes no prior history to the next round's proposal.
         assert histories == [0, 0]
+
+    def test_a_no_op_only_proposer_seals_its_failure_records_in_the_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """A proposer that only ever re-emits the incumbent (the 2026-09-10
+        OOLONG-Pairs rounds 4-6) is re-asked, then closes the round with zero
+        candidates -- and the marker keeps WHY (R4): surface, reason, and the
+        candidate's predicted effect, not just a count."""
+        from shrlm.optimization.proposal import ProposerConfig
+
+        config = make_config(tmp_path, t=1)
+        out = tmp_path / "exp"
+        # max_attempts is not reachable from ExperimentConfig (the default is 8
+        # and the mock LM raises once its list empties), so bound the re-ask
+        # loop at the orchestrator's factory seam.
+        monkeypatch.setattr(
+            orchestrator_module,
+            "proposer_config",
+            lambda config: ProposerConfig(k=config.loop.k, max_attempts=2),
+        )
+        factory = patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("iteration_budget_exhaustion")] * 2)
+        proposer = MockLM(responses=[NO_OP_POLICY_BATCH, NO_OP_POLICY_BATCH])
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 2  # re-asked once, then exhausted
+        assert factory.total_calls == 2  # mining only: nothing to validate
+        [outcome] = result.rounds
+        assert (outcome.has_ledger, outcome.promoted) == (False, False)
+        marker = json.loads((experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text())
+        assert marker["candidate_ids"] == []
+        assert marker["n_materialization_failures"] == 1
+        [record] = marker["materialization_failures"]
+        assert (record["pattern_index"], record["surface"]) == (0, "S6")
+        assert "no surface" in record["reason"]
+        assert record["predicted_effect"] == "the root double-checks before answering"
+        assert 0 not in marker["skipped_patterns"]
 
 
 # ---------------------------------------------------------------------------

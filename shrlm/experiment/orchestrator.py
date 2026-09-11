@@ -1000,6 +1000,7 @@ class _Experiment:
                     "prompt_sha256": None,
                     "skipped_patterns": [],
                     "n_materialization_failures": 0,
+                    "materialization_failures": [],
                     "stage_failure": {
                         "kind": "budget_exhausted",
                         "error": str(exc),
@@ -1014,6 +1015,13 @@ class _Experiment:
                     "prompt_sha256": result.prompt_sha256,
                     "skipped_patterns": list(result.skipped_patterns),
                     "n_materialization_failures": len(result.materialization_failures),
+                    # The reasons, not just the count (R4): a zero-candidate
+                    # round leaves no ledger, so this list is the only durable
+                    # record of what the proposer tried and why it was refused,
+                    # and the next round's history is rebuilt from it.
+                    "materialization_failures": [
+                        record.to_dict() for record in result.materialization_failures
+                    ],
                 }
         _persist_once(
             marker_path,
