@@ -114,7 +114,7 @@ class ScriptedLM(MockLM):
     def completion(self, prompt: str | dict[str, Any]) -> str:
         self._call_count += 1
         if not self._script:
-            raise IndexError("ScriptedLM: script exhausted")
+            raise OSError("ScriptedLM: script exhausted")
         return self._script.pop(0)
 
     def get_usage_summary(self) -> UsageSummary:
@@ -1427,3 +1427,29 @@ class TestSubjectOutcomeReflectsSkippedRuns:
         ]
         assert skipped
         assert evaluation.summary["outcome"] == OUTCOME_OVER_BUDGET
+
+
+def test_zero_trajectory_runtime_failure_aggregates_full_denominator(tmp_path, monkeypatch):
+    import shrlm.optimization.driver as driver
+
+    original = driver.build_round_rlm
+
+    def build(config):
+        harnessed = original(config)
+        harnessed.logger._run_metadata = None
+
+        def fail(prompt, **kwargs):
+            raise TypeError("early harness failure")
+
+        monkeypatch.setattr(harnessed.rlm, "completion", fail)
+        return harnessed
+
+    monkeypatch.setattr(driver, "build_round_rlm", build)
+    config = make_config(tmp_path, splits=make_splits(1), repetitions=2)
+    evaluation = evaluate_subject("early-failure", H0, config)
+    summary = evaluation.summary["splits"][SPLIT_HELDOUT]
+    assert summary["n_runs"] == summary["n_runtime_errors"] == 2
+    assert summary["pass_count"] == summary["total_sub_calls"] == 0
+    assert summary["n_resource_terminated"] == 0
+    assert summary["total_cost"] == 0
+    assert evaluation.summary["spent"] == pytest.approx(config.caps.max_budget * 2)

@@ -593,7 +593,7 @@ class TestResumeMidMining:
         # The script covers only the first mining run: the second run's client
         # call raises, exactly like a crash mid-round.
         factory = patch_runner(monkeypatch, [final("WRONG")])
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, MockLM(responses=[]), MockLM(responses=[]))
         assert factory.total_calls == 2  # the crashing call itself is counted
         assert len(mining_manifest(out, 1)) == 1  # run 1 persisted before the crash
@@ -1205,7 +1205,7 @@ class TestCrashedStageUsage:
         config = make_config(tmp_path)
         out = tmp_path / "exp"
         patch_runner(monkeypatch, [final("WRONG")])  # the second run's call raises
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, MockLM(responses=[]), MockLM(responses=[]))
 
         assert len(mining_manifest(out, 1)) == 1
@@ -1225,7 +1225,7 @@ class TestCrashedStageUsage:
         patch_runner(monkeypatch, MINING_FAIL + [final("WRONG")] * 2)
         attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, attributor, proposer)
 
         usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
@@ -1688,7 +1688,7 @@ class TestCrossRoundHistory:
         config_b = make_config(tmp_path / "b", t=2)
         out_b = tmp_path / "b" / "exp"
         patch_runner(monkeypatch, list(MINING_FAIL))
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(
                 config_b,
                 out_b,
@@ -2147,7 +2147,7 @@ class TestPostRoundAnalysisOnResume:
         patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_PASS)
         attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, attributor, proposer)
         assert len(snapshots(out)) == 1  # round 1's refresh, and nothing else
 
@@ -2326,3 +2326,77 @@ class TestOolongEnvironment:
         )
         assert not (out / "opt" / REAL_CHECK_DIR).exists()
         assert not (out / SPLITS_DIR / split_file_name("oolong_real", "short", "check")).exists()
+
+
+@pytest.mark.parametrize("subject_workers,run_workers", [(1, 1), (1, 2), (2, 1), (2, 2)])
+def test_runtime_failed_proposal_finishes_experiment(
+    tmp_path, monkeypatch, subject_workers, run_workers
+):
+    from tests.optimization.test_validation import parallel_client_factory
+
+    config = make_config(tmp_path, validation_workers=subject_workers, t=2, patience=1)
+    config = replace(
+        config, operational=replace(config.operational, validation_run_workers=run_workers)
+    )
+    out = tmp_path / "exp"
+    source = """def accept_answer(answer, repl_inventory):
+    import re
+    if answer in ("RIGHT", "WRONG"):
+        re.findall(r"\\d+", ("str", 100))
+    return AnswerDecision.accept(answer)
+"""
+    proposal = (
+        "```json\n"
+        + json.dumps(
+            [
+                {
+                    "pattern_index": 0,
+                    "surface": "S9",
+                    "edit": {"kind": "code", "source": source},
+                    "predicted_effect": "normalize the final answer",
+                    "regression_risks": ["runtime error"],
+                }
+            ]
+        )
+        + "\n```"
+    )
+    patch_runner(monkeypatch, MINING_FAIL + SUBJECT_PASS * 2)
+    factories = parallel_client_factory(
+        tmp_path, {"baseline": SUBJECT_PASS, "r01-c01-s9": SUBJECT_PASS}
+    )
+    if subject_workers == 1:
+        factories = (factories[0], factories[1]["baseline"])
+    result = run_experiment(
+        config,
+        out,
+        verifier=GoldVerifier(),
+        attributor_lm=MockLM(responses=[attribution("lossy_aggregation")] * 2),
+        proposer_lm=MockLM(responses=[proposal]),
+        loaders=LOADERS,
+        verifier_factory="tests.optimization.test_driver:GoldVerifier",
+        client_factory=factories,
+    )
+    assert len(result.rounds) == 1  # patience stops normally after the failed proposal
+    assert not result.rounds[0].promoted
+    assert frozen_envelope(out)["hash"] == harness_hash(H0)
+    summary = json.loads(
+        (validation_round_path(out, 1) / "r01-c01-s9" / "summary.json").read_text()
+    )
+    heldout = summary["splits"][SPLIT_HELDOUT]
+    assert heldout["n_runs"] == heldout["n_runtime_errors"] == 2
+    assert heldout["pass_count"] == 0
+    assert load_promotion_ledger(validation_round_path(out, 1))
+    # A completed experiment resumes without repeating mining or validation.
+    idle = patch_runner(monkeypatch, [])
+    resumed = run_experiment(
+        config,
+        out,
+        verifier=GoldVerifier(),
+        attributor_lm=MockLM(responses=[]),
+        proposer_lm=MockLM(responses=[]),
+        loaders=LOADERS,
+        verifier_factory="tests.optimization.test_driver:GoldVerifier",
+        client_factory=factories,
+    )
+    assert resumed.final_harness_hash == result.final_harness_hash
+    assert idle.total_calls == 0

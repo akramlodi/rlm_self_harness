@@ -235,6 +235,32 @@ class AnswerDecision:
 ########   Types for REPL and RLM Iterations   #########
 ########################################################
 @dataclass
+class ExecutionFailure:
+    """Diagnostics for a failed completion, preserved across worker boundaries."""
+
+    cause: Literal["runtime_error"]
+    exception_type: str
+    message: str
+    traceback: str
+
+    def __post_init__(self) -> None:
+        if self.cause != "runtime_error":
+            raise ValueError(f"Unknown execution failure cause: {self.cause!r}")
+        if not all(
+            isinstance(value, str) for value in (self.exception_type, self.message, self.traceback)
+        ):
+            raise ValueError("Execution failure diagnostics must be strings")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "cause": self.cause,
+            "exception_type": self.exception_type,
+            "message": self.message,
+            "traceback": self.traceback,
+        }
+
+
+@dataclass
 class RLMChatCompletion:
     """Record of a single LLM call made from within the environment."""
 
@@ -252,6 +278,7 @@ class RLMChatCompletion:
     trace_metrics: dict[str, Any] | None = (
         None  # Per-call trace metrics (cost, syntax-error flag, retries, validity).
     )
+    execution_failure: ExecutionFailure | None = None
 
     def to_dict(self):
         out = {
@@ -267,6 +294,8 @@ class RLMChatCompletion:
             out["error"] = self.error
         if self.trace_metrics is not None:
             out["trace_metrics"] = self.trace_metrics
+        if self.execution_failure is not None:
+            out["execution_failure"] = self.execution_failure.to_dict()
         return out
 
     @classmethod
@@ -280,6 +309,11 @@ class RLMChatCompletion:
             metadata=data.get("metadata"),
             error=data.get("error"),
             trace_metrics=data.get("trace_metrics"),
+            execution_failure=(
+                ExecutionFailure(**data["execution_failure"])
+                if data.get("execution_failure") is not None
+                else None
+            ),
         )
 
 

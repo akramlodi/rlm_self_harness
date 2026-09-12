@@ -85,6 +85,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
+from rlm.core.types import RLMChatCompletion
 from rlm.utils.exceptions import HardDeadlineExceeded, HardDeadlineSignal, TimeoutExceededError
 from shrlm.harness_identity import harness_hash, serialize_harness
 from shrlm.optimization.bundle import round_dir
@@ -278,7 +279,10 @@ def breaker_run_cost(entry: dict[str, Any], caps: ValidationCaps) -> float:
     cost = entry.get("cost")
     if cost is not None:
         return float(cost)
-    if entry.get("cause") == VerifierCause.RESOURCE_TERMINATED.value:
+    if entry.get("cause") in (
+        VerifierCause.RESOURCE_TERMINATED.value,
+        VerifierCause.RUNTIME_ERROR.value,
+    ):
         # A cost-less termination (e.g. timeout on a backend without cost
         # tracking) is priced at the worst a run may spend, never zero.
         return caps.max_budget
@@ -519,25 +523,27 @@ def _run_reservation(caps: ValidationCaps) -> float:
 _CONTENT_FILTER_MARKERS = ("content_filter", "responsibleai", "content management policy")
 
 
-def _error_verdict(detail: str, produced: str = "") -> Verdict:
-    """The failing verdict for a child trace that carries an ``error``.
-
-    A child runs ``execute_run`` and records a provider content-filter refusal
-    as a CONTENT_FILTERED verdict, but only the trace (not the verdict) crosses
-    the process boundary, and the parent used to relabel every ``error`` as
-    RESOURCE_TERMINATED. The error string is the refusal text itself, so the
-    label is recovered from it here.
-    """
-    lowered = detail.lower()
-    if any(marker in lowered for marker in _CONTENT_FILTER_MARKERS):
+def failed_completion_verdict(completion: RLMChatCompletion) -> Verdict:
+    """Recover a failure from the trace alone; old traces use the legacy text rule."""
+    detail = completion.error or ""
+    if completion.execution_failure is not None:
+        failure = completion.execution_failure
+        return Verdict(
+            passed=False,
+            cause=VerifierCause(failure.cause),
+            gold="",
+            produced=completion.response,
+            detail=f"{failure.exception_type}: {failure.message}",
+        )
+    if any(marker in detail.lower() for marker in _CONTENT_FILTER_MARKERS):
         return Verdict(
             passed=False,
             cause=VerifierCause.CONTENT_FILTERED,
             gold="",
-            produced=produced,
+            produced=completion.response,
             detail=detail,
         )
-    return _terminated_verdict(detail, produced)
+    return _terminated_verdict(detail, completion.response)
 
 
 def _terminated_verdict(detail: str, produced: str = "") -> Verdict:
@@ -579,8 +585,8 @@ def _adopt_orphan_traces(
         if completion is None:
             continue
         verdict = (
-            _error_verdict(str(completion.error), completion.response)
-            if completion.error
+            failed_completion_verdict(completion)
+            if completion.error or completion.execution_failure
             else config.verifier(instance, completion.response)
         )
         entry = append_child_run(
@@ -590,7 +596,7 @@ def _adopt_orphan_traces(
             attempt,
             completion,
             verdict,
-            usage_lower_bound=bool(completion.error),
+            usage_lower_bound=bool(completion.error or completion.execution_failure),
         )
         breaker.charge(entry, namespace=namespace)
         adopted.append(entry)
@@ -799,8 +805,8 @@ def _reap_run(
     completion = read_child_trace(trace_path_for(path, run_id))
     if completion is not None:
         verdict = (
-            _error_verdict(str(completion.error), completion.response)
-            if completion.error
+            failed_completion_verdict(completion)
+            if completion.error or completion.execution_failure
             else config.verifier(instance, completion.response)
         )
         return append_child_run(
@@ -810,7 +816,7 @@ def _reap_run(
             attempt=live["attempt"],
             completion=completion,
             verdict=verdict,
-            usage_lower_bound=bool(completion.error),
+            usage_lower_bound=bool(completion.error or completion.execution_failure),
         )
 
     # No usable trace. The run may still have spent money, so it is recorded as

@@ -32,6 +32,7 @@ from rlm.logger import RLMLogger, VerbosePrinter
 from rlm.utils.exceptions import (
     BudgetExceededError,
     CancellationError,
+    ClientInitializationError,
     ErrorThresholdExceededError,
     TimeoutExceededError,
     TokenLimitExceededError,
@@ -318,6 +319,13 @@ class RLM:
                 self.logger.log_metadata(metadata)
             self.verbose.print_metadata(metadata)
 
+    def create_client(self, backend: str, kwargs: dict[str, Any] | None) -> BaseLM:
+        """Keep backend setup failures distinct from generated harness failures."""
+        try:
+            return get_client(backend, kwargs)
+        except Exception as error:
+            raise ClientInitializationError(f"{type(error).__name__}: {error}") from error
+
     @contextmanager
     def _spawn_completion_context(self, prompt: str | dict[str, Any]):
         """
@@ -327,12 +335,14 @@ class RLM:
         When persistent=False (default), creates fresh environment each call.
         """
         # Create client and wrap in handler
-        client: BaseLM = get_client(self.backend, self.backend_kwargs)
+        client: BaseLM = self.create_client(self.backend, self.backend_kwargs)
 
         # Create other_backend_client if provided (for depth=1 routing)
         other_backend_client: BaseLM | None = None
         if self.other_backends and self.other_backend_kwargs:
-            other_backend_client = get_client(self.other_backends[0], self.other_backend_kwargs[0])
+            other_backend_client = self.create_client(
+                self.other_backends[0], self.other_backend_kwargs[0]
+            )
 
         lm_handler = LMHandler(client, other_backend_client=other_backend_client)
 
@@ -346,65 +356,70 @@ class RLM:
                 self.other_backend_kwargs[1:],
                 strict=True,
             ):
-                other_client: BaseLM = get_client(backend, kwargs)
+                other_client: BaseLM = self.create_client(backend, kwargs)
                 lm_handler.register_client(other_client.model_name, other_client)
 
         lm_handler.start()
 
-        # Environment: reuse if persistent, otherwise create fresh
-        if self.persistent and self._persistent_env is not None:
-            environment = self._persistent_env
-            # Defensive check: ensure environment supports persistence methods
-            if not self._env_supports_persistence(environment):
-                raise RuntimeError(
-                    f"Persistent environment of type '{type(environment).__name__}' does not "
-                    f"implement required methods (update_handler_address, add_context, get_context_count). "
-                    f"This should have been caught at initialization."
-                )
-            environment.update_handler_address((lm_handler.host, lm_handler.port))
-            environment.add_context(prompt)
-        else:
-            env_kwargs = self.environment_kwargs.copy()
-            env_kwargs["lm_handler_address"] = (lm_handler.host, lm_handler.port)
-            env_kwargs["context_payload"] = prompt
-            env_kwargs["depth"] = self.depth + 1  # Environment depth is RLM depth + 1
-            # For environments that support recursive RLM calls, pass the subcall
-            # callback when max_depth > 1. local/ipython invoke it in-process;
-            # docker invokes it via its host-side proxy (/rlm_query endpoints).
-            if self.environment_type in ("local", "ipython", "docker") and self.max_depth > 1:
-                env_kwargs["subcall_fn"] = self._subcall
-            # Pass custom tools to the environment
-            if self.custom_tools is not None:
-                env_kwargs["custom_tools"] = self.custom_tools
-            if self.custom_sub_tools is not None:
-                env_kwargs["custom_sub_tools"] = self.custom_sub_tools
-            if self.compaction and self.environment_type in ("local", "docker"):
-                env_kwargs["compaction"] = True
-            env_kwargs["max_concurrent_subcalls"] = self.max_concurrent_subcalls
-            # S6 runtime policy is enforced by the local REPL's sub-call helpers.
-            if self.runtime_policy is not None and self.environment_type == "local":
-                env_kwargs["runtime_policy"] = self.runtime_policy
-            environment: BaseEnv = get_environment(self.environment_type, env_kwargs)
-
-            if self.persistent:
-                self._persistent_env = environment
-
+        environment: BaseEnv | None = None
         try:
+            # Environment: reuse if persistent, otherwise create fresh
+            if self.persistent and self._persistent_env is not None:
+                environment = self._persistent_env
+                # Defensive check: ensure environment supports persistence methods
+                if not self._env_supports_persistence(environment):
+                    raise RuntimeError(
+                        f"Persistent environment of type '{type(environment).__name__}' does not "
+                        f"implement required methods (update_handler_address, add_context, get_context_count). "
+                        f"This should have been caught at initialization."
+                    )
+                environment.update_handler_address((lm_handler.host, lm_handler.port))
+                environment.add_context(prompt)
+            else:
+                env_kwargs = self.environment_kwargs.copy()
+                env_kwargs["lm_handler_address"] = (lm_handler.host, lm_handler.port)
+                env_kwargs["context_payload"] = prompt
+                env_kwargs["depth"] = self.depth + 1  # Environment depth is RLM depth + 1
+                # For environments that support recursive RLM calls, pass the subcall
+                # callback when max_depth > 1. local/ipython invoke it in-process;
+                # docker invokes it via its host-side proxy (/rlm_query endpoints).
+                if self.environment_type in ("local", "ipython", "docker") and self.max_depth > 1:
+                    env_kwargs["subcall_fn"] = self._subcall
+                # Pass custom tools to the environment
+                if self.custom_tools is not None:
+                    env_kwargs["custom_tools"] = self.custom_tools
+                if self.custom_sub_tools is not None:
+                    env_kwargs["custom_sub_tools"] = self.custom_sub_tools
+                if self.compaction and self.environment_type in ("local", "docker"):
+                    env_kwargs["compaction"] = True
+                env_kwargs["max_concurrent_subcalls"] = self.max_concurrent_subcalls
+                # S6 runtime policy is enforced by the local REPL's sub-call helpers.
+                if self.runtime_policy is not None and self.environment_type == "local":
+                    env_kwargs["runtime_policy"] = self.runtime_policy
+                environment = get_environment(self.environment_type, env_kwargs)
+
+                if self.persistent:
+                    self._persistent_env = environment
+
             yield lm_handler, environment
         finally:
-            # Publish the run's total before the only object holding it dies.
-            # This block runs during exception propagation too, after every
-            # completed call has been recorded, which makes it the one point
-            # where "the run is over" is true however it ended -- including a
-            # limit raised inside a client, which never reaches the iteration
-            # checks. A terminated completion returns nothing, so without this
-            # its usage would be unrecoverable and the run would read as free.
-            self._last_completion_usage = lm_handler.get_usage_summary().merged_with(
-                self._subcall_usage_snapshot()
-            )
-            lm_handler.stop()
-            if not self.persistent and hasattr(environment, "cleanup"):
-                environment.cleanup()
+            # Publish partial usage before releasing the handler, including
+            # failures during environment setup. Cleanup must also run if
+            # usage publication itself raises.
+            try:
+                self._last_completion_usage = lm_handler.get_usage_summary().merged_with(
+                    self._subcall_usage_snapshot()
+                )
+            finally:
+                try:
+                    lm_handler.stop()
+                finally:
+                    if (
+                        not self.persistent
+                        and environment is not None
+                        and hasattr(environment, "cleanup")
+                    ):
+                        environment.cleanup()
 
     def _setup_prompt(
         self,
@@ -958,7 +973,7 @@ class RLM:
         """
         Fallback behavior if the RLM is actually at max depth, and should be treated as an LM.
         """
-        client: BaseLM = get_client(self.backend, self.backend_kwargs)
+        client: BaseLM = self.create_client(self.backend, self.backend_kwargs)
         response = client.completion(message)
         return response
 
@@ -995,9 +1010,9 @@ class RLM:
         if next_depth >= self.max_depth:
             # Use other_backend if available, otherwise use main backend
             if self.other_backends and self.other_backend_kwargs:
-                client = get_client(self.other_backends[0], self.other_backend_kwargs[0])
+                client = self.create_client(self.other_backends[0], self.other_backend_kwargs[0])
             else:
-                client = get_client(self.backend, child_backend_kwargs or {})
+                client = self.create_client(self.backend, child_backend_kwargs or {})
             root_model = model or client.model_name
             start_time = time.perf_counter()
             try:

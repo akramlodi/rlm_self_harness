@@ -237,3 +237,25 @@ class TestMissingTrajectory:
         del data["metadata"]
         with pytest.raises(ValueError, match="no trajectory metadata"):
             build_call_tree_from_dict(data)
+
+
+def test_runtime_failure_without_trajectory_has_minimal_root():
+    from rlm.core.types import ExecutionFailure, RLMChatCompletion, UsageSummary
+
+    completion = RLMChatCompletion(
+        "model",
+        "prompt",
+        "",
+        UsageSummary({}),
+        1.0,
+        error="TypeError: bad tuple",
+        execution_failure=ExecutionFailure("runtime_error", "TypeError", "bad tuple", "stack"),
+    )
+    root = build_call_tree(completion)
+    assert root.node_id == "r"
+    assert root.iterations == []
+    assert root.error_kind == "runtime_error"
+    assert root.error == completion.error
+    assert root.usage_summary == completion.usage_summary.to_dict()
+    assert completion.metadata is None
+    assert build_call_tree_from_dict(completion.to_dict()).to_dict() == root.to_dict()

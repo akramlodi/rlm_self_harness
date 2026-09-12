@@ -168,9 +168,11 @@ class CallNode:
     children: list["CallNode"] = field(default_factory=list)
     sub_verdict: bool | None = None
     skill_index: list[dict[str, str]] | None = None
+    error: str | None = None
+    usage_summary: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "node_id": self.node_id,
             "parent_id": self.parent_id,
             "kind": self.kind.value,
@@ -188,6 +190,11 @@ class CallNode:
                 None if self.skill_index is None else [dict(entry) for entry in self.skill_index]
             ),
         }
+        if self.error is not None:
+            result["error"] = self.error
+        if self.usage_summary is not None:
+            result["usage_summary"] = self.usage_summary
+        return result
 
 
 @dataclass

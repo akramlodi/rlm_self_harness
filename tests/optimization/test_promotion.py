@@ -630,3 +630,12 @@ class TestBandMath:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+def test_runtime_failures_follow_normal_pass_and_cost_rule():
+    candidate = make_summary("mixed", 0, 3)
+    candidate["splits"][SPLIT_HELDOUT]["n_runtime_errors"] = 1
+    decision = score_candidate(BASELINE, candidate, PromotionConfig())
+    assert decision.decision == DECISION_ACCEPTED
+    candidate["splits"][SPLIT_HELDOUT].update(pass_count=0, pass_rate=0, n_runtime_errors=4)
+    assert score_candidate(BASELINE, candidate, PromotionConfig()).decision == DECISION_REJECTED

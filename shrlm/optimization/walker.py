@@ -137,7 +137,7 @@ def build_call_tree(completion: RLMChatCompletion) -> CallNode:
     inherit the parent's logger, so the entire tree is missing, not just the
     root.
     """
-    if completion.metadata is None:
+    if completion.metadata is None and completion.execution_failure is None:
         raise ValueError(
             "Completion has no trajectory metadata. Construct the RLM with "
             "logger=RLMLogger() -- children inherit the parent's logger, so without one "
@@ -149,10 +149,12 @@ def build_call_tree(completion: RLMChatCompletion) -> CallNode:
 def build_call_tree_from_dict(data: dict[str, Any]) -> CallNode:
     """Reconstruct the call tree from a serialized RLMChatCompletion."""
     metadata = data.get("metadata")
-    if metadata is None:
+    failure = data.get("execution_failure")
+    runtime_error = failure is not None and failure.get("cause") == "runtime_error"
+    if metadata is None and not runtime_error:
         raise ValueError("Serialized completion has no trajectory metadata")
 
-    run_metadata = metadata.get("run_metadata") or {}
+    run_metadata = (metadata or {}).get("run_metadata") or {}
     max_depth = int(run_metadata.get("max_depth", 1))
     environment_type = str(run_metadata.get("environment_type", "local"))
     ctx = WalkContext(
@@ -167,7 +169,7 @@ def build_call_tree_from_dict(data: dict[str, Any]) -> CallNode:
         parent_id=None,
         depth=0,
         kind=NodeKind.ROOT,
-        error_kind=None,
+        error_kind="runtime_error" if runtime_error else None,
         ctx=ctx,
     )
 
@@ -195,6 +197,8 @@ def build_node(
         execution_time=call.get("execution_time"),
         error_kind=error_kind,
         ambiguous=kind is NodeKind.INDETERMINATE,
+        error=call.get("error") if call.get("execution_failure") else None,
+        usage_summary=call.get("usage_summary") if call.get("execution_failure") else None,
     )
 
     metadata = call.get("metadata")
@@ -349,11 +353,11 @@ def compute_tree_stats(root: CallNode, ctx: WalkContext | None = None) -> TreeSt
 def walk(completion: RLMChatCompletion) -> tuple[CallNode, TreeStats]:
     """Reconstruct a tree and compute its statistics in one step."""
     metadata = completion.metadata
-    if metadata is None:
+    if metadata is None and completion.execution_failure is None:
         raise ValueError(
             "Completion has no trajectory metadata. Construct the RLM with logger=RLMLogger()."
         )
-    run_metadata = metadata.get("run_metadata") or {}
+    run_metadata = (metadata or {}).get("run_metadata") or {}
     max_depth = int(run_metadata.get("max_depth", 1))
     environment_type = str(run_metadata.get("environment_type", "local"))
     ctx = WalkContext(

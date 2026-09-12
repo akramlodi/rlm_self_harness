@@ -63,15 +63,18 @@ import hashlib
 import json
 import os
 import time
+import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from rlm.core.types import ModelUsageSummary, RLMChatCompletion, UsageSummary
+from rlm.core.types import ExecutionFailure, ModelUsageSummary, RLMChatCompletion, UsageSummary
 from rlm.utils.exceptions import (
     BudgetExceededError,
+    CancellationError,
+    ClientInitializationError,
     ErrorThresholdExceededError,
     HardDeadlineExceeded,
     HardDeadlineSignal,
@@ -908,8 +911,51 @@ def execute_run(
         )
 
     try:
-        run = harnessed.completion(prompt)
-        completion = run.completion
+        try:
+            run = harnessed.completion(prompt)
+            completion = run.completion
+        except ROOT_LIMIT_EXCEPTIONS:
+            raise
+        except Exception as error:
+            origin = error.__traceback__
+            while origin is not None and origin.tb_next is not None:
+                origin = origin.tb_next
+            origin_module = origin.tb_frame.f_globals.get("__name__", "") if origin else ""
+            if origin_module.startswith(("rlm.clients.", "rlm.environments.")):
+                # First-party adapters also raise plain built-in exceptions
+                # for provider/sandbox failures; their class MRO cannot tell.
+                raise
+            # SDK/transport errors and host resource failures are operational.
+            # Inspect the MRO so optional SDKs need not be imported on worker
+            # startup, and subclasses defined by callers retain their meaning.
+            provider_modules = (
+                "openai",
+                "anthropic",
+                "google.genai",
+                "google.api_core",
+                "httpx",
+                "httpcore",
+                "requests",
+                "urllib3",
+                "botocore",
+                "portkey_ai",
+            )
+            if isinstance(
+                error, (CancellationError, ClientInitializationError, OSError, MemoryError)
+            ) or any(
+                cls.__module__ == module or cls.__module__.startswith(module + ".")
+                for cls in type(error).__mro__
+                for module in provider_modules
+            ):
+                raise
+            outcome = _terminated(error, VerifierCause.RUNTIME_ERROR)
+            outcome.completion.execution_failure = ExecutionFailure(
+                cause="runtime_error",
+                exception_type=type(error).__name__,
+                message=str(error),
+                traceback="".join(traceback.format_exception(error)),
+            )
+            return outcome
         verdict = verifier(instance, completion.response) if verifier is not None else None
         return RunOutcome(completion=completion, verdict=verdict, usage_lower_bound=False)
     except ROOT_LIMIT_EXCEPTIONS as error:

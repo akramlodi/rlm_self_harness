@@ -276,7 +276,10 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
     total_sub_calls = 0
     total_skill_loads = 0
     for entry, (_instance, completion) in zip(entries, runs, strict=True):
-        terminated = entry.get("cause") == VerifierCause.RESOURCE_TERMINATED.value
+        terminated = entry.get("cause") in (
+            VerifierCause.RESOURCE_TERMINATED.value,
+            VerifierCause.RUNTIME_ERROR.value,
+        )
         if completion.metadata is None and terminated:
             continue  # terminated before any trajectory existed: no sub-call evidence
         metrics = run_metrics(completion)
@@ -302,6 +305,9 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
         "pass_rate": pass_count / n_runs if n_runs else None,
         "n_resource_terminated": sum(
             1 for entry in entries if entry.get("cause") == VerifierCause.RESOURCE_TERMINATED.value
+        ),
+        "n_runtime_errors": sum(
+            1 for entry in entries if entry.get("cause") == VerifierCause.RUNTIME_ERROR.value
         ),
         "total_cost": total_cost,
         "mean_cost": total_cost / n_runs if n_runs else None,

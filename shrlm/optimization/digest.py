@@ -19,6 +19,7 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import CallNode, NodeKind, TreeStats, Verdict, iter_nodes
 from shrlm.optimization.walker import iter_skill_loads
 
@@ -150,6 +151,11 @@ def render_header(
         f"gold_answer: {head_tail(verdict.gold, ANSWER_CHARS)}",
         f"produced_answer: {head_tail(verdict.produced, ANSWER_CHARS)}",
         f"verifier_cause: {verdict.cause.value if verdict.cause else 'none'}",
+        *(
+            [f"execution_error: {head_tail(verdict.detail, ANSWER_CHARS)}"]
+            if verdict.cause is VerifierCause.RUNTIME_ERROR
+            else []
+        ),
         *skill_lines,
         "",
         "## Tree statistics",
