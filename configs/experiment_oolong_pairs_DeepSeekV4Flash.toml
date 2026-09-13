@@ -25,9 +25,9 @@ max_output_tokens = 8192
 # instances at 8k and 40 at 262k. Partition all 40 short instances disjointly
 # for optimization and its untouched test; reserve all 40 long instances for
 # frozen-harness evaluation.
-n_in = 10 # held-in: weakness mining only
+n_in = 20 # held-in: weakness mining only
 n_ho = 10 # held-out: validation only, never mined
-test_short = 20 # untouched short test; 10 + 10 + 20 exhausts the 40-instance pool
+test_short = 10 # untouched short test; 10 + 10 + 20 exhausts the 40-instance pool
 test_long = 40 # untouched long test; exhausts its independent 40-instance pool
 seed = 0 # seeded partition of the OOLONG-Pairs pools
 
@@ -59,7 +59,7 @@ tau_improvement = 0.0
 # price); at 1.25 it is x7.3 ($507). A candidate that costs 25% more than
 # its incumbent is already a hard sell as an improvement, so the ceiling
 # buys almost nothing above 1.25 and costs orders of magnitude.
-cost_band = [0.5, 1.25]
+cost_band = [0.0, 1.25]
 # sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
 
 [caps]
@@ -281,7 +281,7 @@ validation_run_workers = 1
 
 # Held-in mining runs fan out independently. Start at 5; if provider 429s
 # appear, reduce to 3, then 1.
-mining_run_workers = 5
+mining_run_workers = 3
 
 # OOLONG-real is unrelated to the selected pair-task pool and stays disabled.
 # Identity-exempt.
