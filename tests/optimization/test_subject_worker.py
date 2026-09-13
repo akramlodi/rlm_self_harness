@@ -17,6 +17,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from shrlm.harness_identity import harness_hash, serialize_harness
 from shrlm.optimization.subject_worker import (
     CLIENT_CALLS_FILENAME,
@@ -115,17 +117,26 @@ class TestHappyPath:
         # The status line is echoed to stdout for the worker log.
         assert json.loads(completed.stdout.strip().splitlines()[-1])["ok"] is True
 
-    def test_second_run_resumes_with_zero_model_calls(self, tmp_path):
+    @pytest.mark.parametrize("legacy_summary", [False, True])
+    def test_second_run_resumes_with_zero_model_calls(self, tmp_path, legacy_summary):
         script = [final("RIGHT")] * 8
         request_path = request_for(tmp_path, "cand-b", script)
         assert run_child(request_path).returncode == 0
         first = load_summary(request_path.parent)
         assert client_calls(request_path.parent) == 4
+        if legacy_summary:
+            for split in first["splits"].values():
+                del split["n_runtime_errors"]
+            (request_path.parent / SUMMARY_FILENAME).write_text(
+                json.dumps(first, indent=2, sort_keys=True) + "\n"
+            )
+        saved = (request_path.parent / SUMMARY_FILENAME).read_bytes()
 
         # Re-run against the SAME script file: nothing is popped on resume.
         assert run_child(request_path).returncode == 0
         assert client_calls(request_path.parent) == 0
         assert load_summary(request_path.parent) == first
+        assert (request_path.parent / SUMMARY_FILENAME).read_bytes() == saved
 
     def test_request_round_trips_through_disk(self, tmp_path):
         request_path = request_for(tmp_path, "cand-c", [final("RIGHT")] * 8)

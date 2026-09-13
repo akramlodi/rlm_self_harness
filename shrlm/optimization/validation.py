@@ -364,8 +364,17 @@ def _write_summary(path: Path, payload: dict[str, Any]) -> None:
     mean the configuration changed under an already-summarized subject (e.g. a
     raised budget re-running a previously over-budget candidate); that summary
     may already have fed a promotion decision, so the rewrite is refused and
-    the operator must delete the stale file deliberately.
+    the operator must delete the stale file deliberately. A legacy missing
+    runtime-error count is equivalent to zero and leaves the saved file intact.
     """
+    if path.exists():
+        previous = json.loads(path.read_text())
+        # Summaries written before runtime-error containment lack this count.
+        # Accept only an equivalent zero count, preserving the saved bytes.
+        for split in previous.get("splits", {}).values():
+            split.setdefault("n_runtime_errors", 0)
+        if previous == payload:
+            return
     _persist_once(
         path,
         json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n",
