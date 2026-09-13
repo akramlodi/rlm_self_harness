@@ -120,24 +120,32 @@ def load_deepmind_mrcrv2(
         raise ValueError(f"limit must be >= 1, got {limit}")
     csv.field_size_limit(sys.maxsize)
     path = ensure_dataset(Path(cache_path), download_url)
-    with path.open(newline="") as handle:
-        rows = list(csv.DictReader(handle))
-
     # The released CSV remains intact in ``cache_path``.  A row is eligible for
     # split sampling only when the independently derived turn records agree
     # with the official answer and ordinal; anomalous rows remain auditable in
-    # the source cache rather than being silently repaired or discarded.
-    clean = [
-        instance
-        for index, row in enumerate(rows)
-        if (instance := row_to_instance(row, seed, index, expected_needles))["parse_status"] == "ok"
-    ]
-    if len(clean) < limit:
+    # the source cache rather than being silently repaired or discarded. Stream
+    # the 3 GB CSV: retaining all parsed prompts would exceed ordinary EC2 RAM.
+    rng = random.Random(seed)
+    sample: list[dict[str, Any]] = []
+    clean_count = 0
+    with path.open(newline="") as handle:
+        for index, row in enumerate(csv.DictReader(handle)):
+            instance = row_to_instance(row, seed, index, expected_needles)
+            if instance["parse_status"] != "ok":
+                continue
+            clean_count += 1
+            if len(sample) < limit:
+                sample.append(instance)
+            else:
+                replacement = rng.randrange(clean_count)
+                if replacement < limit:
+                    sample[replacement] = instance
+    if clean_count < limit:
         raise ValueError(
-            f"requested {limit} clean MRCR rows but only {len(clean)} of {len(rows)} released rows "
+            f"requested {limit} clean MRCR rows but only {clean_count} released rows "
             "passed the answer-anchored parser audit"
         )
-    return random.Random(seed).sample(clean, limit)
+    return sample
 
 
 class DeepMindMrcrv2Verifier:
