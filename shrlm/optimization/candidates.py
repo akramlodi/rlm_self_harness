@@ -80,7 +80,7 @@ from shrlm.optimization.taxonomy import (
     VerifierCause,
 )
 from shrlm.rlm_harness import Harness, SkillEntry
-from shrlm.runner import check_harness
+from shrlm.runner import check_answer_fixtures, check_harness
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
 # ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
@@ -645,7 +645,26 @@ def assemble_harness(serialization: dict[str, Any], module_path: Path) -> Harnes
 # ---------------------------------------------------------------------------
 
 
-def run_subprocess_gate(proposal_path: str) -> dict[str, Any]:
+LEGACY_PREFLIGHT_PROFILE = "generic/v1"
+OOLONG_PREFLIGHT_PROFILE = "oolong-pairs/v1"
+
+
+def select_preflight_profile(verifier_config: dict[str, Any] | None) -> str:
+    return (
+        OOLONG_PREFLIGHT_PROFILE
+        if (verifier_config or {}).get("environment") == "oolong_pairs"
+        else LEGACY_PREFLIGHT_PROFILE
+    )
+
+
+def validate_preflight_profile(profile: str) -> None:
+    if profile not in (LEGACY_PREFLIGHT_PROFILE, OOLONG_PREFLIGHT_PROFILE):
+        raise ValueError(f"unknown host preflight profile: {profile}")
+
+
+def run_subprocess_gate(
+    proposal_path: str, preflight_profile: str = LEGACY_PREFLIGHT_PROFILE
+) -> dict[str, Any]:
     """Materialize, ``check_harness``, and round-trip one proposal. Child-side.
 
     Runs inside the gate subprocess (``python -m shrlm.optimization.candidates
@@ -667,6 +686,10 @@ def run_subprocess_gate(proposal_path: str) -> dict[str, Any]:
         }
     try:
         check_harness(harness)
+        if payload["surface"] == "S9" and preflight_profile == OOLONG_PREFLIGHT_PROFILE:
+            from shrlm.environments.oolong_pairs import ANSWER_FIXTURES
+
+            check_answer_fixtures(harness.answer_middleware, ANSWER_FIXTURES)
     except Exception as error:
         return {
             "ok": False,
@@ -704,9 +727,17 @@ def _gate_environment() -> dict[str, str]:
     }
 
 
-def _run_gate_subprocess(proposal_path: Path, timeout_seconds: float) -> dict[str, Any]:
+def _run_gate_subprocess(
+    proposal_path: Path, timeout_seconds: float, preflight_profile: str = LEGACY_PREFLIGHT_PROFILE
+) -> dict[str, Any]:
     """Host-side wrapper: run the gate in a child under a wall-clock timeout."""
-    command = [sys.executable, "-m", "shrlm.optimization.candidates", str(proposal_path)]
+    command = [
+        sys.executable,
+        "-m",
+        "shrlm.optimization.candidates",
+        str(proposal_path),
+        preflight_profile,
+    ]
     try:
         process = subprocess.run(
             command,
@@ -722,7 +753,7 @@ def _run_gate_subprocess(proposal_path: Path, timeout_seconds: float) -> dict[st
             "reason": f"materialization/check timed out after {timeout_seconds}s of wall clock; "
             "candidate source must not block",
         }
-    except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as error:
+    except (subprocess.SubprocessError, UnicodeDecodeError) as error:
         return {
             "ok": False,
             "gate": GATE_MATERIALIZATION,
@@ -761,6 +792,7 @@ def load_candidate(
     caps: dict[str, int | float] | None = None,
     timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
     incumbent_serialization: dict[str, Any] | None = None,
+    preflight_profile: str = LEGACY_PREFLIGHT_PROFILE,
 ) -> LoadedCandidate | CandidateRejection:
     """Gate one ``proposal.json`` against the incumbent, KTD2 order.
 
@@ -781,6 +813,7 @@ def load_candidate(
         a ``CandidateRejection`` naming the gate and the violation. Expected-
         invalid input never raises.
     """
+    validate_preflight_profile(preflight_profile)
     proposal_path = Path(proposal_path)
     fallback_id = proposal_path.parent.name
 
@@ -857,7 +890,7 @@ def load_candidate(
         if violations:
             return rejection(candidate_id, GATE_CAPS, "; ".join(violations))
 
-    verdict = _run_gate_subprocess(proposal_path, timeout_seconds)
+    verdict = _run_gate_subprocess(proposal_path, timeout_seconds, preflight_profile)
     if not verdict.get("ok"):
         return rejection(
             candidate_id,
@@ -924,6 +957,7 @@ def load_candidates(
     *,
     caps: dict[str, int | float] | None = None,
     timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
+    preflight_profile: str = LEGACY_PREFLIGHT_PROFILE,
 ) -> tuple[list[LoadedCandidate], list[CandidateRejection]]:
     """Gate every candidate directory under ``proposals_dir``, in sorted order.
 
@@ -967,6 +1001,7 @@ def load_candidates(
             caps=caps,
             timeout_seconds=timeout_seconds,
             incumbent_serialization=incumbent_serialization,
+            preflight_profile=preflight_profile,
         )
         if isinstance(result, CandidateRejection) and result.candidate_id != entry.name:
             # Defensive: ledger subjects must be unique, and directory names
@@ -1001,7 +1036,13 @@ if __name__ == "__main__":
     for _key in list(os.environ):
         if _key not in _GATE_ENV_ALLOWLIST and not _key.startswith("LC_"):
             del os.environ[_key]
-    print(json.dumps(run_subprocess_gate(sys.argv[1])))
+    print(
+        json.dumps(
+            run_subprocess_gate(
+                sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else LEGACY_PREFLIGHT_PROFILE
+            )
+        )
+    )
 
 
 __all__ = [

@@ -904,6 +904,7 @@ def validate_round(
     promotion: "PromotionConfig | None" = None,
     *,
     loader_timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
+    preflight_profile: str | None = None,
 ) -> ValidationRound:
     """Load and freeze a disjoint proposal batch, evaluate it, then persist one verdict.
 
@@ -912,6 +913,7 @@ def validate_round(
     Single edits keep their candidate id; multi-edit batches evaluate as ``merged``.
     Duplicate surfaces or reserved ids fail before model calls. Loader rejections
     remain visible in the ledger. Empty proposal directories create no artifacts."""
+    from shrlm.optimization.candidates import select_preflight_profile
     from shrlm.optimization.promotion import (
         DECISION_BUNDLED,
         MERGED_SUBJECT_ID,
@@ -923,10 +925,31 @@ def validate_round(
         promote_decision,
     )
 
-    pconfig = promotion if promotion is not None else PromotionConfig()
     round_path = round_dir(config.out_dir, config.round_index)
+    contract_path = round_path / "validation.json"
+    persisted_contract = json.loads(contract_path.read_text()) if contract_path.exists() else None
+    if preflight_profile is None:
+        preflight_profile = (
+            persisted_contract.get("preflight_profile", "generic/v1")
+            if persisted_contract is not None
+            else select_preflight_profile(evaluation_contract(config)["verifier_config"])
+        )
+    if persisted_contract is not None and preflight_profile != persisted_contract.get(
+        "preflight_profile", "generic/v1"
+    ):
+        raise ValueError("different validation contract: preflight profile changed")
+    profile_fields = (
+        {"preflight_profile": preflight_profile}
+        if persisted_contract is None or "preflight_profile" in persisted_contract
+        else {}
+    )
+    pconfig = promotion if promotion is not None else PromotionConfig()
     loaded, rejections = load_candidates(
-        proposals_dir, incumbent, caps=config.caps.s6_caps(), timeout_seconds=loader_timeout_seconds
+        proposals_dir,
+        incumbent,
+        caps=config.caps.s6_caps(),
+        timeout_seconds=loader_timeout_seconds,
+        preflight_profile=preflight_profile,
     )
     for candidate in loaded:
         if candidate.candidate_id in (BASELINE_ID, MERGED_SUBJECT_ID):
@@ -942,6 +965,7 @@ def validate_round(
             round_path / "validation.json",
             {
                 **evaluation_contract(config),
+                **profile_fields,
                 "incumbent_hash": harness_hash(incumbent),
                 "batch_hash": plan.harness_hash,
                 "constituents": [

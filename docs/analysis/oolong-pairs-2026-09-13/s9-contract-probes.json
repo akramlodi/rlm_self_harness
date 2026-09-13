@@ -1,0 +1,82 @@
+[
+  {
+    "proposal": "experiment_oolong_pairs_dsv4f/opt/round_02/proposals/r02-c01-s9/proposal.json",
+    "results": {
+      "valid_list": "accept",
+      "valid_newline_pairs": "accept",
+      "valid_empty": "accept",
+      "valid_non_clique": "redirect",
+      "malformed": "accept"
+    }
+  },
+  {
+    "proposal": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/proposals/r01-c01-s9/proposal.json",
+    "results": {
+      "valid_list": "accept",
+      "valid_newline_pairs": "redirect",
+      "valid_empty": "redirect",
+      "valid_non_clique": "accept",
+      "malformed": "redirect"
+    }
+  },
+  {
+    "proposal": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/proposals/r03-c01-s9/proposal.json",
+    "results": {
+      "valid_list": "accept",
+      "valid_newline_pairs": "redirect",
+      "valid_empty": "redirect",
+      "valid_non_clique": "accept",
+      "malformed": "redirect"
+    }
+  },
+  {
+    "proposal": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_01/proposals/r01-c01-s9/proposal.json",
+    "results": {
+      "valid_list": "accept",
+      "valid_newline_pairs": "AttributeError: type object 'AnswerDecision' has no attribute 'reject'",
+      "valid_empty": "AttributeError: type object 'AnswerDecision' has no attribute 'reject'",
+      "valid_non_clique": "accept",
+      "malformed": "AttributeError: type object 'AnswerDecision' has no attribute 'reject'"
+    }
+  },
+  {
+    "proposal": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_02/proposals/r02-c02-s9/proposal.json",
+    "results": {
+      "valid_list": "accept",
+      "valid_newline_pairs": "redirect",
+      "valid_empty": "redirect",
+      "valid_non_clique": "accept",
+      "malformed": "redirect"
+    }
+  },
+  {
+    "proposal": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/proposals/r03-c01-s9/proposal.json",
+    "results": {
+      "valid_list": "TypeError: expected string or bytes-like object, got 'tuple'",
+      "valid_newline_pairs": "redirect",
+      "valid_empty": "redirect",
+      "valid_non_clique": "TypeError: expected string or bytes-like object, got 'tuple'",
+      "malformed": "redirect"
+    }
+  },
+  {
+    "proposal": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/proposals/r04-c02-s9/proposal.json",
+    "results": {
+      "valid_list": "TypeError: AnswerDecision.accept() missing 1 required positional argument: 'answer'",
+      "valid_newline_pairs": "redirect",
+      "valid_empty": "redirect",
+      "valid_non_clique": "TypeError: AnswerDecision.accept() missing 1 required positional argument: 'answer'",
+      "malformed": "redirect"
+    }
+  },
+  {
+    "proposal": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/proposals/r05-c02-s9/proposal.json",
+    "results": {
+      "valid_list": "TypeError: AnswerDecision.accept() missing 1 required positional argument: 'answer'",
+      "valid_newline_pairs": "redirect",
+      "valid_empty": "redirect",
+      "valid_non_clique": "TypeError: AnswerDecision.accept() missing 1 required positional argument: 'answer'",
+      "malformed": "redirect"
+    }
+  }
+]

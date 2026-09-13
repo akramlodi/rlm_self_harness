@@ -1,0 +1,855 @@
+[
+  {
+    "experiment": "experiment_oolong_pairs_dsv4f",
+    "runs_with_redirects": 0,
+    "redirect_count": 0,
+    "runs_correct_redirected": 0,
+    "runs_correct_redirected_final_failed": 0,
+    "records": [],
+    "scope_note": "Root submissions with recorded answer_redirected events only. Oldest run has no such recorded events; its zero counts are not evidence of no redirects. Offline verdicts are diagnostics and do not change stored outcomes."
+  },
+  {
+    "experiment": "experiment_oolong_pairs_dsv4f_20260911_1458",
+    "runs_with_redirects": 20,
+    "redirect_count": 63,
+    "runs_correct_redirected": 7,
+    "runs_correct_redirected_final_failed": 3,
+    "records": [
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/validation/round_01/r01-c01-s9/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t06-w9-22ddb943784e7d7f__a01",
+        "final_passed": false,
+        "cause": "wrong_format",
+        "redirects": [
+          {
+            "iteration": 19,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          },
+          {
+            "iteration": 21,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          },
+          {
+            "iteration": 23,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          },
+          {
+            "iteration": 24,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          },
+          {
+            "iteration": 26,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/validation/round_01/r01-c01-s9/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t14-w9-259b0efda7a2e2e8__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 16,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          },
+          {
+            "iteration": 18,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          },
+          {
+            "iteration": 20,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          },
+          {
+            "iteration": 21,
+            "would_pass": false,
+            "detail": "precision=0.700 recall=0.656 f1=0.677 missing=11 extra=9",
+            "answer_prefix": "(14630, 17636)\n(14630, 31244)\n(14630, 34020)\n(14630, 35531)\n(14630, 57020)\n(1463"
+          },
+          {
+            "iteration": 26,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          },
+          {
+            "iteration": 27,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          },
+          {
+            "iteration": 28,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706), (14630, 98250), (14630, 99829), (17636, 94706), (17636, 98250), "
+          },
+          {
+            "iteration": 29,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          },
+          {
+            "iteration": 30,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/validation/round_01/r01-c01-s9/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t03-w10-f17c87447f7ca0f0__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 15,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 17,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 18,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 20,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 22,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 28,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 29,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 30,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/validation/round_01/r01-c01-s9/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t20-w10-c0dd071439e06fa2__a01",
+        "final_passed": false,
+        "cause": "wrong_format",
+        "redirects": [
+          {
+            "iteration": 29,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(72621, 96597)"
+          },
+          {
+            "iteration": 30,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(72621, 96597)"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/validation/round_03/merged/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t14-w9-259b0efda7a2e2e8__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 22,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          },
+          {
+            "iteration": 23,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/validation/round_03/merged/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t18-w10-7316cc87a69b31b7__a01",
+        "final_passed": false,
+        "cause": "wrong_format",
+        "redirects": [
+          {
+            "iteration": 30,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(16357, 72621)\n(25308, 72621)\n(27887, 72621)\n(31029, 72621)\n(40446, 72621)\n(6904"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/validation/round_03/merged/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t03-w10-f17c87447f7ca0f0__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 6,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 7,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          }
+        ]
+      }
+    ],
+    "scope_note": "Root submissions with recorded answer_redirected events only. Oldest run has no such recorded events; its zero counts are not evidence of no redirects. Offline verdicts are diagnostics and do not change stored outcomes."
+  },
+  {
+    "experiment": "experiment_oolong_pairs_dsv4f_20260911_213930",
+    "runs_with_redirects": 179,
+    "redirect_count": 232,
+    "runs_correct_redirected": 39,
+    "runs_correct_redirected_final_failed": 4,
+    "records": [
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_02/validation/round_02/merged/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t10-w9-2827bc624a60c091__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 17,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 21908)\n(10149, 26472)\n(10149, 50580)\n(10149, 82104)\n(10149, 88510)\n(1014"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/mining/round_03/runs.jsonl",
+        "run_id": "oolong-t02-w10-8531d00f4e16fe6b__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 22,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(16357, 25308)\n(16357, 27887)\n(16357, 31029)\n(16357, 40446)\n(16357, 69046)\n(1635"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/mining/round_03/runs.jsonl",
+        "run_id": "oolong-t06-w9-22ddb943784e7d7f__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 23,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          },
+          {
+            "iteration": 25,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/mining/round_03/runs.jsonl",
+        "run_id": "oolong-t15-w9-23b921f28b2e514b__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 25,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 14630)\n(10149, 57020)\n(10149, 64261)\n(10149, 85017)\n(10149, 94706)\n(1014"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/mining/round_03/runs.jsonl",
+        "run_id": "oolong-t03-w10-f17c87447f7ca0f0__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 15,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/mining/round_03/runs.jsonl",
+        "run_id": "oolong-t03-w10-f17c87447f7ca0f0__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 25,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/mining/round_03/runs.jsonl",
+        "run_id": "oolong-t20-w10-c0dd071439e06fa2__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 20,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(72621, 96597)"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t10-w9-2827bc624a60c091__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 11,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 21908)\n(10149, 26472)\n(10149, 50580)\n(10149, 82104)\n(10149, 88510)\n(1014"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t09-w10-90d877bb39360949__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 11,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(16357, 17364)\n(16357, 18063)\n(16357, 19717)\n(16357, 25308)\n(16357, 27887)\n(1635"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/validation/round_03/r03-c01-s9/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t10-w9-2827bc624a60c091__a01",
+        "final_passed": false,
+        "cause": "runtime_error",
+        "redirects": [
+          {
+            "iteration": 27,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 21908)\n(10149, 26472)\n(10149, 50580)\n(10149, 82104)\n(10149, 88510)\n(1014"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t01-w9-ab9956978b367bac__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 12,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 14630)\n(10149, 17636)\n(10149, 18397)\n(10149, 19891)\n(10149, 21908)\n(1014"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t08-w10-4f259998df92e58c__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 25,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(27887, 41079)\n(27887, 69046)\n(27887, 72621)\n(27887, 83104)\n(41079, 69046)\n(4107"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t01-w9-ab9956978b367bac__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 5,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 14630)\n(10149, 17636)\n(10149, 18397)\n(10149, 19891)\n(10149, 21908)\n(1014"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t10-w10-27a4b36613829c4b__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 26,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(11644, 13249)\n(11644, 26513)\n(11644, 26526)\n(11644, 27887)\n(11644, 30165)\n(1164"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t16-w9-1dcaca72ce800990__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 18,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 34020)\n(14630, 64261)\n(14630, 65282)\n(14630, 88510)\n(1463"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t16-w9-1dcaca72ce800990__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 29,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 34020)\n(14630, 64261)\n(14630, 65282)\n(14630, 88510)\n(1463"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t01-w10-e1931c943e436c56__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 22,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(11644, 13152)\n(11644, 13249)\n(11644, 16357)\n(11644, 17364)\n(11644, 18063)\n(1164"
+          },
+          {
+            "iteration": 23,
+            "would_pass": false,
+            "detail": "no '(user_id_1, user_id_2)' pair and no 'No valid pairs' marker to parse",
+            "answer_prefix": "[[11644, 13152], [11644, 13249], [11644, 16357], [11644, 17364], [11644, 18063],"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t01-w10-e1931c943e436c56__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 21,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(11644, 13152)\n(11644, 13249)\n(11644, 16357)\n(11644, 17364)\n(11644, 18063)\n(1164"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t06-w9-22ddb943784e7d7f__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 27,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          },
+          {
+            "iteration": 28,
+            "would_pass": false,
+            "detail": "no '(user_id_1, user_id_2)' pair and no 'No valid pairs' marker to parse",
+            "answer_prefix": "[('14630', '17636'), ('14630', '18397'), ('14630', '19891'), ('14630', '21006'),"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t14-w9-259b0efda7a2e2e8__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 23,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 94706)\n(14630, 98250)\n(14630, 99829)\n(17636, 94706)\n(17636, 98250)\n(1763"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t03-w10-f17c87447f7ca0f0__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 10,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 11,
+            "would_pass": false,
+            "detail": "no '(user_id_1, user_id_2)' pair and no 'No valid pairs' marker to parse",
+            "answer_prefix": "[('13152', '16357'), ('13152', '18063'), ('13152', '25041'), ('13152', '25308'),"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t18-w10-7316cc87a69b31b7__a02",
+        "final_passed": false,
+        "cause": "wrong_format",
+        "redirects": [
+          {
+            "iteration": 30,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(16357, 72621)\n(25308, 72621)\n(27887, 72621)\n(31029, 72621)\n(40446, 72621)\n(6904"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+        "run_id": "oolong-t03-w10-f17c87447f7ca0f0__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 13,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          },
+          {
+            "iteration": 15,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/validation/round_04/baseline/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t10-w9-2827bc624a60c091__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 18,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 21908)\n(10149, 26472)\n(10149, 50580)\n(10149, 82104)\n(10149, 88510)\n(1014"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t01-w9-ab9956978b367bac__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 9,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 14630)\n(10149, 17636)\n(10149, 18397)\n(10149, 19891)\n(10149, 21908)\n(1014"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t08-w10-4f259998df92e58c__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 25,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(27887, 41079)\n(27887, 69046)\n(27887, 72621)\n(27887, 83104)\n(41079, 69046)\n(4107"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t10-w10-27a4b36613829c4b__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 3,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(11644, 13249)\n(11644, 26513)\n(11644, 26526)\n(11644, 27887)\n(11644, 30165)\n(1164"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t02-w10-8531d00f4e16fe6b__a01",
+        "final_passed": false,
+        "cause": "wrong_format",
+        "redirects": [
+          {
+            "iteration": 30,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(16357, 25308)\n(16357, 27887)\n(16357, 31029)\n(16357, 40446)\n(16357, 69046)\n(1635"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t10-w10-27a4b36613829c4b__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 21,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(82203, 83579)\n(67774, 82203)\n(33300, 82203)\n(72014, 82203)\n(82203, 96511)\n(1324"
+          },
+          {
+            "iteration": 22,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "[(82203, 83579), (82203, 96511), (83579, 96511), (67774, 82203), (67774, 83579),"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t01-w10-e1931c943e436c56__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 15,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(11644, 13152)\n(11644, 13249)\n(11644, 16357)\n(11644, 17364)\n(11644, 18063)\n(1164"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t06-w9-22ddb943784e7d7f__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 16,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t06-w9-22ddb943784e7d7f__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 15,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(14630, 17636)\n(14630, 18397)\n(14630, 19891)\n(14630, 21006)\n(14630, 26472)\n(1463"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t18-w10-7316cc87a69b31b7__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 10,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(16357, 72621)\n(25308, 72621)\n(27887, 72621)\n(31029, 72621)\n(40446, 72621)\n(6904"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t03-w10-f17c87447f7ca0f0__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 19,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t03-w10-f17c87447f7ca0f0__a02",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 10,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(13152, 16357)\n(13152, 18063)\n(13152, 25041)\n(13152, 25308)\n(13152, 26513)\n(1315"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+        "run_id": "oolong-t20-w10-c0dd071439e06fa2__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 15,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(72621, 96597)"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/validation/round_05/baseline/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t10-w9-2827bc624a60c091__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 27,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 21908)\n(10149, 26472)\n(10149, 50580)\n(10149, 82104)\n(10149, 88510)\n(1014"
+          },
+          {
+            "iteration": 28,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "[(26472, 90816), (26472, 50580), (21908, 26472), (26472, 98411), (26472, 88510),"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/validation/round_05/baseline/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t17-w10-74f51cb44a6e57c1__a01",
+        "final_passed": true,
+        "cause": null,
+        "redirects": [
+          {
+            "iteration": 24,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(11644, 27887)\n(11644, 41079)\n(11644, 69046)\n(13152, 27887)\n(13152, 41079)\n(1315"
+          }
+        ]
+      },
+      {
+        "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/validation/round_05/r05-c02-s9/heldout/round_00/runs.jsonl",
+        "run_id": "oolong-t10-w9-2827bc624a60c091__a01",
+        "final_passed": false,
+        "cause": "runtime_error",
+        "redirects": [
+          {
+            "iteration": 25,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 21908)\n(10149, 26472)\n(10149, 50580)\n(10149, 82104)\n(10149, 88510)\n(1014"
+          },
+          {
+            "iteration": 27,
+            "would_pass": true,
+            "detail": "precision=1.000 recall=1.000 f1=1.000 missing=0 extra=0",
+            "answer_prefix": "(10149, 21908)\n(10149, 26472)\n(10149, 50580)\n(10149, 82104)\n(10149, 88510)\n(1014"
+          }
+        ]
+      }
+    ],
+    "scope_note": "Root submissions with recorded answer_redirected events only. Oldest run has no such recorded events; its zero counts are not evidence of no redirects. Offline verdicts are diagnostics and do not change stored outcomes."
+  }
+]

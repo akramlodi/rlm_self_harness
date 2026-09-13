@@ -2400,3 +2400,132 @@ def test_runtime_failed_proposal_finishes_experiment(
     )
     assert resumed.final_harness_hash == result.final_harness_hash
     assert idle.total_calls == 0
+
+
+def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch):
+    import re
+
+    config = make_config(tmp_path, t=2)
+    config = replace(
+        config,
+        loop=replace(config.loop, environment="oolong_pairs"),
+        environments=replace(
+            config.environments, oolong_pairs=replace(config.environments.oolong_pairs, n_short=5)
+        ),
+    )
+    out = tmp_path / "exp"
+
+    def pair_loader(config, length, limit, seed):
+        return [
+            {
+                "id": f"pairs-{length}-{i}",
+                "prompt": "classify input rows",
+                "question": f"TASK_SENTINEL_{i}: count labels by user and apply dates",
+                "gold_pairs": [(11, 22), (11, 33), (22, 33)],
+            }
+            for i in range(limit)
+        ]
+
+    class RepairProposer(MockLM):
+        def __init__(self):
+            super().__init__(responses=[])
+            self.prompts = []
+            self.s9_index = None
+
+        def completion(self, prompt):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 3:
+                return "[]"
+            if len(self.prompts) == 1:
+                indices = {
+                    json.loads(signature)["agent_mechanism"]: int(index)
+                    for index, signature in re.findall(
+                        r"\[(\d+)\] eligible surfaces: [^\n]+\n  signature: ([^\n]+)",
+                        prompt[0]["content"],
+                    )
+                }
+                self.s9_index = indices["lossy_aggregation"]
+                s2 = {
+                    "pattern_index": indices["incomplete_coverage"],
+                    "surface": "S2",
+                    "edit": {"kind": "text", "new_text": "Classify records with stable row IDs."},
+                    "predicted_effect": "Preserve record identity and coverage",
+                    "regression_risks": [],
+                }
+                condition = "answer.startswith('[')"
+                items = [s2]
+            else:
+                # A different branch that the synthetic contract cannot exhaustively prove safe.
+                condition = "answer.count('(') == 3"
+                items = []
+            items.append(
+                {
+                    "pattern_index": self.s9_index,
+                    "surface": "S9",
+                    "edit": {
+                        "kind": "code",
+                        "source": f"def middleware(answer, repl_inventory):\n    if {condition}:\n"
+                        "        return AnswerDecision.accept()\n    return AnswerDecision.accept(answer)\n",
+                    },
+                    "predicted_effect": "Preserve valid answers",
+                    "regression_risks": ["branch error"],
+                }
+            )
+            return json.dumps(items)
+
+    proposer = RepairProposer()
+    factory = patch_runner(
+        monkeypatch,
+        [final("[(11, 22)]")] * 4
+        + [final("[(11, 22), (11, 33), (22, 33)]")] * 2
+        + [final("[(11, 22)]")] * 2,
+    )
+    result = run_experiment(
+        config,
+        out,
+        attributor_lm=MockLM(
+            responses=[attribution("incomplete_coverage"), attribution("lossy_aggregation")] * 2
+        ),
+        proposer_lm=proposer,
+        loaders={**LOADERS, "oolong_pairs": pair_loader},
+    )
+    assert len(result.rounds) == 2
+    assert factory.total_calls == 8  # mining + baseline + one combined batch + next mining
+    marker = json.loads((experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text())
+    assert marker["preflight_profile"] == "oolong-pairs/v1"
+    assert len(marker["candidate_ids"]) == 2
+    assert len(marker["attempts"]) == 2
+    assert "bracketed_pair" in marker["attempts"][0]["violation"]
+    validation = validation_round_path(out, 1)
+    assert not list(validation.glob("*/heldin"))
+    assert not (validation / "r01-c01-s2").exists()
+    history_prompt = proposer.prompts[2][0]["content"]
+    assert "the model answered without verifying" in history_prompt
+    assert "mean_f1_all_attempts" in history_prompt and "n_runtime_errors" in history_prompt
+    assert "AnswerDecision.accept() missing" in history_prompt
+    assert "Preserve record identity and coverage" in history_prompt
+    assert "Preserve valid answers" in history_prompt
+    heldout_ids = {
+        str(instance["id"])
+        for instance in orchestrator_module._read_split(
+            out / SPLITS_DIR, "oolong_pairs", "short", "held_out"
+        )
+    }
+    assert all(
+        f"TASK_SENTINEL_{instance_id.rsplit('-', 1)[-1]}" not in history_prompt
+        for instance_id in heldout_ids
+    )
+    snapshots_before = {
+        p: p.read_bytes() for p in validation.rglob("*.json") if p.name != "surfaces.py"
+    }
+    idle = patch_runner(monkeypatch, [])
+    replay = run_experiment(
+        config,
+        out,
+        attributor_lm=MockLM(responses=[]),
+        proposer_lm=MockLM(responses=[]),
+        loaders={**LOADERS, "oolong_pairs": pair_loader},
+    )
+    assert replay.final_harness_hash == result.final_harness_hash
+    assert idle.total_calls == 0
+    assert snapshots_before == {p: p.read_bytes() for p in snapshots_before}

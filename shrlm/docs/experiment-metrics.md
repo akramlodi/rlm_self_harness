@@ -68,3 +68,30 @@ The following are **not** captured, or not captured at the grain the analysis ne
 ## Definition of done
 
 A script that consumes a completed run directory and emits every table and figure the paper needs, demonstrated end to end against a smoke run. Anything it cannot produce from persisted artifacts is a gap to close **before** the full loop starts.
+
+
+## OOLONG-Pairs feedback used by optimization
+
+Attribution digests and held-in proposal evidence expose the recorded precision,
+recall, F1, and missing/extra counts. These are diagnostics at the verifier's
+saved three-decimal precision; exact set equality still determines success.
+Representative held-in examples include at most three missing and three extra
+pairs. Runtime, resource, provider content-filter and format failures have
+unavailable pair counts; a partial or redirected submission is never rescored
+as an answer.
+
+Prior-round proposal history reads baseline and combined-subject links from the
+ledger and saved run manifests, without opening held-out trace bodies. It reports
+exact passes, cost, runtime-error count, all-attempt mean F1, and missing/extra
+totals with their measured-answer denominator. Explicit runtime, resource,
+content-filter and format failures contribute zero to all-attempt F1. Missing
+ordinary legacy metrics make that mean unavailable (`null`); zero attempts also
+have no mean. A correct empty answer contributes F1=1 and zero pair errors.
+
+History includes each batch member's predicted effect and one shared verdict.
+Only aggregate validation diagnostics and recognized structural exception text
+reach the proposer. Held-out task text, pair IDs, answers, code and arbitrary
+exception payloads are excluded. These are read-only projections; existing
+bundles, verdicts, summaries, ledgers and completed experiments are not rewritten.
+Keep the current round's held-in traces available until its proposal stage is
+sealed, so the diagnosis excerpts can be verified.

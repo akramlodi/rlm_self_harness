@@ -402,16 +402,26 @@ def load_round_history(
     list and contributes no synthesized records; the round still renders as
     an entry with its outcome.
     """
+    from shrlm.optimization.proposal_evidence import validation_history_diagnostics
+
     decision = _load_marker(round_path / ROUND_MARKER_FILENAME, ROUND_MARKER_FORMAT)
     records: list[dict[str, Any]] = []
     if has_ledger:
-        ledger_records, _ = load_promotion_ledger(
+        ledger_records, ledger_decision = load_promotion_ledger(
             round_dir(round_path / VALIDATION_DIR, round_index)
         )
+        validation_path = round_dir(round_path / VALIDATION_DIR, round_index)
+        if ledger_decision.get("baseline"):
+            decision["baseline_diagnostics"] = validation_history_diagnostics(
+                validation_path, ledger_decision["baseline"]
+            )
         proposals_dir = round_path / PROPOSALS_DIR
         for record in ledger_records:
             effect = _proposal_predicted_effect(proposals_dir, record.get("subject_id"))
-            records.append({**record, "predicted_effect": effect} if effect else dict(record))
+            enriched = {**record, "predicted_effect": effect} if effect else dict(record)
+            if record.get("links"):
+                enriched["diagnostics"] = validation_history_diagnostics(validation_path, record)
+            records.append(enriched)
     marker = _load_marker(round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT)
     for failure in marker.get("materialization_failures", []):
         records.append(
@@ -423,6 +433,21 @@ def load_round_history(
                 "predicted_effect": failure.get("predicted_effect", ""),
             }
         )
+    for failure in marker.get("preflight_failures", []):
+        records.append(
+            {
+                "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
+                "surface": failure["surface"],
+                "decision": "preflight_rejected",
+                "predicted_effect": failure.get("predicted_effect", ""),
+                "reasons": [f"{failure['gate']}: {failure['reason']}"],
+            }
+        )
+    if marker.get("attempts"):
+        decision["proposal_attempts"] = [
+            {"attempt": a["attempt"], "accepted": a["accepted"], "violation": a["violation"]}
+            for a in marker["attempts"]
+        ]
     return records, decision
 
 
@@ -1026,11 +1051,20 @@ class _Experiment:
         bundle: dict[str, Any],
     ) -> Path:
         """Stage 3: propose candidates, sealed by ``proposals_complete.json``."""
+        from shrlm.optimization.candidates import select_preflight_profile
+        from shrlm.optimization.proposal_evidence import load_proposal_evidence
+
+        profile = select_preflight_profile((bundle.get("config") or {}).get("verifier_config"))
         proposals_dir = round_path / PROPOSALS_DIR
         marker_path = round_path / PROPOSALS_MARKER_FILENAME
         if marker_path.exists():
             _load_marker(marker_path, PROPOSALS_MARKER_FORMAT)
             return proposals_dir
+        if (round_dir(round_path / VALIDATION_DIR, round_index) / "validation.json").exists():
+            raise ExperimentPersistenceError(
+                "validation is frozen without a proposal marker; refusing paid proposal work"
+            )
+        evidence = load_proposal_evidence(mining_round_path, bundle)
         cache_path = _operational_path(self.out_dir, self.config.operational.proposal_cache_path)
         with StageMeter(
             stage=STAGE_PROPOSAL,
@@ -1047,6 +1081,10 @@ class _Experiment:
                     proposer_lm,
                     proposals_dir,
                     round_index=round_index,
+                    preflight_profile=profile,
+                    caps=self.caps.s6_caps(),
+                    loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
+                    evidence=evidence,
                     passing_behaviors=load_passing_behaviors(mining_round_path),
                     prior_history=self.prior_history,
                     config=proposer_config(self.config),
@@ -1104,6 +1142,10 @@ class _Experiment:
                         record.to_dict() for record in result.materialization_failures
                     ],
                 }
+        payload["preflight_profile"] = profile
+        if "stage_failure" not in payload:
+            payload["preflight_failures"] = result.preflight_failures
+            payload["attempts"] = [attempt.to_dict() for attempt in result.attempts]
         _persist_once(
             marker_path,
             payload,
@@ -1148,6 +1190,9 @@ class _Experiment:
                     eval_config,
                     self.pconfig,
                     loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
+                    preflight_profile=_load_marker(
+                        round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT
+                    ).get("preflight_profile", "generic/v1"),
                 )
             finally:
                 # A crashed validation stage still persisted (and paid for)
