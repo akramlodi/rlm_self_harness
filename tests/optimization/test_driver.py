@@ -89,7 +89,7 @@ class ScriptedLM(MockLM):
         self._call_count += 1
         self._calls.append("call")
         if not self._script:
-            raise IndexError("ScriptedLM: script exhausted")
+            raise OSError("ScriptedLM: script exhausted")
         return self._script.pop(0)
 
     def get_usage_summary(self) -> UsageSummary:
@@ -210,6 +210,44 @@ def make_round_config(tmp_path: Path, **overrides: Any) -> RoundConfig:
     }
     values.update(overrides)
     return RoundConfig(**values)
+
+
+def test_s9_runtime_error_is_persisted_and_next_attempt_runs(tmp_path, monkeypatch):
+    import re
+
+    import shrlm.optimization.driver as driver
+
+    factory = ClientFactory([final("RIGHT")] * 3)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    config = make_round_config(tmp_path)
+    harnessed = build_round_rlm(config)
+    original = harnessed.rlm.answer_middleware
+    attempts = 0
+
+    def broken_s9(answer, inventory):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            re.findall(r"\d+", ("str", 100))
+        return original(answer, inventory)
+
+    harnessed.rlm.answer_middleware = broken_s9
+    monkeypatch.setattr(driver, "build_round_rlm", lambda config: harnessed)
+    entries = run_round(config)
+    assert [entry["passed"] for entry in entries] == [True, False, True]
+    assert entries[1]["cause"] == "runtime_error"
+    assert entries[1]["cost"] == pytest.approx(COST_PER_CALL)
+    assert entries[1]["usage_lower_bound"] is True
+    assert config.verifier.calls == 2
+    runs, _, _, _ = load_round(config.out_dir, config.round_index)
+    failure = runs[1][1].execution_failure
+    assert failure.exception_type == "TypeError"
+    assert "broken_s9" in failure.traceback
+    assert runs[2][1].execution_failure is None
+    assert runs[2][1].usage_summary.total_calls == 1
+    assert len(runs[2][1].metadata["iterations"]) == 1
+    assert run_round(config) == entries
+    assert factory.total_calls == 3
 
 
 # The attributor runs ungrounded (no sub-verifier), so the canned response must
@@ -1517,3 +1555,170 @@ class TestPromptPersistence:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+@pytest.mark.parametrize(
+    "error_type", [TypeError, AttributeError, KeyError, ValueError, RuntimeError]
+)
+def test_early_runtime_errors_have_diagnostics(tmp_path, monkeypatch, error_type):
+    config = make_round_config(tmp_path)
+    harnessed = build_round_rlm(config)
+
+    def fail(prompt, **kwargs):
+        error = error_type("broken harness")
+        error.partial_answer = "RIGHT"
+        raise error
+
+    monkeypatch.setattr(harnessed.rlm, "completion", fail)
+    result = execute_run(
+        harnessed, config.instances[0], model_name="test", verifier=config.verifier
+    )
+    assert result.verdict.cause is VerifierCause.RUNTIME_ERROR
+    assert not result.verdict.passed
+    assert config.verifier.calls == 0
+    assert result.completion.execution_failure.exception_type == error_type.__name__
+    assert result.usage_lower_bound
+
+
+@pytest.mark.parametrize("error_type", [OSError, MemoryError, KeyboardInterrupt, SystemExit])
+def test_operational_and_control_errors_propagate(tmp_path, monkeypatch, error_type):
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def fail(prompt, **kwargs):
+        raise error_type("operational")
+
+    monkeypatch.setattr(harnessed.rlm, "completion", fail)
+    with pytest.raises(error_type):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test")
+
+
+def test_verifier_bug_is_not_a_runtime_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(rlm_module, "get_client", ClientFactory([final("RIGHT")]))
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def fail(instance, response):
+        raise TypeError("broken verifier")
+
+    with pytest.raises(TypeError, match="broken verifier"):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test", verifier=fail)
+
+
+def test_unhandled_provider_error_propagates(tmp_path, monkeypatch):
+    import httpx
+    import openai
+
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def fail(prompt, **kwargs):
+        raise openai.APIConnectionError(request=httpx.Request("POST", "https://example.test"))
+
+    monkeypatch.setattr(harnessed.rlm, "completion", fail)
+    with pytest.raises(openai.APIConnectionError):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test")
+
+
+def test_client_configuration_error_remains_fatal(tmp_path, monkeypatch):
+    from rlm.utils.exceptions import ClientInitializationError
+
+    def invalid_client(backend, kwargs):
+        raise ValueError("invalid backend configuration")
+
+    monkeypatch.setattr(rlm_module, "get_client", invalid_client)
+    with pytest.raises(ClientInitializationError, match="invalid backend configuration"):
+        run_round(make_round_config(tmp_path))
+
+
+@pytest.mark.parametrize("failure_phase", ["environment", "usage"])
+def test_environment_setup_failure_stops_handler_and_next_attempt_runs(
+    tmp_path, monkeypatch, failure_phase
+):
+    from rlm.core.lm_handler import LMHandler
+
+    factory = ClientFactory([final("RIGHT")] * 2)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    original_environment = rlm_module.get_environment
+    original_start = LMHandler.start
+    original_stop = LMHandler.stop
+    original_usage = LMHandler.get_usage_summary
+    started = []
+    stopped = []
+
+    def start(handler):
+        started.append(handler)
+        return original_start(handler)
+
+    def stop(handler):
+        stopped.append(handler)
+        return original_stop(handler)
+
+    def environment(kind, kwargs):
+        if failure_phase == "environment" and len(started) == 1:
+            raise TypeError("broken environment setup")
+        return original_environment(kind, kwargs)
+
+    def usage(handler):
+        if failure_phase == "usage" and handler is started[0]:
+            raise TypeError("broken usage publication")
+        return original_usage(handler)
+
+    monkeypatch.setattr(LMHandler, "get_usage_summary", usage)
+    monkeypatch.setattr(LMHandler, "start", start)
+    monkeypatch.setattr(LMHandler, "stop", stop)
+    monkeypatch.setattr(rlm_module, "get_environment", environment)
+    try:
+        config = make_round_config(tmp_path, instances=make_instances()[:2])
+        entries = run_round(config)
+        assert [entry["cause"] for entry in entries] == ["runtime_error", None]
+        assert len(started) == len(stopped) == 2
+        assert entries[0]["cost"] is None
+        assert entries[1]["cost"] == pytest.approx(COST_PER_CALL)
+    finally:
+        for handler in started:
+            if handler not in stopped:
+                original_stop(handler)
+
+
+@pytest.mark.parametrize("response_kind", ["no_choices", "content_filter", "empty_content"])
+def test_azure_response_errors_remain_operational(tmp_path, monkeypatch, response_kind):
+    from types import SimpleNamespace
+
+    from rlm.clients.azure_foundry import AzureFoundryClient
+
+    client = AzureFoundryClient.__new__(AzureFoundryClient)
+    response = SimpleNamespace(
+        choices=[]
+        if response_kind == "no_choices"
+        else [
+            SimpleNamespace(
+                finish_reason="content_filter" if response_kind == "content_filter" else "stop",
+                message=SimpleNamespace(content=""),
+            )
+        ]
+    )
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def fail(prompt, **kwargs):
+        client._validate_response(response)
+
+    monkeypatch.setattr(harnessed.rlm, "completion", fail)
+    with pytest.raises(RuntimeError, match="Azure Foundry"):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test")
+
+
+def test_exhausted_mock_script_remains_a_test_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(rlm_module, "get_client", lambda *args: MockLM(responses=[]))
+    with pytest.raises(OSError, match="no more responses"):
+        run_round(make_round_config(tmp_path))
+
+
+def test_cancellation_is_not_a_runtime_failure(tmp_path, monkeypatch):
+    from rlm.utils.exceptions import CancellationError
+
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def cancel(prompt, **kwargs):
+        raise CancellationError("cancelled")
+
+    monkeypatch.setattr(harnessed.rlm, "completion", cancel)
+    with pytest.raises(CancellationError):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test")

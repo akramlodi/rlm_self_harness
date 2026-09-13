@@ -186,6 +186,12 @@ The `build_harnessed_rlm()` function automatically runs `check_harness()` before
 - **runner.py** — Read structural checks and `build_harnessed_rlm()` to see how harness fields are enforced and wired into the runtime.
 - **harness_identity.py** — Read serialization rules and hashing logic to understand what is recorded and hashed.
 
+During optimization, an ordinary harness execution exception becomes a persisted
+failed attempt (`runtime_error`), and remaining attempts continue under the
+existing spend caps. Its trace retains diagnostics and recorded usage; resume
+reuses it without another call. See [runtime failure handling](optimization/README.md#harness-runtime-failures)
+for scoring, accounting, and the operational errors that remain fatal.
+
 ## Related Links
 
 - [RLM Paper](https://arxiv.org/abs/2512.24601)

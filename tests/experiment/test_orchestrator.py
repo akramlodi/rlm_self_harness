@@ -57,8 +57,10 @@ from shrlm.experiment.orchestrator import (
     OOLONG_SYNTH_VERIFIER_FACTORY,
     POST_ROUND_BATCH_TOOL,
     PROPOSALS_MARKER_FILENAME,
+    PROPOSALS_MARKER_FORMAT,
     REAL_CHECK_DIR,
     ROUND_MARKER_FILENAME,
+    ROUND_MARKER_FORMAT,
     STOP_MAX_ROUNDS,
     STOP_PATIENCE,
     ExperimentPersistenceError,
@@ -91,6 +93,7 @@ from shrlm.optimization.bundle import (
 )
 from shrlm.optimization.candidates import materialize_harness
 from shrlm.optimization.driver import TRACES_DIR, load_manifest
+from shrlm.optimization.promotion import DECISION_PROMOTED, MERGED_SUBJECT_ID
 from shrlm.optimization.proposal import _import_candidate_function
 from shrlm.optimization.validation import SPLIT_HELDOUT, load_promotion_ledger
 from shrlm.rlm_harness import H0, H0_STAR
@@ -590,7 +593,7 @@ class TestResumeMidMining:
         # The script covers only the first mining run: the second run's client
         # call raises, exactly like a crash mid-round.
         factory = patch_runner(monkeypatch, [final("WRONG")])
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, MockLM(responses=[]), MockLM(responses=[]))
         assert factory.total_calls == 2  # the crashing call itself is counted
         assert len(mining_manifest(out, 1)) == 1  # run 1 persisted before the crash
@@ -641,6 +644,35 @@ class TestProposalBudgetExhaustion:
         assert marker["candidate_ids"] == []
         assert marker["stage_failure"]["kind"] == "budget_exhausted"
         assert "reasoning" in marker["stage_failure"]["error"]
+        assert marker["materialization_failures"] == []
+        assert (round_path / ROUND_MARKER_FILENAME).exists()
+
+    def test_validation_exhausted_proposer_seals_a_zero_candidate_round(
+        self, tmp_path, monkeypatch
+    ):
+        """A proposer that exhausts its attempt budget on malformed responses
+        (review finding #2) is a deterministic stage failure too: rejected
+        attempts are cached, so an escaping ProposalRejection would crash the
+        run and re-crash it on every resume. The round seals with zero
+        candidates and continues instead."""
+        config = make_config(tmp_path, t=1)
+        out = tmp_path / "exp"
+        bound_proposer_attempts(monkeypatch, 2)
+        factory = patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=["not json at all", "still not json"])
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 2  # asked, re-asked, then exhausted
+        assert factory.total_calls == 2  # mining only: nothing to validate
+        [outcome] = result.rounds
+        assert (outcome.has_ledger, outcome.promoted) == (False, False)
+        round_path = experiment_round_dir(out, 1)
+        marker = json.loads((round_path / PROPOSALS_MARKER_FILENAME).read_text())
+        assert marker["candidate_ids"] == []
+        assert marker["stage_failure"]["kind"] == "validation_exhausted"
+        assert marker["stage_failure"]["n_attempts"] == 2
+        assert "after 2 attempts" in marker["stage_failure"]["error"]
         assert (round_path / ROUND_MARKER_FILENAME).exists()
 
 
@@ -1173,7 +1205,7 @@ class TestCrashedStageUsage:
         config = make_config(tmp_path)
         out = tmp_path / "exp"
         patch_runner(monkeypatch, [final("WRONG")])  # the second run's call raises
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, MockLM(responses=[]), MockLM(responses=[]))
 
         assert len(mining_manifest(out, 1)) == 1
@@ -1193,7 +1225,7 @@ class TestCrashedStageUsage:
         patch_runner(monkeypatch, MINING_FAIL + [final("WRONG")] * 2)
         attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, attributor, proposer)
 
         usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
@@ -1451,23 +1483,60 @@ class TestContradictoryPersistedState:
 # ---------------------------------------------------------------------------
 
 EMPTY_BATCH = "```json\n[]\n```"
+# A policy edit that sets nothing: the merged runtime policy is byte-identical
+# to the incumbent's, so the candidate fails materialization as a no-op.
+NO_OP_POLICY_BATCH = (
+    "```json\n"
+    + json.dumps(
+        [
+            {
+                "pattern_index": 0,
+                "edit": {"kind": "policy", "runtime_policy": {}},
+                "predicted_effect": "the root double-checks before answering",
+                "regression_risks": ["one extra turn per run"],
+            }
+        ]
+    )
+    + "\n```"
+)
+
+
+def spy_prior_history(monkeypatch: pytest.MonkeyPatch) -> list[list[tuple[list, dict]]]:
+    """Capture the ``prior_history`` each ``propose_round`` call receives."""
+    captured: list[list[tuple[list, dict]]] = []
+    real_propose_round = orchestrator_module.propose_round
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        captured.append(
+            [(list(records), dict(decision)) for records, decision in kwargs["prior_history"]]
+        )
+        return real_propose_round(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator_module, "propose_round", spy)
+    return captured
+
+
+def bound_proposer_attempts(monkeypatch: pytest.MonkeyPatch, max_attempts: int) -> None:
+    """max_attempts is not reachable from ExperimentConfig (the default is 8
+    and the mock LM raises once its list empties), so bound the re-ask loop at
+    the orchestrator's factory seam."""
+    from shrlm.optimization.proposal import ProposerConfig
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "proposer_config",
+        lambda config: ProposerConfig(k=config.loop.k, max_attempts=max_attempts),
+    )
 
 
 class TestZeroCandidateRound:
-    def test_no_candidates_means_no_ledger_no_promotion_and_no_prior_history(
+    def test_no_candidates_means_no_ledger_no_promotion_and_a_records_free_history_entry(
         self, tmp_path, monkeypatch
     ):
         config = make_config(tmp_path, t=2)
         out = tmp_path / "exp"
 
-        histories: list[int] = []
-        real_propose_round = orchestrator_module.propose_round
-
-        def spy(*args: Any, **kwargs: Any) -> Any:
-            histories.append(len(kwargs["prior_history"]))
-            return real_propose_round(*args, **kwargs)
-
-        monkeypatch.setattr(orchestrator_module, "propose_round", spy)
+        captured = spy_prior_history(monkeypatch)
         factory = patch_runner(
             monkeypatch,
             MINING_FAIL  # round 1: mined, but the proposer offers nothing
@@ -1496,8 +1565,265 @@ class TestZeroCandidateRound:
         )
         # A ledger-less round creates no validation round directory at all...
         assert not validation_round_path(out, 1).exists()
-        # ...and contributes no prior history to the next round's proposal.
-        assert histories == [0, 0]
+        # ...but still contributes one history entry to the next round's
+        # proposal (R5): no records, and the round's own outcome as decision.
+        assert [len(entry) for entry in captured] == [0, 1]
+        [(records, decision)] = captured[1]
+        assert records == []
+        assert (decision["round"], decision["promoted"]) == (1, False)
+
+    def test_a_no_op_only_proposer_seals_its_failure_records_in_the_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """A proposer that only ever re-emits the incumbent is re-asked, then
+        closes the round with zero candidates -- and the marker keeps WHY (R4):
+        surface, reason, and the candidate's predicted effect, not just a count."""
+        config = make_config(tmp_path, t=1)
+        out = tmp_path / "exp"
+        bound_proposer_attempts(monkeypatch, 2)
+        factory = patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("iteration_budget_exhaustion")] * 2)
+        proposer = MockLM(responses=[NO_OP_POLICY_BATCH, NO_OP_POLICY_BATCH])
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 2  # re-asked once, then exhausted
+        assert factory.total_calls == 2  # mining only: nothing to validate
+        [outcome] = result.rounds
+        assert (outcome.has_ledger, outcome.promoted) == (False, False)
+        marker = json.loads((experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text())
+        assert marker["candidate_ids"] == []
+        assert marker["n_materialization_failures"] == 1
+        [record] = marker["materialization_failures"]
+        assert (record["pattern_index"], record["surface"]) == (0, "S6")
+        assert "no surface" in record["reason"]
+        assert record["predicted_effect"] == "the root double-checks before answering"
+        assert 0 not in marker["skipped_patterns"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-round memory (R5-R7): the next round's proposer sees every prior
+# round, including rounds that reached no validation, with each attempted
+# edit's surface, predicted effect, outcome, and reason.
+# ---------------------------------------------------------------------------
+
+NO_OP_ROUND_SCRIPT = MINING_FAIL + MINING_FAIL_V2 + SUBJECT_FAIL + SUBJECT_PASS
+
+
+def no_op_then_promote_mocks() -> tuple[MockLM, MockLM]:
+    """Round 1: an S6 pattern, proposer no-ops twice. Round 2: an S4 pattern,
+    a real text edit that promotes."""
+    attributor = MockLM(
+        responses=[attribution("iteration_budget_exhaustion")] * 2
+        + [attribution("skipped_verification")] * 2
+    )
+    proposer = MockLM(
+        responses=[NO_OP_POLICY_BATCH, NO_OP_POLICY_BATCH, proposer_batch((0, TEXT_ROUND_2))]
+    )
+    return attributor, proposer
+
+
+class TestCrossRoundHistory:
+    def test_a_no_op_round_reaches_the_next_proposer_with_its_reason(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path, t=2)
+        out = tmp_path / "exp"
+        bound_proposer_attempts(monkeypatch, 2)
+        captured = spy_prior_history(monkeypatch)
+        factory = patch_runner(monkeypatch, list(NO_OP_ROUND_SCRIPT))
+        attributor, proposer = no_op_then_promote_mocks()
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 3
+        assert factory.total_calls == 8
+        assert [outcome.promoted for outcome in result.rounds] == [False, True]
+        assert captured[0] == []
+        [(records, decision)] = captured[1]
+        assert (decision["round"], decision["promoted"]) == (1, False)
+        [record] = records
+        assert record["decision"] == orchestrator_module.HISTORY_NOT_MATERIALIZED
+        assert record["surface"] == "S6"
+        assert record["predicted_effect"] == "the root double-checks before answering"
+        assert any("no surface" in reason for reason in record["reasons"])
+
+    def test_a_promoted_round_reaches_the_next_proposer_with_predicted_effects(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path, t=2)
+        out = tmp_path / "exp"
+        captured = spy_prior_history(monkeypatch)
+        patch_runner(
+            monkeypatch,
+            MINING_FAIL
+            + SUBJECT_FAIL
+            + SUBJECT_PASS
+            + MINING_FAIL_V2
+            + SUBJECT_FAIL
+            + SUBJECT_PASS,
+        )
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
+        proposer = MockLM(
+            responses=[proposer_batch((0, TEXT_ROUND_1)), proposer_batch((0, TEXT_ROUND_2))]
+        )
+        result = run(config, out, attributor, proposer)
+
+        assert [outcome.promoted for outcome in result.rounds] == [True, True]
+        [(records, decision)] = captured[1]
+        assert (decision["round"], decision["promoted"]) == (1, True)
+        by_subject = {record["subject_id"]: record for record in records}
+        candidate = by_subject["r01-c01-s4"]
+        assert candidate["decision"] == DECISION_PROMOTED
+        assert candidate["predicted_effect"] == "the root double-checks before answering"
+
+    def test_resume_rebuilds_the_same_history_entry_byte_for_byte(self, tmp_path, monkeypatch):
+        """R7: a resumed experiment hands round 2 exactly the entry the
+        uninterrupted run did, because both read the same persisted markers."""
+        bound_proposer_attempts(monkeypatch, 2)
+
+        # Uninterrupted run.
+        config_a = make_config(tmp_path / "a", t=2)
+        captured_a = spy_prior_history(monkeypatch)
+        patch_runner(monkeypatch, list(NO_OP_ROUND_SCRIPT))
+        run(config_a, tmp_path / "a" / "exp", *no_op_then_promote_mocks())
+
+        # Same run, crashed at round 2's first mining call, then resumed.
+        config_b = make_config(tmp_path / "b", t=2)
+        out_b = tmp_path / "b" / "exp"
+        patch_runner(monkeypatch, list(MINING_FAIL))
+        with pytest.raises(OSError):
+            run(
+                config_b,
+                out_b,
+                MockLM(responses=[attribution("iteration_budget_exhaustion")] * 2),
+                MockLM(responses=[NO_OP_POLICY_BATCH, NO_OP_POLICY_BATCH]),
+            )
+        captured_b = spy_prior_history(monkeypatch)
+        patch_runner(monkeypatch, MINING_FAIL_V2 + SUBJECT_FAIL + SUBJECT_PASS)
+        result = run(
+            config_b,
+            out_b,
+            MockLM(responses=[attribution("skipped_verification")] * 2),
+            MockLM(responses=[proposer_batch((0, TEXT_ROUND_2))]),
+        )
+
+        assert [outcome.promoted for outcome in result.rounds] == [False, True]
+        assert json.dumps(captured_b[0], sort_keys=True) == json.dumps(
+            captured_a[1], sort_keys=True
+        )
+
+
+class TestRoundHistoryLoader:
+    """``load_round_history`` against synthetic persisted rounds."""
+
+    def write_round(
+        self,
+        round_path: Path,
+        round_index: int,
+        *,
+        marker_extra: dict[str, Any] | None = None,
+        ledger: list[dict[str, Any]] | None = None,
+        proposals: dict[str, dict[str, Any]] | None = None,
+        promoted: bool = False,
+    ) -> None:
+        from shrlm.optimization.proposal import PROPOSAL_FILENAME, PROPOSAL_FORMAT
+        from shrlm.optimization.validation import (
+            DECISION_FILENAME,
+            DECISION_FORMAT,
+            LEDGER_RECORD_FORMAT,
+            PROMOTIONS_FILENAME,
+        )
+
+        round_path.mkdir(parents=True)
+        (round_path / ROUND_MARKER_FILENAME).write_text(
+            json.dumps(
+                {
+                    "format": ROUND_MARKER_FORMAT,
+                    "round": round_index,
+                    "promoted": promoted,
+                    "promoted_harness_hash": "hash" if promoted else None,
+                    "has_ledger": ledger is not None,
+                }
+            )
+        )
+        marker = {
+            "format": PROPOSALS_MARKER_FORMAT,
+            "round": round_index,
+            "candidate_ids": sorted(proposals or {}),
+            "prompt_sha256": "p",
+            "skipped_patterns": [],
+            "n_materialization_failures": 0,
+        }
+        marker.update(marker_extra or {})
+        (round_path / PROPOSALS_MARKER_FILENAME).write_text(json.dumps(marker))
+        for candidate_id, payload in (proposals or {}).items():
+            candidate_dir = round_path / "proposals" / candidate_id
+            candidate_dir.mkdir(parents=True)
+            (candidate_dir / PROPOSAL_FILENAME).write_text(
+                json.dumps({"format": PROPOSAL_FORMAT, **payload})
+            )
+        if ledger is not None:
+            ledger_dir = round_dir(round_path / "validation", round_index)
+            ledger_dir.mkdir(parents=True)
+            (ledger_dir / PROMOTIONS_FILENAME).write_text(
+                "\n".join(json.dumps({"format": LEDGER_RECORD_FORMAT, **row}) for row in ledger)
+                + "\n"
+            )
+            (ledger_dir / DECISION_FILENAME).write_text(
+                json.dumps(
+                    {
+                        "format": DECISION_FORMAT,
+                        "promoted": promoted,
+                        "promoted_harness_hash": "hash" if promoted else None,
+                    }
+                )
+            )
+
+    def test_a_legacy_marker_without_failures_and_no_ledger_yields_no_records(self, tmp_path):
+        round_path = experiment_round_dir(tmp_path, 4)
+        self.write_round(round_path, 4)
+        records, decision = orchestrator_module.load_round_history(round_path, 4, has_ledger=False)
+        assert records == []
+        assert (decision["round"], decision["promoted"]) == (4, False)
+
+    def test_ledger_records_and_marker_failures_merge_for_a_partial_batch(self, tmp_path):
+        round_path = experiment_round_dir(tmp_path, 2)
+        failure = {
+            "pattern_index": 1,
+            "surface": "S6",
+            "reason": "declared surface S6 but the materialized harness changes no surface",
+            "predicted_effect": "fewer wasted iterations",
+        }
+        self.write_round(
+            round_path,
+            2,
+            marker_extra={"materialization_failures": [failure], "n_materialization_failures": 1},
+            ledger=[
+                {"subject_id": "baseline", "decision": "rejected", "reasons": []},
+                {
+                    "subject_id": "r02-c01-s4",
+                    "surface": "S4",
+                    "decision": "rejected",
+                    "reasons": ["heldout did not improve"],
+                },
+                {
+                    "subject_id": MERGED_SUBJECT_ID,
+                    "decision": "rejected",
+                    "reasons": ["heldout did not improve"],
+                    "merge": {"role": "merged", "constituent_ids": ["r02-c01-s4"]},
+                },
+            ],
+            proposals={"r02-c01-s4": {"surface": "S4", "predicted_effect": "verifies first"}},
+        )
+        records, decision = orchestrator_module.load_round_history(round_path, 2, has_ledger=True)
+
+        assert decision["round"] == 2
+        by_subject = {record["subject_id"]: record for record in records}
+        assert by_subject["r02-c01-s4"]["predicted_effect"] == "verifies first"
+        assert "predicted_effect" not in by_subject["baseline"]  # no proposal.json
+        assert "predicted_effect" not in by_subject[MERGED_SUBJECT_ID]  # merged: none either
+        refused = by_subject["pattern 1 on S6"]
+        assert refused["decision"] == orchestrator_module.HISTORY_NOT_MATERIALIZED
+        assert refused["surface"] == "S6"
+        assert refused["reasons"] == [failure["reason"]]
+        assert refused["predicted_effect"] == "fewer wasted iterations"
 
 
 # ---------------------------------------------------------------------------
@@ -1821,7 +2147,7 @@ class TestPostRoundAnalysisOnResume:
         patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_PASS)
         attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, attributor, proposer)
         assert len(snapshots(out)) == 1  # round 1's refresh, and nothing else
 
@@ -2000,3 +2326,77 @@ class TestOolongEnvironment:
         )
         assert not (out / "opt" / REAL_CHECK_DIR).exists()
         assert not (out / SPLITS_DIR / split_file_name("oolong_real", "short", "check")).exists()
+
+
+@pytest.mark.parametrize("subject_workers,run_workers", [(1, 1), (1, 2), (2, 1), (2, 2)])
+def test_runtime_failed_proposal_finishes_experiment(
+    tmp_path, monkeypatch, subject_workers, run_workers
+):
+    from tests.optimization.test_validation import parallel_client_factory
+
+    config = make_config(tmp_path, validation_workers=subject_workers, t=2, patience=1)
+    config = replace(
+        config, operational=replace(config.operational, validation_run_workers=run_workers)
+    )
+    out = tmp_path / "exp"
+    source = """def accept_answer(answer, repl_inventory):
+    import re
+    if answer in ("RIGHT", "WRONG"):
+        re.findall(r"\\d+", ("str", 100))
+    return AnswerDecision.accept(answer)
+"""
+    proposal = (
+        "```json\n"
+        + json.dumps(
+            [
+                {
+                    "pattern_index": 0,
+                    "surface": "S9",
+                    "edit": {"kind": "code", "source": source},
+                    "predicted_effect": "normalize the final answer",
+                    "regression_risks": ["runtime error"],
+                }
+            ]
+        )
+        + "\n```"
+    )
+    patch_runner(monkeypatch, MINING_FAIL + SUBJECT_PASS * 2)
+    factories = parallel_client_factory(
+        tmp_path, {"baseline": SUBJECT_PASS, "r01-c01-s9": SUBJECT_PASS}
+    )
+    if subject_workers == 1:
+        factories = (factories[0], factories[1]["baseline"])
+    result = run_experiment(
+        config,
+        out,
+        verifier=GoldVerifier(),
+        attributor_lm=MockLM(responses=[attribution("lossy_aggregation")] * 2),
+        proposer_lm=MockLM(responses=[proposal]),
+        loaders=LOADERS,
+        verifier_factory="tests.optimization.test_driver:GoldVerifier",
+        client_factory=factories,
+    )
+    assert len(result.rounds) == 1  # patience stops normally after the failed proposal
+    assert not result.rounds[0].promoted
+    assert frozen_envelope(out)["hash"] == harness_hash(H0)
+    summary = json.loads(
+        (validation_round_path(out, 1) / "r01-c01-s9" / "summary.json").read_text()
+    )
+    heldout = summary["splits"][SPLIT_HELDOUT]
+    assert heldout["n_runs"] == heldout["n_runtime_errors"] == 2
+    assert heldout["pass_count"] == 0
+    assert load_promotion_ledger(validation_round_path(out, 1))
+    # A completed experiment resumes without repeating mining or validation.
+    idle = patch_runner(monkeypatch, [])
+    resumed = run_experiment(
+        config,
+        out,
+        verifier=GoldVerifier(),
+        attributor_lm=MockLM(responses=[]),
+        proposer_lm=MockLM(responses=[]),
+        loaders=LOADERS,
+        verifier_factory="tests.optimization.test_driver:GoldVerifier",
+        client_factory=factories,
+    )
+    assert resumed.final_harness_hash == result.final_harness_hash
+    assert idle.total_calls == 0

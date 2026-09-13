@@ -380,7 +380,7 @@ def test_render_prompt_includes_surfaces_patterns_and_fallbacks():
     assert "S1" in rendered and "S9" in rendered and "S10" in rendered  # render_surface_block()
     assert "skipped_verification" in rendered
     assert "no passing runs" in rendered.lower()
-    assert "no prior validation rounds" in rendered.lower()
+    assert "no prior rounds" in rendered.lower()
     # Taxonomy 3.1.0: every recognized mechanism is addressable, OTHER included,
     # and each pattern advertises its eligible surfaces with the primary first.
     assert [index for index, _ in addressable] == [0, 1, 2, 3, 4, 5, 6]
@@ -559,6 +559,120 @@ def test_propose_round_materialization_failure_does_not_drop_the_rest(tmp_path):
     assert result.written[0].surface == "S4"
     assert len(result.materialization_failures) == 1
     assert result.materialization_failures[0].pattern_index == 1
+
+
+def test_propose_round_survivor_keeps_its_batch_position_after_a_failure(tmp_path):
+    """A refused candidate still consumes its position: the survivor behind a
+    failed first candidate is written as c02, not renumbered to c01, because
+    the candidate id is hash material and a ledger subject id."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    response = canned_batch(no_op_policy, TEXT_ITEM)
+    lm = MockLM(model_name="mock-proposer", responses=[response])
+    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert [w.candidate_id for w in result.written] == ["r00-c02-s4"]
+    assert len(result.materialization_failures) == 1
+    assert result.materialization_failures[0].pattern_index == 1
+
+
+def test_propose_round_reasks_when_the_whole_batch_fails_to_materialize(tmp_path):
+    """A batch whose every candidate is a no-op is rejected with the reason and
+    re-asked, exactly like a malformed batch (KTD1)."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(
+        model_name="mock-proposer",
+        responses=[canned_batch(no_op_policy), canned_batch(TEXT_ITEM)],
+    )
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=3),
+        workdir=tmp_path / "work",
+    )
+    assert len(result.attempts) == 2
+    first, second = result.attempts
+    assert first.accepted is False
+    assert "pattern 1" in first.violation and "S6" in first.violation
+    assert "already" in first.violation  # the surface already holds this text
+    assert second.accepted is True
+    assert [w.surface for w in result.written] == ["S4"]
+    # The failure that was re-asked away lives in the attempt trail, not in the
+    # round's failure records: those describe the accepted attempt only.
+    assert result.materialization_failures == []
+
+
+def test_propose_round_exhaustion_on_no_ops_returns_an_empty_result(tmp_path):
+    """Exhaustion whose final attempt validated but did not materialize is a
+    proposer-quality outcome, not an exception (KTD2): the round closes with
+    zero candidates and its failure records, and nothing escapes to crash a
+    resumable run."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(
+        model_name="mock-proposer",
+        responses=[canned_batch(no_op_policy), canned_batch(no_op_policy)],
+    )
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=2),
+        workdir=tmp_path / "work",
+    )
+    assert result.written == []
+    assert len(result.attempts) == 2
+    assert all(a.accepted is False for a in result.attempts)
+    assert len(result.materialization_failures) == 1
+    record = result.materialization_failures[0]
+    assert (record.pattern_index, record.surface) == (1, "S6")
+    assert "no surface" in record.reason
+    # The refused pattern was proposed, so it is not "skipped".
+    assert 1 not in result.skipped_patterns
+    assert list((tmp_path / "proposals").glob("r00-*")) == []
+
+
+def test_propose_round_mixed_malformed_then_no_op_exhaustion_returns_empty(tmp_path):
+    """The exhaustion branch is classified by the FINAL attempt (KTD2): a
+    malformed first response followed by a no-op does not fall through to the
+    ProposalRejection raise."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(
+        model_name="mock-proposer",
+        responses=["not json at all", canned_batch(no_op_policy)],
+    )
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=2),
+        workdir=tmp_path / "work",
+    )
+    assert result.written == []
+    assert len(result.materialization_failures) == 1
+    assert [a.accepted for a in result.attempts] == [False, False]
+
+
+def test_propose_round_mixed_no_op_then_malformed_exhaustion_raises(tmp_path):
+    """The exhaustion branch is classified by the FINAL attempt (KTD2): a
+    no-op first response followed by a malformed one raises ProposalRejection,
+    because the malformed attempt clears the earlier attempt's failure records
+    rather than letting them classify the round as a no-op close."""
+    no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(
+        model_name="mock-proposer",
+        responses=[canned_batch(no_op_policy), "not json at all"],
+    )
+    with pytest.raises(ProposalRejection):
+        propose_round(
+            BUNDLE,
+            H0,
+            lm,
+            tmp_path / "proposals",
+            config=ProposerConfig(max_attempts=2),
+            workdir=tmp_path / "work",
+        )
 
 
 def test_propose_round_empty_bundle_no_crash(tmp_path):
@@ -1129,3 +1243,72 @@ def test_history_reports_one_shared_verdict_for_bundled_edits():
     assert history.count("rejected") == 1
     assert "S2, S3" in history
     assert "bundled" not in history
+
+
+# ---------------------------------------------------------------------------
+# Cross-round history (R5-R7): every prior round renders, refused edits carry
+# their direction and reason, and the proposer is told a no-op is refused.
+# ---------------------------------------------------------------------------
+
+
+def test_history_renders_not_materialized_records_with_effect_and_reason():
+    from shrlm.optimization.proposal import HISTORY_NOT_MATERIALIZED, _render_history_block
+
+    records = [
+        {
+            "subject_id": "pattern 0 on S9",
+            "surface": "S9",
+            "decision": HISTORY_NOT_MATERIALIZED,
+            "reasons": ["declared surface S9 but the materialized harness changes no surface"],
+            "predicted_effect": "redirect on an incomplete pair set",
+        }
+    ]
+    history = _render_history_block([(records, {"round": 4, "promoted": False})])
+    assert "Round 4:" in history
+    [line] = [line for line in history.splitlines() if "pattern 0 on S9" in line]
+    assert "not_materialized" in line
+    assert "redirect on an incomplete pair set" in line
+    assert "changes no surface" in line
+
+
+def test_history_labels_rounds_by_position_when_the_decision_has_no_round():
+    from shrlm.optimization.proposal import _render_history_block
+
+    history = _render_history_block(
+        [
+            ([], {"promoted": False, "promoted_harness_hash": None}),
+            ([], {"round": 7, "promoted": True, "promoted_harness_hash": "abc"}),
+        ]
+    )
+    assert "Round 0:" in history and "Round 7:" in history
+
+
+def test_history_renders_predicted_effect_on_ledger_records_and_tolerates_absence():
+    from shrlm.optimization.proposal import _render_history_block
+
+    records = [
+        {
+            "subject_id": "r01-c01-s4",
+            "surface": "S4",
+            "decision": "rejected",
+            "reasons": ["heldout did not improve"],
+            "predicted_effect": "the root verifies before answering",
+        },
+        {"subject_id": "baseline", "decision": "rejected", "reasons": []},
+    ]
+    history = _render_history_block([(records, {"round": 1, "promoted": False})])
+    assert "the root verifies before answering" in history
+    assert "baseline: rejected" in history
+
+
+def test_history_renders_a_round_without_records_as_no_record_persisted():
+    from shrlm.optimization.proposal import _render_history_block
+
+    history = _render_history_block([([], {"round": 2, "promoted": False})])
+    assert "Round 2:" in history
+    assert "no per-edit record persisted" in history
+
+
+def test_render_prompt_history_preamble_names_the_no_op_refusal():
+    rendered, _ = render_prompt(ALL_PATTERNS, serialize_harness(H0), (), (), k=4)
+    assert "identical to the current surface" in rendered

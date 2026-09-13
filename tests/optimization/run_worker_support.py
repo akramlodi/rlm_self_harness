@@ -128,3 +128,22 @@ def write_script(path: Path, script: list[str]) -> Path:
 
 
 RUN_SCRIPTED_FACTORY = "tests.optimization.run_worker_support:run_scripted_client_factory"
+
+
+def broken_s9_harness(tmp_path: Path):
+    """Importable generated S9 reproducing the live tuple/string failure."""
+    from dataclasses import replace
+
+    from shrlm.optimization.proposal import _import_candidate_function
+    from shrlm.rlm_harness import H0
+
+    source = """import re
+from rlm.core.types import AnswerDecision
+
+def accept_answer(answer, inventory):
+    if answer in ("RIGHT", "WRONG"):
+        re.findall(r"\\d+", ("str", 100))
+    return AnswerDecision.accept(answer)
+"""
+    middleware = _import_candidate_function(source, "accept_answer", tmp_path, "S9")
+    return replace(H0, answer_middleware=middleware)

@@ -322,6 +322,25 @@ class TestEnvironmentCausedRouting:
         assert outcome.record.signature is not None
 
 
-
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+@pytest.mark.parametrize("has_trajectory", [False, True])
+def test_runtime_failure_remains_mining_evidence(has_trajectory):
+    from rlm.core.types import ExecutionFailure
+
+    verifier = CountingVerifier()
+    instance, completion = failing_run()
+    if not has_trajectory:
+        completion.metadata = None
+    completion.error = "TypeError: bad tuple"
+    completion.execution_failure = ExecutionFailure(
+        "runtime_error", "TypeError", "bad tuple", "stack"
+    )
+    verdict = Verdict(False, VerifierCause.RUNTIME_ERROR, "", "", completion.error)
+    outcome = make_miner(verifier).record_failure(instance, completion, verdict=verdict)
+    assert not verifier.calls
+    assert outcome.record.verdict.cause is VerifierCause.RUNTIME_ERROR
+    assert outcome.raw is not None
+    assert "TypeError: bad tuple" in outcome.digest_text

@@ -544,7 +544,7 @@ class TestCrashedEvalUsage:
         freeze(out)
         scripted(monkeypatch, "RIGHT")  # the second attempt's call raises
 
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             evaluate(config, out)
 
         # Long sets run first, so the crashed set is the long one.

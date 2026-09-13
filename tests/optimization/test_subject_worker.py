@@ -231,3 +231,30 @@ def test_legacy_request_refuses_before_loading_harness(tmp_path, monkeypatch):
     result = worker.run_subject_worker(path)
     assert result["ok"] is False
     assert "legacy validation protocol" in result["error"]
+
+
+def test_s9_failure_completes_subject_and_resumes_without_replacement(tmp_path):
+    from tests.optimization.run_worker_support import broken_s9_harness
+
+    harness = broken_s9_harness(tmp_path / "generated")
+    for workers in (1, 2):
+        request_path = request_for(
+            tmp_path / str(workers),
+            "broken-s9",
+            [final("RIGHT")] * 8,
+            harness=harness,
+            run_workers=workers,
+        )
+        completed = run_child(request_path)
+        assert completed.returncode == 0, completed.stderr
+        summary = load_summary(request_path.parent)
+        for split in summary["splits"].values():
+            assert split["n_runs"] == 4
+            assert split["n_runtime_errors"] == 4
+            assert split["pass_count"] == 0
+            assert split["n_resource_terminated"] == 0
+        before = (request_path.parent / SUMMARY_FILENAME).read_bytes()
+        completed = run_child(request_path)
+        assert completed.returncode == 0, completed.stderr
+        assert (request_path.parent / SUMMARY_FILENAME).read_bytes() == before
+        assert client_calls(request_path.parent) == 0

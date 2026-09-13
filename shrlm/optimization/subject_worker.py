@@ -319,6 +319,11 @@ def run_subject_worker(request_path: str | Path) -> dict[str, Any]:
             backend=str(request["backend"]),
             backend_kwargs=dict(request["backend_kwargs"]),
             run_workers=int(request.get("run_workers", 1)),
+            client_factory=(
+                (request["client_factory"][0], request["client_factory"][1])
+                if request.get("client_factory") is not None
+                else None
+            ),
         )
         outcome = evaluate_subject(subject_id, harness, config)
         if isinstance(outcome, CandidateRejection):

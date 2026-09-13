@@ -151,6 +151,7 @@ class VerifierCause(str, Enum):
     MIXED_SET_ERROR = "mixed_set_error"
     WRONG_VALUE = "wrong_value"
     RESOURCE_TERMINATED = "resource_terminated"
+    RUNTIME_ERROR = "runtime_error"
     # Like RESOURCE_TERMINATED, a substrate artifact rather than a harness
     # weakness: the provider refused to return its own sampled response. Kept
     # distinct so analysis can discount it without conflating it with a run the

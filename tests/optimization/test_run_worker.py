@@ -536,3 +536,33 @@ class TestOrphanedChildrenBlockANewParent:
 
         round_path = round_dir(config.out_dir, config.round_index)
         assert list((round_path / "run_workers").glob("*/worker.pid")) == []
+
+
+def test_runtime_failure_survives_workers_and_trace_only_resume(tmp_path, monkeypatch):
+    from tests.optimization.run_worker_support import broken_s9_harness
+
+    harness = broken_s9_harness(tmp_path / "generated")
+    config = replace(
+        fanned_config(tmp_path / "round", workers=2, script=[final("RIGHT")]), harness=harness
+    )
+    first = run_governed_round(config, CandidateSpendBreaker(CAPS))
+    assert first.outcome == OUTCOME_COMPLETED
+    assert len(first.entries) == 3
+    assert {entry["cause"] for entry in first.entries} == {"runtime_error"}
+    assert all(entry["cost"] == pytest.approx(0.001) for entry in first.entries)
+    path = round_dir(config.out_dir, config.round_index)
+    traces = {p.name: p.read_bytes() for p in (path / "runs").glob("*.json")}
+    for data in traces.values():
+        assert json.loads(data)["execution_failure"]["exception_type"] == "TypeError"
+    (path / "runs.jsonl").write_text("")
+    shutil.rmtree(path / "run_workers")
+    idle = ClientFactory([])
+    monkeypatch.setattr(rlm_module, "get_client", idle)
+    resumed = run_governed_round(replace(config, run_workers=1), CandidateSpendBreaker(CAPS))
+    assert idle.total_calls == 0
+    assert {entry["cause"] for entry in resumed.entries} == {"runtime_error"}
+    assert resumed.spent == pytest.approx(first.spent)
+    assert len(resumed.entries) == 3
+    assert {p.name: p.read_bytes() for p in (path / "runs").glob("*.json")} == traces
+    again = run_governed_round(config, CandidateSpendBreaker(CAPS))
+    assert again.entries == resumed.entries

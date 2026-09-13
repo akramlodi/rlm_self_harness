@@ -27,7 +27,7 @@ import pytest
 import rlm.core.rlm as rlm_module
 import shrlm.optimization.costs as costs_module
 import shrlm.runner as runner_module
-from rlm.core.types import ModelUsageSummary, UsageSummary
+from rlm.core.types import ModelUsageSummary, RLMChatCompletion, UsageSummary
 from shrlm.optimization.candidates import GATE_CAPS, CandidateRejection
 from shrlm.optimization.costs import (
     OUTCOME_COMPLETED,
@@ -82,7 +82,7 @@ class ScriptedLM(MockLM):
     def completion(self, prompt: str | dict[str, Any]) -> str:
         self._call_count += 1
         if not self._script:
-            raise IndexError("ScriptedLM: script exhausted")
+            raise OSError("ScriptedLM: script exhausted")
         return self._script.pop(0)
 
     def get_usage_summary(self) -> UsageSummary:
@@ -767,12 +767,29 @@ class TestChildErrorVerdict:
             "BadRequestError: Error code: 400 - {'error': {'code': 'content_filter', "
             "'message': \"Response content blocked by label 'MultiSeverity_ViolenceScore'.\"}}"
         )
-        verdict = costs_module._error_verdict(detail, "partial")
+        verdict = costs_module.failed_completion_verdict(
+            RLMChatCompletion("model", "prompt", "partial", UsageSummary({}), 0.0, error=detail)
+        )
         assert verdict.cause is VerifierCause.CONTENT_FILTERED
         assert verdict.passed is False
         assert verdict.produced == "partial"
         assert verdict.detail == detail
 
     def test_any_other_error_is_a_termination(self):
-        verdict = costs_module._error_verdict("TimeoutExceededError: 1900.0s of 1800.0s", "")
+        verdict = costs_module.failed_completion_verdict(
+            RLMChatCompletion(
+                "model",
+                "prompt",
+                "",
+                UsageSummary({}),
+                0.0,
+                error="TimeoutExceededError: 1900.0s of 1800.0s",
+            )
+        )
         assert verdict.cause is VerifierCause.RESOURCE_TERMINATED
+
+
+def test_runtime_failure_without_measured_cost_charges_ceiling():
+    entry = {"run_id": "failed", "cost": None, "cause": "runtime_error"}
+    assert breaker_run_cost(entry, CAPS) == CAPS.max_budget
+    assert entry["cost"] is None

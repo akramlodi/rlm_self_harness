@@ -351,3 +351,24 @@ RLMChatCompletion
   → cluster_failures() → FailurePattern[]  (ranked by support, then actionability)
   → build_evidence_bundle() → EvidenceBundle → round_NN/
 ```
+
+### Harness runtime failures
+
+An ordinary exception during a harness completion (for example, a generated S9
+callback passing a tuple to a regex) is persisted as one failed attempt with
+`cause=runtime_error`. It stays in the sample denominator; pending attempts
+continue without replacement retries, and promotion uses the usual pass and
+cost rules. Summaries report `n_runtime_errors` separately from resource limits.
+Mining can attribute these failures even when no iteration was recorded.
+
+The completion trace retains `error` plus structured `execution_failure`
+diagnostics: cause, original exception type, message, and traceback. Recorded
+usage and partial trajectory are preserved, with usage marked as a lower bound.
+When cost is unknown, the breaker charges the per-run budget ceiling; the trace
+still reports unknown measured cost. Serial execution, workers, and trace-only
+recovery preserve the classification. Resume skips persisted failed attempts.
+
+Backend initialization, unhandled provider/transport errors, verifier defects,
+persistence errors, cancellation, and host resource failures retain fatal
+handling (or existing worker failure handling). Containment applies to one
+completion, not to the experiment orchestration loop.

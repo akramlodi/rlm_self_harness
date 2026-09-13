@@ -212,7 +212,7 @@ and the resulting evidence bundle ranks each recurring pattern by the number of 
 \subsubsection{Harness Proposal}
 \label{sec:harness-proposal}
 
-Harness proposal provides the same fixed model with the verifier- and sub-verifier-grounded failure patterns of the evidence bundle, a record of passing behaviors that should be preserved, and a summary of previously attempted edits, and asks it to generate several distinct, minimal candidate edits, excluding patterns not plausibly addressable by an editable surface. Each proposal must target one mined failure pattern, modify one declared harness surface, state its predicted behavioral effect, and identify possible regressions.
+Harness proposal provides the same fixed model with the verifier- and sub-verifier-grounded failure patterns of the evidence bundle, a record of passing behaviors that should be preserved, and a summary of previously attempted edits, and asks it to generate several distinct, minimal candidate edits, excluding patterns not plausibly addressable by an editable surface. The summary covers every prior round, including rounds that produced no validated candidate, listing each attempted edit with its surface, predicted effect, and the outcome and reason it was refused, whether at materialization, at the loader gate, or at the promotion rule. A candidate that does not change the current harness is rejected and re-asked with the reason, like a malformed proposal, rather than closing the round. Each proposal must target one mined failure pattern, modify one declared harness surface, state its predicted behavioral effect, and identify possible regressions.
 
 \subsubsection{Proposal Validation}
 \label{sec:proposal-validation}

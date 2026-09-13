@@ -133,7 +133,11 @@ PROPOSAL_FILENAME = "proposal.json"
 # pattern targets S10, and the S10 pattern block carries a full-library
 # inventory line. 1.3.0: S10 edit is one skill added or replaced by name
 # (S8-style), not a whole-list rewrite.
-PROMPT_VERSION = "1.8.0"
+# 1.9.0: the prior-edit history covers every completed round, not only rounds
+# that reached validation, renders each attempted edit's predicted effect, and
+# says that a candidate identical to the current surface is refused before
+# validation (see VALIDATOR_VERSION 1.5.0).
+PROMPT_VERSION = "1.9.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -143,7 +147,13 @@ PROMPT_VERSION = "1.8.0"
 # 1.3.1: strict-parse failures get a bounded unescaped-quote repair pass
 # (_repair_unescaped_quotes) before rejection -- responses judged invalid
 # under 1.3.0 may parse under it, so cached rejections must not replay.
-VALIDATOR_VERSION = "1.4.0"
+# 1.5.0: a batch in which no candidate materializes as a change to the
+# incumbent (a no-op edit that reproduces the current surface) is rejected and
+# re-asked with the reason, and exhaustion whose final attempt failed only at
+# materialization returns an empty result instead of raising. The 2026-09-10
+# OOLONG-Pairs run lost rounds 4-6 to a proposer that re-emitted the incumbent's
+# own S9 three rounds in a row; under 1.4.0 that was counted, never re-asked.
+VALIDATOR_VERSION = "1.5.0"
 
 DEFAULT_K = 4
 # Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
@@ -300,9 +310,25 @@ class WrittenProposal:
 
 @dataclass(frozen=True)
 class MaterializationFailureRecord:
+    """One validated candidate that failed to materialize (R4).
+
+    Carries the candidate's own predicted effect so the persisted marker and
+    the next round's history can say what direction was refused, not only
+    which surface.
+    """
+
     pattern_index: int
     surface: str
     reason: str
+    predicted_effect: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "pattern_index": self.pattern_index,
+            "surface": self.surface,
+            "reason": self.reason,
+            "predicted_effect": self.predicted_effect,
+        }
 
 
 @dataclass(frozen=True)
@@ -510,17 +536,37 @@ def _render_passing_block(passing_behaviors: Sequence[dict[str, Any]]) -> str:
     )
 
 
+# The history outcome of a candidate that validated but failed to materialize
+# (its edit reproduced the incumbent). Synthesized by the orchestrator from the
+# proposals marker; never written to a validation ledger.
+HISTORY_NOT_MATERIALIZED = "not_materialized"
+HISTORY_NO_RECORDS = "no per-edit record persisted"
+
+
 def _render_history_block(
     prior_history: Sequence[tuple[list[dict[str, Any]], dict[str, Any]]],
 ) -> str:
+    """One entry per completed prior round (R5), every attempted edit with its
+    outcome, predicted effect, and reasons (R6).
+
+    A round is labeled by its decision's ``round`` when the orchestrator
+    supplied one (the ``round.json`` payload), else by list position, which
+    keeps legacy callers that pass a bare promotion decision readable. A round
+    without records -- a proposer that offered nothing, or a marker written
+    before failure records were persisted -- says so rather than vanishing.
+    """
     if not prior_history:
-        return "No prior validation rounds exist yet; this is the first proposal round."
+        return "No prior rounds exist yet; this is the first proposal round."
     lines: list[str] = []
-    for round_number, (records, decision) in enumerate(prior_history):
+    for position, (records, decision) in enumerate(prior_history):
+        label = decision.get("round", position)
         lines.append(
-            f"Round {round_number}: promoted={decision.get('promoted')} "
+            f"Round {label}: promoted={decision.get('promoted')} "
             f"promoted_harness_hash={decision.get('promoted_harness_hash')}"
         )
+        if not records:
+            lines.append(f"  - {HISTORY_NO_RECORDS}")
+            continue
         for record in records:
             if record.get("decision") == "bundled":
                 continue
@@ -539,8 +585,14 @@ def _render_history_block(
                 ]
                 subject = f"{subject} (combined edits: {', '.join(str(s) for s in surfaces)})"
             outcome = record.get("decision")
+            effect = record.get("predicted_effect")
             reasons = "; ".join(record.get("reasons") or [])
-            lines.append(f"  - {subject}: {outcome}" + (f" ({reasons})" if reasons else ""))
+            line = f"  - {subject}: {outcome}"
+            if effect:
+                line += f' -- predicted "{effect}"'
+            if reasons:
+                line += f" ({reasons})"
+            lines.append(line)
     return "\n".join(lines)
 
 
@@ -735,8 +787,11 @@ def render_prompt(
         _render_verifier_contract(verifier_config),
         "Failure patterns:\n" + pattern_text,
         "Passing behavior to preserve:\n" + _render_passing_block(passing_behaviors),
-        "Prior edit history (previously attempted candidates and their outcomes; do "
-        "not repeat an approach already rejected for the same reason):\n"
+        "Prior edit history (every previously attempted candidate with its surface, "
+        "predicted effect, and outcome; do not repeat an approach already rejected "
+        "for the same reason). A candidate identical to the current surface is "
+        "refused before validation and must not be re-proposed: a not_materialized "
+        "entry below means the incumbent already contained that edit.\n"
         + _render_history_block(prior_history),
         EDIT_FORMATS
         % {
@@ -1335,6 +1390,13 @@ def propose_round(
     attempts: list[ProposalAttempt] = []
     rejection = ""
     specs: list[CandidateSpec] = []
+    # (spec, serialization) for every candidate of the accepted attempt that
+    # materialized, and the failure records of the LAST attempt that reached
+    # materialization. A batch that validates but materializes to nothing is a
+    # rejection like any other (KTD1): the model is re-asked with the reason
+    # rather than the round silently closing with zero candidates.
+    materialized: list[tuple[CandidateSpec, dict[str, Any]]] = []
+    materialization_failures: list[MaterializationFailureRecord] = []
 
     for attempt in range(config.max_attempts):
         user = (
@@ -1385,6 +1447,15 @@ def propose_round(
                     _dry_run_skill_merge(spec, incumbent)
         except ProposalRejection as exc:
             rejection = str(exc)
+            materialized, materialization_failures = [], []
+            attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
+            continue
+
+        materialized, materialization_failures = _materialize_batch(
+            incumbent, incumbent_serialization, batch, workdir
+        )
+        if batch and not materialized:
+            rejection = _materialization_rejection(materialization_failures)
             attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
             continue
 
@@ -1392,23 +1463,32 @@ def propose_round(
         specs = batch
         break
     else:
-        raise ProposalRejection(
-            f"no valid proposal batch after {config.max_attempts} attempts: {rejection}",
+        # The failure lists describe the final attempt only: a parse or
+        # validation rejection clears them, a materialization rejection fills
+        # them.
+        if not materialization_failures:
+            raise ProposalRejection(
+                f"no valid proposal batch after {config.max_attempts} attempts: {rejection}",
+                attempts=attempts,
+            )
+        # Exhaustion is classified by the final attempt (KTD2). One that
+        # validated but changed nothing is a proposer-quality outcome the round
+        # already knows how to close -- zero candidates, unpromoted -- so the
+        # failure records are returned for the marker and the next round's
+        # history rather than raised past an orchestrator that catches only
+        # ProposalBudgetExhausted.
+        all_indices = {index for index, _ in addressable}
+        refused_indices = {record.pattern_index for record in materialization_failures}
+        return ProposalRoundResult(
+            written=[],
+            skipped_patterns=sorted(all_indices - refused_indices),
+            materialization_failures=materialization_failures,
             attempts=attempts,
+            prompt_sha256=system_sha,
         )
 
     written: list[WrittenProposal] = []
-    materialization_failures: list[MaterializationFailureRecord] = []
-    for position, spec in enumerate(specs, start=1):
-        try:
-            _harness, serialization = build_candidate(
-                incumbent, incumbent_serialization, spec, workdir
-            )
-        except MaterializationFailure as failure:
-            materialization_failures.append(
-                MaterializationFailureRecord(spec.pattern_index, spec.surface, failure.reason)
-            )
-            continue
+    for position, spec, serialization in materialized:
         candidate_id = _candidate_id(round_index, position, spec.surface)
         path = write_proposal(
             proposals_dir,
@@ -1431,4 +1511,58 @@ def propose_round(
         materialization_failures=materialization_failures,
         attempts=attempts,
         prompt_sha256=system_sha,
+    )
+
+
+def _materialize_batch(
+    incumbent: Harness,
+    incumbent_serialization: dict[str, Any],
+    batch: Sequence[CandidateSpec],
+    workdir: Path,
+) -> tuple[list[tuple[int, CandidateSpec, dict[str, Any]]], list[MaterializationFailureRecord]]:
+    """Materialize every spec of one validated batch, keeping the survivors.
+
+    A partially successful batch keeps its survivors and records the rest
+    (R2); only the caller decides that an empty survivor list is a rejection.
+    Each survivor carries its 1-based position in the batch so a failed spec
+    still consumes a candidate-id slot: the id is hash material and a ledger
+    subject id, so it must not shift when an earlier sibling is refused.
+    """
+    materialized: list[tuple[int, CandidateSpec, dict[str, Any]]] = []
+    failures: list[MaterializationFailureRecord] = []
+    for position, spec in enumerate(batch, start=1):
+        try:
+            _harness, serialization = build_candidate(
+                incumbent, incumbent_serialization, spec, workdir
+            )
+        except MaterializationFailure as failure:
+            failures.append(
+                MaterializationFailureRecord(
+                    spec.pattern_index, spec.surface, failure.reason, spec.predicted_effect
+                )
+            )
+            continue
+        materialized.append((position, spec, serialization))
+    return materialized, failures
+
+
+def _materialization_rejection(failures: Sequence[MaterializationFailureRecord]) -> str:
+    """The re-ask message for a batch in which nothing materialized.
+
+    Names every refused candidate by pattern and surface with the loader's
+    own reason, then coaches the one correction that fits the observed failure:
+    the surface already holds the proposed text, so the edit must differ from
+    the current surface shown in the pattern block, or address the pattern on
+    another of its listed surfaces.
+    """
+    lines = [
+        f"candidate for pattern {record.pattern_index} on {record.surface}: {record.reason}"
+        for record in failures
+    ]
+    return (
+        "no candidate in the batch changes the harness ("
+        + "; ".join(lines)
+        + "). The current surface already contains what you proposed. Propose an edit "
+        "whose text differs from the current surface shown in the pattern block, or "
+        "address the pattern on another of its listed surfaces."
     )

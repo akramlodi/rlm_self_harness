@@ -1,6 +1,10 @@
 """Custom exceptions for RLM execution limits and cancellation."""
 
 
+class ClientInitializationError(RuntimeError):
+    """A backend could not be constructed; this is not a harness run failure."""
+
+
 class BudgetExceededError(Exception):
     """Raised when the RLM execution exceeds the maximum budget."""
 
