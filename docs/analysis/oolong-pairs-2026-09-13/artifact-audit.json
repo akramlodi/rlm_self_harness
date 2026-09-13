@@ -1,0 +1,5588 @@
+[
+  {
+    "experiment": "experiment_oolong_pairs_dsv4f",
+    "rounds": [
+      {
+        "round": "round_01",
+        "promoted": true,
+        "marker": {
+          "candidate_ids": [
+            "r01-c01-s4"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "n_materialization_failures": 0,
+          "prompt_sha256": "f291d99e398641aa30dfc3d3af9f022dfd4f77ccd72825760d6457359701305f",
+          "round": 1,
+          "skipped_patterns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 7,
+            "instance_support": 5,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac",
+              "oolong-t01-w9-ab9956978b367bac",
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              16440,
+              16968,
+              1657
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 4,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              4488,
+              5128,
+              5385
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              13064
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              3833
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              13512
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              107
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c"
+            ],
+            "evidence_lengths": [
+              457
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_01/mining/round_01/runs.jsonl",
+            "count": 20,
+            "pass_count": 4,
+            "causes": {
+              "spurious": 9,
+              "mixed_set_error": 5,
+              "passed": 4,
+              "incomplete": 2
+            },
+            "mean_f1_rounded": 0.7984,
+            "near_misses_09": 7,
+            "runtime_errors": {},
+            "cost": 1.57215388,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 3,
+            "causes": {
+              "spurious": 2,
+              "passed": 3,
+              "mixed_set_error": 3,
+              "wrong_format": 1,
+              "incomplete": 1
+            },
+            "mean_f1_rounded": 0.727,
+            "near_misses_09": 2,
+            "runtime_errors": {},
+            "cost": 1.0953939799999999,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_01/validation/round_01/r01-c01-s4/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 4,
+            "causes": {
+              "mixed_set_error": 1,
+              "passed": 4,
+              "incomplete": 3,
+              "spurious": 1,
+              "wrong_format": 1
+            },
+            "mean_f1_rounded": 0.8384,
+            "near_misses_09": 1,
+            "runtime_errors": {},
+            "cost": 1.2738490600000003,
+            "harness_hash": "2e7849f9e4a982a5d95e9544936ef453de1091e4416339c7e3580176629e9a75"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r01-c01-s4",
+            "surface": "S4",
+            "effect": "Roots that drop or mis-merge sub-call results will catch the error during verification and re-attempt the combine step, reducing lossy_aggregation failures.",
+            "risks": [
+              "A root that correctly produces a complete set will pass this check trivially \u2014 no regression.",
+              "A root that intentionally produces a subset (e.g., only pairs matching a filter) would be incorrectly blocked, but the task asks for ALL pairs, so a subset is wrong anyway.",
+              "The check adds a small amount of work (one set comparison), but it's negligible compared to the cost of a failed run."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_01/proposals/r01-c01-s4/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.10953939799999998,
+                "candidate": 0.12738490600000002,
+                "lower": 0.5,
+                "upper": 1.25,
+                "within": true
+              },
+              "mean_sub_calls": {
+                "baseline": 7.9,
+                "candidate": 5.4,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "promoted",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "2e7849f9e4a982a5d95e9544936ef453de1091e4416339c7e3580176629e9a75",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "r01-c01-s4/heldout/round_00/harness.json",
+                  "round_dir": "r01-c01-s4/heldout/round_00"
+                }
+              },
+              "summary": "r01-c01-s4/summary.json"
+            },
+            "merge": {
+              "constituent_ids": null,
+              "role": null
+            },
+            "reasons": [],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 3,
+                "candidate_pass_count": 4,
+                "delta": 1,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "r01-c01-s4",
+            "surface": "S4",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      },
+      {
+        "round": "round_02",
+        "promoted": true,
+        "marker": {
+          "candidate_ids": [
+            "r02-c01-s9"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "n_materialization_failures": 0,
+          "prompt_sha256": "bdd278dff173ceea151ef5927193035ef1781b9c089fb794195443a604ffc049",
+          "round": 2,
+          "skipped_patterns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 3,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w10-e1931c943e436c56",
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              28953,
+              4440,
+              552
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 4,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac",
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              16440,
+              2953,
+              123
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w10-e1931c943e436c56",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              24393,
+              3849
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t10-w10-27a4b36613829c4b",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              7449,
+              4377
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              12216
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "whole_input_subcall_collapse",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              12632
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              440
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t10-w10-27a4b36613829c4b"
+            ],
+            "evidence_lengths": [
+              7449
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46"
+            ],
+            "evidence_lengths": [
+              4264
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_02/mining/round_02/runs.jsonl",
+            "count": 20,
+            "pass_count": 4,
+            "causes": {
+              "passed": 4,
+              "spurious": 4,
+              "mixed_set_error": 7,
+              "incomplete": 5
+            },
+            "mean_f1_rounded": 0.78555,
+            "near_misses_09": 4,
+            "runtime_errors": {},
+            "cost": 1.89480812,
+            "harness_hash": "2e7849f9e4a982a5d95e9544936ef453de1091e4416339c7e3580176629e9a75"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 3,
+            "causes": {
+              "spurious": 1,
+              "passed": 3,
+              "mixed_set_error": 4,
+              "wrong_format": 1,
+              "incomplete": 1
+            },
+            "mean_f1_rounded": 0.7003,
+            "near_misses_09": 2,
+            "runtime_errors": {},
+            "cost": 1.37937924,
+            "harness_hash": "2e7849f9e4a982a5d95e9544936ef453de1091e4416339c7e3580176629e9a75"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_02/validation/round_02/r02-c01-s9/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 5,
+            "causes": {
+              "passed": 5,
+              "incomplete": 2,
+              "mixed_set_error": 2,
+              "wrong_format": 1
+            },
+            "mean_f1_rounded": 0.7567,
+            "near_misses_09": 2,
+            "runtime_errors": {},
+            "cost": 0.9907538100000001,
+            "harness_hash": "61d708215307adf7025c1569c0839e2fe64e9ae5cf2487f1f4a4ddf65ae0f18f"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r02-c01-s9",
+            "surface": "S9",
+            "effect": "When the root declares ready with a lossy aggregation (missing pairs or spurious pairs), the S9 middleware will detect the mismatch and redirect the model to fix its combine step, rather than accepting the incorrect answer. This directly addresses the lossy_aggregation mechanism.",
+            "risks": [
+              "If the answer format is not a simple list of tuples (e.g., JSON string, different delimiter), the middleware falls through to accept, so no regression.",
+              "If the model produces a correct answer that is not sorted exactly as expected (e.g., different ordering), the middleware would incorrectly redirect. However, the gold_ordering is 'sorted', so the expected format is sorted pairs. The model should produce sorted output per the task contract.",
+              "The redirect adds one extra iteration for the model to fix the combine step, which increases time/spend slightly. But this is bounded: the model will either fix it or loop. To prevent infinite loops, the model's own iteration limit still applies.",
+              "If the model's answer contains IDs that are not integers (e.g., strings), the sorting and comparison still works correctly."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_02/proposals/r02-c01-s9/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.137937924,
+                "candidate": 0.099075381,
+                "lower": 0.5,
+                "upper": 1.25,
+                "within": true
+              },
+              "mean_sub_calls": {
+                "baseline": 7.4,
+                "candidate": 6.5,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "promoted",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "61d708215307adf7025c1569c0839e2fe64e9ae5cf2487f1f4a4ddf65ae0f18f",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "r02-c01-s9/heldout/round_00/harness.json",
+                  "round_dir": "r02-c01-s9/heldout/round_00"
+                }
+              },
+              "summary": "r02-c01-s9/summary.json"
+            },
+            "merge": {
+              "constituent_ids": null,
+              "role": null
+            },
+            "reasons": [],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 3,
+                "candidate_pass_count": 5,
+                "delta": 2,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "r02-c01-s9",
+            "surface": "S9",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      },
+      {
+        "round": "round_03",
+        "promoted": true,
+        "marker": {
+          "candidate_ids": [
+            "r03-c01-s4"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "n_materialization_failures": 0,
+          "prompt_sha256": "179c04f26c2f300eaf6d7014d4781b9d68aa49e5f3f2f54395cc5de2f9628f4f",
+          "round": 3,
+          "skipped_patterns": [
+            0,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              313,
+              3833
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              11432,
+              392
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              4312,
+              4649
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac",
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              16440,
+              123
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              13064
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46"
+            ],
+            "evidence_lengths": [
+              4248
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 1,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              2457,
+              3225
+            ],
+            "gold_visible_after_2000": [
+              true,
+              false
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              568
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c"
+            ],
+            "evidence_lengths": [
+              793
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 9,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              59
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_03/mining/round_03/runs.jsonl",
+            "count": 20,
+            "pass_count": 5,
+            "causes": {
+              "spurious": 6,
+              "passed": 5,
+              "mixed_set_error": 3,
+              "incomplete": 5,
+              "wrong_format": 1
+            },
+            "mean_f1_rounded": 0.70755,
+            "near_misses_09": 3,
+            "runtime_errors": {},
+            "cost": 2.20642214,
+            "harness_hash": "61d708215307adf7025c1569c0839e2fe64e9ae5cf2487f1f4a4ddf65ae0f18f"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 0,
+            "causes": {
+              "spurious": 2,
+              "mixed_set_error": 2,
+              "incomplete": 3,
+              "wrong_format": 3
+            },
+            "mean_f1_rounded": 0.6107,
+            "near_misses_09": 4,
+            "runtime_errors": {},
+            "cost": 1.5370494899999998,
+            "harness_hash": "61d708215307adf7025c1569c0839e2fe64e9ae5cf2487f1f4a4ddf65ae0f18f"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_03/validation/round_03/r03-c01-s4/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 1,
+            "causes": {
+              "spurious": 4,
+              "mixed_set_error": 3,
+              "passed": 1,
+              "incomplete": 2
+            },
+            "mean_f1_rounded": 0.8114,
+            "near_misses_09": 4,
+            "runtime_errors": {},
+            "cost": 1.49889501,
+            "harness_hash": "2fc2449c10dab14afc4ecee84ba12ce4c7abe255447e64b56d62223e19e61566"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r03-c01-s4",
+            "surface": "S4",
+            "effect": "Roots will verify completeness against the original input rather than against potentially-incomplete sub-results, preventing lossy_aggregation failures where the combine step drops IDs or pairs.",
+            "risks": [
+              "Roots that cannot easily extract all IDs from the input (e.g., non-numeric IDs, IDs embedded in prose) may get stuck in a verification loop. However, for this task (user IDs are numeric and appear in a structured format), extraction is straightforward.",
+              "Roots that previously passed by checking only sub-results will now do more work (extracting IDs from input), but this is a few lines of Python, not a sub-call, so iteration count is unaffected.",
+              "If a root's decomposition is correct and its answer is complete, the new check will pass and behavior is unchanged."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_03/proposals/r03-c01-s4/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.15370494899999998,
+                "candidate": 0.149889501,
+                "lower": 0.5,
+                "upper": 1.25,
+                "within": true
+              },
+              "mean_sub_calls": {
+                "baseline": 33.5,
+                "candidate": 8.9,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "promoted",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "2fc2449c10dab14afc4ecee84ba12ce4c7abe255447e64b56d62223e19e61566",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "r03-c01-s4/heldout/round_00/harness.json",
+                  "round_dir": "r03-c01-s4/heldout/round_00"
+                }
+              },
+              "summary": "r03-c01-s4/summary.json"
+            },
+            "merge": {
+              "constituent_ids": null,
+              "role": null
+            },
+            "reasons": [],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 0,
+                "candidate_pass_count": 1,
+                "delta": 1,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "r03-c01-s4",
+            "surface": "S4",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      },
+      {
+        "round": "round_04",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [],
+          "format": "shrlm-proposals-complete/v1",
+          "n_materialization_failures": 1,
+          "prompt_sha256": "76819c389dd1892f23bdcada033e41cc55675c8ac9b23d4af3f9e6b7b888a032",
+          "round": 4,
+          "skipped_patterns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 5,
+            "instance_support": 4,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w10-e1931c943e436c56",
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              20249,
+              5976,
+              3849
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 3,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              1225,
+              13064,
+              13064
+            ],
+            "gold_visible_after_2000": [
+              true,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              553,
+              107
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              504
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t10-w10-27a4b36613829c4b"
+            ],
+            "evidence_lengths": [
+              7801
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46"
+            ],
+            "evidence_lengths": [
+              4616
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "swallowed_subcall_error",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "resource_terminated"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c"
+            ],
+            "evidence_lengths": [
+              2774
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              1657
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_04/mining/round_04/runs.jsonl",
+            "count": 20,
+            "pass_count": 5,
+            "causes": {
+              "passed": 5,
+              "spurious": 3,
+              "mixed_set_error": 7,
+              "incomplete": 4,
+              "resource_terminated": 1
+            },
+            "mean_f1_rounded": 0.7186,
+            "near_misses_09": 5,
+            "runtime_errors": {},
+            "cost": 3.4863481000000003,
+            "harness_hash": "2fc2449c10dab14afc4ecee84ba12ce4c7abe255447e64b56d62223e19e61566"
+          }
+        ],
+        "proposals": [],
+        "ledger": []
+      },
+      {
+        "round": "round_05",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [],
+          "format": "shrlm-proposals-complete/v1",
+          "n_materialization_failures": 1,
+          "prompt_sha256": "5883d494478abefb0f2d02d142d93d097f86e82655c1dfde908e5fb64704138e",
+          "round": 5,
+          "skipped_patterns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 4,
+            "instance_support": 4,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              17177,
+              457,
+              584
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true,
+              true
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 5,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              4840,
+              4440,
+              4105
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac",
+              "oolong-t10-w10-27a4b36613829c4b"
+            ],
+            "evidence_lengths": [
+              16440,
+              7801
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              1113
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              13512
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              13064
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac"
+            ],
+            "evidence_lengths": [
+              16968
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c"
+            ],
+            "evidence_lengths": [
+              553
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "iteration_budget_exhaustion",
+              "causal_status": "causal",
+              "failing_level": "no_recursion",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              1884
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_05/mining/round_05/runs.jsonl",
+            "count": 20,
+            "pass_count": 3,
+            "causes": {
+              "spurious": 8,
+              "mixed_set_error": 6,
+              "incomplete": 2,
+              "passed": 3,
+              "wrong_format": 1
+            },
+            "mean_f1_rounded": 0.7017,
+            "near_misses_09": 5,
+            "runtime_errors": {},
+            "cost": 2.52751044,
+            "harness_hash": "2fc2449c10dab14afc4ecee84ba12ce4c7abe255447e64b56d62223e19e61566"
+          }
+        ],
+        "proposals": [],
+        "ledger": []
+      },
+      {
+        "round": "round_06",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [],
+          "format": "shrlm-proposals-complete/v1",
+          "n_materialization_failures": 1,
+          "prompt_sha256": "52630ab5f4ddcc19fda9ef1e4b2fbf71c3f1c26d584ce4809840da9807bac4ba",
+          "round": 6,
+          "skipped_patterns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 3,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac",
+              "oolong-t10-w10-27a4b36613829c4b",
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              16440,
+              7801,
+              107
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 3,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              12632,
+              12216,
+              376
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 3,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              4648,
+              4168,
+              4377
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true,
+              false
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              1113
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w10-e1931c943e436c56"
+            ],
+            "evidence_lengths": [
+              24393
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              504
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              5481
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "iteration_budget_exhaustion",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "resource_terminated"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              2782
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c"
+            ],
+            "evidence_lengths": [
+              665
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 9,
+            "signature": {
+              "agent_mechanism": "premature_termination",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              59
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f/opt/round_06/mining/round_06/runs.jsonl",
+            "count": 20,
+            "pass_count": 4,
+            "causes": {
+              "passed": 4,
+              "spurious": 4,
+              "mixed_set_error": 4,
+              "incomplete": 6,
+              "wrong_format": 1,
+              "resource_terminated": 1
+            },
+            "mean_f1_rounded": 0.6694,
+            "near_misses_09": 4,
+            "runtime_errors": {},
+            "cost": 2.4729524199999995,
+            "harness_hash": "2fc2449c10dab14afc4ecee84ba12ce4c7abe255447e64b56d62223e19e61566"
+          }
+        ],
+        "proposals": [],
+        "ledger": []
+      }
+    ],
+    "all_causes": {
+      "spurious": 44,
+      "mixed_set_error": 47,
+      "passed": 41,
+      "incomplete": 36,
+      "wrong_format": 10,
+      "resource_terminated": 2
+    },
+    "mining_mechanisms": {
+      "lossy_aggregation": 53,
+      "incomplete_coverage": 26,
+      "misaligned_unit": 11,
+      "whole_input_subcall_collapse": 1,
+      "swallowed_subcall_error": 1,
+      "iteration_budget_exhaustion": 2,
+      "premature_termination": 1
+    },
+    "grounded": 0,
+    "attributions": 95,
+    "proposals": {
+      "S4": 2,
+      "S9": 1
+    }
+  },
+  {
+    "experiment": "experiment_oolong_pairs_dsv4f_20260911_1458",
+    "rounds": [
+      {
+        "round": "round_01",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [
+            "r01-c01-s9"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "materialization_failures": [],
+          "n_materialization_failures": 0,
+          "prompt_sha256": "c814ee0def480fac43e9c3263680ece3a4012e9cc40fefcf9ce86660ef784cbf",
+          "round": 1,
+          "skipped_patterns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 3,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t10-w10-27a4b36613829c4b",
+              "oolong-t15-w10-00f4616187f818a3",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              6489,
+              3785,
+              504
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true,
+              true
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 3,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              4584,
+              4488,
+              520
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              12632
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              4377
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              14456
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c"
+            ],
+            "evidence_lengths": [
+              457
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              59
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/mining/round_01/runs.jsonl",
+            "count": 20,
+            "pass_count": 9,
+            "causes": {
+              "passed": 9,
+              "spurious": 1,
+              "mixed_set_error": 5,
+              "incomplete": 4,
+              "wrong_format": 1
+            },
+            "mean_f1_rounded": 0.8818,
+            "near_misses_09": 2,
+            "runtime_errors": {},
+            "cost": 1.7305993100000001,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 2,
+            "causes": {
+              "spurious": 4,
+              "passed": 2,
+              "mixed_set_error": 3,
+              "incomplete": 1
+            },
+            "mean_f1_rounded": 0.7551,
+            "near_misses_09": 2,
+            "runtime_errors": {},
+            "cost": 0.53080259,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/validation/round_01/r01-c01-s9/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 2,
+            "causes": {
+              "spurious": 1,
+              "wrong_format": 3,
+              "incomplete": 2,
+              "passed": 2,
+              "mixed_set_error": 2
+            },
+            "mean_f1_rounded": 0.4822,
+            "near_misses_09": 3,
+            "runtime_errors": {},
+            "cost": 1.67617741,
+            "harness_hash": "eca167767c28cb34c68479d0a673f9097d6d97bdf1094a49217e4fe47c19a11c"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r01-c01-s9",
+            "surface": "S9",
+            "effect": "Patterns 0, 1, and 6 all involve lossy aggregation where the root's combine step drops pairs or produces an empty/wrong-format answer. The current S9 identity middleware accepts any detected answer, even if truncated or empty. This edit adds a minimal structural check: if the answer is not a non-empty bracketed list, redirect to re-derive. This catches the empty-string case (pattern 6) and the truncated/malformed cases (patterns 0, 1) without inspecting content, so correct answers pass through unchanged. The check is work-neutral for passing runs because they already produce a well-formed bracketed list.",
+            "risks": [
+              "A passing run that produces a correct answer in a non-standard format (e.g., a single tuple without brackets) would be redirected, causing a regression. However, the verifier contract expects a bracketed list of tuples, and all passing runs in the history produce such a format, so this risk is minimal.",
+              "If a correct answer is very short (e.g., exactly '[]' for an empty set), the len > 2 check would reject it. The expected output for this task is never empty (the gold set always has at least one pair), so this is safe."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/proposals/r01-c01-s9/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.053080259,
+                "candidate": 0.167617741,
+                "lower": 0.5,
+                "upper": 1.25,
+                "within": false
+              },
+              "mean_sub_calls": {
+                "baseline": 4.4,
+                "candidate": 33.5,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "rejected",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "eca167767c28cb34c68479d0a673f9097d6d97bdf1094a49217e4fe47c19a11c",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "r01-c01-s9/heldout/round_00/harness.json",
+                  "round_dir": "r01-c01-s9/heldout/round_00"
+                }
+              },
+              "summary": "r01-c01-s9/summary.json"
+            },
+            "merge": {
+              "constituent_ids": null,
+              "role": null
+            },
+            "reasons": [
+              "no split improves beyond tau_improvement=0.0 (heldout +0)",
+              "mean_cost 0.167617741 is outside the band [0.5, 1.25] x baseline 0.053080259"
+            ],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 2,
+                "candidate_pass_count": 2,
+                "delta": 0,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "r01-c01-s9",
+            "surface": "S9",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      },
+      {
+        "round": "round_02",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [
+            "r02-c01-s2",
+            "r02-c02-s3"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "materialization_failures": [],
+          "n_materialization_failures": 0,
+          "prompt_sha256": "f9d6e9950dc748745164a7d41d23e2d664cd145b3b85ed13a87ae9119eec0bd6",
+          "round": 2,
+          "skipped_patterns": [
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 4,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t13-w9-81ca14885b886d46"
+            ],
+            "evidence_lengths": [
+              1497,
+              13976,
+              4616
+            ],
+            "gold_visible_after_2000": [
+              true,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t15-w10-00f4616187f818a3",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              3305,
+              472
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              13064,
+              3305
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 3,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t10-w10-27a4b36613829c4b"
+            ],
+            "evidence_lengths": [
+              553,
+              793,
+              7801
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true,
+              false
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 1,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac",
+              "oolong-t01-w9-ab9956978b367bac"
+            ],
+            "evidence_lengths": [
+              16968,
+              16968
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              83
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              59
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_02/mining/round_02/runs.jsonl",
+            "count": 20,
+            "pass_count": 5,
+            "causes": {
+              "spurious": 5,
+              "mixed_set_error": 4,
+              "passed": 5,
+              "incomplete": 4,
+              "wrong_format": 2
+            },
+            "mean_f1_rounded": 0.7614,
+            "near_misses_09": 5,
+            "runtime_errors": {},
+            "cost": 1.29388554,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 2,
+            "causes": {
+              "spurious": 2,
+              "passed": 2,
+              "incomplete": 5,
+              "mixed_set_error": 1
+            },
+            "mean_f1_rounded": 0.7836,
+            "near_misses_09": 4,
+            "runtime_errors": {},
+            "cost": 0.85025035,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_02/validation/round_02/merged/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 4,
+            "causes": {
+              "spurious": 1,
+              "passed": 4,
+              "mixed_set_error": 1,
+              "incomplete": 4
+            },
+            "mean_f1_rounded": 0.9201,
+            "near_misses_09": 3,
+            "runtime_errors": {},
+            "cost": 0.32147748000000004,
+            "harness_hash": "44972745bcb6a69a611823c21742bd815c993b29565184368c817079a9231439"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r02-c01-s2",
+            "surface": "S2",
+            "effect": "Patterns 1 and 3 (incomplete_coverage) occur when the model splits items into groups but only generates pairs within each group, missing cross-group pairs. This edit adds a concrete pattern for generating all pairs from a list, including cross-group pairs, and adds a coverage verification instruction. It replaces the task-specific label-counting pattern (which is irrelevant to the pair-generation task) with a pair-generation pattern. Passing runs that already generate correct pairs will not be harmed because the new pattern is a superset of correct behavior - it shows both within-group and cross-group pair generation.",
+            "risks": [
+              "The new pattern is longer and may increase prompt token usage slightly, but it replaces the old pattern so total length is similar.",
+              "A run that was using the old label-counting pattern for a different task type might lose guidance, but the task is consistently pair-generation (oolong_pairs) so this is not a regression risk for the current task distribution."
+            ],
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_02/proposals/r02-c01-s2/proposal.json"
+          },
+          {
+            "id": "r02-c02-s3",
+            "surface": "S3",
+            "effect": "Patterns 0, 2, and 4 (lossy_aggregation) occur when the root's combine step drops pairs during merge. This edit adds explicit execution guidance to merge all pairs without dropping any, and to sort the final list. It also specifies the output format to prevent wrong_format errors (patterns 5, 6). Passing runs already produce correct output and will not be harmed because the guidance simply reinforces what they already do.",
+            "risks": [
+              "The instruction adds a small amount of prompt text, but it is work-neutral - it does not add iterations or sub-calls.",
+              "A run that was producing correct output through a different merge strategy (e.g., using a dict instead of set) might be confused, but the guidance is general enough to accommodate any correct merge strategy."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_02/proposals/r02-c02-s3/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": null,
+            "batch_subject_id": "merged",
+            "decision": "bundled",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "1b8e1368f85c7eb558fa14651d8649efaa5d4e343ceb3afb94dfa05b32cc4992",
+            "links": null,
+            "merge": {
+              "constituent_ids": [
+                "r02-c01-s2",
+                "r02-c02-s3"
+              ],
+              "role": "constituent"
+            },
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r02-c01-s2",
+            "surface": "S2",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": null,
+            "batch_subject_id": "merged",
+            "decision": "bundled",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "513eef79f848417fa8c80bb66d5cbae4e56028279ca8e912b65b7ff7328bf4bb",
+            "links": null,
+            "merge": {
+              "constituent_ids": [
+                "r02-c01-s2",
+                "r02-c02-s3"
+              ],
+              "role": "constituent"
+            },
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r02-c02-s3",
+            "surface": "S3",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.085025035,
+                "candidate": 0.032147748000000004,
+                "lower": 0.5,
+                "upper": 1.25,
+                "within": false
+              },
+              "mean_sub_calls": {
+                "baseline": 4.9,
+                "candidate": 42.1,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "rejected",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "44972745bcb6a69a611823c21742bd815c993b29565184368c817079a9231439",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "merged/heldout/round_00/harness.json",
+                  "round_dir": "merged/heldout/round_00"
+                }
+              },
+              "summary": "merged/summary.json"
+            },
+            "merge": {
+              "constituent_ids": [
+                "r02-c01-s2",
+                "r02-c02-s3"
+              ],
+              "role": "merged"
+            },
+            "reasons": [
+              "mean_cost 0.032147748000000004 is outside the band [0.5, 1.25] x baseline 0.085025035"
+            ],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 2,
+                "candidate_pass_count": 4,
+                "delta": 2,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "merged",
+            "surface": null,
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      },
+      {
+        "round": "round_03",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [
+            "r03-c01-s9",
+            "r03-c02-s2",
+            "r03-c03-s6"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "materialization_failures": [],
+          "n_materialization_failures": 0,
+          "prompt_sha256": "86489abeec8223b5c9e1a18009eca0e25beb11deb4d48bc5d9d8091881160266",
+          "round": 3,
+          "skipped_patterns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 3,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              13976,
+              4712,
+              760
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              2440,
+              4217
+            ],
+            "gold_visible_after_2000": [
+              true,
+              false
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              457,
+              568
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              1353
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "whole_input_subcall_collapse",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              13512
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w10-e1931c943e436c56"
+            ],
+            "evidence_lengths": [
+              20473
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              3785
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac"
+            ],
+            "evidence_lengths": [
+              16440
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              107
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 9,
+            "signature": {
+              "agent_mechanism": "iteration_budget_exhaustion",
+              "causal_status": "causal",
+              "failing_level": "no_recursion",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              3008
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/mining/round_03/runs.jsonl",
+            "count": 20,
+            "pass_count": 6,
+            "causes": {
+              "spurious": 4,
+              "passed": 6,
+              "incomplete": 3,
+              "mixed_set_error": 6,
+              "wrong_format": 1
+            },
+            "mean_f1_rounded": 0.75015,
+            "near_misses_09": 5,
+            "runtime_errors": {},
+            "cost": 1.6584117300000003,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 4,
+            "causes": {
+              "passed": 4,
+              "mixed_set_error": 3,
+              "spurious": 1,
+              "incomplete": 2
+            },
+            "mean_f1_rounded": 0.8549,
+            "near_misses_09": 3,
+            "runtime_errors": {},
+            "cost": 0.90956004,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/validation/round_03/merged/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 2,
+            "causes": {
+              "spurious": 2,
+              "wrong_format": 3,
+              "passed": 2,
+              "incomplete": 3
+            },
+            "mean_f1_rounded": 0.6486,
+            "near_misses_09": 4,
+            "runtime_errors": {},
+            "cost": 1.19248945,
+            "harness_hash": "f60a40299d162665058207e0dc59500ee158374bd21fd8abee6eaf084e21b499"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r03-c01-s9",
+            "surface": "S9",
+            "effect": "Pattern 0 (lossy_aggregation, mixed_set_error) shows the root producing a truncated or mis-merged list that is still a bracketed list, so this check will not catch it. However, pattern 8 (lossy_aggregation, spurious) shows the root producing a short list like '[(28828, 31029), (28828, 69046), (28828, 75925)]' when the expected answer is '[]' \u2014 that is a well-formed list and will pass. This edit is a no-op for both patterns. The real target is the iteration-budget-exhaustion case (pattern 9) where the fallback synthesizes a non-list answer (prose, no bracketed list) \u2014 that will be redirected, giving the root a chance to re-derive a proper answer. Passing runs already produce well-formed bracketed lists and are unaffected.",
+            "risks": [
+              "A passing run that produces a correct but empty list '[]' would be redirected \u2014 but the verifier expects non-empty lists for this task (pass_f1_threshold=1.0, gold_ordering=sorted), so an empty list is already a failure. Redirecting it is harmless.",
+              "A passing run that produces a correct list with trailing whitespace or newlines is still accepted because strip() is applied before checking brackets.",
+              "A passing run that produces a list with extra text after the closing bracket (e.g., a trailing comment) would be rejected \u2014 but the REPL contract requires the answer to be on the last line, and the harness extracts it; this is unlikely."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/proposals/r03-c01-s9/proposal.json"
+          },
+          {
+            "id": "r03-c02-s2",
+            "surface": "S2",
+            "effect": "Patterns 1, 2, 3, 5 (incomplete_coverage) all show the root missing some pairs because sub-calls only saw a subset of items and cross-chunk pairs were never generated. This edit adds explicit guidance for pair-generation tasks: how to structure decomposition so that every pair (including cross-chunk) is covered, and a verification step (n*(n-1)/2 check). This directly addresses the mechanism without changing behavior for non-pair tasks (label statistics, counting, etc.) which already have their own pattern. Passing runs that already produce correct pair sets will not be harmed because the guidance is additive \u2014 it does not force a specific decomposition, only warns about coverage and suggests a correct pattern.",
+            "risks": [
+              "A passing run that uses a different correct decomposition (e.g., overlapping windows) will not be affected because the guidance is advisory, not mandatory.",
+              "The added text increases prompt length slightly, but the S2 surface is already long; this is a few hundred extra characters, negligible for model performance.",
+              "If a passing run currently relies on a single sub-call that generates all pairs correctly, the new guidance does not override that \u2014 it only adds a fallback pattern for larger lists."
+            ],
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/proposals/r03-c02-s2/proposal.json"
+          },
+          {
+            "id": "r03-c03-s6",
+            "surface": "S6",
+            "effect": "Pattern 9 (iteration_budget_exhaustion) shows the root running out of iterations (31 iterations, median 31) and the fallback synthesizing a wrong-format answer. The current S6 is disabled. Enabling it with no numeric limits changes nothing by itself \u2014 the policy is a no-op. However, this edit is a prerequisite for future S6 edits that set limits (e.g., max_iterations). It does not address pattern 9 directly, but it makes the runtime policy active so that future candidates can set iteration limits without needing to enable it again. Passing runs are unaffected because no limits are imposed.",
+            "risks": [
+              "Enabling the policy with all null fields is a no-op \u2014 no behavior change. The only risk is if the harness treats 'enabled: true' differently from 'enabled: false' even with no limits set; but the spec says 'Only \"enabled\": true activates any numeric/boolean field you set', so with all nulls, nothing activates.",
+              "No regression risk for passing runs."
+            ],
+            "signature": {
+              "agent_mechanism": "iteration_budget_exhaustion",
+              "causal_status": "causal",
+              "failing_level": "no_recursion",
+              "verifier_cause": "wrong_format"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/proposals/r03-c03-s6/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": null,
+            "batch_subject_id": null,
+            "decision": "rejected",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": null,
+            "links": null,
+            "merge": {
+              "constituent_ids": null,
+              "role": null
+            },
+            "reasons": [
+              "rejected upstream at gate harness_check: ValueError: S2 is not format-ready: formatting it with a placeholder `custom_tools_section` raised KeyError: 'chunk'. Every brace other than the `{custom_tools_section}` slot must be doubled (see `escape_braces`); otherwise the run dies at prompt assembly instead of scoring badly."
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r03-c02-s2",
+            "surface": null,
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": {
+              "candidate_id": "r03-c02-s2",
+              "gate": "harness_check",
+              "path": "/Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/proposals/r03-c02-s2/proposal.json",
+              "reason": "ValueError: S2 is not format-ready: formatting it with a placeholder `custom_tools_section` raised KeyError: 'chunk'. Every brace other than the `{custom_tools_section}` slot must be doubled (see `escape_braces`); otherwise the run dies at prompt assembly instead of scoring badly."
+            },
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": null,
+            "batch_subject_id": "merged",
+            "decision": "bundled",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "f89ac113a8ba45c1101852666b96ba6a2e2943c5ae9018a2c7e7f3faab49e564",
+            "links": null,
+            "merge": {
+              "constituent_ids": [
+                "r03-c01-s9",
+                "r03-c03-s6"
+              ],
+              "role": "constituent"
+            },
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r03-c01-s9",
+            "surface": "S9",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": null,
+            "batch_subject_id": "merged",
+            "decision": "bundled",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "638205ebaabb65732698e84d73193dd3ffcf9871cc809d650e2ca35f3f933658",
+            "links": null,
+            "merge": {
+              "constituent_ids": [
+                "r03-c01-s9",
+                "r03-c03-s6"
+              ],
+              "role": "constituent"
+            },
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r03-c03-s6",
+            "surface": "S6",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.09095600400000001,
+                "candidate": 0.11924894500000001,
+                "lower": 0.5,
+                "upper": 1.25,
+                "within": false
+              },
+              "mean_sub_calls": {
+                "baseline": 8.6,
+                "candidate": 4.9,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "rejected",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "f60a40299d162665058207e0dc59500ee158374bd21fd8abee6eaf084e21b499",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "merged/heldout/round_00/harness.json",
+                  "round_dir": "merged/heldout/round_00"
+                }
+              },
+              "summary": "merged/summary.json"
+            },
+            "merge": {
+              "constituent_ids": [
+                "r03-c01-s9",
+                "r03-c03-s6"
+              ],
+              "role": "merged"
+            },
+            "reasons": [
+              "heldout pass-count delta -2 regresses beyond tau_regression=0.0",
+              "no split improves beyond tau_improvement=0.0 (heldout -2)",
+              "mean_cost 0.11924894500000001 is outside the band [0.5, 1.25] x baseline 0.09095600400000001"
+            ],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 4,
+                "candidate_pass_count": 2,
+                "delta": -2,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "merged",
+            "surface": null,
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      }
+    ],
+    "all_causes": {
+      "passed": 36,
+      "spurious": 21,
+      "mixed_set_error": 25,
+      "incomplete": 28,
+      "wrong_format": 10
+    },
+    "mining_mechanisms": {
+      "incomplete_coverage": 15,
+      "lossy_aggregation": 20,
+      "misaligned_unit": 3,
+      "iteration_budget_exhaustion": 1,
+      "whole_input_subcall_collapse": 1
+    },
+    "grounded": 0,
+    "attributions": 40,
+    "proposals": {
+      "S9": 2,
+      "S2": 2,
+      "S3": 1,
+      "S6": 1
+    }
+  },
+  {
+    "experiment": "experiment_oolong_pairs_dsv4f_20260911_213930",
+    "rounds": [
+      {
+        "round": "round_01",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [
+            "r01-c01-s9"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "materialization_failures": [],
+          "n_materialization_failures": 0,
+          "prompt_sha256": "a9570c0c759690f0d52200f87264e8f2f8620cc99fe68d580ea48e4f58c0a0b7",
+          "round": 1,
+          "skipped_patterns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 6,
+            "instance_support": 6,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t04-w10-408a35294f798183",
+              "oolong-t06-w9-22ddb943784e7d7f"
+            ],
+            "evidence_lengths": [
+              12216,
+              7801,
+              15432
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 7,
+            "instance_support": 6,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t11-w9-b4cbd11dd9c162ad",
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t14-w9-259b0efda7a2e2e8"
+            ],
+            "evidence_lengths": [
+              5112,
+              5768,
+              1048
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 4,
+            "instance_support": 4,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t04-w10-408a35294f798183",
+              "oolong-t11-w9-b4cbd11dd9c162ad",
+              "oolong-t13-w9-81ca14885b886d46"
+            ],
+            "evidence_lengths": [
+              7801,
+              5560,
+              4312
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 3,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w9-b928cb333c4990f4",
+              "oolong-t16-w9-1dcaca72ce800990",
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              10904,
+              568,
+              123
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true,
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 3,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t18-w9-39d3efa53b257ebb"
+            ],
+            "evidence_lengths": [
+              1225,
+              937,
+              1432
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true,
+              true
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t03-w10-f17c87447f7ca0f0",
+              "oolong-t08-w9-b928cb333c4990f4"
+            ],
+            "evidence_lengths": [
+              19657,
+              10472
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 3,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t20-w10-c0dd071439e06fa2"
+            ],
+            "evidence_lengths": [
+              553,
+              665,
+              105
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true,
+              true
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              12632
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t14-w9-259b0efda7a2e2e8"
+            ],
+            "evidence_lengths": [
+              1160
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 9,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t20-w10-c0dd071439e06fa2"
+            ],
+            "evidence_lengths": [
+              2053
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_01/mining/round_01/runs.jsonl",
+            "count": 40,
+            "pass_count": 9,
+            "causes": {
+              "spurious": 8,
+              "passed": 9,
+              "mixed_set_error": 8,
+              "incomplete": 14,
+              "wrong_format": 1
+            },
+            "mean_f1_rounded": 0.7683,
+            "near_misses_09": 12,
+            "runtime_errors": {},
+            "cost": 3.766832479999999,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r01-c01-s9",
+            "surface": "S9",
+            "effect": "Root runs that produce truncated, malformed, or self-pair-containing output (lossy_aggregation) will have their answer rejected instead of accepted, triggering recovery (re-iteration with better combine logic). This directly addresses patterns 0, 1, and 3 where sub-calls were correct but the root's combine step dropped or mis-merged results.",
+            "risks": [
+              "A correctly-formed but empty answer (e.g., no matching pairs) would be rejected by the empty-list check. However, the task requires listing all matching pairs; an empty list is a valid answer only when no pairs match, which is unlikely for this dataset. If empty answers are valid, the check can be relaxed.",
+              "A correct answer that happens to contain a self-pair due to a legitimate edge case would be rejected. Self-pairs are never correct for this task (user IDs are distinct), so this is safe.",
+              "The ast.literal_eval check adds negligible overhead and only rejects truly unparseable output. Currently passing runs produce valid Python list literals, so they will continue to pass."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_01/proposals/r01-c01-s9/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": null,
+            "batch_subject_id": null,
+            "decision": "rejected",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": null,
+            "links": null,
+            "merge": {
+              "constituent_ids": null,
+              "role": null
+            },
+            "reasons": [
+              "rejected upstream at gate harness_check: AttributeError: type object 'AnswerDecision' has no attribute 'reject'"
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r01-c01-s9",
+            "surface": null,
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": {
+              "candidate_id": "r01-c01-s9",
+              "gate": "harness_check",
+              "path": "/Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_01/proposals/r01-c01-s9/proposal.json",
+              "reason": "AttributeError: type object 'AnswerDecision' has no attribute 'reject'"
+            },
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      },
+      {
+        "round": "round_02",
+        "promoted": true,
+        "marker": {
+          "candidate_ids": [
+            "r02-c01-s2",
+            "r02-c02-s9"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "materialization_failures": [],
+          "n_materialization_failures": 0,
+          "prompt_sha256": "c027a0639a10dc2140daeeef8030b744bee2f7e21d4b36e085761e72442866bc",
+          "round": 2,
+          "skipped_patterns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 8,
+            "instance_support": 5,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t04-w10-408a35294f798183",
+              "oolong-t04-w10-408a35294f798183"
+            ],
+            "evidence_lengths": [
+              1353,
+              7465,
+              7465
+            ],
+            "gold_visible_after_2000": [
+              true,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 6,
+            "instance_support": 5,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w10-e1931c943e436c56",
+              "oolong-t08-w9-b928cb333c4990f4",
+              "oolong-t10-w10-27a4b36613829c4b"
+            ],
+            "evidence_lengths": [
+              23785,
+              10472,
+              8169
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 3,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t08-w9-b928cb333c4990f4",
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              665,
+              10056,
+              347
+            ],
+            "gold_visible_after_2000": [
+              true,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              13064,
+              504
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              504
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              12632
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 2,
+            "instance_support": 1,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t15-w10-00f4616187f818a3",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              4649,
+              4105
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t15-w9-23b921f28b2e514b"
+            ],
+            "evidence_lengths": [
+              3176
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t18-w10-7316cc87a69b31b7"
+            ],
+            "evidence_lengths": [
+              361
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 9,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c"
+            ],
+            "evidence_lengths": [
+              457
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 10,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t18-w10-7316cc87a69b31b7"
+            ],
+            "evidence_lengths": [
+              185
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 11,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              59
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_02/mining/round_02/runs.jsonl",
+            "count": 40,
+            "pass_count": 12,
+            "causes": {
+              "passed": 12,
+              "spurious": 5,
+              "mixed_set_error": 9,
+              "incomplete": 12,
+              "wrong_format": 2
+            },
+            "mean_f1_rounded": 0.78795,
+            "near_misses_09": 8,
+            "runtime_errors": {},
+            "cost": 4.202957119999999,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 0,
+            "causes": {
+              "incomplete": 2,
+              "spurious": 5,
+              "mixed_set_error": 2,
+              "wrong_format": 1
+            },
+            "mean_f1_rounded": 0.682,
+            "near_misses_09": 2,
+            "runtime_errors": {},
+            "cost": 1.14804273,
+            "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_02/validation/round_02/merged/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 2,
+            "causes": {
+              "mixed_set_error": 5,
+              "passed": 2,
+              "spurious": 1,
+              "incomplete": 1,
+              "no_answer": 1
+            },
+            "mean_f1_rounded": 0.7769,
+            "near_misses_09": 2,
+            "runtime_errors": {},
+            "cost": 0.6047062400000001,
+            "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r02-c01-s2",
+            "surface": "S2",
+            "effect": "Adds guidance to the decomposition instruction about ensuring every item in the input is covered by at least one sub-call. The current instruction only gives a label-statistics pattern; it does not tell the model how to verify coverage completeness. This edit appends a short paragraph after the existing pattern text (the truncated portion) that says: 'When the task requires processing every item in the input (e.g., generating all pairs from a list of IDs), verify that the union of all sub-call inputs covers every item. After collecting sub-call results, check whether any item was never passed to any sub-call; if so, issue an additional sub-call for the missing items before combining.' This directly addresses the incomplete_coverage mechanism by making coverage verification part of the decomposition plan.",
+            "risks": [
+              "The added text may cause the model to spend extra iterations on coverage checks, increasing time/spend usage in runs that already pass.",
+              "If the model misinterprets the guidance, it might issue unnecessary extra sub-calls for items already covered, increasing cost without benefit.",
+              "The edit is appended to truncated existing text; if the truncation boundary is awkward, the model may not read the new guidance coherently."
+            ],
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_02/proposals/r02-c01-s2/proposal.json"
+          },
+          {
+            "id": "r02-c02-s9",
+            "surface": "S9",
+            "effect": "Adds validation middleware that catches malformed, duplicate, unsorted, or structurally wrong answer lists before they reach the verifier. This directly addresses the lossy_aggregation mechanism (patterns 1, 2, 3) where sub-calls return correct results but the root's combine step produces a list with missing items, extra items, wrong ordering, or format errors. The middleware redirects with a specific error message instead of accepting a broken answer, giving the model a chance to fix the aggregation. This is a soft redirect (not a hard reject) so correct answers still pass through unchanged.",
+            "risks": [
+              "Runs that currently pass with a correctly formatted answer will see no change (the middleware accepts valid lists).",
+              "Runs that produce a correct answer but in a non-standard format (e.g., using spaces differently) might get redirected unnecessarily. The ast.literal_eval parsing is lenient about whitespace, so this risk is low.",
+              "The redirect adds an extra iteration for malformed answers, increasing time/spend for runs that would have failed anyway. This is acceptable since those runs were already failing.",
+              "If the model's answer is a very large list, parsing and checking could add latency, but the check is O(n) and the lists are bounded by the task size."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_02/proposals/r02-c02-s9/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": null,
+            "batch_subject_id": "merged",
+            "decision": "bundled",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "911720140e3bc16109ace1bea80928e33698c9527e0678794266f8f7012944e2",
+            "links": null,
+            "merge": {
+              "constituent_ids": [
+                "r02-c01-s2",
+                "r02-c02-s9"
+              ],
+              "role": "constituent"
+            },
+            "reasons": [
+              "evaluated only as part of merged; shared decision: promoted"
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r02-c01-s2",
+            "surface": "S2",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": null,
+            "batch_subject_id": "merged",
+            "decision": "bundled",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "cb364f406cc9d3a3fe88e90400307640ef0a4ec61ba600d4c01011fa94fb611a",
+            "links": null,
+            "merge": {
+              "constituent_ids": [
+                "r02-c01-s2",
+                "r02-c02-s9"
+              ],
+              "role": "constituent"
+            },
+            "reasons": [
+              "evaluated only as part of merged; shared decision: promoted"
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r02-c02-s9",
+            "surface": "S9",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.114804273,
+                "candidate": 0.06047062400000001,
+                "lower": 0.0,
+                "upper": 1.25,
+                "within": true
+              },
+              "mean_sub_calls": {
+                "baseline": 8.2,
+                "candidate": 45.4,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "promoted",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "merged/heldout/round_00/harness.json",
+                  "round_dir": "merged/heldout/round_00"
+                }
+              },
+              "summary": "merged/summary.json"
+            },
+            "merge": {
+              "constituent_ids": [
+                "r02-c01-s2",
+                "r02-c02-s9"
+              ],
+              "role": "merged"
+            },
+            "reasons": [],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 0,
+                "candidate_pass_count": 2,
+                "delta": 2,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "merged",
+            "surface": null,
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      },
+      {
+        "round": "round_03",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [
+            "r03-c01-s9",
+            "r03-c02-s2"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "materialization_failures": [],
+          "n_materialization_failures": 0,
+          "prompt_sha256": "f7dc9e730618b18015bca1c1433389b0800479823af1f5237ed2109227c14857",
+          "round": 3,
+          "skipped_patterns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 7,
+            "instance_support": 5,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t11-w9-b4cbd11dd9c162ad",
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t13-w9-81ca14885b886d46"
+            ],
+            "evidence_lengths": [
+              4856,
+              4376,
+              4392
+            ],
+            "gold_visible_after_2000": [
+              true,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 4,
+            "instance_support": 4,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac",
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t02-w9-fcf921f0019d1bd5"
+            ],
+            "evidence_lengths": [
+              15432,
+              1353,
+              12216
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true,
+              false
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 4,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w10-e1931c943e436c56",
+              "oolong-t04-w10-408a35294f798183",
+              "oolong-t04-w10-408a35294f798183"
+            ],
+            "evidence_lengths": [
+              23785,
+              7145,
+              7465
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 3,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w10-e1931c943e436c56",
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t18-w9-39d3efa53b257ebb"
+            ],
+            "evidence_lengths": [
+              23785,
+              12632,
+              2296
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 4,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w9-b928cb333c4990f4",
+              "oolong-t08-w9-b928cb333c4990f4",
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              10904,
+              10904,
+              107
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t14-w9-259b0efda7a2e2e8"
+            ],
+            "evidence_lengths": [
+              665,
+              1224
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c",
+              "oolong-t14-w9-259b0efda7a2e2e8"
+            ],
+            "evidence_lengths": [
+              404,
+              672
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac"
+            ],
+            "evidence_lengths": [
+              15432
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t10-w10-27a4b36613829c4b"
+            ],
+            "evidence_lengths": [
+              7113
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 9,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t18-w10-7316cc87a69b31b7"
+            ],
+            "evidence_lengths": [
+              393
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 10,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              2444
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 11,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              568
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 12,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t11-w9-b4cbd11dd9c162ad"
+            ],
+            "evidence_lengths": [
+              3273
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/mining/round_03/runs.jsonl",
+            "count": 40,
+            "pass_count": 8,
+            "causes": {
+              "incomplete": 13,
+              "mixed_set_error": 9,
+              "wrong_format": 3,
+              "spurious": 7,
+              "passed": 8
+            },
+            "mean_f1_rounded": 0.763525,
+            "near_misses_09": 9,
+            "runtime_errors": {},
+            "cost": 1.8417908800000002,
+            "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 2,
+            "causes": {
+              "mixed_set_error": 1,
+              "wrong_format": 3,
+              "incomplete": 1,
+              "spurious": 3,
+              "passed": 2
+            },
+            "mean_f1_rounded": 0.6104,
+            "near_misses_09": 2,
+            "runtime_errors": {},
+            "cost": 0.7462027100000002,
+            "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/validation/round_03/r03-c01-s9/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 0,
+            "causes": {
+              "runtime_error": 8,
+              "wrong_format": 1,
+              "no_answer": 1
+            },
+            "mean_f1_rounded": 0.0,
+            "near_misses_09": 0,
+            "runtime_errors": {
+              "TypeError: expected string or bytes-like object, got 'tuple'": 8
+            },
+            "cost": 0.61473066,
+            "harness_hash": "c637df3f81bf22c323416740572ba7f06b9abc1ee0afa5cd4cc6f59ec1bece18"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r03-c01-s9",
+            "surface": "S9",
+            "effect": "Redirects answers where the root's combine step dropped entire user IDs (lossy aggregation), giving the model a chance to re-merge. Currently-passing runs already produce complete lists and will pass the coverage check harmlessly.",
+            "risks": [
+              "If a passing run's answer legitimately omits a user ID that appears in the context but is not part of the task (e.g., a header number), the redirect would be a false positive. The regex \\b\\d{5,6}\\b is narrow enough to avoid most non-ID numbers, but a run that outputs a correct subset of pairs (e.g., the task asks for pairs only among a subset) could be falsely redirected. This is unlikely given the task requires all pairs among all listed IDs."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/proposals/r03-c01-s9/proposal.json"
+          },
+          {
+            "id": "r03-c02-s2",
+            "surface": "S2",
+            "effect": "Provides a concrete decomposition pattern for pair-generation tasks, reducing incomplete coverage failures where the root fails to examine all IDs. Currently-passing runs either don't need this pattern or already cover all IDs; adding guidance text does not change their behavior.",
+            "risks": [
+              "The added text increases prompt length slightly, which could affect model attention but is unlikely to cause regression. The pattern is specific enough that runs on different task types won't follow it. No behavioral change for runs that already pass."
+            ],
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/proposals/r03-c02-s2/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": null,
+            "batch_subject_id": null,
+            "decision": "rejected",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": null,
+            "links": null,
+            "merge": {
+              "constituent_ids": null,
+              "role": null
+            },
+            "reasons": [
+              "rejected upstream at gate harness_check: ValueError: S2 is not format-ready: formatting it with a placeholder `custom_tools_section` raised KeyError: '\"chunk\"'. Every brace other than the `{custom_tools_section}` slot must be doubled (see `escape_braces`); otherwise the run dies at prompt assembly instead of scoring badly."
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r03-c02-s2",
+            "surface": null,
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": {
+              "candidate_id": "r03-c02-s2",
+              "gate": "harness_check",
+              "path": "/Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/proposals/r03-c02-s2/proposal.json",
+              "reason": "ValueError: S2 is not format-ready: formatting it with a placeholder `custom_tools_section` raised KeyError: '\"chunk\"'. Every brace other than the `{custom_tools_section}` slot must be doubled (see `escape_braces`); otherwise the run dies at prompt assembly instead of scoring badly."
+            },
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.07462027100000002,
+                "candidate": 0.061473066,
+                "lower": 0.0,
+                "upper": 1.25,
+                "within": true
+              },
+              "mean_sub_calls": {
+                "baseline": 67.0,
+                "candidate": 27.2,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "rejected",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "c637df3f81bf22c323416740572ba7f06b9abc1ee0afa5cd4cc6f59ec1bece18",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "r03-c01-s9/heldout/round_00/harness.json",
+                  "round_dir": "r03-c01-s9/heldout/round_00"
+                }
+              },
+              "summary": "r03-c01-s9/summary.json"
+            },
+            "merge": {
+              "constituent_ids": null,
+              "role": null
+            },
+            "reasons": [
+              "heldout pass-count delta -2 regresses beyond tau_regression=0.0",
+              "no split improves beyond tau_improvement=0.0 (heldout -2)"
+            ],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 2,
+                "candidate_pass_count": 0,
+                "delta": -2,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "r03-c01-s9",
+            "surface": "S9",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      },
+      {
+        "round": "round_04",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [
+            "r04-c01-s2",
+            "r04-c02-s9"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "materialization_failures": [],
+          "n_materialization_failures": 0,
+          "prompt_sha256": "090a30490ef105e43640d034cdb440c273c058e7df331acc7530cca8ad9c2f6a",
+          "round": 4,
+          "skipped_patterns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 4,
+            "instance_support": 4,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b",
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t04-w10-408a35294f798183"
+            ],
+            "evidence_lengths": [
+              1113,
+              13064,
+              7465
+            ],
+            "gold_visible_after_2000": [
+              true,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 4,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t15-w10-00f4616187f818a3",
+              "oolong-t15-w10-00f4616187f818a3"
+            ],
+            "evidence_lengths": [
+              4488,
+              3561,
+              3929
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true,
+              true
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 3,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w9-b928cb333c4990f4",
+              "oolong-t15-w9-23b921f28b2e514b",
+              "oolong-t20-w10-c0dd071439e06fa2"
+            ],
+            "evidence_lengths": [
+              10904,
+              2744,
+              105
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true,
+              true
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t11-w9-b4cbd11dd9c162ad"
+            ],
+            "evidence_lengths": [
+              11816,
+              5384
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t04-w10-408a35294f798183",
+              "oolong-t10-w10-27a4b36613829c4b"
+            ],
+            "evidence_lengths": [
+              7801,
+              7113
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46",
+              "oolong-t20-w10-c0dd071439e06fa2"
+            ],
+            "evidence_lengths": [
+              4120,
+              89
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t06-w9-22ddb943784e7d7f",
+              "oolong-t08-w10-4f259998df92e58c"
+            ],
+            "evidence_lengths": [
+              16440,
+              793
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w9-b928cb333c4990f4",
+              "oolong-t15-w9-23b921f28b2e514b"
+            ],
+            "evidence_lengths": [
+              10904,
+              2904
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t11-w9-b4cbd11dd9c162ad"
+            ],
+            "evidence_lengths": [
+              5816
+            ],
+            "gold_visible_after_2000": [
+              false
+            ]
+          },
+          {
+            "index": 9,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t18-w10-7316cc87a69b31b7"
+            ],
+            "evidence_lengths": [
+              345
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 10,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t14-w9-259b0efda7a2e2e8"
+            ],
+            "evidence_lengths": [
+              1224
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 11,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              250
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 12,
+            "signature": {
+              "agent_mechanism": "premature_termination",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              1075
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/mining/round_04/runs.jsonl",
+            "count": 40,
+            "pass_count": 13,
+            "causes": {
+              "passed": 13,
+              "mixed_set_error": 7,
+              "spurious": 9,
+              "incomplete": 8,
+              "wrong_format": 3
+            },
+            "mean_f1_rounded": 0.801125,
+            "near_misses_09": 9,
+            "runtime_errors": {},
+            "cost": 2.12050151,
+            "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/validation/round_04/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 1,
+            "causes": {
+              "wrong_format": 2,
+              "spurious": 4,
+              "mixed_set_error": 3,
+              "passed": 1
+            },
+            "mean_f1_rounded": 0.5721,
+            "near_misses_09": 0,
+            "runtime_errors": {},
+            "cost": 0.44301285999999995,
+            "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/validation/round_04/merged/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 0,
+            "causes": {
+              "runtime_error": 5,
+              "wrong_format": 5
+            },
+            "mean_f1_rounded": 0.0,
+            "near_misses_09": 0,
+            "runtime_errors": {
+              "TypeError: AnswerDecision.accept() missing 1 required positional argument: 'answer'": 5
+            },
+            "cost": 0.7039477800000001,
+            "harness_hash": "2a558ae1bef3297a4f7ac2c0e4ff4d4f8d0052bc89c8a118fbfdece6f9ee44ca"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r04-c01-s2",
+            "surface": "S2",
+            "effect": "Adds a coverage verification step to the decomposition instruction, reminding the root to check that all input items appear in the final answer after merging sub-call results. This directly addresses the incomplete_coverage mechanism where some spans were never examined.",
+            "risks": [
+              "May add a small amount of work (one set comparison) per iteration, but this is negligible compared to existing sub-call costs.",
+              "Passing runs already produce complete coverage and will pass the check harmlessly; the check is a no-op for correct outputs."
+            ],
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/proposals/r04-c01-s2/proposal.json"
+          },
+          {
+            "id": "r04-c02-s9",
+            "surface": "S9",
+            "effect": "Adds a check that each tuple is sorted (a < b) to catch lossy aggregation where the root's combine step produces pairs with wrong ordering. The existing checks for format, duplicates, and integer types remain. This addresses the mixed_set_error and spurious verifier causes in lossy_aggregation patterns where sub-calls returned correct local results but the merge was wrong.",
+            "risks": [
+              "Passing runs already produce sorted tuples and will pass the new check harmlessly.",
+              "The check is O(n) and adds negligible overhead.",
+              "If a correct answer legitimately has a >= b (unlikely given the task contract), it would be falsely redirected, but the task requires sorted ordering per the gold_ordering=sorted contract."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/proposals/r04-c02-s9/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": null,
+            "batch_subject_id": "merged",
+            "decision": "bundled",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "666fb091fb29e5a9c7efa5ee9fc8892d0f2f19aa4c6b2d2458b64728017df722",
+            "links": null,
+            "merge": {
+              "constituent_ids": [
+                "r04-c01-s2",
+                "r04-c02-s9"
+              ],
+              "role": "constituent"
+            },
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r04-c01-s2",
+            "surface": "S2",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": null,
+            "batch_subject_id": "merged",
+            "decision": "bundled",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "531deb50212feaa61839dd5e59a97f4b0770d37c499ea60b07011b06dcc0b601",
+            "links": null,
+            "merge": {
+              "constituent_ids": [
+                "r04-c01-s2",
+                "r04-c02-s9"
+              ],
+              "role": "constituent"
+            },
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "rule": null,
+            "selection_excluded": null,
+            "subject_id": "r04-c02-s9",
+            "surface": "S9",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          },
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.044301285999999995,
+                "candidate": 0.07039477800000002,
+                "lower": 0.0,
+                "upper": 1.25,
+                "within": false
+              },
+              "mean_sub_calls": {
+                "baseline": 12.7,
+                "candidate": 50.8,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "rejected",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "2a558ae1bef3297a4f7ac2c0e4ff4d4f8d0052bc89c8a118fbfdece6f9ee44ca",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "merged/heldout/round_00/harness.json",
+                  "round_dir": "merged/heldout/round_00"
+                }
+              },
+              "summary": "merged/summary.json"
+            },
+            "merge": {
+              "constituent_ids": [
+                "r04-c01-s2",
+                "r04-c02-s9"
+              ],
+              "role": "merged"
+            },
+            "reasons": [
+              "heldout pass-count delta -1 regresses beyond tau_regression=0.0",
+              "no split improves beyond tau_improvement=0.0 (heldout -1)",
+              "mean_cost 0.07039477800000002 is outside the band [0.0, 1.25] x baseline 0.044301285999999995"
+            ],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 1,
+                "candidate_pass_count": 0,
+                "delta": -1,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "merged",
+            "surface": null,
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      },
+      {
+        "round": "round_05",
+        "promoted": false,
+        "marker": {
+          "candidate_ids": [
+            "r05-c02-s9"
+          ],
+          "format": "shrlm-proposals-complete/v1",
+          "materialization_failures": [
+            {
+              "pattern_index": 0,
+              "predicted_effect": "Adds a pattern for generating all pairs from two user lists, guiding the model to split the input into chunks, have each child find all pairs within its chunk and across chunks, then merge. This addresses incomplete_coverage where the root's decomposition misses spans.",
+              "reason": "declared surface S2 but the materialized harness changes no surface",
+              "surface": "S2"
+            }
+          ],
+          "n_materialization_failures": 1,
+          "prompt_sha256": "10aadbba790c537cc87b715644e1f3e1df6974fa4652c744af8c7eba623018ee",
+          "round": 5,
+          "skipped_patterns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14
+          ]
+        },
+        "patterns": [
+          {
+            "index": 0,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 6,
+            "instance_support": 5,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w10-e1931c943e436c56",
+              "oolong-t04-w10-408a35294f798183",
+              "oolong-t04-w10-408a35294f798183"
+            ],
+            "evidence_lengths": [
+              24393,
+              7145,
+              7465
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 1,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 5,
+            "instance_support": 5,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t01-w9-ab9956978b367bac",
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t13-w9-81ca14885b886d46"
+            ],
+            "evidence_lengths": [
+              16440,
+              13512,
+              4904
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              false
+            ]
+          },
+          {
+            "index": 2,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 4,
+            "instance_support": 3,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w9-b928cb333c4990f4",
+              "oolong-t08-w9-b928cb333c4990f4",
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              11352,
+              10904,
+              91
+            ],
+            "gold_visible_after_2000": [
+              false,
+              false,
+              true
+            ]
+          },
+          {
+            "index": 3,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "incomplete"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w9-fcf921f0019d1bd5",
+              "oolong-t18-w9-39d3efa53b257ebb"
+            ],
+            "evidence_lengths": [
+              11816,
+              2360
+            ],
+            "gold_visible_after_2000": [
+              false,
+              true
+            ]
+          },
+          {
+            "index": 4,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 2,
+            "instance_support": 2,
+            "below_floor": false,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t14-w9-259b0efda7a2e2e8",
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              1160,
+              632
+            ],
+            "gold_visible_after_2000": [
+              true,
+              true
+            ]
+          },
+          {
+            "index": 5,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t15-w9-23b921f28b2e514b"
+            ],
+            "evidence_lengths": [
+              2456
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 6,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "incomplete"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t11-w9-b4cbd11dd9c162ad"
+            ],
+            "evidence_lengths": [
+              4856
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 7,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t15-w9-23b921f28b2e514b"
+            ],
+            "evidence_lengths": [
+              2792
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 8,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t16-w9-1dcaca72ce800990"
+            ],
+            "evidence_lengths": [
+              308
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 9,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "child",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              1657
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 10,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "spurious"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t08-w10-4f259998df92e58c"
+            ],
+            "evidence_lengths": [
+              457
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 11,
+            "signature": {
+              "agent_mechanism": "iteration_budget_exhaustion",
+              "causal_status": "causal",
+              "failing_level": "no_recursion",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t13-w9-81ca14885b886d46"
+            ],
+            "evidence_lengths": [
+              2577
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 12,
+            "signature": {
+              "agent_mechanism": "incomplete_coverage",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t02-w10-8531d00f4e16fe6b"
+            ],
+            "evidence_lengths": [
+              963
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 13,
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t11-w9-b4cbd11dd9c162ad"
+            ],
+            "evidence_lengths": [
+              3229
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          },
+          {
+            "index": 14,
+            "signature": {
+              "agent_mechanism": "misaligned_unit",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "wrong_format"
+            },
+            "support": 1,
+            "instance_support": 1,
+            "below_floor": true,
+            "grounded_fraction": 0.0,
+            "representatives": [
+              "oolong-t19-w10-b199ac1713e514c3"
+            ],
+            "evidence_lengths": [
+              703
+            ],
+            "gold_visible_after_2000": [
+              true
+            ]
+          }
+        ],
+        "runs": [
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/mining/round_05/runs.jsonl",
+            "count": 40,
+            "pass_count": 11,
+            "causes": {
+              "passed": 11,
+              "mixed_set_error": 9,
+              "spurious": 6,
+              "wrong_format": 4,
+              "incomplete": 10
+            },
+            "mean_f1_rounded": 0.7361,
+            "near_misses_09": 7,
+            "runtime_errors": {},
+            "cost": 1.8281922300000002,
+            "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/validation/round_05/baseline/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 2,
+            "causes": {
+              "mixed_set_error": 5,
+              "spurious": 1,
+              "incomplete": 2,
+              "passed": 2
+            },
+            "mean_f1_rounded": 0.7284,
+            "near_misses_09": 3,
+            "runtime_errors": {},
+            "cost": 0.51332142,
+            "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f"
+          },
+          {
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/validation/round_05/r05-c02-s9/heldout/round_00/runs.jsonl",
+            "count": 10,
+            "pass_count": 0,
+            "causes": {
+              "wrong_format": 1,
+              "spurious": 1,
+              "runtime_error": 8
+            },
+            "mean_f1_rounded": 0.0,
+            "near_misses_09": 0,
+            "runtime_errors": {
+              "TypeError: AnswerDecision.accept() missing 1 required positional argument: 'answer'": 8
+            },
+            "cost": 0.46989444,
+            "harness_hash": "f3735015737de323a1d6db5410978cbf788ebc4794a6470ec66838d6bfac5da0"
+          }
+        ],
+        "proposals": [
+          {
+            "id": "r05-c02-s9",
+            "surface": "S9",
+            "effect": "Adds duplicate detection to the answer middleware. Lossy aggregation often produces duplicate pairs when merging overlapping chunk results. Redirecting on duplicates gives the model a chance to deduplicate, fixing mixed_set_error and spurious failures from lossy_aggregation.",
+            "risks": [
+              "Currently-passing runs already produce complete, deduplicated lists and will pass the duplicate check harmlessly.",
+              "The check is O(n) on answer length and adds negligible cost.",
+              "If a correct answer legitimately has duplicates (impossible for sorted unique pairs), it would be falsely redirected, but the verifier contract requires sorted unique pairs so this cannot happen."
+            ],
+            "signature": {
+              "agent_mechanism": "lossy_aggregation",
+              "causal_status": "causal",
+              "failing_level": "root",
+              "verifier_cause": "mixed_set_error"
+            },
+            "path": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/proposals/r05-c02-s9/proposal.json"
+          }
+        ],
+        "ledger": [
+          {
+            "band": {
+              "mean_cost": {
+                "baseline": 0.051332142000000004,
+                "candidate": 0.046989444000000005,
+                "lower": 0.0,
+                "upper": 1.25,
+                "within": true
+              },
+              "mean_sub_calls": {
+                "baseline": 17.0,
+                "candidate": 30.2,
+                "lower": 0.0,
+                "upper": null,
+                "within": true
+              }
+            },
+            "batch_subject_id": null,
+            "decision": "rejected",
+            "format": "shrlm-promotion-record/v2",
+            "harness_hash": "f3735015737de323a1d6db5410978cbf788ebc4794a6470ec66838d6bfac5da0",
+            "links": {
+              "splits": {
+                "heldout": {
+                  "harness": "r05-c02-s9/heldout/round_00/harness.json",
+                  "round_dir": "r05-c02-s9/heldout/round_00"
+                }
+              },
+              "summary": "r05-c02-s9/summary.json"
+            },
+            "merge": {
+              "constituent_ids": null,
+              "role": null
+            },
+            "reasons": [
+              "heldout pass-count delta -2 regresses beyond tau_regression=0.0",
+              "no split improves beyond tau_improvement=0.0 (heldout -2)"
+            ],
+            "rule": {
+              "heldout": {
+                "baseline_pass_count": 2,
+                "candidate_pass_count": 0,
+                "delta": -2,
+                "n_runs": 10
+              }
+            },
+            "selection_excluded": null,
+            "subject_id": "r05-c02-s9",
+            "surface": "S9",
+            "tau_improvement": 0.0,
+            "tau_regression": 0.0,
+            "upstream": null,
+            "validation_protocol": "heldout-batch/v1"
+          }
+        ]
+      }
+    ],
+    "all_causes": {
+      "spurious": 50,
+      "passed": 60,
+      "mixed_set_error": 58,
+      "incomplete": 63,
+      "wrong_format": 26,
+      "no_answer": 2,
+      "runtime_error": 21
+    },
+    "mining_mechanisms": {
+      "incomplete_coverage": 61,
+      "lossy_aggregation": 64,
+      "misaligned_unit": 19,
+      "premature_termination": 1,
+      "iteration_budget_exhaustion": 1
+    },
+    "grounded": 0,
+    "attributions": 147,
+    "proposals": {
+      "S9": 5,
+      "S2": 3
+    }
+  }
+]

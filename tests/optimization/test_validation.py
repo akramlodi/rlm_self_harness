@@ -1088,6 +1088,39 @@ class TestSubCallAggregation:
 
 
 class TestSummaryPersistence:
+    @pytest.mark.parametrize("runtime_errors", [0, 1])
+    def test_resume_legacy_summary_without_runtime_error_count(
+        self, tmp_path, monkeypatch, runtime_errors
+    ):
+        import shrlm.optimization.validation as validation
+
+        factory = ClientFactory([final("RIGHT")])
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+        first = evaluate_subject(BASELINE_ID, H0, config)
+        legacy = json.loads(first.summary_path.read_text())
+        for split in legacy["splits"].values():
+            del split["n_runtime_errors"]
+        saved = json.dumps(legacy, indent=2, sort_keys=True) + "\n"
+        first.summary_path.write_text(saved)
+
+        aggregate = validation.split_aggregate
+
+        def updated_aggregate(path):
+            return {**aggregate(path), "n_runtime_errors": runtime_errors}
+
+        monkeypatch.setattr(validation, "split_aggregate", updated_aggregate)
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        if runtime_errors:
+            with pytest.raises(ValueError, match="diverging summary"):
+                evaluate_subject(BASELINE_ID, H0, config)
+        else:
+            resumed = evaluate_subject(BASELINE_ID, H0, config)
+            assert resumed.summary == first.summary
+        assert idle.total_calls == 0
+        assert first.summary_path.read_text() == saved
+
     def test_divergent_summary_rewrite_is_refused(self, tmp_path, monkeypatch):
         factory = ClientFactory([final("RIGHT")] * 2)
         monkeypatch.setattr(rlm_module, "get_client", factory)

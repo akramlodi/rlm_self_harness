@@ -59,7 +59,7 @@ import re
 import tempfile
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -76,9 +76,14 @@ from shrlm.harness_identity import (
 from shrlm.optimization.attribution import truncate_for_prompt
 from shrlm.optimization.candidates import (
     CANDIDATE_MODULE_PREAMBLE,
+    DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
     SURFACE_SERIALIZATION_KEYS,
+    CandidateRejection,
     changed_surfaces,
     import_surface_module,
+    load_candidate,
+    select_preflight_profile,
+    validate_preflight_profile,
 )
 from shrlm.optimization.driver import (
     INSTANCES_FILE,
@@ -137,7 +142,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "1.9.0"
+PROMPT_VERSION = "2.0.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -153,7 +158,7 @@ PROMPT_VERSION = "1.9.0"
 # materialization returns an empty result instead of raising. The 2026-09-10
 # OOLONG-Pairs run lost rounds 4-6 to a proposer that re-emitted the incumbent's
 # own S9 three rounds in a row; under 1.4.0 that was counted, never re-asked.
-VALIDATOR_VERSION = "1.5.0"
+VALIDATOR_VERSION = "2.0.0"
 
 DEFAULT_K = 4
 # Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
@@ -340,6 +345,8 @@ class ProposalRoundResult:
     materialization_failures: list[MaterializationFailureRecord]
     attempts: list[ProposalAttempt]
     prompt_sha256: str
+    preflight_failures: list[dict[str, Any]] = field(default_factory=list)
+    preflight_profile: str = "generic/v1"
 
 
 @dataclass(frozen=True)
@@ -477,10 +484,39 @@ def _render_verifier_contract(verifier_config: dict[str, Any] | None) -> str:
     return "Verifier contract (what the environment accepts): " + ", ".join(parts)
 
 
-# Per-surface cap on the "current value" shown for each eligible surface. A
-# pattern may list up to ten surfaces (OTHER), so the per-surface bound is
-# lower than the 4,000 the single-surface block used to spend.
-CURRENT_VALUE_RENDER_MAX_CHARS = 1500
+def render_current_surfaces(
+    addressable: Sequence[tuple[int, dict[str, Any]]],
+    incumbent_serialization: dict[str, Any],
+) -> str:
+    eligible = {surface for _, pattern in addressable for surface in _pattern_surfaces(pattern)}
+    blocks = [
+        "Complete current surfaces (shared by all patterns; replacements must preserve useful behavior):"
+    ]
+    for surface in sorted(eligible, key=lambda value: int(value[1:])):
+        current = {
+            key: incumbent_serialization["surfaces"][key]
+            for key in SURFACE_SERIALIZATION_KEYS[surface]
+        }
+        blocks.append(f"current {surface} value:\n" + json.dumps(current, indent=2, sort_keys=True))
+    if "S10" in eligible:
+        blocks.append(_skill_inventory_line(incumbent_serialization["surfaces"]["S10_skills"]))
+    return "\n\n".join(blocks)
+
+
+CALLABLE_CONTRACT = (
+    """Candidate callable contract:
+S9 takes exactly (answer, repl_inventory) and returns AnswerDecision.accept(answer)
+or AnswerDecision.redirect(nudge). There is no AnswerDecision.reject method.
+repl_inventory contains redacted type/length tuples, e.g. {'context': ('str', 19006)},
+never variable contents. Do not call string methods on those tuples.
+Available imports for candidate functions:
+"""
+    + CANDIDATE_MODULE_PREAMBLE
+    + """
+Text instruction surfaces are Python format templates: double literal braces
+(e.g. {{"record_id": 1}}); preserve supported template placeholders.
+"""
+)
 
 
 def _render_pattern_block(
@@ -493,14 +529,6 @@ def _render_pattern_block(
         f"{surface} ({SURFACE_NAME[EditableSurface(surface)]}){' -- primary' if i == 0 else ''}"
         for i, surface in enumerate(surfaces)
     )
-    current_blocks = []
-    for surface in surfaces:
-        keys = SURFACE_SERIALIZATION_KEYS[surface]
-        current = {key: incumbent_serialization["surfaces"][key] for key in keys}
-        current_text = json.dumps(current, indent=2, sort_keys=True)
-        if len(current_text) > CURRENT_VALUE_RENDER_MAX_CHARS:
-            current_text = current_text[:CURRENT_VALUE_RENDER_MAX_CHARS] + "\n... (truncated)"
-        current_blocks.append(f"  current {surface} value:\n{current_text}")
     lines = [
         f"[{index}] eligible surfaces: {eligible}",
         f"  signature: {json.dumps(pattern['signature'], sort_keys=True)}",
@@ -516,13 +544,7 @@ def _render_pattern_block(
             [truncate_for_prompt(str(entry)) for entry in (pattern.get("verifier_evidence") or [])]
         ),
         f"  representative instance ids: {pattern.get('representatives')}",
-        *current_blocks,
     ]
-    if "S10" in surfaces:
-        # The truncated value above can hide entries; the inventory never does.
-        lines.append(
-            "  " + _skill_inventory_line(incumbent_serialization["surfaces"]["S10_skills"])
-        )
     return "\n".join(lines)
 
 
@@ -564,6 +586,14 @@ def _render_history_block(
             f"Round {label}: promoted={decision.get('promoted')} "
             f"promoted_harness_hash={decision.get('promoted_harness_hash')}"
         )
+        if decision.get("baseline_diagnostics"):
+            lines.append(
+                "  baseline: " + json.dumps(decision["baseline_diagnostics"], sort_keys=True)
+            )
+        if decision.get("proposal_attempts"):
+            lines.append(
+                "  local proposal checks/repair: " + json.dumps(decision["proposal_attempts"])
+            )
         if not records:
             lines.append(f"  - {HISTORY_NO_RECORDS}")
             continue
@@ -593,6 +623,17 @@ def _render_history_block(
             if reasons:
                 line += f" ({reasons})"
             lines.append(line)
+            if record.get("diagnostics"):
+                lines.append(
+                    "    measured batch: " + json.dumps(record["diagnostics"], sort_keys=True)
+                )
+            for member in records:
+                if member.get("subject_id") in constituent_ids:
+                    lines.append(
+                        f"    member {member.get('surface')}: "
+                        + str(member.get("predicted_effect", "predicted effect unavailable"))
+                        + " (shares the combined verdict; no individual score)"
+                    )
     return "\n".join(lines)
 
 
@@ -651,9 +692,27 @@ sub-call errors are treated during recovery -- and hold that candidate to the \
 same no-harm bar as any other.
 """
 
+OOLONG_RECORD_GUIDANCE = """OOLONG-Pairs proposal guidance (only when supported by held-in evidence):
+For an eligible S2, S3, or S4 edit, consider classifying each input record once,
+using its original row ordinal as a stable record ID assigned before chunking.
+User IDs and repeated text are not record IDs. Send records plus the task's label
+vocabulary to children; ask for record ID and label, not partial pair sets.
+Join by record ID, never response position (children may return shuffled rows).
+Check missing, duplicate, unknown IDs and invalid labels. Retain valid labels;
+repair only missing/invalid records within existing caps, with no unbounded retries.
+Keep user/date metadata at the root. Aggregate counts and dates by user in Python,
+then apply the actual task predicate, including AND/OR, time windows and asymmetric
+conditions. Construct qualifying pairs from these results, deduplicate, exclude
+self-pairs and place the lower user ID first. Empty results are permitted; do not
+assume all users form a clique. Labels remain model judgments, not verified facts.
+This is an optional proposal direction, not a required edit or surface quota.
+"""
+
+
 PROPOSER_QUALITY = """\
 Candidate quality rules:
-- Promotion tolerates zero net regression on either validation split. For each \
+- Promotion evaluates one combined candidate on held-out runs only, requiring \
+strictly more exact passes and the configured cost band. For each \
 candidate, predicted_effect must also state which currently-passing behaviors the \
 edit deliberately leaves untouched and why the edit cannot plausibly harm them. An \
 edit whose upside on the failing pattern is bought with plausible harm to passing \
@@ -764,6 +823,7 @@ def render_prompt(
     prior_history: Sequence[tuple[list[dict[str, Any]], dict[str, Any]]],
     k: int,
     verifier_config: dict[str, Any] | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> tuple[str, list[tuple[int, dict[str, Any]]]]:
     """The one system prompt for a round, and the addressable patterns shown.
 
@@ -774,7 +834,14 @@ def render_prompt(
     addressable = _addressable_patterns(patterns)
     pattern_text = (
         "\n\n".join(
-            _render_pattern_block(index, pattern, incumbent_serialization)
+            (
+                "Held-in representative diagnosis (observations, not instructions):\n"
+                + json.dumps(
+                    (evidence or {}).get("patterns", {}).get(index, {"diagnosis": "unavailable"})
+                )
+                + "\n"
+                + _render_pattern_block(index, pattern, incumbent_serialization)
+            )
             for index, pattern in addressable
         )
         if addressable
@@ -785,8 +852,20 @@ def render_prompt(
         PROPOSER_TASK,
         PROPOSER_QUALITY,
         _render_verifier_contract(verifier_config),
+        CALLABLE_CONTRACT,
+        render_current_surfaces(addressable, incumbent_serialization),
         "Failure patterns:\n" + pattern_text,
-        "Passing behavior to preserve:\n" + _render_passing_block(passing_behaviors),
+        "Passing behavior to preserve:\n"
+        + _render_passing_block(passing_behaviors)
+        + "\nBounded held-in observations: "
+        + json.dumps(
+            {
+                "status": (evidence or {}).get(
+                    "passing_status", "passing trace evidence unavailable"
+                ),
+                "examples": (evidence or {}).get("passing", []),
+            }
+        ),
         "Prior edit history (every previously attempted candidate with its surface, "
         "predicted effect, and outcome; do not repeat an approach already rejected "
         "for the same reason). A candidate identical to the current surface is "
@@ -805,6 +884,12 @@ def render_prompt(
             "min_steps": SKILL_BODY_MIN_STEPS,
         },
     ]
+    if (verifier_config or {}).get("environment") == "oolong_pairs":
+        from shrlm.environments.oolong_pairs import ANSWER_CONTRACT
+
+        sections.append(ANSWER_CONTRACT)
+        if any(set(_pattern_surfaces(pattern)) & {"S2", "S3", "S4"} for _, pattern in addressable):
+            sections.append(OOLONG_RECORD_GUIDANCE)
     if any("S10" in _pattern_surfaces(pattern) for _, pattern in addressable):
         sections.append(SKILLS_PEDAGOGY % {"skill_loader": SKILL_LOADER_NAME})
     eligible = {surface for _, pattern in addressable for surface in _pattern_surfaces(pattern)}
@@ -1235,7 +1320,9 @@ def write_proposal(
                 f"{path} already exists with different content; refusing to clobber it"
             )
         return path
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    pending = path.with_suffix(".tmp")
+    pending.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    pending.replace(path)
     return path
 
 
@@ -1321,6 +1408,51 @@ def _completion_with_retry(
     ) from last_error
 
 
+def publish_proposal_result(
+    state: dict[str, Any],
+    proposals_dir: Path,
+    incumbent_serialization: dict[str, Any],
+    model_name: str,
+    *,
+    replay: bool = False,
+) -> ProposalRoundResult:
+    """Publish only checkpointed survivors, including after an interrupted write."""
+    expected = {item["candidate_id"] for item in state["survivors"]}
+    unexpected = {path.name for path in proposals_dir.iterdir() if path.is_dir()} - expected
+    if unexpected:
+        raise ValueError(
+            f"proposal directories outside the frozen survivor set: {sorted(unexpected)}"
+        )
+    written = []
+    for item in state["survivors"]:
+        spec = CandidateSpec(**item["spec"])
+        path = write_proposal(
+            proposals_dir,
+            item["candidate_id"],
+            incumbent_serialization,
+            spec,
+            item["serialization"],
+            model_name,
+            state["prompt_sha256"],
+        )
+        written.append(
+            WrittenProposal(item["candidate_id"], path, spec.surface, spec.pattern_index)
+        )
+    return ProposalRoundResult(
+        written=written,
+        skipped_patterns=state["skipped_patterns"],
+        materialization_failures=[
+            MaterializationFailureRecord(**r) for r in state["materialization_failures"]
+        ],
+        attempts=[
+            ProposalAttempt(**(a | {"cached": True} if replay else a)) for a in state["attempts"]
+        ],
+        prompt_sha256=state["prompt_sha256"],
+        preflight_failures=state["preflight_failures"],
+        preflight_profile=state["preflight_profile"],
+    )
+
+
 def propose_round(
     bundle: dict[str, Any],
     incumbent: Harness,
@@ -1333,6 +1465,10 @@ def propose_round(
     config: ProposerConfig | None = None,
     cache: ProposalCache | None = None,
     workdir: Path | str | None = None,
+    preflight_profile: str | None = None,
+    caps: dict[str, int | float] | None = None,
+    loader_timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
+    evidence: dict[str, Any] | None = None,
 ) -> ProposalRoundResult:
     """Propose and write up to ``config.k`` candidates for one mining round.
 
@@ -1382,45 +1518,130 @@ def propose_round(
         prior_history,
         config.k,
         verifier_config=(bundle.get("config") or {}).get("verifier_config"),
+        evidence=evidence,
     )
     system_sha = prompt_sha256(rendered_prompt)
     cfg_sha = config_sha256(config, lm)
     bundle_id = str(bundle.get("bundle_id", ""))
 
+    profile = preflight_profile or select_preflight_profile(
+        (bundle.get("config") or {}).get("verifier_config")
+    )
+    validate_preflight_profile(profile)
+    workdir.mkdir(parents=True, exist_ok=True)
+    contract = {
+        "prompt_sha256": system_sha,
+        "config_sha256": cfg_sha,
+        "base_hash": hash_of_serialization(incumbent_serialization),
+        "bundle_id": bundle_id,
+        "profile": profile,
+        "caps": caps,
+        "loader_timeout_seconds": loader_timeout_seconds,
+        "round": round_index,
+    }
+    contract_path = workdir / "proposal_contract.json"
+    finalized = list(proposals_dir.glob("*/proposal.json"))
+    if contract_path.exists():
+        if json.loads(contract_path.read_text()) != contract:
+            raise ValueError(
+                "proposal prompt/source/profile contract changed; refusing paid replay"
+            )
+    elif finalized:
+        raise ValueError("finalized unsealed proposals have no matching preflight contract")
+    else:
+        pending_contract = contract_path.with_suffix(".tmp")
+        pending_contract.write_text(json.dumps(contract, sort_keys=True) + "\n")
+        pending_contract.replace(contract_path)
+    for path in finalized:
+        payload = json.loads(path.read_text())
+        if (
+            payload["provenance"]["prompt_sha256"] != system_sha
+            or payload["base_harness_hash"] != contract["base_hash"]
+            or hash_of_serialization(payload["harness"]["harness"]) != payload["harness"]["hash"]
+        ):
+            raise ValueError(f"finalized proposal source mismatch: {path}")
+
+    result_path = workdir / "proposal_result.json"
+    if result_path.exists():
+        saved = json.loads(result_path.read_text())
+        if saved["sha256"] != prompt_sha256(canonical_json(saved["result"])):
+            raise ValueError("proposal result checkpoint hash mismatch")
+        if saved["contract"] != contract:
+            raise ValueError("proposal result checkpoint contract mismatch")
+        return publish_proposal_result(
+            saved["result"], proposals_dir, incumbent_serialization, lm.model_name, replay=True
+        )
+    if finalized:
+        raise ValueError("finalized proposals have no frozen result checkpoint")
+
     attempts: list[ProposalAttempt] = []
     rejection = ""
     specs: list[CandidateSpec] = []
-    # (spec, serialization) for every candidate of the accepted attempt that
-    # materialized, and the failure records of the LAST attempt that reached
-    # materialization. A batch that validates but materializes to nothing is a
-    # rejection like any other (KTD1): the model is re-asked with the reason
-    # rather than the round silently closing with zero candidates.
-    materialized: list[tuple[CandidateSpec, dict[str, Any]]] = []
+    materialized: list[tuple[int, CandidateSpec, dict[str, Any]]] = []
     materialization_failures: list[MaterializationFailureRecord] = []
-
+    preflight_failures: list[dict[str, Any]] = []
+    failed_slots: dict[tuple[int, str], int] = {}
+    repairing = False
     for attempt in range(config.max_attempts):
         user = (
             "Propose your candidates now."
             if not rejection
-            else (
-                f"Your previous response was rejected: {rejection}\n"
-                "Respond again with a corrected JSON array."
-            )
+            else f"Your previous response was rejected: {rejection}\nRespond again with a corrected JSON array."
         )
-        key = _cache_key(system_sha, bundle_id, cfg_sha, attempt)
+        if repairing:
+            retained = [
+                {
+                    "pattern_index": spec.pattern_index,
+                    "surface": spec.surface,
+                    "hash": hash_of_serialization(serialization),
+                }
+                for _, spec, serialization in materialized
+            ]
+            failed = [
+                {"pattern_index": spec.pattern_index, "surface": spec.surface, "edit": spec.edit}
+                for spec in specs
+                if (spec.pattern_index, spec.surface) in failed_slots
+            ]
+            user = (
+                "One repair response only. Return replacements only for the failed original "
+                "pattern/surface slots; omit a failed member to withdraw it. Keep retained edits "
+                "unchanged; no new patterns or surfaces.\nRetained: "
+                + canonical_json(retained)
+                + "\nFailed sources: "
+                + canonical_json(failed)
+                + "\nFailures: "
+                + rejection
+            )
+        request_sha = prompt_sha256(
+            canonical_json({"system": system_sha, "user": user, "profile": profile})
+        )
+        key = _cache_key(request_sha, bundle_id, cfg_sha, attempt)
         response = cache.get(key)
         cached = response is not None
-        if response is None:
-            response = _completion_with_retry(
-                lm,
-                [
-                    {"role": "system", "content": rendered_prompt},
-                    {"role": "user", "content": user},
-                ],
-                config,
-                attempts,
-            )
-            cache.put(key, response)
+        try:
+            budget_failure = cache.get(key + ":budget_exhausted")
+            if budget_failure is not None:
+                raise ProposalBudgetExhausted(budget_failure, attempts)
+            if response is None:
+                try:
+                    response = _completion_with_retry(
+                        lm,
+                        [
+                            {"role": "system", "content": rendered_prompt},
+                            {"role": "user", "content": user},
+                        ],
+                        config,
+                        attempts,
+                    )
+                except ProposalBudgetExhausted as exc:
+                    cache.put(key + ":budget_exhausted", str(exc))
+                    raise
+                cache.put(key, response)
+        except ProposalBudgetExhausted as exc:
+            if not repairing:
+                raise
+            attempts.append(ProposalAttempt(attempt + 1, cached, "", False, str(exc)))
+            break
 
         try:
             raw_items = extract_json_array(response)
@@ -1434,135 +1655,131 @@ def propose_round(
             for spec in batch:
                 if spec.pattern_index in seen:
                     raise ProposalRejection(
-                        f"pattern_index {spec.pattern_index} was proposed more than once "
-                        "in the same batch"
+                        f"pattern_index {spec.pattern_index} was proposed more than once in the same batch"
                     )
-                seen.add(spec.pattern_index)
                 if spec.surface in seen_surfaces:
                     raise ProposalRejection(
                         f"surface {spec.surface} was proposed more than once in the same batch"
                     )
+                seen.add(spec.pattern_index)
                 seen_surfaces.add(spec.surface)
+                if repairing and (spec.pattern_index, spec.surface) not in failed_slots:
+                    raise ProposalRejection(
+                        "repair must target only an original failed pattern/surface slot"
+                    )
                 if spec.edit["kind"] == EDIT_KIND_SKILLS:
                     _dry_run_skill_merge(spec, incumbent)
         except ProposalRejection as exc:
             rejection = str(exc)
-            materialized, materialization_failures = [], []
             attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
+            if repairing:
+                break
             continue
 
-        materialized, materialization_failures = _materialize_batch(
-            incumbent, incumbent_serialization, batch, workdir
+        slots = [
+            (failed_slots[(spec.pattern_index, spec.surface)] if repairing else position, spec)
+            for position, spec in enumerate(batch, start=1)
+        ]
+        if not repairing:
+            specs = batch
+        new_materialized = []
+        new_materialization_failures = []
+        new_preflight_failures = []
+        new_failed_slots = {}
+        for position, spec in slots:
+            stage = workdir / f"attempt_{attempt + 1:02d}"
+            try:
+                _, serialization = build_candidate(incumbent, incumbent_serialization, spec, stage)
+            except MaterializationFailure as exc:
+                new_materialization_failures.append(
+                    MaterializationFailureRecord(
+                        spec.pattern_index, spec.surface, exc.reason, spec.predicted_effect
+                    )
+                )
+                new_failed_slots[(spec.pattern_index, spec.surface)] = position
+                continue
+            path = write_proposal(
+                stage / "proposals",
+                _candidate_id(round_index, position, spec.surface),
+                incumbent_serialization,
+                spec,
+                serialization,
+                lm.model_name,
+                system_sha,
+            )
+            checked = load_candidate(
+                path,
+                incumbent,
+                caps=caps,
+                timeout_seconds=loader_timeout_seconds,
+                incumbent_serialization=incumbent_serialization,
+                preflight_profile=profile,
+            )
+            if isinstance(checked, CandidateRejection):
+                new_preflight_failures.append(
+                    {
+                        "pattern_index": spec.pattern_index,
+                        "surface": spec.surface,
+                        "position": position,
+                        "gate": checked.gate,
+                        "reason": checked.reason,
+                        "predicted_effect": spec.predicted_effect,
+                    }
+                )
+                new_failed_slots[(spec.pattern_index, spec.surface)] = position
+            else:
+                new_materialized.append((position, spec, serialization))
+        materialized.extend(new_materialized)
+        # A valid repair replaces the failed slots (omission explicitly withdraws them).
+        materialization_failures = new_materialization_failures
+        preflight_failures = new_preflight_failures
+        failed_slots = new_failed_slots
+        reasons = [
+            f"pattern {r.pattern_index} {r.surface}: {r.reason} (already unchanged or unmaterializable)"
+            for r in materialization_failures
+        ]
+        reasons.extend(
+            f"pattern {r['pattern_index']} {r['surface']} {r['gate']}: {r['reason']}"
+            for r in preflight_failures
         )
-        if batch and not materialized:
-            rejection = _materialization_rejection(materialization_failures)
-            attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
-            continue
-
-        attempts.append(ProposalAttempt(attempt + 1, cached, response, True))
-        specs = batch
-        break
+        rejection = "; ".join(reasons)
+        attempts.append(ProposalAttempt(attempt + 1, cached, response, not failed_slots, rejection))
+        if repairing or not failed_slots:
+            break
+        repairing = True
     else:
-        # The failure lists describe the final attempt only: a parse or
-        # validation rejection clears them, a materialization rejection fills
-        # them.
-        if not materialization_failures:
+        if not repairing:
             raise ProposalRejection(
                 f"no valid proposal batch after {config.max_attempts} attempts: {rejection}",
                 attempts=attempts,
             )
-        # Exhaustion is classified by the final attempt (KTD2). One that
-        # validated but changed nothing is a proposer-quality outcome the round
-        # already knows how to close -- zero candidates, unpromoted -- so the
-        # failure records are returned for the marker and the next round's
-        # history rather than raised past an orchestrator that catches only
-        # ProposalBudgetExhausted.
-        all_indices = {index for index, _ in addressable}
-        refused_indices = {record.pattern_index for record in materialization_failures}
-        return ProposalRoundResult(
-            written=[],
-            skipped_patterns=sorted(all_indices - refused_indices),
-            materialization_failures=materialization_failures,
-            attempts=attempts,
-            prompt_sha256=system_sha,
-        )
-
-    written: list[WrittenProposal] = []
-    for position, spec, serialization in materialized:
-        candidate_id = _candidate_id(round_index, position, spec.surface)
-        path = write_proposal(
-            proposals_dir,
-            candidate_id,
-            incumbent_serialization,
-            spec,
-            serialization,
-            lm.model_name,
-            system_sha,
-        )
-        written.append(WrittenProposal(candidate_id, path, spec.surface, spec.pattern_index))
 
     all_indices = {index for index, _ in addressable}
     proposed_indices = {spec.pattern_index for spec in specs}
-    skipped_patterns = sorted(all_indices - proposed_indices)
-
-    return ProposalRoundResult(
-        written=written,
-        skipped_patterns=skipped_patterns,
-        materialization_failures=materialization_failures,
-        attempts=attempts,
-        prompt_sha256=system_sha,
+    state = {
+        "survivors": [
+            {
+                "candidate_id": _candidate_id(round_index, position, spec.surface),
+                "spec": asdict(spec),
+                "serialization": serialization,
+            }
+            for position, spec, serialization in sorted(materialized, key=lambda item: item[0])
+        ],
+        "skipped_patterns": sorted(all_indices - proposed_indices),
+        "materialization_failures": [r.to_dict() for r in materialization_failures],
+        "attempts": [a.to_dict() for a in attempts],
+        "prompt_sha256": system_sha,
+        "preflight_failures": preflight_failures,
+        "preflight_profile": profile,
+    }
+    # Freeze before the first final directory is written. A replay never re-runs
+    # nondeterministic/time-limited gates to decide which paid batch to admit.
+    pending = result_path.with_suffix(".tmp")
+    pending.write_text(
+        canonical_json(
+            {"contract": contract, "result": state, "sha256": prompt_sha256(canonical_json(state))}
+        )
+        + "\n"
     )
-
-
-def _materialize_batch(
-    incumbent: Harness,
-    incumbent_serialization: dict[str, Any],
-    batch: Sequence[CandidateSpec],
-    workdir: Path,
-) -> tuple[list[tuple[int, CandidateSpec, dict[str, Any]]], list[MaterializationFailureRecord]]:
-    """Materialize every spec of one validated batch, keeping the survivors.
-
-    A partially successful batch keeps its survivors and records the rest
-    (R2); only the caller decides that an empty survivor list is a rejection.
-    Each survivor carries its 1-based position in the batch so a failed spec
-    still consumes a candidate-id slot: the id is hash material and a ledger
-    subject id, so it must not shift when an earlier sibling is refused.
-    """
-    materialized: list[tuple[int, CandidateSpec, dict[str, Any]]] = []
-    failures: list[MaterializationFailureRecord] = []
-    for position, spec in enumerate(batch, start=1):
-        try:
-            _harness, serialization = build_candidate(
-                incumbent, incumbent_serialization, spec, workdir
-            )
-        except MaterializationFailure as failure:
-            failures.append(
-                MaterializationFailureRecord(
-                    spec.pattern_index, spec.surface, failure.reason, spec.predicted_effect
-                )
-            )
-            continue
-        materialized.append((position, spec, serialization))
-    return materialized, failures
-
-
-def _materialization_rejection(failures: Sequence[MaterializationFailureRecord]) -> str:
-    """The re-ask message for a batch in which nothing materialized.
-
-    Names every refused candidate by pattern and surface with the loader's
-    own reason, then coaches the one correction that fits the observed failure:
-    the surface already holds the proposed text, so the edit must differ from
-    the current surface shown in the pattern block, or address the pattern on
-    another of its listed surfaces.
-    """
-    lines = [
-        f"candidate for pattern {record.pattern_index} on {record.surface}: {record.reason}"
-        for record in failures
-    ]
-    return (
-        "no candidate in the batch changes the harness ("
-        + "; ".join(lines)
-        + "). The current surface already contains what you proposed. Propose an edit "
-        "whose text differs from the current surface shown in the pattern block, or "
-        "address the pattern on another of its listed surfaces."
-    )
+    pending.replace(result_path)
+    return publish_proposal_result(state, proposals_dir, incumbent_serialization, lm.model_name)

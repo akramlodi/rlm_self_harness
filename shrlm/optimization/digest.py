@@ -34,7 +34,7 @@ from shrlm.optimization.walker import iter_skill_loads
 # the trace's run-start record names a skill index (a loader was installed,
 # i.e. S10 was non-empty). A trace without one -- every pre-S10 trace, and
 # every trace under an empty S10 -- renders byte-identically to 1.1.0.
-DIGEST_VERSION = "1.2.0"
+DIGEST_VERSION = "1.3.0"
 
 DEFAULT_CHAR_BUDGET = 12000
 DEFAULT_FOCUS_K = 4
@@ -143,11 +143,22 @@ def render_header(
     verdict: Verdict,
     stats: TreeStats,
     skill_lines: Sequence[str] = (),
+    verifier_environment: str | None = None,
 ) -> str:
+    from shrlm.environments.oolong_pairs import recorded_pair_metrics
+
+    pair_metrics = (
+        recorded_pair_metrics(verdict) if verifier_environment == "oolong_pairs" else None
+    )
     lines = [
         "## Run",
         f"instance_id: {instance_id}",
         f"question: {head_tail(question, QUESTION_CHARS)}",
+        *(
+            [f"pair_diagnostics: {pair_metrics or 'unavailable (unscored or legacy verdict)'}"]
+            if verifier_environment == "oolong_pairs"
+            else []
+        ),
         f"gold_answer: {head_tail(verdict.gold, ANSWER_CHARS)}",
         f"produced_answer: {head_tail(verdict.produced, ANSWER_CHARS)}",
         f"verifier_cause: {verdict.cause.value if verdict.cause else 'none'}",
@@ -327,6 +338,7 @@ def build_digest(
     stats: TreeStats,
     verdict: Verdict,
     cfg: DigestConfig | None = None,
+    verifier_environment: str | None = None,
 ) -> TraceDigest:
     """
     Render a bounded view of one failed run.
@@ -346,6 +358,7 @@ def build_digest(
         verdict,
         stats,
         skill_lines=render_skill_lines(root.skill_index, list(iter_skill_loads(root))),
+        verifier_environment=verifier_environment,
     )
     skeleton, skeleton_available = render_root_skeleton(
         root, int(cfg.char_budget * ROOT_SKELETON_SHARE)

@@ -182,6 +182,8 @@ class WeaknessMiner:
 
         root, stats = walk(completion)
         grounding = apply_sub_verifier(instance, root, self.sub_verifier)
+        verifier_config_fn = getattr(self.verifier, "config", None)
+        verifier_config = verifier_config_fn() if callable(verifier_config_fn) else {}
         digest = build_digest(
             instance_id=instance_id,
             question=str(instance.get("question", "")),
@@ -189,6 +191,7 @@ class WeaknessMiner:
             stats=stats,
             verdict=verdict,
             cfg=self.digest_config,
+            verifier_environment=verifier_config.get("environment"),
         )
 
         record = FailureRecord(

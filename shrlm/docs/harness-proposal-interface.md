@@ -201,5 +201,59 @@ different declared id is preserved in the rejection reason.
 - **Rejections are data.** Expect your proposals to be rejected sometimes and
   read the `gate`/`reason` pair; they are designed to be actionable
   ("candidate declares surface S2 but modifies S3").
-- **K distinct candidates** (the handoff doc's contract) means K distinct
-  candidate directories; the loader gates each independently.
+- **K is a ceiling, not a quota.** Propose at most one edit per surface. Local
+  loader checks run per edit; paid validation runs baseline plus one combined
+  held-out batch, with no individual edit scoring.
+
+
+## Proposal context and local repair
+
+The prompt shows each eligible incumbent surface in full once, shared by all
+patterns. Held-in context includes a representative's saved symptom, evidence
+node IDs, actual task question, pair diagnostics, and bounded trace observations.
+Up to two passing held-in examples show behavior to preserve. Missing evidence
+is explicit; ambiguous legacy attempt links never select an arbitrary trace.
+
+S9 takes `(answer, repl_inventory)` and returns `AnswerDecision.accept(answer)`
+or `AnswerDecision.redirect(nudge)`. There is no `reject` method. Inventory values
+are redacted `(type_name, length)` tuples, not variable contents. Literal braces
+in text instruction templates must be doubled; code and skill bodies are not
+format templates.
+
+Edited OOLONG-Pairs S9 functions also face synthetic valid-answer probes in the
+timed loader subprocess: bracketed and newline pairs, an explicit empty marker,
+non-clique pairs, and different global ordering must all be accepted unchanged.
+Malformed input may pass through or redirect, but must return `AnswerDecision`.
+The valid empty marker is `No valid pairs found.`, not `[]`. The host pins the
+profile in `proposals_complete.json`; old markers use the legacy generic checks.
+Unchanged incumbent middleware does not receive the new domain probes.
+
+After the first structurally valid batch, materialization and loader checks run
+locally. Valid members keep their original slots and content. Failed members get
+at most **one repair response**, within the existing total attempt/output caps;
+repairs must retain each failed member's pattern and surface. Omission withdraws
+that member. Malformed repair or output exhaustion preserves the valid siblings.
+Transport, credential, integrity, and interruption failures retain their existing
+handling. A gate process that cannot spawn raises a host error without spending
+the repair response. Only final survivors are published for combined validation.
+
+Scratch files live under `work/attempt_NN/`; the proposal contract pins prompt,
+validator, profile, incumbent and caps. Cache keys include the actual repair
+request and retained hashes. Before publishing final candidates,
+`work/proposal_result.json` freezes survivors and their complete attempt outcomes;
+an interrupted publication replays this checkpoint without re-running gates.
+Unexpected final candidate directories are refused. The marker records final
+preflight/materialization failures and the attempt audit, including repaired
+failures. Replays cannot
+silently change a finalized source/profile or restart proposals after validation
+has frozen. Standalone validation also pins its profile in `validation.json`;
+pre-change contracts remain readable without rewriting them. Complete any
+unsealed evidence or proposal stage with its original code revision before
+upgrading: a changed digest or proposal contract can prevent that incomplete
+stage from replaying. Sealed historical stages use their persisted artifacts.
+
+For eligible OOLONG-Pairs S2/S3/S4 proposals, the prompt offers a record-preserving
+workflow: stable original row IDs before chunking; child ID/label results joined
+by ID; coverage checks and bounded repairs; then root-side counts, dates, task
+predicates and qualifying pairs in Python. This is proposal guidance, not a
+built-in solver or an edit to the initial harness.

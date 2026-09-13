@@ -52,6 +52,21 @@ def reject_empty_answer(answer, repl_inventory):
     return AnswerDecision.accept(answer)
 
 
+def missing_accept_argument(answer, repl_inventory):
+    if answer.startswith("["):
+        return AnswerDecision.accept()
+    return AnswerDecision.redirect("use a list")
+
+
+def test_oolong_profile_exercises_valid_answer_branch(tmp_path):
+    candidate = replace(H0, answer_middleware=missing_accept_argument)
+    path = write_payload(tmp_path, proposal_payload(candidate, "S9"))
+    result = load_candidate(path, H0, preflight_profile="oolong-pairs/v1")
+    assert isinstance(result, CandidateRejection)
+    assert "bracketed_pair" in result.reason
+    assert "TypeError" in result.reason
+
+
 def exploding_middleware(answer, repl_inventory):
     """S9 candidate whose probe call raises."""
     raise RuntimeError("boom at probe time")
@@ -559,7 +574,7 @@ def test_hanging_candidate_source_times_out(tmp_path):
     assert "timed out" in result.reason
 
 
-def test_gate_subprocess_launch_failure_is_a_structured_rejection(tmp_path, monkeypatch):
+def test_gate_subprocess_launch_failure_is_a_host_error(tmp_path, monkeypatch):
     payload = proposal_payload(s9_candidate(), "S9")
     path = write_payload(tmp_path, payload)
 
@@ -567,11 +582,8 @@ def test_gate_subprocess_launch_failure_is_a_structured_rejection(tmp_path, monk
         raise OSError("cannot spawn a child process")
 
     monkeypatch.setattr(candidates_module.subprocess, "run", refuse_to_spawn)
-    result = load_candidate(path, H0)
-    assert isinstance(result, CandidateRejection), result
-    assert result.gate == "materialization"
-    assert "OSError" in result.reason
-    assert "cannot spawn" in result.reason
+    with pytest.raises(OSError, match="cannot spawn"):
+        load_candidate(path, H0)
 
 
 def test_gate_subprocess_env_drops_host_secrets(tmp_path, monkeypatch):
@@ -683,3 +695,79 @@ def test_load_candidates_on_an_empty_directory(tmp_path):
     loaded, rejections = load_candidates(tmp_path, H0)
     assert loaded == []
     assert rejections == []
+
+
+@pytest.mark.parametrize(
+    "source,reason",
+    [
+        ("if answer.startswith('['):\n        return AnswerDecision.accept()", "bracketed_pair"),
+        ("if answer.startswith('['):\n        repl_inventory['context'].strip()", "tuple"),
+        ("if answer.startswith('['):\n        return AnswerDecision.reject('no')", "reject"),
+        (
+            "if not answer.startswith('['):\n        return AnswerDecision.redirect('list only')",
+            "newline_pairs",
+        ),
+        (
+            "if answer == 'No valid pairs found.':\n        return AnswerDecision.redirect('nonempty only')",
+            "empty_marker",
+        ),
+        (
+            "if len(re.findall(r'\\d+', answer)) == 4 and len(set(re.findall(r'\\d+', answer))) == 3:\n        return AnswerDecision.redirect('must form clique')",
+            "non_clique",
+        ),
+        (
+            "if answer.startswith('[(307'):\n        return AnswerDecision.redirect('sort globally')",
+            "global_order",
+        ),
+        ("if answer.startswith('['):\n        return answer", "AnswerDecision"),
+    ],
+)
+def test_oolong_valid_fixture_rejections(tmp_path, source, reason):
+    payload = proposal_payload(s9_candidate(), "S9")
+    serialized = payload["harness"]["harness"]
+    serialized["surfaces"]["S9_answer_middleware"]["source"] = (
+        "def middleware(answer, repl_inventory):\n    "
+        + source
+        + "\n    return AnswerDecision.accept(answer)\n"
+    )
+    payload["harness"]["hash"] = hash_of_serialization(serialized)
+    result = load_candidate(
+        write_payload(tmp_path, payload), H0, preflight_profile="oolong-pairs/v1"
+    )
+    assert isinstance(result, CandidateRejection)
+    assert reason in result.reason
+
+
+def test_oolong_profile_keeps_legacy_and_unchanged_middleware_checks(tmp_path):
+    bad = replace(H0, answer_middleware=missing_accept_argument)
+    legacy = load_candidate(write_payload(tmp_path / "legacy", proposal_payload(bad, "S9")), H0)
+    assert isinstance(legacy, LoadedCandidate)
+    edited = replace(bad, decomposition_instruction="A new instruction")
+    payload = proposal_payload(edited, "S2", base_harness_hash=harness_hash(bad))
+    result = load_candidate(
+        write_payload(tmp_path / "s2", payload), bad, preflight_profile="oolong-pairs/v1"
+    )
+    assert isinstance(result, LoadedCandidate)
+    passing = load_candidate(
+        write_payload(tmp_path / "pass", proposal_payload(s9_candidate(), "S9")),
+        H0,
+        preflight_profile="oolong-pairs/v1",
+    )
+    assert isinstance(passing, LoadedCandidate)
+
+
+def test_oolong_fixtures_supply_the_existing_redacted_inventory(tmp_path):
+    payload = proposal_payload(s9_candidate(), "S9")
+    serialized = payload["harness"]["harness"]
+    serialized["surfaces"]["S9_answer_middleware"]["source"] = (
+        "def middleware(answer, repl_inventory):\n"
+        "    assert repl_inventory['answer'] == ('dict', 2)\n"
+        "    assert repl_inventory['buffer'][0] == 'str'\n"
+        "    assert repl_inventory['context_0'][0] == 'str'\n"
+        "    return AnswerDecision.accept(answer)\n"
+    )
+    payload["harness"]["hash"] = hash_of_serialization(serialized)
+    result = load_candidate(
+        write_payload(tmp_path, payload), H0, preflight_profile="oolong-pairs/v1"
+    )
+    assert isinstance(result, LoadedCandidate)

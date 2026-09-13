@@ -10,6 +10,8 @@ import hashlib
 import json
 from typing import Any
 
+import pytest
+
 from shrlm.optimization.attribution import LLMAttributor
 from shrlm.optimization.digest import (
     DIGEST_VERSION,
@@ -148,6 +150,34 @@ class TestCoverage:
 
 
 class TestRenderedSections:
+    @pytest.mark.parametrize("environment", ["oolong_pairs", "graphwalks", None])
+    def test_pair_metrics_are_specific_to_the_verifier_environment(self, environment):
+        from shrlm.environments.oolong_pairs import OolongPairsVerifier
+
+        verifier = OolongPairsVerifier()
+        verdict = verifier({"gold_pairs": [(1, 2), (1, 3)]}, "[(1, 2)]")
+
+        class ConfiguredVerifier:
+            def config(self):
+                return {"environment": environment}
+
+        captured = []
+
+        def respond(messages):
+            captured.append(messages[-1]["content"])
+            return scripted_response(messages)
+
+        miner = WeaknessMiner(
+            verifier=ConfiguredVerifier(), attributor=LLMAttributor(MockLM(response_fn=respond))
+        )
+        miner.record_failure(
+            {"id": "test", "question": "predicate"}, as_completion(shallow_run()), verdict
+        )
+        assert ("pair_diagnostics:" in captured[0]) == (environment == "oolong_pairs")
+        if environment == "oolong_pairs":
+            assert "'f1': 0.667" in captured[0]
+            assert "'missing': 1" in captured[0]
+
     def test_header_carries_the_verifier_outcome(self):
         digest = digest_of_nested_run()
         assert "instance_id: run-nested" in digest.text
@@ -513,7 +543,7 @@ class TestDigestVersion:
     def test_version_bumped_for_the_skill_lines(self):
         # 1.1.0 was the n/a aggregate rendering; 1.2.0 adds the
         # available_skills / loaded_skills pair under a non-empty index.
-        assert DIGEST_VERSION == "1.2.0"
+        assert DIGEST_VERSION == "1.3.0"
 
     def test_digest_version_is_recorded_per_bundle(self):
         lm = MockLM(response_fn=scripted_response)
@@ -524,8 +554,8 @@ class TestDigestVersion:
             harness_version="H0",
             split_id="held_in_v1",
         )
-        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.2.0"
-        assert result.bundle.to_dict()["config"]["digest_version"] == "1.2.0"
+        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.3.0"
+        assert result.bundle.to_dict()["config"]["digest_version"] == "1.3.0"
 
     def test_attribution_cache_key_does_not_include_digest_version(self):
         # DIGEST_VERSION reaches bundle ids via MiningConfig.digest_version

@@ -206,3 +206,46 @@ def test_writer_refuses_missing_batch_evaluation_or_scored_constituent(tmp_path,
     scored = [replace(result.decisions[0], decision="accepted"), *result.decisions[1:]]
     with pytest.raises(ValueError, match="without individual scores"):
         write_promotion_ledger(result.evaluation, scored, result.plan, constituents=constituents)
+
+
+def test_standalone_oolong_preflight_rejects_before_evaluation(tmp_path, monkeypatch):
+    from shrlm.environments.oolong_pairs import OolongPairsVerifier
+    from tests.optimization.test_candidates import missing_accept_argument
+
+    proposals = tmp_path / "proposals"
+    write_candidate(
+        proposals, replace(H0, answer_middleware=missing_accept_argument), "S9", "broken"
+    )
+    idle = ClientFactory([])
+    monkeypatch.setattr(rlm_module, "get_client", idle)
+    config = make_config(tmp_path, verifier=OolongPairsVerifier())
+    result = validate_round(H0, proposals, config)
+    assert idle.total_calls == 0
+    assert not result.promoted
+    assert "bracketed_pair" in result.loader_rejections[0].reason
+    assert not (result.round_path / "baseline").exists()
+    with pytest.raises(ValueError, match="preflight profile changed"):
+        validate_round(H0, proposals, config, preflight_profile="generic/v1")
+    assert idle.total_calls == 0
+
+
+def test_prechange_validation_contract_replays_without_rewriting(tmp_path, monkeypatch):
+    proposals = tmp_path / "proposals"
+    write_candidate(proposals, edited("a", "execution_instruction", "a"), "S3", "a")
+    factory = ClientFactory([final("WRONG")] * 2 + [final("RIGHT")] * 2)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    config = make_config(tmp_path)
+    result = validate_round(H0, proposals, config)
+    contract_path = result.round_path / "validation.json"
+    contract = json.loads(contract_path.read_text())
+    del contract["preflight_profile"]
+    contract_path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n")
+    before = contract_path.read_bytes()
+    ledger = result.ledger.ledger_path.read_bytes()
+    idle = ClientFactory([])
+    monkeypatch.setattr(rlm_module, "get_client", idle)
+    replay = validate_round(H0, proposals, config)
+    assert replay.promoted
+    assert idle.total_calls == 0
+    assert contract_path.read_bytes() == before
+    assert result.ledger.ledger_path.read_bytes() == ledger

@@ -10,6 +10,7 @@ proposer's output clears the actual gate, not a re-description of it.
 import copy
 import json
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -554,11 +555,43 @@ def test_propose_round_materialization_failure_does_not_drop_the_rest(tmp_path):
     no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
     response = canned_batch(TEXT_ITEM, no_op_policy)
     lm = MockLM(model_name="mock-proposer", responses=[response])
-    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        config=ProposerConfig(max_attempts=1),
+    )
     assert len(result.written) == 1
     assert result.written[0].surface == "S4"
     assert len(result.materialization_failures) == 1
     assert result.materialization_failures[0].pattern_index == 1
+
+
+def test_preflight_repairs_only_failed_member_and_replays(tmp_path):
+    broken = edit_item(
+        3,
+        {
+            "kind": "code",
+            "def_name": "broken",
+            "source": "def broken(answer, repl_inventory):\n"
+            "    if answer.startswith('['):\n"
+            "        return AnswerDecision.accept()\n"
+            "    return AnswerDecision.accept(answer)\n",
+        },
+    )
+    bundle = {**BUNDLE, "config": {"verifier_config": {"environment": "oolong_pairs"}}}
+    lm = MockLM(responses=[canned_batch(TEXT_ITEM, broken), canned_batch(CODE_S9_ITEM)])
+    cache = ProposalCache()
+    kwargs = dict(cache=cache, workdir=tmp_path / "work")
+    result = propose_round(bundle, H0, lm, tmp_path / "proposals", **kwargs)
+    assert [w.candidate_id for w in result.written] == ["r00-c01-s4", "r00-c02-s9"]
+    assert len(result.attempts) == 2
+    assert "bracketed_pair" in result.attempts[0].violation
+    assert result.preflight_failures == []
+    replay = propose_round(bundle, H0, lm, tmp_path / "proposals", **kwargs)
+    assert all(a.cached for a in replay.attempts)
 
 
 def test_propose_round_survivor_keeps_its_batch_position_after_a_failure(tmp_path):
@@ -568,7 +601,14 @@ def test_propose_round_survivor_keeps_its_batch_position_after_a_failure(tmp_pat
     no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
     response = canned_batch(no_op_policy, TEXT_ITEM)
     lm = MockLM(model_name="mock-proposer", responses=[response])
-    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        config=ProposerConfig(max_attempts=1),
+    )
     assert [w.candidate_id for w in result.written] == ["r00-c02-s4"]
     assert len(result.materialization_failures) == 1
     assert result.materialization_failures[0].pattern_index == 1
@@ -580,7 +620,7 @@ def test_propose_round_reasks_when_the_whole_batch_fails_to_materialize(tmp_path
     no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
     lm = MockLM(
         model_name="mock-proposer",
-        responses=[canned_batch(no_op_policy), canned_batch(TEXT_ITEM)],
+        responses=[canned_batch(no_op_policy), canned_batch(POLICY_ITEM)],
     )
     result = propose_round(
         BUNDLE,
@@ -596,7 +636,7 @@ def test_propose_round_reasks_when_the_whole_batch_fails_to_materialize(tmp_path
     assert "pattern 1" in first.violation and "S6" in first.violation
     assert "already" in first.violation  # the surface already holds this text
     assert second.accepted is True
-    assert [w.surface for w in result.written] == ["S4"]
+    assert [w.surface for w in result.written] == ["S6"]
     # The failure that was re-asked away lives in the attempt trail, not in the
     # round's failure records: those describe the accepted attempt only.
     assert result.materialization_failures == []
@@ -654,25 +694,20 @@ def test_propose_round_mixed_malformed_then_no_op_exhaustion_returns_empty(tmp_p
     assert [a.accepted for a in result.attempts] == [False, False]
 
 
-def test_propose_round_mixed_no_op_then_malformed_exhaustion_raises(tmp_path):
-    """The exhaustion branch is classified by the FINAL attempt (KTD2): a
-    no-op first response followed by a malformed one raises ProposalRejection,
-    because the malformed attempt clears the earlier attempt's failure records
-    rather than letting them classify the round as a no-op close."""
+def test_propose_round_malformed_repair_seals_original_failures(tmp_path):
     no_op_policy = edit_item(1, {"kind": "policy", "runtime_policy": {}})
-    lm = MockLM(
-        model_name="mock-proposer",
-        responses=[canned_batch(no_op_policy), "not json at all"],
+    lm = MockLM(responses=[canned_batch(no_op_policy), "not json at all"])
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        config=ProposerConfig(max_attempts=8),
+        workdir=tmp_path / "work",
     )
-    with pytest.raises(ProposalRejection):
-        propose_round(
-            BUNDLE,
-            H0,
-            lm,
-            tmp_path / "proposals",
-            config=ProposerConfig(max_attempts=2),
-            workdir=tmp_path / "work",
-        )
+    assert result.written == []
+    assert len(result.attempts) == 2
+    assert len(result.materialization_failures) == 1
 
 
 def test_propose_round_empty_bundle_no_crash(tmp_path):
@@ -1226,6 +1261,27 @@ def test_prompt_explains_batch_surface_limit():
     assert "not a quota" in prompt
 
 
+def test_complete_current_surface_is_shared_and_contract_is_environment_specific():
+    serialization = serialize_harness(H0)
+    source = "x" * 1600 + "distinctive middleware tail"
+    serialization["surfaces"]["S9_answer_middleware"] = source
+    prompt, _ = render_prompt(
+        [PATTERN_CODE_S9, PATTERN_CODE_S9],
+        serialization,
+        [],
+        [],
+        4,
+        verifier_config={"environment": "oolong_pairs"},
+    )
+    assert prompt.count(source) == 1
+    assert "AnswerDecision.accept(answer)" in prompt
+    assert "No valid pairs found." in prompt
+    assert "newline" in prompt
+    assert "('str', 19006)" in prompt
+    other, _ = render_prompt([PATTERN_CODE_S9], serialization, [], [], 4)
+    assert "No valid pairs found." not in other
+
+
 def test_history_reports_one_shared_verdict_for_bundled_edits():
     from shrlm.optimization.proposal import _render_history_block
 
@@ -1312,3 +1368,163 @@ def test_history_renders_a_round_without_records_as_no_record_persisted():
 def test_render_prompt_history_preamble_names_the_no_op_refusal():
     rendered, _ = render_prompt(ALL_PATTERNS, serialize_harness(H0), (), (), k=4)
     assert "identical to the current surface" in rendered
+
+
+@pytest.mark.parametrize(
+    "repair", ["not json", canned_batch(TEXT_ITEM), canned_batch(POLICY_ITEM, POLICY_ITEM)]
+)
+def test_invalid_repair_preserves_survivor_and_stops(tmp_path, repair):
+    no_op = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(responses=[canned_batch(TEXT_ITEM, no_op), repair])
+    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert len(result.attempts) == 2
+    assert not result.attempts[-1].accepted
+    assert [w.surface for w in result.written] == ["S4"]
+    assert len(result.materialization_failures) == 1
+
+
+def test_prompt_brace_error_repairs_locally(tmp_path):
+    bad = edit_item(0, {"kind": "text", "new_text": 'Return {"record_id": 1}'})
+    fixed = edit_item(0, {"kind": "text", "new_text": 'Return {{"record_id": 1}}'})
+    lm = MockLM(responses=[canned_batch(bad), canned_batch(fixed)])
+    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert len(result.attempts) == 2 and len(result.written) == 1
+    assert "record_id" in result.attempts[0].violation
+
+
+def test_changed_profile_refused_before_proposal_calls(tmp_path):
+    lm = MockLM(responses=[canned_batch(TEXT_ITEM)])
+    propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    idle = MockLM(responses=[])
+    with pytest.raises(ValueError, match="contract changed"):
+        propose_round(
+            BUNDLE,
+            H0,
+            idle,
+            tmp_path / "proposals",
+            workdir=tmp_path / "work",
+            preflight_profile="oolong-pairs/v1",
+        )
+    assert idle._call_count == 0
+
+
+def test_repair_output_budget_exhaustion_keeps_survivor_and_replays(tmp_path):
+    from rlm.utils.exceptions import TokenLimitExceededError
+
+    initial = canned_batch(TEXT_ITEM, edit_item(1, {"kind": "policy", "runtime_policy": {}}))
+    calls = []
+
+    def respond(prompt):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return initial
+        raise TokenLimitExceededError(tokens_used=512, token_limit=512, message="repair exhausted")
+
+    cache = ProposalCache(path=str(tmp_path / "cache.jsonl"))
+    lm = MockLM(response_fn=respond)
+    first = propose_round(
+        BUNDLE, H0, lm, tmp_path / "proposals", cache=cache, workdir=tmp_path / "work"
+    )
+    assert len(calls) == 2
+    assert [w.candidate_id for w in first.written] == ["r00-c01-s4"]
+    assert "repair exhausted" in first.attempts[-1].violation
+    before = first.written[0].path.read_bytes()
+    idle = MockLM(responses=[])
+    replay = propose_round(
+        BUNDLE,
+        H0,
+        idle,
+        tmp_path / "proposals",
+        cache=ProposalCache(path=str(tmp_path / "cache.jsonl")),
+        workdir=tmp_path / "work",
+    )
+    assert idle._call_count == 0
+    assert replay.written[0].path.read_bytes() == before
+    assert replay.materialization_failures == first.materialization_failures
+
+
+def test_empty_repair_withdraws_failed_slot_without_replacing_survivor(tmp_path):
+    no_op = edit_item(1, {"kind": "policy", "runtime_policy": {}})
+    lm = MockLM(responses=[canned_batch(no_op, TEXT_ITEM), "[]"])
+    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert len(result.attempts) == 2
+    assert [w.candidate_id for w in result.written] == ["r00-c02-s4"]
+    assert not result.materialization_failures
+    assert not result.preflight_failures
+
+
+def test_interrupted_publication_replays_frozen_survivors_without_gates(tmp_path, monkeypatch):
+    import shrlm.optimization.proposal as proposal_module
+
+    proposals = tmp_path / "proposals"
+    work = tmp_path / "work"
+    original_writer = proposal_module.write_proposal
+
+    def interrupted_writer(directory, candidate_id, *args, **kwargs):
+        if directory == proposals and candidate_id == "r00-c02-s9":
+            raise OSError("interrupted publication")
+        return original_writer(directory, candidate_id, *args, **kwargs)
+
+    monkeypatch.setattr(proposal_module, "write_proposal", interrupted_writer)
+    lm = MockLM(responses=[canned_batch(TEXT_ITEM, CODE_S9_ITEM)])
+    with pytest.raises(OSError, match="interrupted publication"):
+        propose_round(BUNDLE, H0, lm, proposals, workdir=work)
+    assert lm._call_count == 1
+    assert (work / "proposal_result.json").exists()
+    first = proposals / "r00-c01-s4" / "proposal.json"
+    before = first.read_bytes()
+    monkeypatch.setattr(proposal_module, "write_proposal", original_writer)
+
+    def forbidden_gate(*args, **kwargs):
+        raise AssertionError("a frozen proposal outcome must not rerun preflight")
+
+    monkeypatch.setattr(proposal_module, "load_candidate", forbidden_gate)
+    idle = MockLM(responses=[])
+    replay = propose_round(BUNDLE, H0, idle, proposals, workdir=work)
+    assert idle._call_count == 0
+    assert [w.candidate_id for w in replay.written] == ["r00-c01-s4", "r00-c02-s9"]
+    assert first.read_bytes() == before
+    assert {p.name for p in proposals.iterdir()} == {w.candidate_id for w in replay.written}
+    (proposals / "unrecorded-candidate").mkdir()
+    with pytest.raises(ValueError, match="outside the frozen survivor set"):
+        propose_round(BUNDLE, H0, idle, proposals, workdir=work)
+
+
+def test_proposal_gate_spawn_failure_does_not_spend_repair(tmp_path, monkeypatch):
+    import shrlm.optimization.candidates as candidates_module
+
+    def cannot_spawn(*args, **kwargs):
+        raise OSError("process resources exhausted")
+
+    monkeypatch.setattr(candidates_module.subprocess, "run", cannot_spawn)
+    lm = MockLM(responses=[canned_batch(TEXT_ITEM)])
+    with pytest.raises(OSError, match="process resources exhausted"):
+        propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert lm._call_count == 1
+    assert not list((tmp_path / "proposals").iterdir())
+    assert not (tmp_path / "work" / "proposal_result.json").exists()
+
+
+def test_partial_final_proposal_write_replays_from_checkpoint(tmp_path, monkeypatch):
+    proposals = tmp_path / "proposals"
+    work = tmp_path / "work"
+    original_write = Path.write_text
+
+    def partial_write(path, data, *args, **kwargs):
+        if path.parent.parent == proposals:
+            original_write(path, data[:20], *args, **kwargs)
+            raise OSError("disk write interrupted")
+        return original_write(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", partial_write)
+    with pytest.raises(OSError, match="disk write interrupted"):
+        propose_round(
+            BUNDLE, H0, MockLM(responses=[canned_batch(TEXT_ITEM)]), proposals, workdir=work
+        )
+    assert not list(proposals.glob("*/proposal.json"))
+    monkeypatch.setattr(Path, "write_text", original_write)
+    idle = MockLM(responses=[])
+    replay = propose_round(BUNDLE, H0, idle, proposals, workdir=work)
+    assert idle._call_count == 0
+    assert [w.candidate_id for w in replay.written] == ["r00-c01-s4"]
+    assert json.loads(replay.written[0].path.read_text())["surface"] == "S4"
