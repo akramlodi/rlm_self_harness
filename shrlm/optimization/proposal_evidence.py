@@ -17,7 +17,12 @@ from rlm.core.types import RLMChatCompletion
 from shrlm.optimization.digest import head_tail
 from shrlm.optimization.driver import canonical_manifest_entries, load_manifest, load_round
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import Verdict
+from shrlm.optimization.types import Verdict, iter_nodes
+from shrlm.optimization.walker import build_call_tree
+
+EVIDENCE_SELECTOR_VERSION = "2.0.0"
+TRACE_EXCERPT_CHARS = 4800
+MAX_TRACE_SNIPPETS = 6
 
 UNSCORED_CAUSES = {
     VerifierCause.RUNTIME_ERROR,
@@ -73,22 +78,111 @@ def read_persisted_round(
     return load_round(path.parent, int(match[1]))
 
 
-def trace_excerpt(completion: RLMChatCompletion) -> dict[str, Any]:
-    iterations = (completion.metadata or {}).get("iterations", [])
-    blocks = [block for iteration in iterations for block in iteration.get("code_blocks", [])]
-    if not blocks:
+def bounded_excerpt(value: str, limit: int) -> str:
+    """Include truncation markers in the budget, unlike the legacy head_tail helper."""
+    if len(value) <= limit:
+        return value
+    marker = "\n...[truncated]...\n"
+    kept = max(0, limit - len(marker))
+    head = kept * 2 // 3
+    return (value[:head] + marker + (value[-(kept - head) :] if kept > head else ""))[:limit]
+
+
+def trace_excerpt(
+    completion: RLMChatCompletion,
+    evidence_node_ids: Sequence[str] = (),
+    operation_evidence: Sequence[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    if completion.metadata is None:
         return {"observation": "trace excerpt unavailable"}
-    # Two bounded snippets, explicitly observations rather than a causal claim.
-    selected = [blocks[0]] if len(blocks) == 1 else [blocks[0], blocks[-1]]
+    root = build_call_tree(completion)
+    nodes = {node.node_id: node for node in iter_nodes(root)}
+    by_node: dict[str, list[dict[str, Any]]] = {}
+    callers: dict[str, tuple[str, int]] = {}
+    for node in nodes.values():
+        blocks = []
+        for iteration in node.iterations:
+            for block_index, block in enumerate(iteration.code_blocks):
+                for child in block.calls:
+                    callers[child.node_id] = (node.node_id, len(blocks))
+                blocks.append(
+                    {
+                        "node_id": node.node_id,
+                        "iteration_index": iteration.index,
+                        "code_block_index": block_index,
+                        "code": block.code,
+                        "stdout": block.stdout,
+                        "stderr": block.stderr,
+                    }
+                )
+        by_node[node.node_id] = blocks
+
+    selected: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+    def add(snippet: dict[str, Any], reason: str) -> None:
+        key = (snippet["node_id"], snippet.get("iteration_index"), snippet.get("code_block_index"))
+        if key not in selected and len(selected) < MAX_TRACE_SNIPPETS:
+            selected[key] = {**snippet, "reason": reason}
+
+    cited = list(dict.fromkeys(evidence_node_ids))
+    unresolved = False
+    for operation in operation_evidence:
+        node_id = operation.get("node_id")
+        if node_id not in nodes:
+            unresolved = True
+            continue
+        if node_id not in cited:
+            cited.append(node_id)
+        if operation.get("iteration_index") is None:
+            continue
+        matching = [
+            b
+            for b in by_node[node_id]
+            if b["iteration_index"] == operation.get("iteration_index")
+            and b["code_block_index"] == operation.get("code_block_index")
+        ]
+        if matching:
+            add(matching[0], "cited operation")
+        else:
+            unresolved = True
+    for node_id in cited:
+        if node_id not in nodes:
+            unresolved = True
+            continue
+        if node_id in callers:
+            parent_id, position = callers[node_id]
+            window = [b for b in by_node[parent_id][position:] if b["code"].strip()][:3]
+            for offset, block in enumerate(window):
+                add(block, "cited call's caller" if offset == 0 else "following consumer context")
+            node = nodes[node_id]
+            add(
+                {"node_id": node_id, "prompt": str(node.prompt), "response": node.response},
+                "cited child prompt/return",
+            )
+    selection = "cited operations and caller context"
+    if not selected:
+        selection = "structural fallback: no resolvable operation or child citation"
+        blocks = by_node[root.node_id]
+        if blocks:
+            for block in (blocks[0], blocks[-1]):
+                add(block, "structural fallback")
+    if unresolved:
+        selection += "; unresolved citations"
+    snippets = list(selected.values())
+    per_snippet = TRACE_EXCERPT_CHARS // max(len(snippets), 1)
+    for snippet in snippets:
+        fields = [
+            key for key in ("code", "stdout", "stderr", "prompt", "response") if snippet.get(key)
+        ]
+        per_field = per_snippet // max(len(fields), 1)
+        for key in fields:
+            snippet[key] = bounded_excerpt(snippet[key], per_field)
+        snippet["node_id"] = bounded_excerpt(snippet["node_id"], 200)
     return {
         "observation": "partial observed behavior; labels and causal effectiveness are not verified",
-        "root_code": [head_tail(str(block.get("code", "")), 1800) for block in selected],
-        "coverage_observations": [
-            head_tail(str((block.get("result") or {}).get("stdout", "")), 600) for block in selected
-        ],
-        "observed_child_calls": sum(
-            len((block.get("result") or {}).get("rlm_calls", [])) for block in blocks
-        ),
+        "selection": selection,
+        "snippets": snippets,
+        "observed_child_calls": len(root.children),
     }
 
 
@@ -138,6 +232,9 @@ def load_proposal_evidence(
         context = {
             "symptom_summary": head_tail(detail.get("symptom_summary", "unavailable"), 2000),
             "evidence_node_ids": detail.get("evidence_node_ids", []),
+            "operation_evidence": detail.get("operation_evidence", []),
+            "verification_limits": head_tail(detail.get("verification_limits", "unavailable"), 500),
+            "level_grounded": record.get("level_grounded", False),
             "task_question": head_tail(str(instance.get("question", "unavailable")), 8000),
         }
         if is_pairs:
@@ -169,7 +266,11 @@ def load_proposal_evidence(
                     raise ValueError(f"record {key} disagrees with manifest")
             if verdict.to_dict() != verdicts[selected].to_dict():
                 raise ValueError("record verdict disagrees with linked run")
-            context["trace"] = trace_excerpt(runs[selected][1])
+            context["trace"] = trace_excerpt(
+                runs[selected][1],
+                detail.get("evidence_node_ids", []),
+                detail.get("operation_evidence", []),
+            )
         contexts[index] = context
     passing = []
     seen = set()

@@ -1529,7 +1529,10 @@ def propose_round(
     )
     validate_preflight_profile(profile)
     workdir.mkdir(parents=True, exist_ok=True)
+    from shrlm.optimization.proposal_evidence import EVIDENCE_SELECTOR_VERSION
+
     contract = {
+        "evidence_selector_version": EVIDENCE_SELECTOR_VERSION,
         "prompt_sha256": system_sha,
         "config_sha256": cfg_sha,
         "base_hash": hash_of_serialization(incumbent_serialization),
