@@ -1515,6 +1515,53 @@ def test_changed_profile_refused_before_proposal_calls(tmp_path):
     assert idle._call_count == 0
 
 
+@pytest.mark.parametrize("version", ["EVIDENCE_SELECTOR_VERSION", "DIAGNOSTIC_HISTORY_VERSION"])
+def test_changed_evidence_contract_refuses_paid_replay(tmp_path, monkeypatch, version):
+    import shrlm.optimization.proposal_evidence as evidence_module
+
+    propose_round(
+        BUNDLE, H0, MockLM(responses=["[]"]), tmp_path / "proposals", workdir=tmp_path / "work"
+    )
+    monkeypatch.setattr(evidence_module, version, "changed")
+    idle = MockLM(responses=[])
+    with pytest.raises(ValueError, match="contract changed"):
+        propose_round(BUNDLE, H0, idle, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert idle._call_count == 0
+
+
+@pytest.mark.parametrize(
+    "surface,index,change",
+    [
+        ("S2", 1, "Use IDs"),
+        ("S9", 1, "Inspect labels"),
+        ("S4", 2, "Verify"),
+        ("S4", 1, TEXT_ITEM["behavioral_change"]),
+    ],
+)
+def test_repair_rejects_occupied_ineligible_unrelated_or_unexplained_target(
+    tmp_path, surface, index, change
+):
+    patterns = [
+        make_pattern("incomplete_coverage"),
+        make_pattern("lossy_aggregation"),
+        PATTERN_TEXT,
+    ]
+    keep = edit_item(0, {"kind": "text", "new_text": "Check record IDs."})
+    failed = edit_item(1, {"kind": "text", "new_text": H0.execution_instruction}, surface="S3")
+    repair = edit_item(
+        index,
+        {"kind": "text", "new_text": "Verify the predicate."},
+        surface=surface,
+        behavioral_change=change,
+    )
+    lm = MockLM(responses=[canned_batch(keep, failed), canned_batch(repair)])
+    result = propose_round(
+        {"patterns": patterns}, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work"
+    )
+    assert [w.surface for w in result.written] == ["S2"]
+    assert not result.attempts[-1].accepted and lm._call_count == 2
+
+
 def test_repair_output_budget_exhaustion_keeps_survivor_and_replays(tmp_path):
     from rlm.utils.exceptions import TokenLimitExceededError
 

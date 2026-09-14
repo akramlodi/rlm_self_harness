@@ -8,6 +8,7 @@ held-out aggregates; history exports no task, answer, or trace text.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -21,6 +22,7 @@ from shrlm.optimization.types import Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
 EVIDENCE_SELECTOR_VERSION = "2.0.0"
+DIAGNOSTIC_HISTORY_VERSION = "1.0.0"
 TRACE_EXCERPT_CHARS = 4800
 MAX_TRACE_SNIPPETS = 6
 
@@ -30,6 +32,76 @@ UNSCORED_CAUSES = {
     VerifierCause.WRONG_FORMAT,
     VerifierCause.CONTENT_FILTERED,
 }
+
+OOLONG_SCORE_RE = re.compile(
+    r"score=(0\.\d+|1\.0+) exact=(True|False) "
+    r"kind=(numeric|comparison|date|month_year|list|label|user|string)"
+)
+
+
+def aggregate_quality_diagnostics(
+    verdicts: Sequence[Verdict], environment: str | None
+) -> dict[str, Any]:
+    """Interpret only known verifier formats, never model diagnoses or answer text."""
+    from shrlm.environments.oolong_pairs import recorded_pair_metrics
+
+    supported = environment in {"oolong_pairs", "graphwalks", "oolong"}
+    definition = (
+        {
+            "name": "score" if environment == "oolong" else "f1",
+            "direction": "higher",
+            "aggregation": "all_attempt_mean",
+            "missing_policy": "known_terminal_zero_unknown_unavailable/v1",
+        }
+        if supported
+        else None
+    )
+    values = []
+    n_zero = 0
+    for verdict in verdicts:
+        if not supported:
+            continue
+        if verdict.cause in UNSCORED_CAUSES or (
+            environment == "oolong"
+            and verdict.cause is VerifierCause.NO_ANSWER
+            and verdict.detail == "final line carried an explicit empty marker"
+        ):
+            n_zero += 1
+        elif environment == "oolong":
+            match = OOLONG_SCORE_RE.fullmatch(verdict.detail)
+            if match:
+                values.append(float(match[1]))
+        else:
+            # GraphWalks emits the identical strict set-metric format.
+            metrics = recorded_pair_metrics(verdict)
+            if metrics is not None:
+                values.append(float(metrics["f1"]))
+    unknown = len(verdicts) - len(values) - n_zero
+    return {
+        "definition": definition,
+        "n_attempts": len(verdicts),
+        "n_measured": len(values),
+        "n_known_zero": n_zero,
+        "n_unknown": unknown,
+        "mean": math.fsum(values) / len(verdicts) if verdicts and not unknown else None,
+    }
+
+
+def compare_quality_diagnostics(baseline: dict[str, Any], candidate: dict[str, Any]) -> str:
+    definition = baseline.get("definition")
+    old, new = baseline.get("mean"), candidate.get("mean")
+    if (
+        not definition
+        or definition != candidate.get("definition")
+        or old is None
+        or new is None
+        or not math.isfinite(old)
+        or not math.isfinite(new)
+        or definition.get("direction") not in {"higher", "lower"}
+    ):
+        return "not_assessed"
+    improved = new > old if definition["direction"] == "higher" else new < old
+    return "potentially_promising" if improved else "no_measured_improvement"
 
 
 def pair_diagnostics(verdict: Verdict) -> dict[str, Any]:
@@ -54,7 +126,7 @@ def aggregate_pair_diagnostics(verdicts: Sequence[Verdict]) -> dict[str, Any]:
         "n_unscored": len(verdicts) - len(known),
         "n_missing_legacy_metrics": unaccounted,
         "mean_f1_all_attempts": (
-            sum(float(m["f1"]) for m in known) / len(verdicts)
+            math.fsum(float(m["f1"]) for m in known) / len(verdicts)
             if verdicts and not unaccounted
             else None
         ),
@@ -236,6 +308,7 @@ def load_proposal_evidence(
             "verification_limits": head_tail(detail.get("verification_limits", "unavailable"), 500),
             "level_grounded": record.get("level_grounded", False),
             "task_question": head_tail(str(instance.get("question", "unavailable")), 8000),
+            "verifier_detail": bounded_excerpt(verdict.detail, 2000),
         }
         if is_pairs:
             context["pair_diagnostics"] = pair_diagnostics(verdict)
@@ -328,17 +401,19 @@ def structural_execution_error(verdict: Verdict) -> dict[str, str] | None:
     }
 
 
-def validation_history_diagnostics(validation_path: Path, record: dict[str, Any]) -> dict[str, Any]:
-    """Export only aggregate numbers and a sanitized structural runtime error."""
+def validation_history_data(
+    validation_path: Path, record: dict[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Read internal comparison inputs; identifiers and contract data stay here."""
     links = record.get("links") or {}
     split = (links.get("splits") or {}).get("heldout") or {}
     if not split.get("round_dir"):
-        return {"status": "validation diagnostics unavailable"}
+        return None
     path = (validation_path / split["round_dir"]).resolve()
     if not path.is_relative_to(validation_path.resolve()):
         raise ValueError("validation history link escapes its round")
     if not (path / "runs.jsonl").exists():
-        return {"status": "validation diagnostics unavailable"}
+        return None
     # Durable verdicts contain all exported fields, including structural errors.
     # History must not open large/transient trace bodies just to report numbers.
     instances = [
@@ -349,18 +424,40 @@ def validation_history_diagnostics(validation_path: Path, record: dict[str, Any]
     entries = canonical_manifest_entries(
         load_manifest(path.parent, int(path.name.removeprefix("round_"))), instances
     )
+    contract_path = (validation_path / str(record["subject_id"]) / "evaluation.json").resolve()
+    if not contract_path.is_relative_to(validation_path.resolve()):
+        raise ValueError("validation subject escapes its round")
+    contract = json.loads(contract_path.read_text()) if contract_path.exists() else {}
+    if record.get("harness_hash") and contract.get("harness_hash") != record["harness_hash"]:
+        raise ValueError("validation subject disagrees with its saved harness identity")
+    return entries, contract
+
+
+def history_diagnostics_from_data(
+    entries: list[dict[str, Any]], contract: dict[str, Any]
+) -> dict[str, Any]:
     verdicts = [Verdict.from_dict(entry["verdict"]) for entry in entries]
+    costs = [float(e["cost"]) for e in entries if e.get("cost") is not None]
     diagnostics = {
         "n_attempts": len(verdicts),
         "exact_passes": sum(v.passed for v in verdicts),
         "n_runtime_errors": sum(v.cause is VerifierCause.RUNTIME_ERROR for v in verdicts),
-        "total_cost": sum(float(e["cost"]) for e in entries if e.get("cost") is not None),
+        "terminal_failures": {
+            cause.value: sum(v.cause is cause for v in verdicts)
+            for cause in sorted(UNSCORED_CAUSES, key=lambda cause: cause.value)
+        },
+        "total_cost": math.fsum(costs)
+        if len(costs) == len(entries) and all(math.isfinite(cost) for cost in costs)
+        else None,
+        "n_cost_measurements": len(costs),
     }
     # Environment identity comes from the persisted subject contract, not task data.
-    contract_path = validation_path / str(record["subject_id"]) / "evaluation.json"
-    contract = json.loads(contract_path.read_text()) if contract_path.exists() else {}
-    if (contract.get("verifier_config") or {}).get("environment") == "oolong_pairs":
-        diagnostics["pairs"] = aggregate_pair_diagnostics(verdicts)
+    environment = (contract.get("verifier_config") or {}).get("environment")
+    diagnostics["quality"] = aggregate_quality_diagnostics(verdicts, environment)
+    if environment in {"oolong_pairs", "graphwalks"}:
+        diagnostics["pairs" if environment == "oolong_pairs" else "sets"] = (
+            aggregate_pair_diagnostics(verdicts)
+        )
     diagnostics["first_runtime_error"] = next(
         (
             structural_execution_error(verdict)
@@ -370,3 +467,58 @@ def validation_history_diagnostics(validation_path: Path, record: dict[str, Any]
         None,
     )
     return diagnostics
+
+
+def validation_history_diagnostics(validation_path: Path, record: dict[str, Any]) -> dict[str, Any]:
+    """Export only aggregate numbers and a sanitized structural runtime error."""
+    data = validation_history_data(validation_path, record)
+    return (
+        history_diagnostics_from_data(*data)
+        if data
+        else {"status": "validation diagnostics unavailable"}
+    )
+
+
+def validation_history_progress(
+    validation_path: Path, record: dict[str, Any], baseline: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Advisory comparison owned by the evaluated subject, never its constituents."""
+    result = {
+        "version": DIAGNOSTIC_HISTORY_VERSION,
+        "status": "not_assessed",
+        "reason": "no comparable rejected evaluation",
+        "interpretation": "Descriptive only; v=1 provides no reliable causal estimate. Promotion is unchanged.",
+    }
+    if record.get("decision") != "rejected" or not baseline:
+        return result
+    candidate_data = validation_history_data(validation_path, record)
+    baseline_data = validation_history_data(validation_path, baseline)
+    if candidate_data is None or baseline_data is None:
+        return result
+    candidate_entries, candidate_contract = candidate_data
+    baseline_entries, baseline_contract = baseline_data
+    identity_keys = ("verifier_config", "verifier_type", "repetitions", "validation_protocol")
+    if any(
+        key not in baseline_contract
+        or key not in candidate_contract
+        or baseline_contract[key] != candidate_contract[key]
+        for key in identity_keys
+    ):
+        result["reason"] = "verifier or evaluation contracts are missing or incompatible"
+        return result
+    candidate_set = sorted((entry["instance_id"], entry["attempt"]) for entry in candidate_entries)
+    baseline_set = sorted((entry["instance_id"], entry["attempt"]) for entry in baseline_entries)
+    if candidate_set != baseline_set or len(set(candidate_set)) != len(candidate_set):
+        result["reason"] = "evaluated instance/attempt sets differ or contain duplicates"
+        return result
+    old = history_diagnostics_from_data(*baseline_data)
+    new = history_diagnostics_from_data(*candidate_data)
+    result["status"] = compare_quality_diagnostics(old["quality"], new["quality"])
+    result["reason"] = {
+        "potentially_promising": "primary recorded quality improved despite rejection; consider a materially different refinement",
+        "no_measured_improvement": "primary recorded quality did not improve",
+        "not_assessed": "primary recorded quality is unavailable or incompatible",
+    }[result["status"]]
+    result["baseline"] = old
+    result["candidate"] = new
+    return result

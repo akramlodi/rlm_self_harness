@@ -366,6 +366,9 @@ def proposer_batch(*edits: tuple[int, str]) -> str:
             "pattern_index": index,
             "edit": {"kind": "text", "new_text": new_text},
             "predicted_effect": "the root double-checks before answering",
+            "incumbent_behavior": "Submits the computed result.",
+            "observed_failure": "Does not cross-check the computed result.",
+            "behavioral_change": "Recompute the result before submitting.",
             "regression_risks": ["one extra turn per run"],
         }
         for index, new_text in edits
@@ -1497,6 +1500,9 @@ NO_OP_POLICY_BATCH = (
                 "pattern_index": 0,
                 "edit": {"kind": "policy", "runtime_policy": {}},
                 "predicted_effect": "the root double-checks before answering",
+                "incumbent_behavior": "Submits the computed result.",
+                "observed_failure": "No cross-check is performed.",
+                "behavioral_change": "Recompute before submitting.",
                 "regression_risks": ["one extra turn per run"],
             }
         ]
@@ -2358,6 +2364,9 @@ def test_runtime_failed_proposal_finishes_experiment(
                     "surface": "S9",
                     "edit": {"kind": "code", "source": source},
                     "predicted_effect": "normalize the final answer",
+                    "incumbent_behavior": "Submits the result directly.",
+                    "observed_failure": "The result contract is not checked.",
+                    "behavioral_change": "Check the result contract before submission.",
                     "regression_risks": ["runtime error"],
                 }
             ]
@@ -2374,7 +2383,7 @@ def test_runtime_failed_proposal_finishes_experiment(
         config,
         out,
         verifier=GoldVerifier(),
-        attributor_lm=MockLM(responses=[attribution("lossy_aggregation")] * 2),
+        attributor_lm=MockLM(responses=[attribution("premature_termination")] * 2),
         proposer_lm=MockLM(responses=[proposal]),
         loaders=LOADERS,
         verifier_factory="tests.optimization.test_driver:GoldVerifier",
@@ -2448,12 +2457,15 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
                         prompt[0]["content"],
                     )
                 }
-                self.s9_index = indices["lossy_aggregation"]
+                self.s9_index = indices["premature_termination"]
                 s2 = {
                     "pattern_index": indices["incomplete_coverage"],
                     "surface": "S2",
                     "edit": {"kind": "text", "new_text": "Classify records with stable row IDs."},
                     "predicted_effect": "Preserve record identity and coverage",
+                    "incumbent_behavior": "Submits the result directly.",
+                    "observed_failure": "The result contract is not checked.",
+                    "behavioral_change": "Check the result contract before submission.",
                     "regression_risks": [],
                 }
                 condition = "answer.startswith('[')"
@@ -2472,6 +2484,9 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
                         "        return AnswerDecision.accept()\n    return AnswerDecision.accept(answer)\n",
                     },
                     "predicted_effect": "Preserve valid answers",
+                    "incumbent_behavior": "Submits the result directly.",
+                    "observed_failure": "The result contract is not checked.",
+                    "behavioral_change": "Check the result contract before submission.",
                     "regression_risks": ["branch error"],
                 }
             )
@@ -2488,7 +2503,7 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
         config,
         out,
         attributor_lm=MockLM(
-            responses=[attribution("incomplete_coverage"), attribution("lossy_aggregation")] * 2
+            responses=[attribution("incomplete_coverage"), attribution("premature_termination")] * 2
         ),
         proposer_lm=proposer,
         loaders={**LOADERS, "oolong_pairs": pair_loader},

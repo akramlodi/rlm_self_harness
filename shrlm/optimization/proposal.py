@@ -631,6 +631,21 @@ def _render_history_block(
             if reasons:
                 line += f" ({reasons})"
             lines.append(line)
+            if not constituent_ids:
+                lines.append(
+                    "    behavior: "
+                    + json.dumps(
+                        {
+                            name: record.get(name, "unavailable (legacy proposal)")
+                            for name in BEHAVIOR_FIELDS
+                        }
+                    )
+                )
+            if record.get("diagnostic_progress"):
+                lines.append(
+                    "    diagnostic progress: "
+                    + json.dumps(record["diagnostic_progress"], sort_keys=True)
+                )
             if record.get("diagnostics"):
                 lines.append(
                     "    measured batch: " + json.dumps(record["diagnostics"], sort_keys=True)
@@ -641,6 +656,15 @@ def _render_history_block(
                         f"    member {member.get('surface')}: "
                         + str(member.get("predicted_effect", "predicted effect unavailable"))
                         + " (shares the combined verdict; no individual score)"
+                    )
+                    lines.append(
+                        "      behavior: "
+                        + json.dumps(
+                            {
+                                name: member.get(name, "unavailable (legacy proposal)")
+                                for name in BEHAVIOR_FIELDS
+                            }
+                        )
                     )
     return "\n".join(lines)
 
@@ -910,6 +934,10 @@ def render_prompt(
         "for the same reason). A candidate identical to the current surface is "
         "refused before validation and must not be re-proposed: a not_materialized "
         "entry below means the incumbent already contained that edit.\n"
+        "A rejected but potentially_promising direction may merit a materially different "
+        "refinement. Keep its rejection reasons and contrary metrics in view; do not replay "
+        "the same edit or attribute a combined gain to one member. These descriptive "
+        "diagnostics do not change promotion; v=1 is not a reliable causal estimate.\n"
         + _render_history_block(prior_history),
         EDIT_FORMATS
         % {
@@ -1637,10 +1665,14 @@ def propose_round(
     )
     validate_preflight_profile(profile)
     workdir.mkdir(parents=True, exist_ok=True)
-    from shrlm.optimization.proposal_evidence import EVIDENCE_SELECTOR_VERSION
+    from shrlm.optimization.proposal_evidence import (
+        DIAGNOSTIC_HISTORY_VERSION,
+        EVIDENCE_SELECTOR_VERSION,
+    )
 
     contract = {
         "evidence_selector_version": EVIDENCE_SELECTOR_VERSION,
+        "diagnostic_history_version": DIAGNOSTIC_HISTORY_VERSION,
         "prompt_sha256": system_sha,
         "config_sha256": cfg_sha,
         "base_hash": hash_of_serialization(incumbent_serialization),

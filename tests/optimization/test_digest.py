@@ -547,7 +547,7 @@ class TestDigestVersion:
     def test_version_bumped_for_the_skill_lines(self):
         # 1.1.0 was the n/a aggregate rendering; 1.2.0 adds the
         # available_skills / loaded_skills pair under a non-empty index.
-        assert DIGEST_VERSION == "1.3.0"
+        assert DIGEST_VERSION == "1.4.0"
 
     def test_digest_version_is_recorded_per_bundle(self):
         lm = MockLM(response_fn=scripted_response)
@@ -558,7 +558,7 @@ class TestDigestVersion:
             harness_version="H0",
             split_id="held_in_v1",
         )
-        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.3.0"
+        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.4.0"
         assert result.bundle.to_dict()["config"]["digest_version"] == "1.3.0"
 
     def test_attribution_cache_key_does_not_include_digest_version(self):

@@ -976,6 +976,7 @@ def recorded_pair_metrics(verdict: Verdict) -> dict[str, float | int] | None:
         VerifierCause.RUNTIME_ERROR,
         VerifierCause.RESOURCE_TERMINATED,
         VerifierCause.WRONG_FORMAT,
+        VerifierCause.CONTENT_FILTERED,
     ):
         return None
     match = PAIR_METRICS_RE.fullmatch(verdict.detail)

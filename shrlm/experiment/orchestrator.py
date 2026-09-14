@@ -402,7 +402,10 @@ def load_round_history(
     list and contributes no synthesized records; the round still renders as
     an entry with its outcome.
     """
-    from shrlm.optimization.proposal_evidence import validation_history_diagnostics
+    from shrlm.optimization.proposal_evidence import (
+        validation_history_diagnostics,
+        validation_history_progress,
+    )
 
     decision = _load_marker(round_path / ROUND_MARKER_FILENAME, ROUND_MARKER_FORMAT)
     records: list[dict[str, Any]] = []
@@ -417,10 +420,13 @@ def load_round_history(
             )
         proposals_dir = round_path / PROPOSALS_DIR
         for record in ledger_records:
-            effect = _proposal_predicted_effect(proposals_dir, record.get("subject_id"))
-            enriched = {**record, "predicted_effect": effect} if effect else dict(record)
+            enriched = {**record, **proposal_behavior(proposals_dir, record.get("subject_id"))}
             if record.get("links"):
                 enriched["diagnostics"] = validation_history_diagnostics(validation_path, record)
+            if record.get("decision") != "bundled":
+                enriched["diagnostic_progress"] = validation_history_progress(
+                    validation_path, record, ledger_decision.get("baseline")
+                )
             records.append(enriched)
     marker = _load_marker(round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT)
     for failure in marker.get("materialization_failures", []):
@@ -451,20 +457,24 @@ def load_round_history(
     return records, decision
 
 
-def _proposal_predicted_effect(proposals_dir: Path, candidate_id: Any) -> str | None:
-    """A written candidate's own predicted effect, or None when it has no
-    readable ``proposal.json`` (the baseline, the merged subject)."""
+def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, str]:
+    """Load proposal rationale additively; old artifacts have no invented explanation."""
+    from shrlm.optimization.candidates import BEHAVIOR_FIELDS
+
     if not candidate_id:
-        return None
+        return {}
     path = proposals_dir / str(candidate_id) / PROPOSAL_FILENAME
     try:
         payload = json.loads(path.read_text())
     except (OSError, ValueError):
-        return None
+        return {}
     if not isinstance(payload, dict) or payload.get("format") != PROPOSAL_FORMAT:
-        return None
-    effect = payload.get("predicted_effect")
-    return str(effect) if effect else None
+        return {}
+    return {
+        name: payload[name]
+        for name in ("predicted_effect", *BEHAVIOR_FIELDS)
+        if isinstance(payload.get(name), str) and payload[name].strip()
+    }
 
 
 def _load_marker(path: Path, expected_format: str) -> dict[str, Any]:
