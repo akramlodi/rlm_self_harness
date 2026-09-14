@@ -394,6 +394,10 @@ class TestPipelineSeams:
                     "failing_level": "root",
                     "evidence_node_ids": ["r"],
                     "symptom_summary": "stopped before checking the answer",
+                    "operation_evidence": [
+                        {"node_id": "r", "observation": "The root submitted the produced answer."}
+                    ],
+                    "verification_limits": "Intermediate results were not semantically verified.",
                 }
             )
             + "\n```"

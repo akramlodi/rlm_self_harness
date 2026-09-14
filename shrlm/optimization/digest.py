@@ -34,7 +34,7 @@ from shrlm.optimization.walker import iter_skill_loads
 # the trace's run-start record names a skill index (a loader was installed,
 # i.e. S10 was non-empty). A trace without one -- every pre-S10 trace, and
 # every trace under an empty S10 -- renders byte-identically to 1.1.0.
-DIGEST_VERSION = "1.3.0"
+DIGEST_VERSION = "1.4.0"
 
 DEFAULT_CHAR_BUDGET = 12000
 DEFAULT_FOCUS_K = 4
@@ -162,6 +162,13 @@ def render_header(
         f"gold_answer: {head_tail(verdict.gold, ANSWER_CHARS)}",
         f"produced_answer: {head_tail(verdict.produced, ANSWER_CHARS)}",
         f"verifier_cause: {verdict.cause.value if verdict.cause else 'none'}",
+        *(
+            [f"verifier_detail: {head_tail(verdict.detail, ANSWER_CHARS)}"]
+            if verdict.detail
+            and (verifier_environment != "oolong_pairs" or pair_metrics is None)
+            and verdict.cause is not VerifierCause.RUNTIME_ERROR
+            else []
+        ),
         *(
             [f"execution_error: {head_tail(verdict.detail, ANSWER_CHARS)}"]
             if verdict.cause is VerifierCause.RUNTIME_ERROR

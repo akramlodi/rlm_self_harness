@@ -21,6 +21,7 @@ from shrlm.optimization.types import (
     FailureSignature,
     MiningConfig,
     NodeKind,
+    OperationEvidence,
     Verdict,
     iter_nodes,
 )
@@ -97,6 +98,17 @@ class TestVerdict:
         failing = Verdict(passed=False, cause=VerifierCause.SPURIOUS, gold="B", produced="B,C")
         assert passing.to_dict()["cause"] is None
         assert failing.to_dict()["cause"] == "spurious"
+
+
+def test_legacy_attribution_detail_and_operation_round_trip():
+    legacy = AttributionDetail("missing result", ["r"])
+    assert "operation_evidence" not in legacy.to_dict()
+    assert AttributionDetail(**legacy.to_dict()) == legacy
+    legacy.operation_evidence = [OperationEvidence("r", "Merge discarded a return.", 2, 0)]
+    legacy.verification_limits = "Labels were not verified."
+    saved = legacy.to_dict()
+    operations = [OperationEvidence(**entry) for entry in saved.pop("operation_evidence")]
+    assert AttributionDetail(**saved, operation_evidence=operations) == legacy
 
 
 def leaf(node_id: str, parent_id: str, depth: int) -> CallNode:

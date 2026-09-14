@@ -54,6 +54,10 @@ def canned_attribution(evidence: list[str] | None = None) -> str:
         "failing_level": "root",
         "evidence_node_ids": ["r"] if evidence is None else evidence,
         "symptom_summary": "the merge step dropped a sub-result",
+        "operation_evidence": [
+            {"node_id": "r", "observation": "The root submitted the produced answer."}
+        ],
+        "verification_limits": "Intermediate results were not semantically verified.",
     }
     return "```json\n" + json.dumps(payload) + "\n```"
 
@@ -67,6 +71,10 @@ OFF_VOCABULARY = (
             "failing_level": "root",
             "evidence_node_ids": ["r"],
             "symptom_summary": "made up a label",
+            "operation_evidence": [
+                {"node_id": "r", "observation": "The root submitted the produced answer."}
+            ],
+            "verification_limits": "Intermediate results were not semantically verified.",
         }
     )
     + "\n```"
@@ -131,6 +139,40 @@ def attribution_inputs(run: dict[str, Any] | None = None) -> tuple[TraceDigest, 
         verdict=make_verdict(),
     )
     return digest, root, make_verdict()
+
+
+def test_operation_evidence_is_validated_and_preserves_verification_limits():
+    _, root, _ = attribution_inputs()
+    payload = json.loads(canned_attribution().split("```json\n")[1].split("\n```")[0])
+    payload["operation_evidence"] = [
+        {
+            "node_id": "r",
+            "iteration_index": root.iterations[0].index,
+            "code_block_index": 0,
+            "observation": "The root consumed the returned records.",
+        }
+    ]
+    payload["verification_limits"] = "Record coverage is visible; label correctness is unverified."
+    attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)
+    *_, detail = attributor.validate(payload, root, UNGROUNDED)
+    assert detail.to_dict()["operation_evidence"] == payload["operation_evidence"]
+    assert detail.to_dict()["verification_limits"] == payload["verification_limits"]
+    payload["operation_evidence"][0]["code_block_index"] = 999
+    with pytest.raises(AttributionRejection, match="operation_evidence"):
+        attributor.validate(payload, root, UNGROUNDED)
+
+
+def test_causal_diagnosis_needs_operation_evidence():
+    _, root, _ = attribution_inputs()
+    payload = json.loads(canned_attribution().split("```json\n")[1].split("\n```")[0])
+    payload["operation_evidence"] = []
+    payload["verification_limits"] = "The operation is not visible."
+    attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)
+    with pytest.raises(AttributionRejection, match="operation_evidence"):
+        attributor.validate(payload, root, UNGROUNDED)
+    payload["causal_status"] = "unattributed"
+    *_, detail = attributor.validate(payload, root, UNGROUNDED)
+    assert detail.verification_limits == payload["verification_limits"]
 
 
 def wide_run(n_children: int = 41) -> dict[str, Any]:
@@ -208,6 +250,10 @@ class TestReAskAudit:
                     "failing_level": "root",
                     "evidence_node_ids": ["r"],
                     "symptom_summary": "a huge made-up label",
+                    "operation_evidence": [
+                        {"node_id": "r", "observation": "The root submitted the produced answer."}
+                    ],
+                    "verification_limits": "Intermediate results were not semantically verified.",
                 }
             )
             + "\n```"
@@ -327,6 +373,10 @@ class TestModeSeparation:
             "agent_mechanism": "lossy_aggregation",
             "evidence_node_ids": ["r"],
             "symptom_summary": "a sub-call returned a wrong local result",
+            "operation_evidence": [
+                {"node_id": "r", "observation": "The root submitted the produced answer."}
+            ],
+            "verification_limits": "Intermediate results were not semantically verified.",
         }
 
         with pytest.raises(AttributionRejection, match="failing_level") as excinfo:

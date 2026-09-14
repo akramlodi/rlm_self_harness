@@ -12,17 +12,254 @@ from shrlm.harness_identity import serialize_harness
 from shrlm.optimization.driver import RoundPersistenceError, load_round, run_round
 from shrlm.optimization.proposal import render_prompt
 from shrlm.optimization.proposal_evidence import (
+    TRACE_EXCERPT_CHARS,
     aggregate_pair_diagnostics,
+    aggregate_quality_diagnostics,
+    compare_quality_diagnostics,
     load_proposal_evidence,
     pair_diagnostics,
     structural_execution_error,
+    trace_excerpt,
     validation_history_diagnostics,
+    validation_history_progress,
 )
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
 from shrlm.rlm_harness import H0
+from tests.optimization.fixtures import as_completion, code_block, completion_dict, iteration_entry
 from tests.optimization.test_driver import ClientFactory, final, make_round_config
 from tests.optimization.test_proposal import PATTERN_CODE_S9, PATTERN_TEXT
+
+
+@pytest.mark.parametrize(
+    "environment,detail,name",
+    [
+        ("oolong_pairs", "precision=0.800 recall=0.800 f1=0.800 missing=2 extra=1", "f1"),
+        ("graphwalks", "precision=0.800 recall=0.800 f1=0.800 missing=2 extra=1", "f1"),
+        ("oolong", "score=0.800 exact=False kind=numeric", "score"),
+    ],
+)
+def test_quality_uses_trusted_verifier_detail_with_all_attempt_denominator(
+    environment, detail, name
+):
+    scored = Verdict(False, VerifierCause.WRONG_VALUE, gold="", produced="", detail=detail)
+    failed = Verdict(False, VerifierCause.WRONG_FORMAT, gold="", produced="", detail="CANARY 0.99")
+    quality = aggregate_quality_diagnostics([scored, failed], environment)
+    assert quality["definition"]["name"] == name
+    assert quality["mean"] == 0.4
+    assert compare_quality_diagnostics({**quality, "mean": 0.3}, quality) == "potentially_promising"
+    assert quality["n_measured"] == 1 and quality["n_known_zero"] == 1
+    legacy = replace(scored, detail="legacy 0.99")
+    assert aggregate_quality_diagnostics([scored, legacy], environment)["mean"] is None
+    assert aggregate_quality_diagnostics([failed], environment)["mean"] == 0
+
+
+def test_explicit_empty_oolong_is_zero_but_unknown_detail_is_not_guessed():
+    empty = Verdict(
+        False,
+        VerifierCause.NO_ANSWER,
+        gold="",
+        produced="",
+        detail="final line carried an explicit empty marker",
+    )
+    assert aggregate_quality_diagnostics([empty], "oolong")["mean"] == 0
+    assert (
+        aggregate_quality_diagnostics([replace(empty, detail="old empty")], "oolong")["mean"]
+        is None
+    )
+    assert aggregate_quality_diagnostics([empty], "unsupported")["mean"] is None
+    for detail in (
+        "score=nan exact=False kind=numeric",
+        "score=1.100 exact=False kind=numeric",
+        "score=0.900 exact=False kind=CANARY",
+        "score=0.900 exact=False kind=numeric CANARY",
+    ):
+        assert (
+            aggregate_quality_diagnostics([replace(empty, detail=detail)], "oolong")["mean"] is None
+        )
+
+
+def test_progress_obeys_declared_direction_and_requires_matching_definition():
+    baseline = {"definition": {"name": "error", "direction": "lower"}, "mean": 0.8}
+    candidate = {**baseline, "mean": 0.6}
+    assert compare_quality_diagnostics(baseline, candidate) == "potentially_promising"
+    assert compare_quality_diagnostics(candidate, baseline) == "no_measured_improvement"
+    assert compare_quality_diagnostics(candidate, candidate) == "no_measured_improvement"
+    assert compare_quality_diagnostics(baseline, {**candidate, "definition": {}}) == "not_assessed"
+
+
+def test_rejected_history_preserves_partial_gain_and_rejection_without_payloads(
+    tmp_path, monkeypatch
+):
+    records = []
+    saved_paths = []
+    for subject, values in (
+        ("baseline", [0.5, 0.6, 0.7, 0.3, 0.2, 0.8, 0.4, 0.888, 1, 1]),
+        ("merged", [0.8, 0.85, 0.9, 0.7, 0.7, 0.8, 0.911, 0.9, 1, None]),
+    ):
+        path, _, _ = mining_fixture(tmp_path / subject / "heldout", monkeypatch, attempts=10)
+        entries = [json.loads(line) for line in (path / "runs.jsonl").read_text().splitlines()]
+        for entry, value in zip(entries, values, strict=True):
+            verdict = Verdict(
+                value == 1,
+                None if value == 1 else VerifierCause.WRONG_VALUE,
+                gold="GOLD CANARY",
+                produced="ANSWER CANARY",
+                detail=f"precision=0.800 recall=0.800 f1={value:.3f} missing=2 extra=3"
+                if value is not None
+                else "ERROR CANARY",
+            )
+            if value is None:
+                verdict = replace(verdict, cause=VerifierCause.WRONG_FORMAT)
+            entry.update(
+                verdict=verdict.to_dict(),
+                passed=verdict.passed,
+                cause=verdict.cause.value if verdict.cause else None,
+            )
+        (path / "runs.jsonl").write_text("\n".join(json.dumps(e) for e in entries))
+        contract = {
+            "verifier_config": OolongPairsVerifier().config(),
+            "verifier_type": "pairs",
+            "repetitions": 10,
+            "validation_protocol": "heldout-batch/v1",
+        }
+        (path.parents[1] / "evaluation.json").write_text(json.dumps(contract))
+        records.append(
+            {
+                "subject_id": subject,
+                "decision": "rejected",
+                "links": {"splits": {"heldout": {"round_dir": str(path.relative_to(tmp_path))}}},
+            }
+        )
+        saved_paths.append(path / "runs.jsonl")
+    before = [path.read_bytes() for path in saved_paths]
+    progress = validation_history_progress(tmp_path, records[1], records[0])
+    assert progress["status"] == "potentially_promising"
+    assert progress["baseline"]["quality"]["mean"] == pytest.approx(0.6388)
+    assert progress["candidate"]["quality"]["mean"] == pytest.approx(0.7561)
+    assert progress["baseline"]["exact_passes"] == 2
+    assert progress["candidate"]["exact_passes"] == 1
+    assert progress["candidate"]["pairs"]["counts_denominator"] == 9
+    assert "CANARY" not in json.dumps(progress) and "held-in" not in json.dumps(progress)
+    assert before == [path.read_bytes() for path in saved_paths]
+    assert (
+        validation_history_progress(tmp_path, {**records[1], "decision": "bundled"}, records[0])[
+            "status"
+        ]
+        == "not_assessed"
+    )
+    entries[0]["attempt"] = 11
+    saved_paths[1].write_text("\n".join(json.dumps(e) for e in entries))
+    assert validation_history_progress(tmp_path, records[1], records[0])["status"] == "not_assessed"
+    saved_paths[1].write_bytes(before[1])
+    contract["verifier_config"] = {"environment": "graphwalks"}
+    (tmp_path / "merged/evaluation.json").write_text(json.dumps(contract))
+    assert validation_history_progress(tmp_path, records[1], records[0])["status"] == "not_assessed"
+
+
+def coverage_trace():
+    child = completion_dict(
+        prompt="Classify record IDs.", response='[[0, "entity"]]', iterations=[], max_depth=2
+    )
+    codes = [
+        code_block(code="print(context[:100])", stdout="INPUT PREVIEW"),
+        code_block(code="records = parse(context)"),
+        code_block(code="results = rlm_query_batched(chunks)", rlm_calls=[child]),
+        code_block(code="labels = parse_returns(results)"),
+        code_block(
+            code="missing = set(record_ids) - set(labels)",
+            stdout="Total classified: 188\nMissing indices: []",
+        ),
+        code_block(code="answer['ready'] = True"),
+    ]
+    return as_completion(
+        completion_dict(
+            prompt="Compute qualifying pairs.",
+            response="[(1, 2)]",
+            iterations=[
+                iteration_entry(index=i, response="", code_blocks=[b])
+                for i, b in enumerate(codes, 1)
+            ],
+            max_depth=2,
+        )
+    )
+
+
+def test_cited_call_reveals_later_coverage_check_and_child_contract():
+    excerpt = trace_excerpt(coverage_trace(), ["r/i2/b0/c0"])
+    rendered = json.dumps(excerpt)
+    assert "Missing indices: []" in rendered
+    assert "Classify record IDs" in rendered
+    assert "INPUT PREVIEW" not in rendered
+    assert "answer['ready']" not in rendered
+    assert excerpt == trace_excerpt(coverage_trace(), ["r/i2/b0/c0"] * 5)
+
+
+def test_explicit_operation_wins_and_unresolvable_citation_is_labelled():
+    excerpt = trace_excerpt(
+        coverage_trace(),
+        [],
+        [
+            {
+                "node_id": "r",
+                "iteration_index": 5,
+                "code_block_index": 0,
+                "observation": "All parsed record IDs covered.",
+            }
+        ],
+    )
+    assert excerpt["snippets"][0]["iteration_index"] == 5
+    assert "Missing indices: []" in json.dumps(excerpt)
+    fallback = trace_excerpt(coverage_trace(), ["unknown"])
+    assert "fallback" in fallback["selection"]
+    assert "unresolved" in fallback["selection"]
+
+
+def test_nested_operation_keeps_its_node_and_payload_budget():
+    child = coverage_trace().to_dict()
+    for iteration in child["metadata"]["iterations"]:
+        for block in iteration["code_blocks"]:
+            block["code"] += "# large\n" * 1000
+            block["result"]["stdout"] = "large output\n" * 1000
+    outer = as_completion(
+        completion_dict(
+            prompt="outer",
+            response="answer",
+            max_depth=3,
+            iterations=[
+                iteration_entry(
+                    index=5,
+                    response="",
+                    code_blocks=[
+                        code_block(code="outer_result = rlm_query(context)", rlm_calls=[child])
+                    ],
+                )
+            ],
+        )
+    )
+    excerpt = trace_excerpt(
+        outer,
+        [],
+        [
+            {
+                "node_id": "r/i0/b0/c0",
+                "iteration_index": 5,
+                "code_block_index": 0,
+                "observation": "coverage check inside child",
+            }
+        ],
+    )
+    assert excerpt["snippets"][0]["node_id"] == "r/i0/b0/c0"
+    assert "missing =" in excerpt["snippets"][0]["code"]
+    assert (
+        sum(
+            len(s.get(k, ""))
+            for s in excerpt["snippets"]
+            for k in ("code", "stdout", "stderr", "prompt", "response")
+        )
+        <= TRACE_EXCERPT_CHARS
+    )
+    assert "truncated" in json.dumps(excerpt)
 
 
 def test_saved_metrics_and_all_attempt_denominators():
@@ -104,7 +341,7 @@ def test_evidence_joins_exact_attempt_and_does_not_rewrite_artifacts(tmp_path, m
     assert context["missing_examples"] == [(1, 3)]
     assert context["pair_diagnostics"]["metrics"]["f1"] == 0.667
     assert context["task_question"] == "ACTUAL PREDICATE and LABEL VOCABULARY"
-    assert "root_code" in context["trace"]
+    assert "snippets" in context["trace"]
     assert before == {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in before}
     prompt, _ = render_prompt(
         bundle["patterns"],
@@ -158,6 +395,10 @@ def test_history_keeps_heldout_payloads_out_and_preserves_saved_bytes(tmp_path, 
     assert "pairs" not in validation_history_diagnostics(tmp_path, record)
     contract_path.unlink()
     assert "pairs" not in validation_history_diagnostics(tmp_path, record)
+    # Legacy ledgers can retain subject hashes after an old evaluation contract
+    # becomes unavailable. Missing context is not evidence of identity corruption.
+    legacy = validation_history_diagnostics(tmp_path, {**record, "harness_hash": "legacy-hash"})
+    assert legacy["quality"]["definition"] is None
 
 
 def test_evidence_rejects_cross_instance_run_links(tmp_path, monkeypatch):
@@ -198,7 +439,9 @@ def test_record_recipe_is_conditional_on_environment_and_eligible_surface(monkey
     from shrlm.optimization.taxonomy import AgentMechanism, EditableSurface
 
     monkeypatch.setitem(
-        MECHANISM_SURFACES, AgentMechanism.LOSSY_AGGREGATION, (EditableSurface.ANSWER_MIDDLEWARE,)
+        MECHANISM_SURFACES,
+        AgentMechanism.PREMATURE_TERMINATION,
+        (EditableSurface.ANSWER_MIDDLEWARE,),
     )
     prompt, _ = render_prompt(
         [PATTERN_CODE_S9],

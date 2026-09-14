@@ -119,6 +119,10 @@ GROUNDED_ATTRIBUTION = (
             "agent_mechanism": "lossy_aggregation",
             "evidence_node_ids": ["r"],
             "symptom_summary": "a sub-call returned a wrong local result",
+            "operation_evidence": [
+                {"node_id": "r", "observation": "The root submitted the produced answer."}
+            ],
+            "verification_limits": "Intermediate results were not semantically verified.",
         }
     )
     + "\n```"

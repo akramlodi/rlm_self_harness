@@ -174,14 +174,21 @@ from the same checkout: they share nothing but the (read-only) datasets and the 
 ### Proposal quality and OOLONG-Pairs feedback
 
 Proposal generation now checks edited candidates locally and can repair failed
-members once while retaining valid siblings. The proposer sees complete current
-surfaces, concrete held-in diagnoses and pair metrics, and previous combined
-outcomes with runtime diagnostics. OOLONG-Pairs guidance encourages stable record
-IDs, classification coverage, and Python aggregation before pair construction.
+members once while retaining valid siblings; repair can move the same failed
+pattern to another eligible, unoccupied surface. Diagnoses cite operations and
+verification limits, and the proposer sees the relevant caller and consumer code.
+Each proposal explains the incumbent behavior, remaining failure and concrete change.
+OOLONG-Pairs guidance encourages consistent record-ID contracts, coverage checks
+before lossy mapping, and Python aggregation before pair construction.
+Rejected candidates with comparable recorded quality gains remain visible as
+potentially promising in history, using F1 for pairs/GraphWalks and score for OOLONG.
+Exact outcomes and regressions remain visible, and `v=1` provides no causal guarantee.
 Validation still uses one baseline and one combined candidate on held-out data.
 See the [proposal contract](shrlm/docs/harness-proposal-interface.md),
 [metric definitions](shrlm/docs/experiment-metrics.md), and
 [OOLONG-Pairs investigation](docs/analysis/oolong-pairs-2026-09-13/README.md).
+The [methodology note](docs/analysis/2026-09-14-proposal-quality-methodology-notes.md)
+records these changes for a future paper update.
 
 ### How the analysis populates
 

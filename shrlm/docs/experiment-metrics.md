@@ -95,3 +95,29 @@ exception payloads are excluded. These are read-only projections; existing
 bundles, verdicts, summaries, ledgers and completed experiments are not rewritten.
 Keep the current round's held-in traces available until its proposal stage is
 sealed, so the diagnosis excerpts can be verified.
+
+## Generalized diagnostic progress in proposal history
+
+`Verdict.detail` is verifier-authored evidence; `AttributionDetail` is the model's
+diagnosis. Bounded verifier detail is available in held-in diagnosis even when no
+numeric adapter exists. Held-out history accepts only strict known verifier formats:
+OOLONG Pairs and GraphWalks use F1; OOLONG uses `score`. All three declare higher as
+better and use an all-attempt mean. OOLONG's exact verifier-authored explicit-empty-marker
+failure also contributes zero. Unknown legacy measurements remain unavailable; arbitrary
+numbers and nonfinite/out-of-range values are never interpreted as quality.
+
+A rejected evaluated subject receives `potentially_promising` when its primary diagnostic
+strictly improves over its own baseline under the same verifier/type, repetition and
+protocol contract and instance/attempt set. Other comparable outcomes receive
+`no_measured_improvement`; missing or incompatible evidence receives `not_assessed`.
+The comparison uses each measure's declared direction, not its name or whichever
+auxiliary count happens to improve. Identifiers are checked internally and never exported.
+Exact passes, terminal failures, cost and measured count denominators remain visible.
+
+The annotation belongs to the combined subject when edits were evaluated together.
+Member behavioral descriptions provide context without individual measured credit.
+The proposer may refine a promising direction with a materially different edit, while
+retaining rejection reasons and contrary evidence. With `v=1`, these observations are
+descriptive and do not establish a reliable causal improvement. Promotion gates, validation
+calls, patience and ranking weights are unchanged. The derived projection is versioned;
+loading history does not rewrite any saved evaluation or ledger.

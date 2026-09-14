@@ -210,7 +210,12 @@ different declared id is preserved in the rejection reason.
 
 The prompt shows each eligible incumbent surface in full once, shared by all
 patterns. Held-in context includes a representative's saved symptom, evidence
-node IDs, actual task question, pair diagnostics, and bounded trace observations.
+node IDs, verifier detail, actual task question, pair diagnostics, and bounded trace observations.
+Attribution cites an observed operation and records verification limits. It distinguishes
+input coverage, label uncertainty and predicate/aggregation errors: complete parsed IDs
+do not prove complete input parsing or correct labels. The proposer sees cited operations,
+the child caller and up to two following consumer blocks within a 4,800-character payload
+budget (at most six snippets). Missing citations use an explicitly labelled structural fallback.
 Up to two passing held-in examples show behavior to preserve. Missing evidence
 is explicit; ambiguous legacy attempt links never select an arbitrary trace.
 
@@ -219,6 +224,15 @@ or `AnswerDecision.redirect(nudge)`. There is no `reject` method. Inventory valu
 are redacted `(type_name, length)` tuples, not variable contents. Literal braces
 in text instruction templates must be doubled; code and skill bodies are not
 format templates.
+Lossy aggregation routes primarily to S3, with S4 as its alternate; S9 is ineligible.
+For semantic errors diagnosed as `other`, the prompt also prefers S3/S4. S9 remains
+appropriate for answer-visible defects under other eligible mechanisms.
+
+New candidates must provide `incumbent_behavior`, `observed_failure` and
+`behavioral_change` before `edit`, each a nonempty string of at most 600 characters.
+Explicit no-change values and byte-identical edits are rejected. Repeating instructions
+more emphatically is insufficient justification, but semantic novelty is not machine-proven.
+Historical v1 proposals without these additive fields still load; history marks them unavailable.
 
 Edited OOLONG-Pairs S9 functions also face synthetic valid-answer probes in the
 timed loader subprocess: bracketed and newline pairs, an explicit empty marker,
@@ -228,17 +242,19 @@ The valid empty marker is `No valid pairs found.`, not `[]`. The host pins the
 profile in `proposals_complete.json`; old markers use the legacy generic checks.
 Unchanged incumbent middleware does not receive the new domain probes.
 
-After the first structurally valid batch, materialization and loader checks run
-locally. Valid members keep their original slots and content. Failed members get
+After a parseable batch within the count cap, each member is checked independently.
+All members of a duplicate-pattern or duplicate-surface group are rejected, while
+independent valid members keep their original slots and content. Failed members get
 at most **one repair response**, within the existing total attempt/output caps;
-repairs must retain each failed member's pattern and surface. Omission withdraws
+repairs must retain each failed member's pattern but may choose another eligible,
+unoccupied surface with a revised behavioral explanation. Omission withdraws
 that member. Malformed repair or output exhaustion preserves the valid siblings.
 Transport, credential, integrity, and interruption failures retain their existing
 handling. A gate process that cannot spawn raises a host error without spending
 the repair response. Only final survivors are published for combined validation.
 
 Scratch files live under `work/attempt_NN/`; the proposal contract pins prompt,
-validator, profile, incumbent and caps. Cache keys include the actual repair
+validator, evidence-selector/history-renderer versions, profile, incumbent and caps. Cache keys include the actual repair
 request and retained hashes. Before publishing final candidates,
 `work/proposal_result.json` freezes survivors and their complete attempt outcomes;
 an interrupted publication replays this checkpoint without re-running gates.
@@ -254,6 +270,9 @@ stage from replaying. Sealed historical stages use their persisted artifacts.
 
 For eligible OOLONG-Pairs S2/S3/S4 proposals, the prompt offers a record-preserving
 workflow: stable original row IDs before chunking; child ID/label results joined
-by ID; coverage checks and bounded repairs; then root-side counts, dates, task
+by ID; duplicate detection before dictionary construction, missing/unknown ID and label-vocabulary
+checks, and bounded repairs; then root-side counts, dates, task
 predicates and qualifying pairs in Python. This is proposal guidance, not a
 built-in solver or an edit to the initial harness.
+The smallest effective edit may replace or clearly scope a conflicting aggregate-count
+example. Count-only examples can remain where sufficient for the actual task predicate.

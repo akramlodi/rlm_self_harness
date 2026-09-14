@@ -19,6 +19,7 @@ from shrlm.harness_identity import serialize_harness
 from shrlm.optimization.candidates import LoadedCandidate, changed_surfaces, load_candidates
 from shrlm.optimization.driver import RoundPersistenceError
 from shrlm.optimization.proposal import (
+    OOLONG_RECORD_GUIDANCE,
     SKILL_BODY_MAX_CHARS,
     SKILL_DESCRIPTION_MAX_CHARS,
     SKILL_MAX_ENTRIES,
@@ -73,7 +74,7 @@ def make_pattern(mechanism: str, verifier_cause: str = "wrong_value") -> dict[st
 PATTERN_TEXT = make_pattern("skipped_verification")  # -> S4
 PATTERN_POLICY = make_pattern("iteration_budget_exhaustion")  # -> S6
 PATTERN_CODE_S7 = make_pattern("unparsed_child_output")  # -> S7
-PATTERN_CODE_S9 = make_pattern("lossy_aggregation")  # -> S9
+PATTERN_CODE_S9 = make_pattern("premature_termination")  # explicit S9 below
 PATTERN_REPL_HELPER = make_pattern("repl_execution_fault")  # -> S8
 PATTERN_SKILLS = make_pattern("unconsulted_procedure")  # -> S10
 PATTERN_OTHER = make_pattern("other")  # unaddressable
@@ -117,10 +118,15 @@ SKILL_RECORD = {
 def edit_item(pattern_index: int, edit: dict[str, Any], **overrides: Any) -> dict[str, Any]:
     item = {
         "pattern_index": pattern_index,
+        "incumbent_behavior": "Submits the computed result.",
+        "observed_failure": "The trace does not compare the aggregate with its inputs.",
+        "behavioral_change": "Compare the aggregate with its inputs before committing.",
         "edit": edit,
         "predicted_effect": "the root double-checks before answering",
         "regression_risks": ["one extra turn per run"],
     }
+    if pattern_index == 3:
+        item["surface"] = "S9"
     item.update(overrides)
     return item
 
@@ -298,6 +304,73 @@ def test_validate_candidate_spec_rejects_empty_predicted_effect():
         validate_candidate_spec(
             edit_item(0, {"kind": "text", "new_text": "x"}, predicted_effect=""), ALL_PATTERNS
         )
+
+
+@pytest.mark.parametrize("field", ["incumbent_behavior", "observed_failure", "behavioral_change"])
+def test_new_proposals_require_a_bounded_behavioral_difference(field):
+    item = {
+        **TEXT_ITEM,
+        "incumbent_behavior": "Counts only.",
+        "observed_failure": "The predicate needs per-user dates.",
+        "behavioral_change": "Preserve record IDs and join labels to user/date metadata.",
+    }
+    item.pop(field)
+    with pytest.raises(ProposalRejection, match=field):
+        validate_candidate_spec(item, ALL_PATTERNS)
+    item[field] = "x" * 601
+    with pytest.raises(ProposalRejection, match=field):
+        validate_candidate_spec(item, ALL_PATTERNS)
+
+
+@pytest.mark.parametrize("change", ["none", "NO CHANGE", "no-op", "unchanged"])
+def test_explicit_absent_behavioral_change_is_rejected(change):
+    item = {
+        **TEXT_ITEM,
+        "incumbent_behavior": "Checks coverage.",
+        "observed_failure": "Some pairs are missing.",
+        "behavioral_change": change,
+    }
+    with pytest.raises(ProposalRejection, match="behavioral_change"):
+        validate_candidate_spec(item, ALL_PATTERNS)
+
+
+@pytest.mark.parametrize(
+    "rows,valid",
+    [
+        ([(2, "b"), (1, "a")], True),
+        ([(1, "a"), (1, "b")], False),
+        ([(1, "a")], False),
+        ([(1, "a"), (3, "b")], False),
+        ([(1, "a"), (2, "unknown")], False),
+    ],
+)
+def test_record_guidance_example_checks_rows_before_mapping(rows, valid):
+    code = OOLONG_RECORD_GUIDANCE.split("```python\n")[1].split("```")[0]
+    namespace = {"returned_rows": rows, "record_ids": [1, 2], "task_labels": {"a", "b"}}
+    if valid:
+        exec(code, namespace)
+        assert namespace["labels_by_id"] == {1: "a", 2: "b"}
+    else:
+        with pytest.raises(AssertionError):
+            exec(code, namespace)
+        assert "labels_by_id" not in namespace
+
+
+def test_behavioral_fields_persist_and_legacy_loader_remains_compatible(tmp_path):
+    spec = validate_candidate_spec(TEXT_ITEM, ALL_PATTERNS)
+    incumbent = serialize_harness(H0)
+    _, serialization = build_candidate(H0, incumbent, spec, tmp_path / "work")
+    path = write_proposal(
+        tmp_path / "proposals", "r01-c01-s4", incumbent, spec, serialization, "mock", "prompt"
+    )
+    payload = json.loads(path.read_text())
+    for name in ("incumbent_behavior", "observed_failure", "behavioral_change"):
+        assert payload.pop(name) == TEXT_ITEM[name]
+    loaded, rejections = load_candidates(tmp_path / "proposals", H0)
+    assert len(loaded) == 1 and not rejections
+    path.write_text(json.dumps(payload))
+    loaded, rejections = load_candidates(tmp_path / "proposals", H0)
+    assert len(loaded) == 1 and not rejections
 
 
 # ---------------------------------------------------------------------------
@@ -1202,7 +1275,7 @@ def test_s10_inventory_line_names_all_entries_past_the_truncation_point():
 def test_skills_pedagogy_only_rendered_when_an_s10_pattern_is_addressable():
     # PATTERN_TEXT (skipped_verification -> S4, S9, S10) and PATTERN_OTHER both
     # list S10 under 3.1.0; only lossy_aggregation's set (S9, S3, S4) does not.
-    no_s10 = [PATTERN_CODE_S9]
+    no_s10 = [make_pattern("lossy_aggregation")]
     rendered, _ = render_prompt(no_s10, serialize_harness(H0), (), (), k=4)
     assert "procedural anchor" not in rendered
     assert '"kind": "skills"' in rendered  # the compact format bullet stays
@@ -1252,6 +1325,40 @@ def test_duplicate_surfaces_reask_before_materialization(tmp_path):
     assert "surface S4" in result.attempts[0].violation
     assert len(result.written) == 1
     assert result.skipped_patterns == [1]
+
+
+@pytest.mark.parametrize("failure", ["unchanged", "malformed", "duplicate"])
+def test_repair_retargets_failed_pattern_and_preserves_independent_member(tmp_path, failure):
+    patterns = [make_pattern("incomplete_coverage"), make_pattern("lossy_aggregation")]
+    retained = edit_item(0, {"kind": "text", "new_text": "Check record IDs before mapping."})
+    failed = edit_item(1, {"kind": "text", "new_text": H0.execution_instruction}, surface="S3")
+    batch = [retained, failed]
+    if failure == "malformed":
+        del failed["behavioral_change"]
+    elif failure == "duplicate":
+        patterns.append(make_pattern("lossy_aggregation"))
+        batch.append({**failed, "pattern_index": 2})
+    repaired = edit_item(
+        1,
+        {"kind": "text", "new_text": "Recompute the predicate from joined records."},
+        surface="S4",
+        behavioral_change="Verify the predicate against the joined records.",
+    )
+    lm = MockLM(responses=[canned_batch(*batch), canned_batch(repaired)])
+    work = tmp_path / "work"
+    result = propose_round({"patterns": patterns}, H0, lm, tmp_path / "proposals", workdir=work)
+    assert lm._call_count == 2
+    assert [w.candidate_id for w in result.written] == ["r00-c01-s2", "r00-c02-s4"]
+    assert (
+        result.written[0].path.read_bytes()
+        == (work / "attempt_01/proposals/r00-c01-s2/proposal.json").read_bytes()
+    )
+    assert not result.materialization_failures and not result.preflight_failures
+    saved = [w.path.read_bytes() for w in result.written]
+    replay = propose_round(
+        {"patterns": patterns}, H0, MockLM(responses=[]), tmp_path / "proposals", workdir=work
+    )
+    assert [w.path.read_bytes() for w in replay.written] == saved
 
 
 def test_prompt_explains_batch_surface_limit():
@@ -1406,6 +1513,53 @@ def test_changed_profile_refused_before_proposal_calls(tmp_path):
             preflight_profile="oolong-pairs/v1",
         )
     assert idle._call_count == 0
+
+
+@pytest.mark.parametrize("version", ["EVIDENCE_SELECTOR_VERSION", "DIAGNOSTIC_HISTORY_VERSION"])
+def test_changed_evidence_contract_refuses_paid_replay(tmp_path, monkeypatch, version):
+    import shrlm.optimization.proposal_evidence as evidence_module
+
+    propose_round(
+        BUNDLE, H0, MockLM(responses=["[]"]), tmp_path / "proposals", workdir=tmp_path / "work"
+    )
+    monkeypatch.setattr(evidence_module, version, "changed")
+    idle = MockLM(responses=[])
+    with pytest.raises(ValueError, match="contract changed"):
+        propose_round(BUNDLE, H0, idle, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert idle._call_count == 0
+
+
+@pytest.mark.parametrize(
+    "surface,index,change",
+    [
+        ("S2", 1, "Use IDs"),
+        ("S9", 1, "Inspect labels"),
+        ("S4", 2, "Verify"),
+        ("S4", 1, TEXT_ITEM["behavioral_change"]),
+    ],
+)
+def test_repair_rejects_occupied_ineligible_unrelated_or_unexplained_target(
+    tmp_path, surface, index, change
+):
+    patterns = [
+        make_pattern("incomplete_coverage"),
+        make_pattern("lossy_aggregation"),
+        PATTERN_TEXT,
+    ]
+    keep = edit_item(0, {"kind": "text", "new_text": "Check record IDs."})
+    failed = edit_item(1, {"kind": "text", "new_text": H0.execution_instruction}, surface="S3")
+    repair = edit_item(
+        index,
+        {"kind": "text", "new_text": "Verify the predicate."},
+        surface=surface,
+        behavioral_change=change,
+    )
+    lm = MockLM(responses=[canned_batch(keep, failed), canned_batch(repair)])
+    result = propose_round(
+        {"patterns": patterns}, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work"
+    )
+    assert [w.surface for w in result.written] == ["S2"]
+    assert not result.attempts[-1].accepted and lm._call_count == 2
 
 
 def test_repair_output_budget_exhaustion_keeps_survivor_and_replays(tmp_path):
