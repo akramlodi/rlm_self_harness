@@ -225,7 +225,7 @@ class TestMarginals:
             make_record("run-b", signature=make_signature(mechanism=AgentMechanism.OTHER)),
         ]
         surfaces = compute_marginals(records)["by_surface"]
-        assert surfaces == {EditableSurface.ANSWER_MIDDLEWARE.value: 1, "unmapped": 1}
+        assert surfaces == {EditableSurface.EXECUTION_INSTRUCTION.value: 1, "unmapped": 1}
 
     def test_by_surface_marginal_has_an_s10_bucket(self):
         # The backoff view is consumed by a proposal stage that targets one
@@ -240,7 +240,7 @@ class TestMarginals:
         ]
         surfaces = compute_marginals(records)["by_surface"]
         assert surfaces == {
-            EditableSurface.ANSWER_MIDDLEWARE.value: 1,
+            EditableSurface.EXECUTION_INSTRUCTION.value: 1,
             EditableSurface.SKILLS.value: 1,
         }
         assert EditableSurface.SKILLS.value == "S10"
