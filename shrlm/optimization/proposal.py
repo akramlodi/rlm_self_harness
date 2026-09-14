@@ -514,6 +514,9 @@ S9 takes exactly (answer, repl_inventory) and returns AnswerDecision.accept(answ
 or AnswerDecision.redirect(nudge). There is no AnswerDecision.reject method.
 repl_inventory contains redacted type/length tuples, e.g. {'context': ('str', 19006)},
 never variable contents. Do not call string methods on those tuples.
+Reserve S9 for answer-visible defects. For semantic aggregation or predicate
+mistakes, including those diagnosed as other, prefer S3/S4: S9 cannot inspect
+the records or verify their classifications.
 Available imports for candidate functions:
 """
     + CANDIDATE_MODULE_PREAMBLE
@@ -1494,6 +1497,70 @@ def publish_proposal_result(
     )
 
 
+def validate_batch_members(
+    items: list[Any],
+    patterns: list[dict[str, Any]],
+    incumbent: Harness,
+    retained: list[tuple[int, CandidateSpec, dict[str, Any]]],
+    failed_slots: dict[int, int] | None,
+    failed_sources: list[Any],
+) -> tuple[list[tuple[int, CandidateSpec]], list[dict[str, Any]]]:
+    """Reject conflicting groups while keeping independent valid members."""
+    identities = []
+    for item in items:
+        index = item.get("pattern_index") if isinstance(item, dict) else None
+        if type(index) is not int or not 0 <= index < len(patterns):
+            identities.append((None, None))
+            continue
+        eligible = _pattern_surfaces(patterns[index])
+        surface = item.get("surface", eligible[0] if eligible else None)
+        identities.append((index, surface if isinstance(surface, str) else None))
+    occupied_patterns = {spec.pattern_index for _, spec, _ in retained}
+    occupied_surfaces = {spec.surface for _, spec, _ in retained}
+    slots = []
+    failures = []
+    for position, (item, (index, surface)) in enumerate(
+        zip(items, identities, strict=True), start=1
+    ):
+        if failed_slots is not None:
+            position = failed_slots.get(index, position)
+        try:
+            if index is not None and sum(i == index for i, _ in identities) > 1:
+                raise ProposalRejection(f"pattern_index {index} was proposed more than once")
+            if surface is not None and sum(s == surface for _, s in identities) > 1:
+                raise ProposalRejection(f"surface {surface} was proposed more than once")
+            if index in occupied_patterns or surface in occupied_surfaces:
+                raise ProposalRejection("repair cannot replace an occupied pattern or surface")
+            if failed_slots is not None and index not in failed_slots:
+                raise ProposalRejection("repair must target only an original failed pattern")
+            spec = validate_candidate_spec(item, patterns)
+            for original in failed_sources:
+                old_surface = original.get("surface", _pattern_surfaces(patterns[index])[0])
+                if (
+                    original["pattern_index"] == index
+                    and old_surface != surface
+                    and original.get("behavioral_change") == spec.behavioral_change
+                ):
+                    raise ProposalRejection("retargeting requires a revised behavioral_change")
+            if spec.edit["kind"] == EDIT_KIND_SKILLS:
+                _dry_run_skill_merge(spec, incumbent)
+            slots.append((position, spec))
+        except ProposalRejection as exc:
+            failures.append(
+                {
+                    "pattern_index": index,
+                    "surface": surface,
+                    "position": position,
+                    "gate": "proposal",
+                    "reason": str(exc),
+                    "predicted_effect": item.get("predicted_effect", "unavailable")
+                    if isinstance(item, dict)
+                    else "unavailable",
+                }
+            )
+    return slots, failures
+
+
 def propose_round(
     bundle: dict[str, Any],
     incumbent: Harness,
@@ -1620,11 +1687,11 @@ def propose_round(
 
     attempts: list[ProposalAttempt] = []
     rejection = ""
-    specs: list[CandidateSpec] = []
     materialized: list[tuple[int, CandidateSpec, dict[str, Any]]] = []
     materialization_failures: list[MaterializationFailureRecord] = []
     preflight_failures: list[dict[str, Any]] = []
-    failed_slots: dict[tuple[int, str], int] = {}
+    failed_slots: dict[int, int] = {}
+    failed_sources: list[Any] = []
     repairing = False
     for attempt in range(config.max_attempts):
         user = (
@@ -1641,18 +1708,14 @@ def propose_round(
                 }
                 for _, spec, serialization in materialized
             ]
-            failed = [
-                {"pattern_index": spec.pattern_index, "surface": spec.surface, "edit": spec.edit}
-                for spec in specs
-                if (spec.pattern_index, spec.surface) in failed_slots
-            ]
             user = (
                 "One repair response only. Return replacements only for the failed original "
-                "pattern/surface slots; omit a failed member to withdraw it. Keep retained edits "
-                "unchanged; no new patterns or surfaces.\nRetained: "
+                "patterns; omit a failed member to withdraw it. You may choose another eligible, "
+                "unoccupied surface for that same pattern. Explain the revised behavioral change "
+                "when retargeting. Keep retained edits unchanged; no new patterns.\nRetained: "
                 + canonical_json(retained)
                 + "\nFailed sources: "
-                + canonical_json(failed)
+                + canonical_json(failed_sources)
                 + "\nFailures: "
                 + rejection
             )
@@ -1693,26 +1756,6 @@ def propose_round(
                 raise ProposalRejection(
                     f"response proposed {len(raw_items)} candidates, more than the allowed {config.k}"
                 )
-            batch = [validate_candidate_spec(item, patterns) for item in raw_items]
-            seen: set[int] = set()
-            seen_surfaces: set[str] = set()
-            for spec in batch:
-                if spec.pattern_index in seen:
-                    raise ProposalRejection(
-                        f"pattern_index {spec.pattern_index} was proposed more than once in the same batch"
-                    )
-                if spec.surface in seen_surfaces:
-                    raise ProposalRejection(
-                        f"surface {spec.surface} was proposed more than once in the same batch"
-                    )
-                seen.add(spec.pattern_index)
-                seen_surfaces.add(spec.surface)
-                if repairing and (spec.pattern_index, spec.surface) not in failed_slots:
-                    raise ProposalRejection(
-                        "repair must target only an original failed pattern/surface slot"
-                    )
-                if spec.edit["kind"] == EDIT_KIND_SKILLS:
-                    _dry_run_skill_merge(spec, incumbent)
         except ProposalRejection as exc:
             rejection = str(exc)
             attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
@@ -1720,16 +1763,26 @@ def propose_round(
                 break
             continue
 
-        slots = [
-            (failed_slots[(spec.pattern_index, spec.surface)] if repairing else position, spec)
-            for position, spec in enumerate(batch, start=1)
-        ]
-        if not repairing:
-            specs = batch
+        slots, local_failures = validate_batch_members(
+            raw_items,
+            patterns,
+            incumbent,
+            materialized,
+            failed_slots if repairing else None,
+            failed_sources,
+        )
+        if repairing and local_failures and not slots:
+            rejection = "; ".join(failure["reason"] for failure in local_failures)
+            attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
+            break
         new_materialized = []
         new_materialization_failures = []
-        new_preflight_failures = []
-        new_failed_slots = {}
+        new_preflight_failures = local_failures
+        new_failed_slots = {
+            failure["pattern_index"]: failure["position"]
+            for failure in reversed(local_failures)
+            if failure["pattern_index"] in {index for index, _ in addressable}
+        }
         for position, spec in slots:
             stage = workdir / f"attempt_{attempt + 1:02d}"
             try:
@@ -1740,7 +1793,7 @@ def propose_round(
                         spec.pattern_index, spec.surface, exc.reason, spec.predicted_effect
                     )
                 )
-                new_failed_slots[(spec.pattern_index, spec.surface)] = position
+                new_failed_slots[spec.pattern_index] = position
                 continue
             path = write_proposal(
                 stage / "proposals",
@@ -1770,7 +1823,7 @@ def propose_round(
                         "predicted_effect": spec.predicted_effect,
                     }
                 )
-                new_failed_slots[(spec.pattern_index, spec.surface)] = position
+                new_failed_slots[spec.pattern_index] = position
             else:
                 new_materialized.append((position, spec, serialization))
         materialized.extend(new_materialized)
@@ -1778,6 +1831,13 @@ def propose_round(
         materialization_failures = new_materialization_failures
         preflight_failures = new_preflight_failures
         failed_slots = new_failed_slots
+        failed_sources = [
+            item
+            for item in raw_items
+            if isinstance(item, dict)
+            and type(item.get("pattern_index")) is int
+            and item["pattern_index"] in failed_slots
+        ]
         reasons = [
             f"pattern {r.pattern_index} {r.surface}: {r.reason} (already unchanged or unmaterializable)"
             for r in materialization_failures
@@ -1787,8 +1847,9 @@ def propose_round(
             for r in preflight_failures
         )
         rejection = "; ".join(reasons)
-        attempts.append(ProposalAttempt(attempt + 1, cached, response, not failed_slots, rejection))
-        if repairing or not failed_slots:
+        has_failures = bool(materialization_failures or preflight_failures)
+        attempts.append(ProposalAttempt(attempt + 1, cached, response, not has_failures, rejection))
+        if repairing or not has_failures:
             break
         repairing = True
     else:
@@ -1799,7 +1860,7 @@ def propose_round(
             )
 
     all_indices = {index for index, _ in addressable}
-    proposed_indices = {spec.pattern_index for spec in specs}
+    proposed_indices = {spec.pattern_index for _, spec, _ in materialized} | set(failed_slots)
     state = {
         "survivors": [
             {

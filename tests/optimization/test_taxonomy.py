@@ -100,11 +100,13 @@ class TestCoverageInvariants:
     def test_other_has_no_surface_by_design(self):
         assert AgentMechanism.OTHER not in MECHANISM_SURFACE
 
-    def test_reachable_surfaces_are_exactly_the_ten_declared_surfaces(self):
+    def test_primary_surfaces_exclude_answer_only_middleware(self):
         # Compared against the harness declaration, not the enum, so a shrunken
         # or drifted mapping fails even if the enum drifts with it.
-        assert {surface.value for surface in MECHANISM_SURFACE.values()} == set(SURFACES)
-        assert set(MECHANISM_SURFACE.values()) == set(EditableSurface)
+        assert {surface.value for surface in MECHANISM_SURFACE.values()} == set(SURFACES) - {"S9"}
+        assert set(MECHANISM_SURFACE.values()) == set(EditableSurface) - {
+            EditableSurface.ANSWER_MIDDLEWARE
+        }
 
     def test_child_level_mechanisms_never_map_to_a_root_only_surface(self):
         for mechanism in CHILD_LEVEL_MECHANISMS:
@@ -145,7 +147,7 @@ class TestCoverageInvariants:
         # reach entry), so bundles written under 2.0.0 are not comparable.
         # 3.1.0: MECHANISM_SURFACES widened each mechanism to a set of eligible
         # surfaces (primary unchanged) and made OTHER addressable.
-        assert TAXONOMY_VERSION == "3.1.0"
+        assert TAXONOMY_VERSION == "3.2.0"
 
 
 class TestSkillsSurface:

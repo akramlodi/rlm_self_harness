@@ -74,7 +74,7 @@ def make_pattern(mechanism: str, verifier_cause: str = "wrong_value") -> dict[st
 PATTERN_TEXT = make_pattern("skipped_verification")  # -> S4
 PATTERN_POLICY = make_pattern("iteration_budget_exhaustion")  # -> S6
 PATTERN_CODE_S7 = make_pattern("unparsed_child_output")  # -> S7
-PATTERN_CODE_S9 = make_pattern("lossy_aggregation")  # -> S9
+PATTERN_CODE_S9 = make_pattern("premature_termination")  # explicit S9 below
 PATTERN_REPL_HELPER = make_pattern("repl_execution_fault")  # -> S8
 PATTERN_SKILLS = make_pattern("unconsulted_procedure")  # -> S10
 PATTERN_OTHER = make_pattern("other")  # unaddressable
@@ -125,6 +125,8 @@ def edit_item(pattern_index: int, edit: dict[str, Any], **overrides: Any) -> dic
         "predicted_effect": "the root double-checks before answering",
         "regression_risks": ["one extra turn per run"],
     }
+    if pattern_index == 3:
+        item["surface"] = "S9"
     item.update(overrides)
     return item
 
@@ -1273,7 +1275,7 @@ def test_s10_inventory_line_names_all_entries_past_the_truncation_point():
 def test_skills_pedagogy_only_rendered_when_an_s10_pattern_is_addressable():
     # PATTERN_TEXT (skipped_verification -> S4, S9, S10) and PATTERN_OTHER both
     # list S10 under 3.1.0; only lossy_aggregation's set (S9, S3, S4) does not.
-    no_s10 = [PATTERN_CODE_S9]
+    no_s10 = [make_pattern("lossy_aggregation")]
     rendered, _ = render_prompt(no_s10, serialize_harness(H0), (), (), k=4)
     assert "procedural anchor" not in rendered
     assert '"kind": "skills"' in rendered  # the compact format bullet stays
@@ -1323,6 +1325,40 @@ def test_duplicate_surfaces_reask_before_materialization(tmp_path):
     assert "surface S4" in result.attempts[0].violation
     assert len(result.written) == 1
     assert result.skipped_patterns == [1]
+
+
+@pytest.mark.parametrize("failure", ["unchanged", "malformed", "duplicate"])
+def test_repair_retargets_failed_pattern_and_preserves_independent_member(tmp_path, failure):
+    patterns = [make_pattern("incomplete_coverage"), make_pattern("lossy_aggregation")]
+    retained = edit_item(0, {"kind": "text", "new_text": "Check record IDs before mapping."})
+    failed = edit_item(1, {"kind": "text", "new_text": H0.execution_instruction}, surface="S3")
+    batch = [retained, failed]
+    if failure == "malformed":
+        del failed["behavioral_change"]
+    elif failure == "duplicate":
+        patterns.append(make_pattern("lossy_aggregation"))
+        batch.append({**failed, "pattern_index": 2})
+    repaired = edit_item(
+        1,
+        {"kind": "text", "new_text": "Recompute the predicate from joined records."},
+        surface="S4",
+        behavioral_change="Verify the predicate against the joined records.",
+    )
+    lm = MockLM(responses=[canned_batch(*batch), canned_batch(repaired)])
+    work = tmp_path / "work"
+    result = propose_round({"patterns": patterns}, H0, lm, tmp_path / "proposals", workdir=work)
+    assert lm._call_count == 2
+    assert [w.candidate_id for w in result.written] == ["r00-c01-s2", "r00-c02-s4"]
+    assert (
+        result.written[0].path.read_bytes()
+        == (work / "attempt_01/proposals/r00-c01-s2/proposal.json").read_bytes()
+    )
+    assert not result.materialization_failures and not result.preflight_failures
+    saved = [w.path.read_bytes() for w in result.written]
+    replay = propose_round(
+        {"patterns": patterns}, H0, MockLM(responses=[]), tmp_path / "proposals", workdir=work
+    )
+    assert [w.path.read_bytes() for w in replay.written] == saved
 
 
 def test_prompt_explains_batch_surface_limit():

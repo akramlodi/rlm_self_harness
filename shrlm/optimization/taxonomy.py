@@ -363,7 +363,7 @@ MECHANISM_SURFACE: dict[AgentMechanism, EditableSurface] = {
     AgentMechanism.ITERATION_BUDGET_EXHAUSTION: EditableSurface.RUNTIME_POLICY,
     AgentMechanism.UNPARSED_CHILD_OUTPUT: EditableSurface.METADATA,
     AgentMechanism.REPL_EXECUTION_FAULT: EditableSurface.REPL_HELPERS,
-    AgentMechanism.LOSSY_AGGREGATION: EditableSurface.ANSWER_MIDDLEWARE,
+    AgentMechanism.LOSSY_AGGREGATION: EditableSurface.EXECUTION_INSTRUCTION,
     AgentMechanism.UNCONSULTED_PROCEDURE: EditableSurface.SKILLS,
 }
 
@@ -455,7 +455,6 @@ MECHANISM_SURFACES: dict[AgentMechanism, tuple[EditableSurface, ...]] = {
         EditableSurface.REPL_CONTRACT,
     ),
     AgentMechanism.LOSSY_AGGREGATION: (
-        EditableSurface.ANSWER_MIDDLEWARE,
         EditableSurface.EXECUTION_INSTRUCTION,
         EditableSurface.VERIFICATION_INSTRUCTION,
     ),
