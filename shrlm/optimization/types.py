@@ -349,6 +349,24 @@ class FailureSignature:
         }
 
 
+@dataclass(frozen=True)
+class OperationEvidence:
+    """An observed operation; coordinates use the digest's displayed iteration index."""
+
+    node_id: str
+    observation: str
+    iteration_index: int | None = None
+    code_block_index: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"node_id": self.node_id, "observation": self.observation}
+        if self.iteration_index is not None:
+            result.update(
+                iteration_index=self.iteration_index, code_block_index=self.code_block_index
+            )
+        return result
+
+
 @dataclass
 class AttributionDetail:
     """
@@ -360,15 +378,22 @@ class AttributionDetail:
     failing_level_detail: str = ""
     causal_status_detail: str = ""
     agent_mechanism_detail: str = ""
+    operation_evidence: list[OperationEvidence] = field(default_factory=list)
+    verification_limits: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "symptom_summary": self.symptom_summary,
             "evidence_node_ids": list(self.evidence_node_ids),
             "failing_level_detail": self.failing_level_detail,
             "causal_status_detail": self.causal_status_detail,
             "agent_mechanism_detail": self.agent_mechanism_detail,
         }
+        # Keep legacy details byte-compatible when no new evidence was supplied.
+        if self.operation_evidence or self.verification_limits:
+            result["operation_evidence"] = [entry.to_dict() for entry in self.operation_evidence]
+            result["verification_limits"] = self.verification_limits
+        return result
 
 
 @dataclass(frozen=True)

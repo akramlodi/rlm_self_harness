@@ -45,7 +45,7 @@ from shrlm.rlm_harness import SURFACES
 # mapping changes. Bundles carrying different versions are not comparable, so
 # the frequency-before-vs-after analysis excludes bundles written under any
 # other version (``pattern_frequency_diff.bundle_completeness``).
-TAXONOMY_VERSION = "3.1.0"
+TAXONOMY_VERSION = "3.2.0"
 
 
 class EditableSurface(str, Enum):
@@ -267,7 +267,9 @@ MECHANISM_DOCS: dict[AgentMechanism, str] = {
         "meaningful decomposition at all."
     ),
     AgentMechanism.INCOMPLETE_COVERAGE: (
-        "The union of the sub-call inputs did not cover the input; some spans were never examined."
+        "The union of the examined inputs did not cover the required input; cite an omitted "
+        "span or record and distinguish original-input coverage from coverage of parsed records. "
+        "Missing output elements alone do not establish this mechanism."
     ),
     AgentMechanism.REDUNDANT_DECOMPOSITION: (
         "Sub-call inputs overlapped or duplicated each other, inflating cost and double-counting "
@@ -289,8 +291,9 @@ MECHANISM_DOCS: dict[AgentMechanism, str] = {
         "A plain llm_query was used where a recursive rlm_query was required, or the reverse."
     ),
     AgentMechanism.LOSSY_AGGREGATION: (
-        "Sub-calls returned correct local results, but the root's combine step dropped, truncated, "
-        "or mis-merged them."
+        "An observed combine operation dropped, truncated, or mis-merged sub-call results. "
+        "Cite that operation; wrong labels or missing final elements alone do not prove a merge "
+        "fault. Do not claim the local results were correct unless that was verified."
     ),
     AgentMechanism.UNPARSED_CHILD_OUTPUT: (
         "The root could not reliably parse free-text sub-call returns because no return structure "

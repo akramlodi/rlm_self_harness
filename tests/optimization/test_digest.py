@@ -477,6 +477,10 @@ def scripted_response(messages: Any) -> str:
         "failing_level": "no_recursion",
         "evidence_node_ids": ["r"],
         "symptom_summary": "scripted attributor following the documented rule",
+        "operation_evidence": [
+            {"node_id": "r", "observation": "The root submitted the produced answer."}
+        ],
+        "verification_limits": "Intermediate results were not semantically verified.",
     }
     return "```json\n" + json.dumps(payload) + "\n```"
 
