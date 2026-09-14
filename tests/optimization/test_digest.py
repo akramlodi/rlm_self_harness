@@ -20,6 +20,7 @@ from shrlm.optimization.digest import (
     build_digest,
     head_tail,
     render_child_table,
+    render_header,
 )
 from shrlm.optimization.grounding import GroundingResult
 from shrlm.optimization.mining import WeaknessMiner
@@ -57,6 +58,19 @@ def digest_of_nested_run(cfg: DigestConfig | None = None) -> TraceDigest:
         verdict=make_verdict(),
         cfg=cfg,
     )
+
+
+def test_unknown_verifier_observations_remain_available_in_heldin_diagnosis():
+    _, stats = walk(as_completion(shallow_run()))
+    verdict = Verdict(
+        False,
+        VerifierCause.WRONG_VALUE,
+        "expected",
+        "produced",
+        detail="custom verifier: wrong relation order",
+    )
+    header = render_header("held-in", "task", verdict, stats, verifier_environment="custom")
+    assert "verifier_detail: custom verifier: wrong relation order" in header
 
 
 def call_node(node_id: str, prompt: str, response: str, depth: int = 1) -> CallNode:
@@ -559,7 +573,7 @@ class TestDigestVersion:
             split_id="held_in_v1",
         )
         assert result.bundle.config.digest_version == DIGEST_VERSION == "1.4.0"
-        assert result.bundle.to_dict()["config"]["digest_version"] == "1.3.0"
+        assert result.bundle.to_dict()["config"]["digest_version"] == "1.4.0"
 
     def test_attribution_cache_key_does_not_include_digest_version(self):
         # DIGEST_VERSION reaches bundle ids via MiningConfig.digest_version

@@ -395,6 +395,10 @@ def test_history_keeps_heldout_payloads_out_and_preserves_saved_bytes(tmp_path, 
     assert "pairs" not in validation_history_diagnostics(tmp_path, record)
     contract_path.unlink()
     assert "pairs" not in validation_history_diagnostics(tmp_path, record)
+    # Legacy ledgers can retain subject hashes after an old evaluation contract
+    # becomes unavailable. Missing context is not evidence of identity corruption.
+    legacy = validation_history_diagnostics(tmp_path, {**record, "harness_hash": "legacy-hash"})
+    assert legacy["quality"]["definition"] is None
 
 
 def test_evidence_rejects_cross_instance_run_links(tmp_path, monkeypatch):

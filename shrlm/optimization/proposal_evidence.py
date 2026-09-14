@@ -428,7 +428,11 @@ def validation_history_data(
     if not contract_path.is_relative_to(validation_path.resolve()):
         raise ValueError("validation subject escapes its round")
     contract = json.loads(contract_path.read_text()) if contract_path.exists() else {}
-    if record.get("harness_hash") and contract.get("harness_hash") != record["harness_hash"]:
+    if (
+        record.get("harness_hash")
+        and contract.get("harness_hash")
+        and contract["harness_hash"] != record["harness_hash"]
+    ):
         raise ValueError("validation subject disagrees with its saved harness identity")
     return entries, contract
 
