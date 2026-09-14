@@ -75,10 +75,12 @@ from shrlm.harness_identity import (
 )
 from shrlm.optimization.attribution import truncate_for_prompt
 from shrlm.optimization.candidates import (
+    BEHAVIOR_FIELDS,
     CANDIDATE_MODULE_PREAMBLE,
     DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
     SURFACE_SERIALIZATION_KEYS,
     CandidateRejection,
+    behavioral_difference_violation,
     changed_surfaces,
     import_surface_module,
     load_candidate,
@@ -142,7 +144,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "2.0.0"
+PROMPT_VERSION = "2.1.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -158,7 +160,7 @@ PROMPT_VERSION = "2.0.0"
 # materialization returns an empty result instead of raising. The 2026-09-10
 # OOLONG-Pairs run lost rounds 4-6 to a proposer that re-emitted the incumbent's
 # own S9 three rounds in a row; under 1.4.0 that was counted, never re-asked.
-VALIDATOR_VERSION = "2.0.0"
+VALIDATOR_VERSION = "2.1.0"
 
 DEFAULT_K = 4
 # Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
@@ -301,6 +303,9 @@ class CandidateSpec:
     edit: dict[str, Any]
     predicted_effect: str
     regression_risks: list[str]
+    incumbent_behavior: str = ""
+    observed_failure: str = ""
+    behavioral_change: str = ""
 
 
 @dataclass(frozen=True)
@@ -660,6 +665,18 @@ choose the best-supported minimal edit. Do not move an edit to a weaker surface 
 just to fill the batch. If only one surface warrants a change, propose one edit; \
 if none does, return an empty array.
 
+Before replacement text, describe incumbent_behavior (what it already does), \
+observed_failure (what operation remains wrong in this trace), and behavioral_change \
+(the precise action this edit changes). Each is a short string, at most 600 characters. \
+Repeating an existing instruction more emphatically is insufficient justification. \
+If there is no concrete difference, withdraw the candidate instead of supplying \
+"none", "no change", "no-op", or "unchanged". Local checks enforce shape and literal \
+changes, not semantic novelty; you must assess the behavioral difference.
+Minimal means the smallest effective change. Replace or clearly scope a misleading \
+worked example when its return contract conflicts with the procedure needed here; \
+do not append another rule while leaving an incompatible example as the default. \
+Preserve an explicitly scoped example when it remains correct for simpler tasks.
+
 For each pattern you choose to address, propose exactly one minimal edit on one of \
 its eligible surfaces, naming that surface in the candidate's "surface" field -- \
 change only what is needed to address that specific mechanism, never a broad rewrite. You do not have to address every pattern: skip a pattern if no \
@@ -698,6 +715,8 @@ using its original row ordinal as a stable record ID assigned before chunking.
 User IDs and repeated text are not record IDs. Send records plus the task's label
 vocabulary to children; ask for record ID and label, not partial pair sets.
 Join by record ID, never response position (children may return shuffled rows).
+Prefer a list of [record_id, label] rows so duplicate IDs remain detectable before
+building a mapping; a JSON object has already discarded duplicate-key evidence.
 Check missing, duplicate, unknown IDs and invalid labels. Retain valid labels;
 repair only missing/invalid records within existing caps, with no unbounded retries.
 Keep user/date metadata at the root. Aggregate counts and dates by user in Python,
@@ -706,6 +725,20 @@ conditions. Construct qualifying pairs from these results, deduplicate, exclude
 self-pairs and place the lower user ID first. Empty results are permitted; do not
 assume all users form a clique. Labels remain model judgments, not verified facts.
 This is an optional proposal direction, not a required edit or surface quota.
+
+Example coverage check for returned_rows (synthetic record IDs; task_labels comes
+from the current task). Put this consistent contract in a replacement/scoped example:
+```python
+ids = [record_id for record_id, label in returned_rows]
+assert len(ids) == len(set(ids)), "duplicate record IDs"
+assert set(ids) <= set(record_ids), "unknown record IDs"
+assert set(record_ids) <= set(ids), "missing record IDs"
+assert all(label in task_labels for record_id, label in returned_rows), "invalid labels"
+labels_by_id = dict(returned_rows)
+```
+These checks establish row coverage and label vocabulary, not label correctness or
+coverage lost before parsing. Retain valid rows and repair only failed rows within caps.
+Do not encode task-specific answers or example record values into a harness surface.
 """
 
 
@@ -807,6 +840,9 @@ per candidate:
   {
     "pattern_index": 0,
     "surface": "<one of that pattern's eligible surfaces, e.g. S9>",
+    "incumbent_behavior": "<what the current surface already instructs>",
+    "observed_failure": "<remaining wrong operation in the held-in evidence>",
+    "behavioral_change": "<precise changed action, not emphasis or a repeated rule>",
     "edit": <one of the edit formats above, in the shape that surface accepts>,
     "predicted_effect": "<what behavior this is predicted to change>",
     "regression_risks": ["<what it might break>"]
@@ -1116,6 +1152,9 @@ def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> Candid
         raise ProposalRejection(
             f"pattern_index {index}: regression_risks must be a list of strings"
         )
+    violation = behavioral_difference_violation(item, required=True)
+    if violation:
+        raise ProposalRejection(f"pattern_index {index}: {violation}")
 
     return CandidateSpec(
         pattern_index=index,
@@ -1124,6 +1163,7 @@ def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> Candid
         edit=validated_edit,
         predicted_effect=effect,
         regression_risks=list(risks),
+        **{name: item[name] for name in BEHAVIOR_FIELDS},
     )
 
 
@@ -1307,6 +1347,7 @@ def write_proposal(
         "surface": spec.surface,
         "harness": envelope,
         "predicted_effect": spec.predicted_effect,
+        **{name: getattr(spec, name) for name in BEHAVIOR_FIELDS if getattr(spec, name)},
         "regression_risks": list(spec.regression_risks),
         "provenance": {"model": model_name, "prompt_sha256": prompt_sha},
     }

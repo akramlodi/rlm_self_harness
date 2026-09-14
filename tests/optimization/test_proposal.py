@@ -19,6 +19,7 @@ from shrlm.harness_identity import serialize_harness
 from shrlm.optimization.candidates import LoadedCandidate, changed_surfaces, load_candidates
 from shrlm.optimization.driver import RoundPersistenceError
 from shrlm.optimization.proposal import (
+    OOLONG_RECORD_GUIDANCE,
     SKILL_BODY_MAX_CHARS,
     SKILL_DESCRIPTION_MAX_CHARS,
     SKILL_MAX_ENTRIES,
@@ -117,6 +118,9 @@ SKILL_RECORD = {
 def edit_item(pattern_index: int, edit: dict[str, Any], **overrides: Any) -> dict[str, Any]:
     item = {
         "pattern_index": pattern_index,
+        "incumbent_behavior": "Submits the computed result.",
+        "observed_failure": "The trace does not compare the aggregate with its inputs.",
+        "behavioral_change": "Compare the aggregate with its inputs before committing.",
         "edit": edit,
         "predicted_effect": "the root double-checks before answering",
         "regression_risks": ["one extra turn per run"],
@@ -298,6 +302,73 @@ def test_validate_candidate_spec_rejects_empty_predicted_effect():
         validate_candidate_spec(
             edit_item(0, {"kind": "text", "new_text": "x"}, predicted_effect=""), ALL_PATTERNS
         )
+
+
+@pytest.mark.parametrize("field", ["incumbent_behavior", "observed_failure", "behavioral_change"])
+def test_new_proposals_require_a_bounded_behavioral_difference(field):
+    item = {
+        **TEXT_ITEM,
+        "incumbent_behavior": "Counts only.",
+        "observed_failure": "The predicate needs per-user dates.",
+        "behavioral_change": "Preserve record IDs and join labels to user/date metadata.",
+    }
+    item.pop(field)
+    with pytest.raises(ProposalRejection, match=field):
+        validate_candidate_spec(item, ALL_PATTERNS)
+    item[field] = "x" * 601
+    with pytest.raises(ProposalRejection, match=field):
+        validate_candidate_spec(item, ALL_PATTERNS)
+
+
+@pytest.mark.parametrize("change", ["none", "NO CHANGE", "no-op", "unchanged"])
+def test_explicit_absent_behavioral_change_is_rejected(change):
+    item = {
+        **TEXT_ITEM,
+        "incumbent_behavior": "Checks coverage.",
+        "observed_failure": "Some pairs are missing.",
+        "behavioral_change": change,
+    }
+    with pytest.raises(ProposalRejection, match="behavioral_change"):
+        validate_candidate_spec(item, ALL_PATTERNS)
+
+
+@pytest.mark.parametrize(
+    "rows,valid",
+    [
+        ([(2, "b"), (1, "a")], True),
+        ([(1, "a"), (1, "b")], False),
+        ([(1, "a")], False),
+        ([(1, "a"), (3, "b")], False),
+        ([(1, "a"), (2, "unknown")], False),
+    ],
+)
+def test_record_guidance_example_checks_rows_before_mapping(rows, valid):
+    code = OOLONG_RECORD_GUIDANCE.split("```python\n")[1].split("```")[0]
+    namespace = {"returned_rows": rows, "record_ids": [1, 2], "task_labels": {"a", "b"}}
+    if valid:
+        exec(code, namespace)
+        assert namespace["labels_by_id"] == {1: "a", 2: "b"}
+    else:
+        with pytest.raises(AssertionError):
+            exec(code, namespace)
+        assert "labels_by_id" not in namespace
+
+
+def test_behavioral_fields_persist_and_legacy_loader_remains_compatible(tmp_path):
+    spec = validate_candidate_spec(TEXT_ITEM, ALL_PATTERNS)
+    incumbent = serialize_harness(H0)
+    _, serialization = build_candidate(H0, incumbent, spec, tmp_path / "work")
+    path = write_proposal(
+        tmp_path / "proposals", "r01-c01-s4", incumbent, spec, serialization, "mock", "prompt"
+    )
+    payload = json.loads(path.read_text())
+    for name in ("incumbent_behavior", "observed_failure", "behavioral_change"):
+        assert payload.pop(name) == TEXT_ITEM[name]
+    loaded, rejections = load_candidates(tmp_path / "proposals", H0)
+    assert len(loaded) == 1 and not rejections
+    path.write_text(json.dumps(payload))
+    loaded, rejections = load_candidates(tmp_path / "proposals", H0)
+    assert len(loaded) == 1 and not rejections
 
 
 # ---------------------------------------------------------------------------

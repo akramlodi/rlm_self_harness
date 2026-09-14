@@ -83,6 +83,32 @@ from shrlm.rlm_harness import Harness, SkillEntry
 from shrlm.runner import check_answer_fixtures, check_harness
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
+BEHAVIOR_FIELDS = ("incumbent_behavior", "observed_failure", "behavioral_change")
+BEHAVIOR_MAX_CHARS = 600
+
+
+def behavioral_difference_violation(payload: dict[str, Any], *, required: bool) -> str | None:
+    """Validate new explanations while allowing historical v1 proposals without them."""
+    for name in BEHAVIOR_FIELDS:
+        if name not in payload and not required:
+            continue
+        value = payload.get(name)
+        if not isinstance(value, str) or not value.strip() or len(value) > BEHAVIOR_MAX_CHARS:
+            return f"{name} must contain 1–{BEHAVIOR_MAX_CHARS} characters"
+    change = payload.get("behavioral_change", "")
+    if change.strip().casefold().rstrip(".") in {
+        "none",
+        "no change",
+        "no-op",
+        "noop",
+        "no op",
+        "unchanged",
+        "n/a",
+    }:
+        return "behavioral_change must name a concrete change; withdraw a no-op"
+    return None
+
+
 # ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
 # declaration site) and re-exported here for the loader and its callers.
 PROPOSAL_FILENAME = "proposal.json"
@@ -330,6 +356,9 @@ def _schema_violation(payload: Any) -> str | None:
     effect = payload.get("predicted_effect")
     if not isinstance(effect, str) or not effect.strip():
         return "predicted_effect must be a non-empty string"
+    violation = behavioral_difference_violation(payload, required=False)
+    if violation:
+        return violation
     risks = payload.get("regression_risks")
     if not isinstance(risks, list) or not all(isinstance(risk, str) for risk in risks):
         return "regression_risks must be a list of strings"

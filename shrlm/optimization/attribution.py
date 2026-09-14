@@ -525,8 +525,8 @@ class LLMAttributor:
         if not all(isinstance(node_id, str) for node_id in evidence):
             raise AttributionRejection("evidence_node_ids must contain strings")
 
-        known = {node.node_id for node in iter_nodes(root)}
-        unknown = [node_id for node_id in evidence if node_id not in known]
+        by_id = {node.node_id: node for node in iter_nodes(root)}
+        unknown = [node_id for node_id in evidence if node_id not in by_id]
         if unknown:
             raise AttributionRejection(
                 f"evidence_node_ids contains identifiers that do not appear in the run: {unknown}"
@@ -547,7 +547,6 @@ class LLMAttributor:
             raise AttributionRejection(
                 "empty operation_evidence requires verification_limits and correlated/unattributed status"
             )
-        by_id = {node.node_id: node for node in iter_nodes(root)}
         checked_operations = []
         for entry in operations:
             if not isinstance(entry, dict):
