@@ -3,10 +3,9 @@
 One ``validate_round`` call against OpenRouter ``qwen/qwen3-30b-a3b-instruct-2507``:
 a hand-written S2 candidate (a decomposition-instruction edit to ``H0``) is
 written as a real ``shrlm-proposal/v1`` artifact, gated by the loader, and
-evaluated with the incumbent over two fabricated splits of 2 instances each,
-1 repetition -- 8 model runs total (baseline 4 + candidate 4; one candidate
-can never merge, and a single accepted candidate promotes without
-re-evaluation, so 8 is the hard ceiling).
+evaluated with the incumbent on two fabricated held-out instances,
+1 repetition -- 4 model runs total (baseline 2 + candidate 2). Held-in
+instances are retained only as mining inputs, and no second evaluation runs.
 
 The smoke asserts artifact structure and ledger completeness, NEVER model
 behavior: whether the candidate is accepted or rejected is the model's
@@ -168,8 +167,6 @@ def check_artifacts(result: ValidationRound) -> tuple[int, float]:
     assert result.evaluation is not None and result.ledger is not None
 
     subjects = [result.evaluation.baseline, *result.evaluation.candidates]
-    if result.merge_evaluation is not None:  # unreachable with one candidate, checked anyway
-        subjects.append(result.merge_evaluation)
     total_runs = 0
     total_spend = 0.0
     for subject in subjects:
@@ -179,7 +176,7 @@ def check_artifacts(result: ValidationRound) -> tuple[int, float]:
             n_runs = int(split_summary["n_runs"])
             total_runs += n_runs
             assert n_runs == 2, f"{subject.subject_id}/{split_id} persisted {n_runs} runs, not 2"
-    assert total_runs <= 8, f"the smoke's ceiling is 8 runs, got {total_runs}"
+    assert total_runs == 4, f"the smoke requires 4 held-out runs, got {total_runs}"
 
     round_path = result.round_path
     assert (round_path / PROMOTIONS_FILENAME).is_file()

@@ -1,0 +1,8 @@
+{
+  "detail": "BadRequestError: Error code: 400 - {'id': 'chatcmpl-6b9e866aa294416da61fe3d34f3d8', 'model': '', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': ''}, 'finish_reason': 'content_filter', 'content_filter_results': {'error': {'code': 'content_filter', 'message': \"Response content blocked by label 'MultiSeverity_SexualScore'.\"}}}], 'usage': {'prompt_tokens': 16093, 'total_tokens': 16093}, 'created': 1788049310, 'object': 'chat.completion', 'prompt_filter_results': None}",
+  "format": "shrlm-run-worker-result/v1",
+  "ok": true,
+  "run_id": "oolong-synth-task-type-least-freq-16384-119efa532adfb704__a01",
+  "terminated": true,
+  "usage_lower_bound": true
+}

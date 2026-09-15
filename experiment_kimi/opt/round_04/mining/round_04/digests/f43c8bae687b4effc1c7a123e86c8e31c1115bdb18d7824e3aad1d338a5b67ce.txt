@@ -1,0 +1,42 @@
+## Run
+instance_id: parents-9e40d09a985f11b1
+question: Perform a BFS from node abcd with depth 1.
+gold_answer: [c9f0f895fb, d3d9446802]
+produced_answer: [3]
+verifier_cause: wrong_format
+
+## Tree statistics
+iterations: 3
+sub_calls_total: 0
+recursive_children: 0
+plain_lm_leaves: 0
+errored_calls: 0
+indeterminate_calls: 0
+max_observed_depth: 0
+root_context_chars: 2709
+largest_subcall_prompt_chars: 0
+collapse_ratio: 0.000
+terminated_by_fallback: False
+recursion_available: True
+block_attribution_reliable: True
+suspected_lost_subcalls: 0
+trace_integrity: complete
+
+## Root iterations
+### iteration 1
+### iteration 2
+### iteration 3
+code[0]:
+answer["content"] = "[3]"
+answer["ready"] = True
+print(f"Answer set to: {answer['content']}")
+stdout[0]:
+Answer set to: [3]
+
+final_answer_set: [3]
+
+## Sub-calls
+(none)
+
+## Focused sub-call excerpts
+(none)

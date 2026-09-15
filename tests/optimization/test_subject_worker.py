@@ -17,6 +17,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from shrlm.harness_identity import harness_hash, serialize_harness
 from shrlm.optimization.subject_worker import (
     CLIENT_CALLS_FILENAME,
@@ -109,23 +111,32 @@ class TestHappyPath:
         summary = load_summary(subject_path)
         assert summary["subject_id"] == "cand-a"
         assert summary["harness_hash"] == harness_hash(H0)
-        assert summary["splits"][SPLIT_HELDIN]["pass_count"] == 3
-        assert summary["splits"][SPLIT_HELDOUT]["pass_count"] == 4
-        assert client_calls(subject_path) == 8
+        assert set(summary["splits"]) == {SPLIT_HELDOUT}
+        assert summary["splits"][SPLIT_HELDOUT]["pass_count"] == 3
+        assert client_calls(subject_path) == 4
         # The status line is echoed to stdout for the worker log.
         assert json.loads(completed.stdout.strip().splitlines()[-1])["ok"] is True
 
-    def test_second_run_resumes_with_zero_model_calls(self, tmp_path):
+    @pytest.mark.parametrize("legacy_summary", [False, True])
+    def test_second_run_resumes_with_zero_model_calls(self, tmp_path, legacy_summary):
         script = [final("RIGHT")] * 8
         request_path = request_for(tmp_path, "cand-b", script)
         assert run_child(request_path).returncode == 0
         first = load_summary(request_path.parent)
-        assert client_calls(request_path.parent) == 8
+        assert client_calls(request_path.parent) == 4
+        if legacy_summary:
+            for split in first["splits"].values():
+                del split["n_runtime_errors"]
+            (request_path.parent / SUMMARY_FILENAME).write_text(
+                json.dumps(first, indent=2, sort_keys=True) + "\n"
+            )
+        saved = (request_path.parent / SUMMARY_FILENAME).read_bytes()
 
         # Re-run against the SAME script file: nothing is popped on resume.
         assert run_child(request_path).returncode == 0
         assert client_calls(request_path.parent) == 0
         assert load_summary(request_path.parent) == first
+        assert (request_path.parent / SUMMARY_FILENAME).read_bytes() == saved
 
     def test_request_round_trips_through_disk(self, tmp_path):
         request_path = request_for(tmp_path, "cand-c", [final("RIGHT")] * 8)
@@ -214,3 +225,47 @@ class TestRunWorkerCountReachesTheChild:
         worker_module.run_subject_worker(request_path)
 
         assert seen["run_workers"] == 3
+
+
+def test_legacy_request_refuses_before_loading_harness(tmp_path, monkeypatch):
+    import shrlm.optimization.subject_worker as worker
+
+    path = request_for(tmp_path, "candidate", [])
+    request = json.loads(path.read_text())
+    request.pop("validation_protocol")
+    path.write_text(json.dumps(request))
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("legacy request must not materialize a harness")
+
+    monkeypatch.setattr(worker, "materialize_harness", refuse)
+    result = worker.run_subject_worker(path)
+    assert result["ok"] is False
+    assert "legacy validation protocol" in result["error"]
+
+
+def test_s9_failure_completes_subject_and_resumes_without_replacement(tmp_path):
+    from tests.optimization.run_worker_support import broken_s9_harness
+
+    harness = broken_s9_harness(tmp_path / "generated")
+    for workers in (1, 2):
+        request_path = request_for(
+            tmp_path / str(workers),
+            "broken-s9",
+            [final("RIGHT")] * 8,
+            harness=harness,
+            run_workers=workers,
+        )
+        completed = run_child(request_path)
+        assert completed.returncode == 0, completed.stderr
+        summary = load_summary(request_path.parent)
+        for split in summary["splits"].values():
+            assert split["n_runs"] == 4
+            assert split["n_runtime_errors"] == 4
+            assert split["pass_count"] == 0
+            assert split["n_resource_terminated"] == 0
+        before = (request_path.parent / SUMMARY_FILENAME).read_bytes()
+        completed = run_child(request_path)
+        assert completed.returncode == 0, completed.stderr
+        assert (request_path.parent / SUMMARY_FILENAME).read_bytes() == before
+        assert client_calls(request_path.parent) == 0

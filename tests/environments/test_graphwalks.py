@@ -18,6 +18,7 @@ from shrlm.environments.graphwalks import (
     GraphWalksSubVerifier,
     GraphWalksVerifier,
     extract_answer_nodes,
+    extract_question,
     fetch_rows,
     load_graphwalks,
     parse_subproblem,
@@ -407,7 +408,7 @@ class TestGraphWalksVerifier:
         config = GraphWalksVerifier().config()
         assert config["environment"] == "graphwalks"
         assert config["pass_f1_threshold"] == 1.0
-        assert config["extraction_rule"] == "trailing-final-answer-line"
+        assert config["extraction_rule"] == "trailing-bracket-list;marker-optional;quotes-stripped"
         assert config["gold_ordering"] == "sorted"
 
 
@@ -523,3 +524,35 @@ class TestGraphWalksSubVerifier:
         binary_garbage = ("\x00\x01\xff�" * 50_000) + "]["
         node = make_node(binary_garbage, "Final Answer: [b]")
         assert GraphWalksSubVerifier()({}, node) is None
+
+
+class TestExtractionTolerance:
+    """Serialization is not graph reasoning: quotes are stripped and the
+    ``Final Answer:`` marker is optional (POST_MORTEM.md section 3)."""
+
+    def test_python_repr_quotes_are_stripped(self):
+        assert extract_answer_nodes("Final Answer: ['b', 'c']") == ["b", "c"]
+        assert extract_answer_nodes('Final Answer: ["b", "c"]') == ["b", "c"]
+
+    def test_marker_is_optional_when_the_last_line_is_a_bracket_list(self):
+        assert extract_answer_nodes("reasoning\n[b, c]") == ["b", "c"]
+        assert extract_answer_nodes("['b', 'c']") == ["b", "c"]
+
+    def test_no_bracket_list_is_still_no_parse(self):
+        assert extract_answer_nodes("the answer is b and c") is None
+        assert extract_answer_nodes("Final Answer: b, c") is None
+
+    def test_verifier_passes_a_quoted_list_without_the_marker(self):
+        instance = {"answer_nodes": ["b", "c"], "prompt": BFS_PROMPT}
+        verdict = GraphWalksVerifier()(instance, "done\n['c', 'b']")
+        assert verdict.passed is True
+
+
+class TestQuestionIsTheLastOperationLine:
+    def test_worked_example_before_the_real_operation_is_ignored(self):
+        prompt = (
+            "Here is an example:\n<begin example>\nOperation:\n"
+            "Perform a BFS from node abcd with depth 1.\n<end example>\n\n"
+            f"{FIXTURE_EDGES}\n\nOperation:\nFind the parents of node d.\n"
+        )
+        assert extract_question(prompt) == "Find the parents of node d."

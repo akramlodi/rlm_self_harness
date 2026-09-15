@@ -60,7 +60,7 @@ on a low sub-call count; that judgment belongs to the optimization loop.
 
 import inspect
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -630,6 +630,21 @@ def check_answer_middleware(middleware: AnswerMiddlewareFn) -> None:
             f"{getattr(middleware, '__name__', middleware)!r} returned "
             f"{type(decision).__name__}."
         )
+
+
+def check_answer_fixtures(
+    middleware: AnswerMiddlewareFn, fixtures: Sequence[tuple[str, str, bool]]
+) -> None:
+    """Exercise valid answers as well as malformed input, in the gate subprocess."""
+    for name, answer, must_accept in fixtures:
+        try:
+            decision = middleware(answer, dict(probe_repl_state(1)[1]))
+            if not isinstance(decision, AnswerDecision):
+                raise TypeError("middleware must return AnswerDecision")
+            if must_accept and (not decision.accepted or decision.answer != answer):
+                raise ValueError("valid answer must be accepted unchanged")
+        except Exception as error:
+            raise ValueError(f"S9 fixture {name}: {type(error).__name__}: {error}") from error
 
 
 def check_harness(harness: Harness) -> None:

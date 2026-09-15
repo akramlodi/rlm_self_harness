@@ -80,7 +80,9 @@ class TestHappyPath:
         assert stats.n_passed == 1
         assert stats.pass_rate == pytest.approx(1 / 3)
         assert stats.n_records == len(result.records) == 2
-        # WRONG_VALUE and RESOURCE_TERMINATED give two distinct signatures.
+        # WRONG_VALUE and RESOURCE_TERMINATED give two distinct signatures:
+        # the budget-cap termination names its exhausted resource, so it stays
+        # attributable as an efficiency signal.
         assert stats.n_patterns == 2
         # No sub-verifier ran, so no record carries a checkable child verdict.
         assert stats.grounding_coverage == pytest.approx(0.0)
@@ -215,9 +217,11 @@ class TestBreakage:
         "extra_fields",
         [
             {"attribution_error_kind": "transport"},
+            {"attribution_error_kind": "content_filtered"},
+            {"attribution_error_kind": "token_limit"},
             {"error": "transport failure: LM unreachable"},
         ],
-        ids=["typed kind", "legacy prefix"],
+        ids=["typed kind", "content filtered", "token limit", "legacy prefix"],
     )
     def test_transport_failed_entry_is_exempt_from_the_attempts_demand(self, audited, extra_fields):
         round_path, _, _ = audited
@@ -390,6 +394,10 @@ class TestPipelineSeams:
                     "failing_level": "root",
                     "evidence_node_ids": ["r"],
                     "symptom_summary": "stopped before checking the answer",
+                    "operation_evidence": [
+                        {"node_id": "r", "observation": "The root submitted the produced answer."}
+                    ],
+                    "verification_limits": "Intermediate results were not semantically verified.",
                 }
             )
             + "\n```"

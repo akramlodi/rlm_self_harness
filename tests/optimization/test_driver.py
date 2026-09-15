@@ -89,7 +89,7 @@ class ScriptedLM(MockLM):
         self._call_count += 1
         self._calls.append("call")
         if not self._script:
-            raise IndexError("ScriptedLM: script exhausted")
+            raise OSError("ScriptedLM: script exhausted")
         return self._script.pop(0)
 
     def get_usage_summary(self) -> UsageSummary:
@@ -212,6 +212,44 @@ def make_round_config(tmp_path: Path, **overrides: Any) -> RoundConfig:
     return RoundConfig(**values)
 
 
+def test_s9_runtime_error_is_persisted_and_next_attempt_runs(tmp_path, monkeypatch):
+    import re
+
+    import shrlm.optimization.driver as driver
+
+    factory = ClientFactory([final("RIGHT")] * 3)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    config = make_round_config(tmp_path)
+    harnessed = build_round_rlm(config)
+    original = harnessed.rlm.answer_middleware
+    attempts = 0
+
+    def broken_s9(answer, inventory):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            re.findall(r"\d+", ("str", 100))
+        return original(answer, inventory)
+
+    harnessed.rlm.answer_middleware = broken_s9
+    monkeypatch.setattr(driver, "build_round_rlm", lambda config: harnessed)
+    entries = run_round(config)
+    assert [entry["passed"] for entry in entries] == [True, False, True]
+    assert entries[1]["cause"] == "runtime_error"
+    assert entries[1]["cost"] == pytest.approx(COST_PER_CALL)
+    assert entries[1]["usage_lower_bound"] is True
+    assert config.verifier.calls == 2
+    runs, _, _, _ = load_round(config.out_dir, config.round_index)
+    failure = runs[1][1].execution_failure
+    assert failure.exception_type == "TypeError"
+    assert "broken_s9" in failure.traceback
+    assert runs[2][1].execution_failure is None
+    assert runs[2][1].usage_summary.total_calls == 1
+    assert len(runs[2][1].metadata["iterations"]) == 1
+    assert run_round(config) == entries
+    assert factory.total_calls == 3
+
+
 # The attributor runs ungrounded (no sub-verifier), so the canned response must
 # carry ``failing_level``. Node id "r" is the root and exists in every tree.
 CANNED_ATTRIBUTION = (
@@ -223,6 +261,10 @@ CANNED_ATTRIBUTION = (
             "failing_level": "root",
             "evidence_node_ids": ["r"],
             "symptom_summary": "the merge step dropped a sub-result",
+            "operation_evidence": [
+                {"node_id": "r", "observation": "The root submitted the produced answer."}
+            ],
+            "verification_limits": "Intermediate results were not semantically verified.",
         }
     )
     + "\n```"
@@ -532,6 +574,65 @@ class TestSharedRunExecutionBody:
         assert outcome.verdict.cause is VerifierCause.RESOURCE_TERMINATED
         assert "TimeoutExceededError" in outcome.verdict.detail
 
+    def test_the_hard_deadline_signal_is_persisted_as_a_timeout(self, tmp_path, monkeypatch):
+        """The alarm raises a BaseException so no inner ``except Exception``
+        can swallow it; the driver alone converts it into the usual terminated
+        run (2026-08-29: runs went 5011s past an 1800s cap when the alarm was a
+        plain Exception caught inside the REPL)."""
+        from rlm.utils.exceptions import HardDeadlineSignal
+
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        harnessed = build_round_rlm(config)
+
+        def verifier_hit_by_the_alarm(instance, response):
+            raise HardDeadlineSignal(2730.0)
+
+        outcome = execute_run(
+            harnessed,
+            config.instances[0],
+            model_name="driver-test",
+            verifier=verifier_hit_by_the_alarm,
+        )
+
+        assert outcome.usage_lower_bound is True
+        assert outcome.verdict.cause is VerifierCause.RESOURCE_TERMINATED
+        assert "HardDeadlineExceeded" in outcome.verdict.detail
+        assert "2730.0s" in outcome.verdict.detail
+
+    def test_an_exhausted_rate_limit_is_persisted_with_its_recorded_usage(
+        self, tmp_path, monkeypatch
+    ):
+        """A 429 that outlives the client's retries must land as a terminated
+        run carrying the usage it recorded. Letting it escape crashed the child,
+        which left no trace and was charged the flat per-run ceiling (nine
+        phantom $1.00 charges on 2026-08-30)."""
+        import httpx
+        import openai
+
+        monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
+        config = make_round_config(tmp_path)
+        harnessed = build_round_rlm(config)
+
+        def verifier_rate_limited(instance, response):
+            request = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+            raise openai.RateLimitError(
+                "Error code: 429 - rate limit reached",
+                response=httpx.Response(429, request=request),
+                body=None,
+            )
+
+        outcome = execute_run(
+            harnessed,
+            config.instances[0],
+            model_name="driver-test",
+            verifier=verifier_rate_limited,
+        )
+
+        assert outcome.usage_lower_bound is True
+        assert outcome.verdict.cause is VerifierCause.RESOURCE_TERMINATED
+        assert "RateLimitError" in outcome.verdict.detail
+
     def test_omitting_the_verifier_leaves_the_verdict_for_the_parent(self, tmp_path, monkeypatch):
         """A run child never verifies -- the parent owns verdict construction (KTD5)."""
         monkeypatch.setattr(rlm_module, "get_client", ClientFactory(full_script()))
@@ -747,6 +848,85 @@ class TestManifestBackwardCompatibility:
         assert len(runs) == 3
         assert len(verdicts) == 3
         assert all("input_tokens" not in entry for entry in entries)
+
+
+class TestCanonicalManifestReads:
+    def test_load_round_sorts_reversed_multi_attempt_manifest(self, tmp_path, monkeypatch):
+        instances = make_instances()[:2]
+        factory = ClientFactory([final("WRONG")] * 4)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, instances=instances, attempts=2)
+        run_round(config)
+        round_path = round_dir(config.out_dir, config.round_index)
+        persisted = read_manifest(round_path)
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in reversed(persisted))
+        )
+
+        runs, verdicts, _envelope, entries = load_round(config.out_dir, config.round_index)
+
+        expected_run_ids = [
+            run_id_for(str(instance["id"]), attempt) for instance in instances for attempt in (1, 2)
+        ]
+        assert [entry["run_id"] for entry in entries] == expected_run_ids
+        assert [str(instance["id"]) for instance, _completion in runs] == [
+            "inst-pass",
+            "inst-pass",
+            "inst-fail",
+            "inst-fail",
+        ]
+        assert len(verdicts) == 4
+
+    def test_reordered_manifest_produces_byte_identical_evidence(self, tmp_path, monkeypatch):
+        instances = make_instances()[:2]
+        factory = ClientFactory([final("WRONG")] * 4)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_round_config(tmp_path, instances=instances, attempts=2)
+        run_round(config)
+        round_path = round_dir(config.out_dir, config.round_index)
+        canonical_manifest = read_manifest(round_path)
+
+        def evidence_bytes(label: str) -> tuple[bytes, bytes, bytes]:
+            result = mine_round(
+                out_dir=config.out_dir,
+                round_index=config.round_index,
+                miner=make_miner(BoomVerifier()),
+                split_id="held_in_v1",
+                created_at="2026-09-02T00:00:00",
+            )
+            destination = tmp_path / label
+            write_bundle(
+                result.bundle,
+                result.records,
+                str(tmp_path),
+                raw_attributions=result.raw_attributions,
+                bundle_dir=str(destination),
+            )
+            return tuple(
+                (destination / name).read_bytes()
+                for name in ("bundle.json", "records.jsonl", "attributions.jsonl")
+            )
+
+        expected = evidence_bytes("canonical-evidence")
+        (round_path / "runs.jsonl").write_text(
+            "".join(
+                json.dumps(entry, sort_keys=True) + "\n" for entry in reversed(canonical_manifest)
+            )
+        )
+
+        assert evidence_bytes("reordered-evidence") == expected
+
+    def test_load_round_rejects_an_unknown_instance_id(self, tmp_path, monkeypatch):
+        config = run_full_round(tmp_path, monkeypatch)
+        round_path = round_dir(config.out_dir, config.round_index)
+        entries = read_manifest(round_path)
+        entries[0]["instance_id"] = "not-in-instances"
+        (round_path / "runs.jsonl").write_text(
+            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries)
+        )
+
+        with pytest.raises(RoundPersistenceError, match="not-in-instances"):
+            load_round(config.out_dir, config.round_index)
 
 
 # ---------------------------------------------------------------------------
@@ -1048,6 +1228,11 @@ class TestMineRound:
         assert result.bundle.config.round_index == config.round_index
 
     def test_terminated_run_is_attributed_from_its_partial_trace(self, tmp_path, monkeypatch):
+        """A budget-cap termination names its exhausted resource in the
+        verdict detail, so it stays attributable as an efficiency signal;
+        only terminations with no recognizable resource-exhaustion cause are
+        environment-skipped (tests/optimization/test_mining.py,
+        TestEnvironmentCausedRouting)."""
         config = run_full_round(tmp_path, monkeypatch)
         result = mine_round(
             out_dir=config.out_dir,
@@ -1098,14 +1283,15 @@ class TestMineRound:
             miner=miner,
             split_id="held_in_v1",
         )
-        # No sub-verifier, narrow trees: the single ungrounded, non-aggregate
-        # variant, persisted under its content-addressed (sha-suffixed) name.
-        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
+        # Narrow trees with no descendants are grounded NO_RECURSION with or
+        # without a sub-verifier: the single grounded, non-aggregate variant,
+        # persisted under its content-addressed (sha-suffixed) name.
+        sha = miner.attributor.prompt_sha256(grounded=True, no_subcalls=True)
         round_path = round_dir(config.out_dir, config.round_index)
         prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
         assert prompt_path.is_file()
         assert prompt_path.read_text() == miner.attributor.system_prompt(
-            grounded=False, no_subcalls=True
+            grounded=True, no_subcalls=True
         )
         # The legacy unsuffixed name is never written by new mines.
         assert not (round_path / "attributor_prompt.txt").exists()
@@ -1267,6 +1453,16 @@ class TestPromptPersistence:
             miner=make_miner(BoomVerifier()),
             split_id="held_in_v1",
         )
+        # The round's runs have no descendants, so grounding renders the same
+        # variant with or without a sub-verifier; the second variant comes from
+        # a changed no-sub-calls evidence instruction embedded in the prompt.
+        import shrlm.optimization.attribution as attribution_module
+
+        monkeypatch.setattr(
+            attribution_module,
+            "EVIDENCE_INSTRUCTION_NO_SUBCALLS",
+            attribution_module.EVIDENCE_INSTRUCTION_NO_SUBCALLS + " (variant B)",
+        )
         result_grounded = mine_round(
             out_dir=config.out_dir,
             round_index=config.round_index,
@@ -1294,8 +1490,8 @@ class TestPromptPersistence:
         whose bytes already hash to its address is skipped, not rewritten."""
         config = run_full_round(tmp_path, monkeypatch)
         miner = make_miner(BoomVerifier())
-        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
-        text = miner.attributor.system_prompt(grounded=False, no_subcalls=True)
+        sha = miner.attributor.prompt_sha256(grounded=True, no_subcalls=True)
+        text = miner.attributor.system_prompt(grounded=True, no_subcalls=True)
         round_path = round_dir(config.out_dir, config.round_index)
         prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
         prompt_path.write_text(text)
@@ -1317,7 +1513,7 @@ class TestPromptPersistence:
         trusting it would permanently break the audit's prompt hash link."""
         config = run_full_round(tmp_path, monkeypatch)
         miner = make_miner(BoomVerifier())
-        sha = miner.attributor.prompt_sha256(grounded=False, no_subcalls=True)
+        sha = miner.attributor.prompt_sha256(grounded=True, no_subcalls=True)
         round_path = round_dir(config.out_dir, config.round_index)
         prompt_path = round_path / f"attributor_prompt_{sha[:16]}.txt"
         prompt_path.write_text("sentinel: bytes that do not hash to the file's name")
@@ -1330,7 +1526,7 @@ class TestPromptPersistence:
         )
 
         healed = prompt_path.read_text()
-        assert healed == miner.attributor.system_prompt(grounded=False, no_subcalls=True)
+        assert healed == miner.attributor.system_prompt(grounded=True, no_subcalls=True)
         assert hashlib.sha256(healed.encode("utf-8")).hexdigest() == sha
 
     def test_truncated_digest_file_is_healed_on_remine(self, tmp_path, monkeypatch):
@@ -1363,3 +1559,170 @@ class TestPromptPersistence:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+@pytest.mark.parametrize(
+    "error_type", [TypeError, AttributeError, KeyError, ValueError, RuntimeError]
+)
+def test_early_runtime_errors_have_diagnostics(tmp_path, monkeypatch, error_type):
+    config = make_round_config(tmp_path)
+    harnessed = build_round_rlm(config)
+
+    def fail(prompt, **kwargs):
+        error = error_type("broken harness")
+        error.partial_answer = "RIGHT"
+        raise error
+
+    monkeypatch.setattr(harnessed.rlm, "completion", fail)
+    result = execute_run(
+        harnessed, config.instances[0], model_name="test", verifier=config.verifier
+    )
+    assert result.verdict.cause is VerifierCause.RUNTIME_ERROR
+    assert not result.verdict.passed
+    assert config.verifier.calls == 0
+    assert result.completion.execution_failure.exception_type == error_type.__name__
+    assert result.usage_lower_bound
+
+
+@pytest.mark.parametrize("error_type", [OSError, MemoryError, KeyboardInterrupt, SystemExit])
+def test_operational_and_control_errors_propagate(tmp_path, monkeypatch, error_type):
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def fail(prompt, **kwargs):
+        raise error_type("operational")
+
+    monkeypatch.setattr(harnessed.rlm, "completion", fail)
+    with pytest.raises(error_type):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test")
+
+
+def test_verifier_bug_is_not_a_runtime_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(rlm_module, "get_client", ClientFactory([final("RIGHT")]))
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def fail(instance, response):
+        raise TypeError("broken verifier")
+
+    with pytest.raises(TypeError, match="broken verifier"):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test", verifier=fail)
+
+
+def test_unhandled_provider_error_propagates(tmp_path, monkeypatch):
+    import httpx
+    import openai
+
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def fail(prompt, **kwargs):
+        raise openai.APIConnectionError(request=httpx.Request("POST", "https://example.test"))
+
+    monkeypatch.setattr(harnessed.rlm, "completion", fail)
+    with pytest.raises(openai.APIConnectionError):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test")
+
+
+def test_client_configuration_error_remains_fatal(tmp_path, monkeypatch):
+    from rlm.utils.exceptions import ClientInitializationError
+
+    def invalid_client(backend, kwargs):
+        raise ValueError("invalid backend configuration")
+
+    monkeypatch.setattr(rlm_module, "get_client", invalid_client)
+    with pytest.raises(ClientInitializationError, match="invalid backend configuration"):
+        run_round(make_round_config(tmp_path))
+
+
+@pytest.mark.parametrize("failure_phase", ["environment", "usage"])
+def test_environment_setup_failure_stops_handler_and_next_attempt_runs(
+    tmp_path, monkeypatch, failure_phase
+):
+    from rlm.core.lm_handler import LMHandler
+
+    factory = ClientFactory([final("RIGHT")] * 2)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    original_environment = rlm_module.get_environment
+    original_start = LMHandler.start
+    original_stop = LMHandler.stop
+    original_usage = LMHandler.get_usage_summary
+    started = []
+    stopped = []
+
+    def start(handler):
+        started.append(handler)
+        return original_start(handler)
+
+    def stop(handler):
+        stopped.append(handler)
+        return original_stop(handler)
+
+    def environment(kind, kwargs):
+        if failure_phase == "environment" and len(started) == 1:
+            raise TypeError("broken environment setup")
+        return original_environment(kind, kwargs)
+
+    def usage(handler):
+        if failure_phase == "usage" and handler is started[0]:
+            raise TypeError("broken usage publication")
+        return original_usage(handler)
+
+    monkeypatch.setattr(LMHandler, "get_usage_summary", usage)
+    monkeypatch.setattr(LMHandler, "start", start)
+    monkeypatch.setattr(LMHandler, "stop", stop)
+    monkeypatch.setattr(rlm_module, "get_environment", environment)
+    try:
+        config = make_round_config(tmp_path, instances=make_instances()[:2])
+        entries = run_round(config)
+        assert [entry["cause"] for entry in entries] == ["runtime_error", None]
+        assert len(started) == len(stopped) == 2
+        assert entries[0]["cost"] is None
+        assert entries[1]["cost"] == pytest.approx(COST_PER_CALL)
+    finally:
+        for handler in started:
+            if handler not in stopped:
+                original_stop(handler)
+
+
+@pytest.mark.parametrize("response_kind", ["no_choices", "content_filter", "empty_content"])
+def test_azure_response_errors_remain_operational(tmp_path, monkeypatch, response_kind):
+    from types import SimpleNamespace
+
+    from rlm.clients.azure_foundry import AzureFoundryClient
+
+    client = AzureFoundryClient.__new__(AzureFoundryClient)
+    response = SimpleNamespace(
+        choices=[]
+        if response_kind == "no_choices"
+        else [
+            SimpleNamespace(
+                finish_reason="content_filter" if response_kind == "content_filter" else "stop",
+                message=SimpleNamespace(content=""),
+            )
+        ]
+    )
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def fail(prompt, **kwargs):
+        client._validate_response(response)
+
+    monkeypatch.setattr(harnessed.rlm, "completion", fail)
+    with pytest.raises(RuntimeError, match="Azure Foundry"):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test")
+
+
+def test_exhausted_mock_script_remains_a_test_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(rlm_module, "get_client", lambda *args: MockLM(responses=[]))
+    with pytest.raises(OSError, match="no more responses"):
+        run_round(make_round_config(tmp_path))
+
+
+def test_cancellation_is_not_a_runtime_failure(tmp_path, monkeypatch):
+    from rlm.utils.exceptions import CancellationError
+
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+
+    def cancel(prompt, **kwargs):
+        raise CancellationError("cancelled")
+
+    monkeypatch.setattr(harnessed.rlm, "completion", cancel)
+    with pytest.raises(CancellationError):
+        execute_run(harnessed, {"prompt": "x"}, model_name="test")

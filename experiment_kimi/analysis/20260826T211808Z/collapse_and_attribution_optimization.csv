@@ -1,0 +1,4 @@
+round_index,environment,n_runs,n_walked,n_unwalkable,n_failures,collapse_rate,root_failure_share,child_failure_share,no_recursion_failure_share,ungrounded_share,sub_verifier_available,n_expected_runs,n_missing_runs,runs_complete,evidence_complete,round_complete
+1,graphwalks,48,48,0,36,0.0,0.0,0.0,1.0,0.0,true,,,unknown,true,true
+2,graphwalks,48,48,0,34,0.0,0.0,0.0,1.0,0.0,true,,,unknown,true,true
+3,graphwalks,48,48,0,15,0.0,0.0,0.0,1.0,0.0,true,,,unknown,true,true

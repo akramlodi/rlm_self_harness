@@ -4,6 +4,8 @@ import threading
 import time
 from unittest.mock import MagicMock
 
+import pytest
+
 from rlm.core.types import RLMChatCompletion, UsageSummary
 from rlm.environments.local_repl import LocalREPL
 
@@ -504,3 +506,28 @@ class TestRlmQueryScaffoldRestoration:
         repl.execute_code("answers = rlm_query_batched(['q1'])")
         assert repl.locals["answers"] == ["real"]
         repl.cleanup()
+
+
+class TestBatchedBudgetShare:
+    """Concurrent children read the same parent spend snapshot, so a batch of N
+    must hand each child 1/N of the remainder (``rlm.core.subcall_context``)."""
+
+    def test_batched_children_see_an_equal_share_and_single_calls_see_the_whole(self):
+        from rlm.core.subcall_context import budget_fraction
+
+        seen: dict[str, float] = {}
+
+        def subcall_fn(prompt, model=None):
+            seen[prompt] = budget_fraction()
+            return _make_completion(f"ok {prompt}")
+
+        repl = LocalREPL(subcall_fn=subcall_fn)
+        result = repl.execute_code(
+            "batched = rlm_query_batched(['a', 'b', 'c', 'd'])\nsingle = rlm_query('e')"
+        )
+        assert result.stderr == ""
+        assert repl.locals["batched"] == ["ok a", "ok b", "ok c", "ok d"]
+        assert all(seen[p] == pytest.approx(0.25) for p in "abcd")
+        assert seen["e"] == 1.0
+        # The share is scoped to the call: nothing leaks onto the calling thread.
+        assert budget_fraction() == 1.0

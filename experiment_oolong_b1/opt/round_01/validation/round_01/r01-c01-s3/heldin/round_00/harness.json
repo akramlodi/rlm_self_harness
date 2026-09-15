@@ -1,0 +1,35 @@
+{
+  "format": "shrlm-harness/v2",
+  "harness": {
+    "name": "r01-c01-s3",
+    "orchestrator": true,
+    "surfaces": {
+      "S10_skills": [],
+      "S1_repl_contract": "You are a Recursive Language Model (RLM): a language model with a prompt, and a very important context stored in a Python REPL related to that prompt.\nYou can iteratively interact with the a Python REPL, which has access to LLM calls as a function. You will be queried turn-by-turn until you have an answer to the query.\n\nTo use the REPL, you need to write code in ```repl``` blocks; the REPL persists across turns. Available in the REPL:\n- `context`: the important, potentially very long information related to the prompt (typically `str` or `list[str]`).\n- `llm_query(prompt: str, model: str | None = None) -> str`: a single sub-LLM completion. Use for extraction, summarization, or Q&A over a chunk of text. Sub-LLM context window \u2248 500K chars.\n- `llm_query_batched(prompts: list[str], model=None) -> list[str]`: concurrently call several LLM calls in parallel over a list of prompts; same order out as in.\n- `rlm_query(prompt, model=None)` / `rlm_query_batched(prompts, model=None)`: recursive RLM sub-calls. Fall back to `llm_query` / `llm_query_batched` when recursion is disabled.\n- `SHOW_VARS() -> str`: list every variable currently in the REPL.\n- `answer`: dict initialized to `{{\"content\": \"\", \"ready\": False}}`. To submit, set `answer[\"content\"]` to the final answer and `answer[\"ready\"] = True` inside a ```repl``` block.\n{custom_tools_section}\n\nREPL outputs over ~20K characters are truncated, so for longer payloads slice `context` and pass slices through `llm_query` rather than `print`-ing them whole. The REPL is NOT a Jupyter cell \u2014 only `print(...)` output (stdout) is shown back to you between turns; a bare expression on the last line is silently discarded. Always wrap inspections in `print(...)`.\n\nAs a general strategy, you should start by probing your context to understand it better (e.g. print a few lines, count them, etc.). Then, use the REPL to build up an answer to the query.\n\nPlan in prose, then execute one ```repl``` block every turn, get feedback from the output, then continue on the next turn. Do not flip `answer[\"ready\"] = True` on turn 1 without first inspecting `context`.\n",
+      "S2_decomposition_instruction": "",
+      "S3_execution_instruction": "For aggregation tasks (counting, frequency analysis, comparisons, or any computation requiring synthesis across large contexts), use `rlm_query` or `rlm_query_batched` to delegate analysis of chunks to recursive sub-calls, then aggregate their results programmatically. Use `llm_query` only for simple extraction, summarization, or formatting of individual chunks where the answer is directly present and requires no cross-chunk computation. Never compute aggregations from partial data or single flat calls when the full context is large.",
+      "S4_verification_instruction": "",
+      "S5_recovery_instruction": "",
+      "S6_runtime_policy": {
+        "enabled": false,
+        "max_batch_width": null,
+        "max_depth": null,
+        "max_prompt_chars": null,
+        "max_retries": null,
+        "retry_on_syntax_error": null,
+        "validate_sub_output": null
+      },
+      "S7_metadata": {
+        "declared_bound": 20000,
+        "source": "def build_metadata(\n    stdout: str,\n    repl_inventory: dict[str, tuple[str, int]],\n    max_character_length: int = DEFAULT_MAX_CHARACTER_LENGTH,\n) -> str:\n    \"\"\"S7 - turn-to-turn memory: what one executed block leaves behind for the next turn.\n\n    The floor is the shipped 20K head-truncation, byte for byte. ``repl_inventory``\n    is the redacted ``{name: (type_name, length)}`` view of the namespace, never\n    the values, so I1 holds however this surface is edited.\n\n    Args:\n        stdout: The formatted execution result for one code block.\n        repl_inventory: The redacted namespace inventory.\n        max_character_length: Per-block cap on the formatted execution result.\n\n    Returns:\n        The entry that carries into the next turn.\n    \"\"\"\n    return default_metadata_builder(stdout, repl_inventory, max_character_length)\n"
+      },
+      "S8_repl_helpers": {},
+      "S8_sub_repl_helpers": {},
+      "S9_answer_middleware": {
+        "source": "def accept_answer(answer: str, repl_inventory: dict[str, tuple[str, int]]) -> AnswerDecision:\n    \"\"\"The S9 floor: accept every detected answer unchanged (identity).\"\"\"\n    return AnswerDecision.accept(answer)\n"
+      }
+    }
+  },
+  "hash": "ca4b8e1d6191f1f507107ad5b1ebcbcbbca74424ec6dde89b142d3ad0e270203",
+  "name": "r01-c01-s3"
+}

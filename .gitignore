@@ -224,3 +224,5 @@ CLAUDE.md
 # Experiment output directories stay local-only. Traces embed full prompts (one
 # long run is tens of MB) and split files can exceed GitHub's 100 MB limit.
 experiment_*/
+
+!experiment_kimi/analysis/20260826T022243Z/*

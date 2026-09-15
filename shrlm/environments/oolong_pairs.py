@@ -957,6 +957,53 @@ def load_oolong_pairs_from_config(
 # =============================================================================
 
 
+ANSWER_CONTRACT = """OOLONG-Pairs answer contract:
+A bracketed list of integer pairs or newline-separated pairs are accepted.
+Use lower ID first within each pair; global pair order is irrelevant.
+The explicit empty answer is "No valid pairs found."; literal [] is not an empty answer.
+Qualifying pairs need not form a clique. S9 must accept valid answers unchanged,
+including the empty marker, and must not invent stricter completeness heuristics.
+"""
+
+# Synthetic contract examples, never sampled from mining or validation data.
+ANSWER_FIXTURES = (
+    ("bracketed_pair", "[(101, 203)]", True),
+    ("newline_pairs", "(101, 203)\n(307, 409)", True),
+    ("empty_marker", "No valid pairs found.", True),
+    ("non_clique", "[(101, 203), (203, 307)]", True),
+    ("global_order", "[(307, 409), (101, 203)]", True),
+    ("malformed", "boundedness probe answer", False),
+)
+
+
+PAIR_METRICS_RE = re.compile(
+    r"precision=(0\.\d+|1\.0+) recall=(0\.\d+|1\.0+) "
+    r"f1=(0\.\d+|1\.0+) missing=(\d+) extra=(\d+)"
+)
+
+
+def recorded_pair_metrics(verdict: Verdict) -> dict[str, float | int] | None:
+    """Read saved diagnostic precision; never rescore a partial or redirected answer."""
+    if verdict.cause in (
+        VerifierCause.RUNTIME_ERROR,
+        VerifierCause.RESOURCE_TERMINATED,
+        VerifierCause.WRONG_FORMAT,
+        VerifierCause.CONTENT_FILTERED,
+    ):
+        return None
+    match = PAIR_METRICS_RE.fullmatch(verdict.detail)
+    if match is None:
+        return None
+    precision, recall, f1, missing, extra = match.groups()
+    return {
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "missing": int(missing),
+        "extra": int(extra),
+    }
+
+
 def extract_answer_pairs(response: str) -> list[tuple[int, int]] | None:
     """Pull every "(user_id_1, user_id_2)" pair out of a response, in order.
 

@@ -20,8 +20,8 @@ target OOLONG-Pairs (n_short=40, n_long=40), so each length's eval run count
 sums both environments' test-role size, not GraphWalks alone (see
 ``shrlm.experiment.report.eval_test_sizes``):
 
-    runs/round = 2*24 + 4*5*64 + 0.5*4*64 = 48 + 1280 + 128 = 1456
-    optimization runs = 1456 * 3 = 4368
+    runs/round = 2*24 + 2*4*40 = 368
+    optimization runs = 368 * 3 = 1104
     eval short size = 40 (graphwalks) + 40 (oolong_pairs) = 80
     eval long size  = 150 (graphwalks) + 40 (oolong_pairs) = 190
     eval runs = 4 * (80 + 190) * 3 = 3240  (960 short + 2,280 long)
@@ -69,8 +69,8 @@ from shrlm.optimization.driver import MANIFEST_FILE
 FIXTURE = Path(__file__).parent / "fixtures" / "report_experiment"
 
 # Hand-computed from the fixture + full-profile config (see module docstring).
-RUNS_PER_ROUND = 1456.0
-OPTIMIZATION_RUNS = 4368.0
+RUNS_PER_ROUND = 368.0
+OPTIMIZATION_RUNS = 1104.0
 EVAL_SHORT_RUNS = 960.0
 EVAL_LONG_RUNS = 2280.0
 
@@ -342,12 +342,8 @@ class TestRunCounts:
     def test_runs_per_round_follows_the_configured_formula(self, config, experiment):
         counts = build_report(config, experiment).run_counts
 
-        loop, splits, report_cfg = config.loop, config.splits, config.report
-        expected = (
-            loop.m * splits.n_in
-            + loop.v * (loop.k + 1) * (splits.n_in + splits.n_ho)
-            + report_cfg.p_merge * loop.v * (splits.n_in + splits.n_ho)
-        )
+        loop, splits = config.loop, config.splits
+        expected = loop.m * splits.n_in + 2 * loop.v * splits.n_ho
         assert counts.runs_per_round == expected == RUNS_PER_ROUND
         assert counts.rounds == loop.t
         assert counts.optimization_runs == OPTIMIZATION_RUNS
@@ -409,7 +405,7 @@ class TestApiScenarios:
         assert promo.usd_point < listed.usd_point
 
     def test_round_extrapolation_identity(self, config, experiment):
-        """(m*n_in + v(K+1)(n_in+n_ho) + p_merge*v(n_in+n_ho)) * mean short tokens * price."""
+        """(m*n_in + 2*v*n_ho) * mean short tokens * price."""
         report = build_report(config, experiment)
 
         optimization = next(leg for leg in report.point.legs if leg.name == "optimization")
@@ -444,7 +440,7 @@ class TestGpuScenarios:
             + long_tokens / profile.throughput_tokens_per_second["long"]
         ) / 3600.0
 
-        assert hours == pytest.approx(10.178333333333333)
+        assert hours == pytest.approx(9.762777777777778)
         assert scenario.detail["gpu_hours_point"] == pytest.approx(hours)
         assert scenario.usd_point == pytest.approx(hours * profile.hourly_rate_usd)
         assert scenario.detail["usd_point_low"] == pytest.approx(
@@ -638,3 +634,17 @@ class TestArtifacts:
         second = write_report(build_report(config, experiment)).read_text()
 
         assert first == second
+
+
+def test_batch_projection_is_independent_of_k_and_legacy_merge_probability(config):
+    changed = replace(
+        config, loop=replace(config.loop, k=1), report=replace(config.report, p_merge=0)
+    )
+    assert run_counts(changed) == run_counts(config)
+
+
+def test_deepseek_profile_has_twenty_validation_runs_per_full_round():
+    config = load_config("full", path="configs/experiment_oolong_pairs_DeepSeekV4Flash.toml")
+    assert config.loop.v == 1
+    assert config.splits.n_in == config.splits.n_ho == 10
+    assert run_counts(config).runs_per_round - config.loop.m * config.splits.n_in == 20

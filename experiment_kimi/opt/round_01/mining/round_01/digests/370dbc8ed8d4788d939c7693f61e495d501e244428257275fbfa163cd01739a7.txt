@@ -1,0 +1,64 @@
+## Run
+instance_id: bfs-a454cef56a3a9fbb
+question: Perform a BFS from node abcd with depth 1.
+gold_answer: [eaae339c4d]
+produced_answer: Based on my investigation, the Eiffel Tower had approximately **5.9 million visitors in 2022** (the exact figure typically cited is **5,902,242 visitors**).
+verifier_cause: wrong_format
+
+## Tree statistics
+iterations: 31
+sub_calls_total: 0
+recursive_children: 0
+plain_lm_leaves: 0
+errored_calls: 0
+indeterminate_calls: 0
+max_observed_depth: 0
+root_context_chars: 28438
+largest_subcall_prompt_chars: 0
+collapse_ratio: 0.000
+terminated_by_fallback: True
+recursion_available: True
+block_attribution_reliable: True
+suspected_lost_subcalls: 0
+trace_integrity: complete
+
+## Root iterations
+### iteration 1
+### iteration 2
+### iteration 3
+### iteration 4
+### iteration 5
+### iteration 6
+### iteration 7
+### iteration 8
+### iteration 9
+### iteration 10
+### iteration 11
+### iteration 12
+### iteration 13
+### iteration 14
+### iteration 15
+### iteration 16
+### iteration 17
+### iteration 18
+### iteration 19
+### iteration 20
+### iteration 21
+### iteration 22
+### iteration 23
+### iteration 24
+### iteration 25
+### iteration 26
+### iteration 27
+### iteration 28
+### iteration 29
+### iteration 30
+### iteration 31
+(no code executed; answer synthesized by the fallback)
+final_answer_set: Based on my investigation, the Eiffel Tower had approximately **5.9 million visitors in 2022** (the exact figure typically cited is **5,902,242 visitors**).
+
+## Sub-calls
+(none)
+
+## Focused sub-call excerpts
+(none)

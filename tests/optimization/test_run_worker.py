@@ -134,6 +134,45 @@ class TestConcurrentEquivalence:
 
 
 class TestChildFailure:
+    def test_pid_marker_write_failure_terminates_and_reaps_spawned_child(
+        self, tmp_path, monkeypatch
+    ):
+        import shrlm.optimization.costs as costs_module
+
+        config = make_config(
+            tmp_path,
+            instances=[{"id": "inst-1", "prompt": "p", "gold": "RIGHT"}],
+            run_workers=2,
+            client_factory=(RUN_SCRIPTED_FACTORY, {"hang": True}),
+        )
+        spawned = []
+        popen = costs_module.subprocess.Popen
+        write_text = Path.write_text
+
+        def capture_popen(*args, **kwargs):
+            process = popen(*args, **kwargs)
+            spawned.append(process)
+            return process
+
+        def fail_pid_marker(path, *args, **kwargs):
+            if path.name == "worker.pid":
+                raise OSError("pid marker write failed")
+            return write_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(costs_module.subprocess, "Popen", capture_popen)
+        monkeypatch.setattr(Path, "write_text", fail_pid_marker)
+
+        with pytest.raises(OSError, match="pid marker write failed"):
+            run_governed_round(config, CandidateSpendBreaker(CAPS))
+
+        assert len(spawned) == 1
+        process = spawned[0]
+        assert process.returncode is not None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(process.pid, os.WNOHANG)
+        round_path = round_dir(config.out_dir, config.round_index)
+        assert list((round_path / "run_workers").glob("*/worker.pid")) == []
+
     def test_a_child_that_crashes_is_persisted_terminated_and_charged(self, tmp_path):
         config = make_config(
             tmp_path,
@@ -202,6 +241,36 @@ class TestOrphanAdoption:
         assert orphan_trace.read_bytes() == trace_bytes_before
         # No child was dispatched for the adopted run at all.
         assert not child_dir.exists()
+
+    def test_a_parallel_orphan_resumed_sequentially_is_adopted_once(self, tmp_path, monkeypatch):
+        """Changing worker count must not turn an existing trace into another paid run."""
+        parallel = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
+        first = run_governed_round(parallel, CandidateSpendBreaker(CAPS))
+        round_path = round_dir(parallel.out_dir, parallel.round_index)
+        entries = read_manifest(round_path)
+        orphan = entries[0]
+        (round_path / "runs.jsonl").write_text(
+            "".join(
+                json.dumps(entry, sort_keys=True) + "\n"
+                for entry in entries
+                if entry["run_id"] != orphan["run_id"]
+            )
+        )
+        orphan_trace = trace_path_for(round_path, str(orphan["run_id"]))
+        trace_bytes_before = orphan_trace.read_bytes()
+
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        sequential = replace(parallel, run_workers=1)
+        breaker = CandidateSpendBreaker(CAPS)
+
+        resumed = run_governed_round(sequential, breaker)
+
+        assert idle.total_calls == 0
+        assert orphan_trace.read_bytes() == trace_bytes_before
+        assert [entry["run_id"] for entry in resumed.entries].count(orphan["run_id"]) == 1
+        assert resumed.spent == pytest.approx(first.spent)
+        assert breaker.spent == pytest.approx(first.spent)
 
 
 class TestBudget:
@@ -340,12 +409,15 @@ class TestDeadline:
         assert result.entries[0]["run_id"] == run_id_for("inst-1", 1)
         assert result.entries[0]["cause"] == VerifierCause.RESOURCE_TERMINATED.value
         # Which deadline fired matters, and so does how. The child's own alarm
-        # must raise the runtime's TimeoutExceededError, not the builtin: only
-        # the former is in ROOT_LIMIT_EXCEPTIONS, so only the former is caught
-        # inside execute_run, which turns the hang into an ordinary terminated
-        # run carrying whatever usage the runtime recorded. Raising the builtin
-        # instead would crash the child, and the parent would then price the run
-        # at its flat ceiling rather than what it actually spent.
+        # raises HardDeadlineSignal (a BaseException, so no ``except Exception``
+        # inside the REPL or a sub-call wrapper can swallow it), and only
+        # execute_run converts it -- into HardDeadlineExceeded, a
+        # TimeoutExceededError persisted as an ordinary terminated run carrying
+        # whatever usage the runtime recorded, its name in the detail so the
+        # audit can tell a backstop kill from a between-iteration timeout. An
+        # alarm that escaped execute_run would crash the child, and the parent
+        # would then price the run at its flat ceiling rather than what it
+        # actually spent.
         #
         # So the child reports success -- it did its job -- with a terminated
         # run inside, and it leaves a trace behind. A crashed child reports
@@ -356,7 +428,7 @@ class TestDeadline:
         payload = json.loads((run_path / "result.json").read_text())
         assert payload["ok"] is True
         assert payload["terminated"] is True
-        assert "TimeoutExceededError" in payload["detail"]
+        assert "HardDeadlineExceeded" in payload["detail"]
         assert trace_path_for(
             round_dir(config.out_dir, config.round_index), run_id_for("inst-1", 1)
         ).exists()
@@ -378,7 +450,8 @@ class TestMisconfiguredBudget:
             run_governed_round(config, CandidateSpendBreaker(caps))
 
         assert "cannot reserve even one concurrent run" in str(excinfo.value)
-        assert "validation_run_workers=1" in str(excinfo.value)
+        assert "run-worker setting to 1" in str(excinfo.value)
+        assert "validation_run_workers" not in str(excinfo.value)
 
     def test_the_sequential_path_accepts_that_same_budget(self, tmp_path, monkeypatch):
         """The reservation is a dispatch mechanism; sequential has no gate."""
@@ -413,6 +486,22 @@ class TestOrphanedChildrenBlockANewParent:
         assert "run worker(s) alive" in str(excinfo.value)
         assert str(os.getppid()) in str(excinfo.value)
 
+    def test_a_live_parallel_child_blocks_a_sequential_resume_before_sidecar_rewrite(
+        self, tmp_path
+    ):
+        parallel = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
+        run_governed_round(parallel, CandidateSpendBreaker(CAPS))
+        round_path = round_dir(parallel.out_dir, parallel.round_index)
+        sidecar = round_path / "execution.json"
+        sidecar_bytes = sidecar.read_bytes()
+        run_path = round_path / "run_workers" / run_id_for("inst-1", 1)
+        (run_path / "worker.pid").write_text(f"{os.getppid()}\n")
+
+        with pytest.raises(SplitClaimedError):
+            run_governed_round(replace(parallel, run_workers=1), CandidateSpendBreaker(CAPS))
+
+        assert sidecar.read_bytes() == sidecar_bytes
+
     def test_a_dead_pid_marker_does_not_block(self, tmp_path):
         config = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
         round_path = round_dir(config.out_dir, config.round_index)
@@ -425,6 +514,21 @@ class TestOrphanedChildrenBlockANewParent:
         assert result.outcome == OUTCOME_COMPLETED
         assert len(result.entries) == 3
 
+    def test_a_dead_parallel_child_does_not_block_a_sequential_resume(self, tmp_path, monkeypatch):
+        parallel = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
+        run_governed_round(parallel, CandidateSpendBreaker(CAPS))
+        round_path = round_dir(parallel.out_dir, parallel.round_index)
+        run_path = round_path / "run_workers" / run_id_for("inst-1", 1)
+        (run_path / "worker.pid").write_text("999999999\n")
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+
+        result = run_governed_round(replace(parallel, run_workers=1), CandidateSpendBreaker(CAPS))
+
+        assert result.outcome == OUTCOME_COMPLETED
+        assert len(result.entries) == 3
+        assert idle.total_calls == 0
+
     def test_a_completed_round_leaves_no_pid_markers_behind(self, tmp_path):
         config = fanned_config(tmp_path, workers=2, script=[final("RIGHT")])
 
@@ -432,3 +536,33 @@ class TestOrphanedChildrenBlockANewParent:
 
         round_path = round_dir(config.out_dir, config.round_index)
         assert list((round_path / "run_workers").glob("*/worker.pid")) == []
+
+
+def test_runtime_failure_survives_workers_and_trace_only_resume(tmp_path, monkeypatch):
+    from tests.optimization.run_worker_support import broken_s9_harness
+
+    harness = broken_s9_harness(tmp_path / "generated")
+    config = replace(
+        fanned_config(tmp_path / "round", workers=2, script=[final("RIGHT")]), harness=harness
+    )
+    first = run_governed_round(config, CandidateSpendBreaker(CAPS))
+    assert first.outcome == OUTCOME_COMPLETED
+    assert len(first.entries) == 3
+    assert {entry["cause"] for entry in first.entries} == {"runtime_error"}
+    assert all(entry["cost"] == pytest.approx(0.001) for entry in first.entries)
+    path = round_dir(config.out_dir, config.round_index)
+    traces = {p.name: p.read_bytes() for p in (path / "runs").glob("*.json")}
+    for data in traces.values():
+        assert json.loads(data)["execution_failure"]["exception_type"] == "TypeError"
+    (path / "runs.jsonl").write_text("")
+    shutil.rmtree(path / "run_workers")
+    idle = ClientFactory([])
+    monkeypatch.setattr(rlm_module, "get_client", idle)
+    resumed = run_governed_round(replace(config, run_workers=1), CandidateSpendBreaker(CAPS))
+    assert idle.total_calls == 0
+    assert {entry["cause"] for entry in resumed.entries} == {"runtime_error"}
+    assert resumed.spent == pytest.approx(first.spent)
+    assert len(resumed.entries) == 3
+    assert {p.name: p.read_bytes() for p in (path / "runs").glob("*.json")} == traces
+    again = run_governed_round(config, CandidateSpendBreaker(CAPS))
+    assert again.entries == resumed.entries

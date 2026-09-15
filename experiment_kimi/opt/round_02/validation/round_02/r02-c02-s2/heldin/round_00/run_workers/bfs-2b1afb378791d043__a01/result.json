@@ -1,0 +1,8 @@
+{
+  "detail": "BudgetExceededError: Budget exceeded after iteration 28: spent $0.506023 of $0.500000 budget",
+  "format": "shrlm-run-worker-result/v1",
+  "ok": true,
+  "run_id": "bfs-2b1afb378791d043__a01",
+  "terminated": true,
+  "usage_lower_bound": true
+}

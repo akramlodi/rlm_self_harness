@@ -112,7 +112,13 @@ from typing import TYPE_CHECKING, Any
 
 from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
-from shrlm.environments.graphwalks import GraphWalksVerifier
+from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier
+from shrlm.environments.oolong import (
+    OolongSubVerifier,
+    OolongVerifier,
+    continuous_score,
+)
+from shrlm.environments.oolong_pairs import OolongPairsVerifier
 from shrlm.experiment.config import (
     GOVERNED_ROUND_KEYS,
     ExperimentConfig,
@@ -149,13 +155,28 @@ from shrlm.optimization.costs import (
     governed_limits,
     run_governed_round,
 )
-from shrlm.optimization.driver import RoundConfig, load_manifest, mine_round
+from shrlm.optimization.driver import (
+    RoundConfig,
+    build_round_rlm,
+    execute_run,
+    load_manifest,
+    mine_round,
+)
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.promotion import DECISION_PROMOTED, PromotionConfig
-from shrlm.optimization.proposal import ProposalCache, load_passing_behaviors, propose_round
+from shrlm.optimization.proposal import (
+    HISTORY_NOT_MATERIALIZED,
+    PROPOSAL_FILENAME,
+    PROPOSAL_FORMAT,
+    ProposalBudgetExhausted,
+    ProposalCache,
+    ProposalRejection,
+    load_passing_behaviors,
+    propose_round,
+)
 from shrlm.optimization.types import SubVerifier, Verifier
 from shrlm.optimization.validation import (
-    SPLIT_HELDIN,
+    SPLIT_HELDOUT,
     EvaluationConfig,
     ValidationRound,
     ValidationSplits,
@@ -194,18 +215,96 @@ STAGE_VALIDATION = "validation"
 STOP_MAX_ROUNDS = "max_rounds"
 STOP_PATIENCE = "patience"
 
-# The incumbent every experiment starts from (registry entry, not a copy).
+# The registry floor. ``config.loop.initial_harness`` decides which registry
+# harness the loop actually starts from (default: this); evaluation's B1
+# condition stays bound to this constant so B1 always means the H0 floor.
 INITIAL_INCUMBENT = "H0"
 
-# The optimization loop mines and validates the source-short splits.
-SPLIT_ENVIRONMENT = "graphwalks"
+# The optimization loop mines and validates one environment's held-in/held-out
+# splits. Which environment (and its verifier pair) is ``config.loop.environment``
+# -- ``graphwalks`` (default), ``oolong_pairs``, or ``oolong_synth`` -- resolved by
+# ``resolve_env_binding``. The length label is ``short`` for both (OOLONG-synth's
+# held-in/held-out/test partition is one length-diverse pool, not a short/long
+# pair).
 SPLIT_LENGTH = "short"
 ROLE_HELD_IN = "held_in"
 ROLE_HELD_OUT = "held_out"
 
+# The default source environment. The loop itself reads
+# ``resolve_env_binding(config).name`` (``config.loop.environment``); this
+# constant is the fallback the report/analysis pipeline
+# (``shrlm.experiment.report``) uses to locate the optimization split bucket,
+# and it stays "graphwalks" -- the shipped default and the environment those
+# analyses were written for.
+SPLIT_ENVIRONMENT = "graphwalks"
 
-# The default verifier's dotted path, handed to validation subject workers.
+# OOLONG-real generalization check (non-gated): its split role and metering
+# stage. Written under ``opt/round_NN/real_check/`` and, for the final
+# incumbent, ``real_check/final/``.
+REAL_CHECK_DIR = "real_check"
+REAL_CHECK_ENVIRONMENT = "oolong_real"
+REAL_CHECK_LENGTH = "short"
+ROLE_REAL_CHECK = "check"
+REAL_CHECK_SUMMARY_FILENAME = "summary.json"
+REAL_CHECK_SUMMARY_FORMAT = "shrlm-oolong-real-check/v1"
+STAGE_REAL_CHECK = "real_check"
+
+
+# The verifier dotted paths handed to validation subject workers, per environment.
 GRAPHWALKS_VERIFIER_FACTORY = "shrlm.environments.graphwalks:GraphWalksVerifier"
+OOLONG_PAIRS_VERIFIER_FACTORY = "shrlm.environments.oolong_pairs:OolongPairsVerifier"
+OOLONG_SYNTH_VERIFIER_FACTORY = "shrlm.environments.oolong:make_synth_verifier"
+
+
+@dataclass(frozen=True)
+class EnvBinding:
+    """Which environment the optimization loop mines and validates this run.
+
+    ``name`` / ``length`` locate the held-in/held-out/test split files;
+    ``verifier`` / ``sub_verifier`` are the defaults ``run_experiment`` installs
+    when the caller passes neither; ``verifier_factory`` is the dotted path a
+    parallel validation stage rebuilds the verifier from in its child processes.
+    """
+
+    name: str
+    length: str
+    verifier: Verifier
+    sub_verifier: SubVerifier | None
+    verifier_factory: str
+
+
+def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
+    """The ``EnvBinding`` for ``config.loop.environment``.
+
+    ``config.load_config`` has already validated the value against
+    ``SELECTABLE_ENVIRONMENTS``; an unexpected value here is a programming error.
+    """
+    environment = config.loop.environment
+    if environment == "graphwalks":
+        return EnvBinding(
+            name="graphwalks",
+            length=SPLIT_LENGTH,
+            verifier=GraphWalksVerifier(),
+            sub_verifier=GraphWalksSubVerifier(),
+            verifier_factory=GRAPHWALKS_VERIFIER_FACTORY,
+        )
+    if environment == "oolong_synth":
+        return EnvBinding(
+            name="oolong_synth",
+            length=SPLIT_LENGTH,
+            verifier=OolongVerifier(task_set="synth"),
+            sub_verifier=OolongSubVerifier(),
+            verifier_factory=OOLONG_SYNTH_VERIFIER_FACTORY,
+        )
+    if environment == "oolong_pairs":
+        return EnvBinding(
+            name="oolong_pairs",
+            length=SPLIT_LENGTH,
+            verifier=OolongPairsVerifier(),
+            sub_verifier=None,
+            verifier_factory=OOLONG_PAIRS_VERIFIER_FACTORY,
+        )
+    raise ValueError(f"resolve_env_binding: unsupported loop.environment {environment!r}")
 
 
 class ExperimentPersistenceError(ExperimentError):
@@ -217,7 +316,11 @@ class IdentityMismatchError(ExperimentPersistenceError):
 
 
 class MiningBudgetExceededError(ExperimentError):
-    """The mining spend breaker tripped; partial state is persisted and resumable."""
+    """Mining's actual cumulative spend exceeded the candidate budget."""
+
+
+class MiningDispatchStoppedError(ExperimentError):
+    """Mining's reservation gate left a resumable tail without overspending."""
 
 
 @dataclass(frozen=True)
@@ -272,6 +375,106 @@ def _persist_once(path: Path, payload: dict[str, Any], diverging: str) -> None:
     tmp_path = path.with_name(path.name + ".tmp")
     tmp_path.write_text(text)
     os.replace(tmp_path, path)
+
+
+def load_round_history(
+    round_path: Path, round_index: int, *, has_ledger: bool
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """One completed round's entry in the proposer's prior-edit history (KTD3).
+
+    Built from persisted markers only, so the execute and replay paths of the
+    round loop hand the next proposer the same entry (R7). The decision is the
+    ``round.json`` payload: it carries the round index, ``promoted``, and the
+    promoted hash, which is everything the renderer reads (the validation
+    ``decision.json`` has no round index). Records come from two sources,
+    merged for every round:
+
+    * the validation ledger when the round has one -- it already persists
+      loader-gate rejections and promotion outcomes -- with each candidate's
+      predicted effect attached from its ``proposal.json`` where that file
+      exists (the baseline and the merged subject have none);
+    * the proposals marker's materialization failures, synthesized as
+      ``not_materialized`` records whether or not a ledger exists, so a
+      candidate refused for reproducing the incumbent still appears (the
+      failure behind ``VALIDATOR_VERSION`` 1.5.0 in ``proposal.py``).
+
+    A marker written before failure records were persisted has no such
+    list and contributes no synthesized records; the round still renders as
+    an entry with its outcome.
+    """
+    from shrlm.optimization.proposal_evidence import (
+        validation_history_diagnostics,
+        validation_history_progress,
+    )
+
+    decision = _load_marker(round_path / ROUND_MARKER_FILENAME, ROUND_MARKER_FORMAT)
+    records: list[dict[str, Any]] = []
+    if has_ledger:
+        ledger_records, ledger_decision = load_promotion_ledger(
+            round_dir(round_path / VALIDATION_DIR, round_index)
+        )
+        validation_path = round_dir(round_path / VALIDATION_DIR, round_index)
+        if ledger_decision.get("baseline"):
+            decision["baseline_diagnostics"] = validation_history_diagnostics(
+                validation_path, ledger_decision["baseline"]
+            )
+        proposals_dir = round_path / PROPOSALS_DIR
+        for record in ledger_records:
+            enriched = {**record, **proposal_behavior(proposals_dir, record.get("subject_id"))}
+            if record.get("links"):
+                enriched["diagnostics"] = validation_history_diagnostics(validation_path, record)
+            if record.get("decision") != "bundled":
+                enriched["diagnostic_progress"] = validation_history_progress(
+                    validation_path, record, ledger_decision.get("baseline")
+                )
+            records.append(enriched)
+    marker = _load_marker(round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT)
+    for failure in marker.get("materialization_failures", []):
+        records.append(
+            {
+                "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
+                "surface": failure["surface"],
+                "decision": HISTORY_NOT_MATERIALIZED,
+                "reasons": [failure["reason"]],
+                "predicted_effect": failure.get("predicted_effect", ""),
+            }
+        )
+    for failure in marker.get("preflight_failures", []):
+        records.append(
+            {
+                "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
+                "surface": failure["surface"],
+                "decision": "preflight_rejected",
+                "predicted_effect": failure.get("predicted_effect", ""),
+                "reasons": [f"{failure['gate']}: {failure['reason']}"],
+            }
+        )
+    if marker.get("attempts"):
+        decision["proposal_attempts"] = [
+            {"attempt": a["attempt"], "accepted": a["accepted"], "violation": a["violation"]}
+            for a in marker["attempts"]
+        ]
+    return records, decision
+
+
+def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, str]:
+    """Load proposal rationale additively; old artifacts have no invented explanation."""
+    from shrlm.optimization.candidates import BEHAVIOR_FIELDS
+
+    if not candidate_id:
+        return {}
+    path = proposals_dir / str(candidate_id) / PROPOSAL_FILENAME
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("format") != PROPOSAL_FORMAT:
+        return {}
+    return {
+        name: payload[name]
+        for name in ("predicted_effect", *BEHAVIOR_FIELDS)
+        if isinstance(payload.get(name), str) and payload[name].strip()
+    }
 
 
 def _load_marker(path: Path, expected_format: str) -> dict[str, Any]:
@@ -364,8 +567,8 @@ def _operational_path(out_dir: Path, raw: str) -> Path:
     return path if path.is_absolute() else out_dir / path
 
 
-def _read_split(splits_dir: Path, role: str) -> list[dict[str, Any]]:
-    path = splits_dir / split_file_name(SPLIT_ENVIRONMENT, SPLIT_LENGTH, role)
+def _read_split(splits_dir: Path, environment: str, length: str, role: str) -> list[dict[str, Any]]:
+    path = splits_dir / split_file_name(environment, length, role)
     instances = read_jsonl(path)
     if not instances:
         raise ExperimentPersistenceError(f"{path} holds no instances; cannot run a round on it")
@@ -465,7 +668,7 @@ def _rematerialize_promoted(
     """Rebuild a completed round's promoted harness from its persisted envelope.
 
     The promoted subject's ``harness.json`` (written by ``run_round`` under its
-    held-in split directory) is located through the ledger record's audit
+    held-out split directory) is located through the ledger record's audit
     links, rematerialized via ``materialize_harness``, and hash-verified --
     the round-trip the gate test pins, covering merged promotions whose live
     harness exists nowhere else on disk.
@@ -484,7 +687,7 @@ def _rematerialize_promoted(
             f"{decision['promoted_harness_hash']}, but the round marker recorded "
             f"{promoted_hash}; the persisted round state contradicts itself"
         )
-    envelope_path = validation_round_path / str(record["links"]["splits"][SPLIT_HELDIN]["harness"])
+    envelope_path = validation_round_path / str(record["links"]["splits"][SPLIT_HELDOUT]["harness"])
     return rematerialize_harness_envelope(
         envelope_path,
         work_dir,
@@ -514,13 +717,16 @@ class _Experiment:
     client_factory: tuple[str, dict[str, Any]] | None = None
     caps: ValidationCaps = field(init=False)
     pconfig: PromotionConfig = field(init=False)
+    binding: EnvBinding = field(init=False)
     splits: ValidationSplits = field(init=False)
+    splits_dir: Path = field(init=False)
     usage_path: Path = field(init=False)
     prior_history: list[tuple[list[dict[str, Any]], dict[str, Any]]] = field(init=False)
 
     def __post_init__(self) -> None:
         self.caps = validation_caps(self.config)
         self.pconfig = promotion_config(self.config)
+        self.binding = resolve_env_binding(self.config)
         self.usage_path = self.out_dir / STAGE_USAGE_FILE
         self.prior_history = []
         self.verifier_factory = self._resolve_verifier_factory()
@@ -529,10 +735,11 @@ class _Experiment:
         """The dotted path validation children rebuild the verifier from (KTD6).
 
         Only a parallel validation stage (``operational.validation_workers > 1``)
-        needs one. The default ``GraphWalksVerifier`` maps to its own path; an
-        injected verifier must come with an explicit ``verifier_factory``, and
-        the mismatch is a configuration error raised here -- before any
-        directory is created or any run executes -- not deep inside stage 4.
+        needs one. A verifier that is the selected environment's default type
+        maps to that environment's factory path; an injected verifier must come
+        with an explicit ``verifier_factory``, and the mismatch is a
+        configuration error raised here -- before any directory is created or any
+        run executes -- not deep inside stage 4.
         """
         if self.verifier_factory is not None:
             return self.verifier_factory
@@ -540,6 +747,10 @@ class _Experiment:
             return None
         if type(self.verifier) is GraphWalksVerifier:
             return GRAPHWALKS_VERIFIER_FACTORY
+        if type(self.verifier) is OolongPairsVerifier:
+            return OOLONG_PAIRS_VERIFIER_FACTORY
+        if isinstance(self.verifier, OolongVerifier) and self.verifier.task_set == "synth":
+            return OOLONG_SYNTH_VERIFIER_FACTORY
         raise ValueError(
             f"operational.validation_workers={self.config.operational.validation_workers} "
             "evaluates validation subjects in child processes, which rebuild the verifier "
@@ -570,12 +781,13 @@ class _Experiment:
     def run(self) -> ExperimentResult:
         check_identity(self.config, self.out_dir)
         splits_dir = materialize_splits(self.config, self.out_dir, loaders=self.loaders)
+        self.splits_dir = splits_dir
         self.splits = ValidationSplits(
-            heldin=_read_split(splits_dir, ROLE_HELD_IN),
-            heldout=_read_split(splits_dir, ROLE_HELD_OUT),
+            heldin=_read_split(splits_dir, self.binding.name, self.binding.length, ROLE_HELD_IN),
+            heldout=_read_split(splits_dir, self.binding.name, self.binding.length, ROLE_HELD_OUT),
         )
 
-        incumbent: Harness = HARNESSES[INITIAL_INCUMBENT]
+        incumbent: Harness = HARNESSES[self.config.loop.initial_harness]
         rounds: list[RoundOutcome] = []
         without_promotion = 0
         stopped = STOP_MAX_ROUNDS
@@ -604,9 +816,17 @@ class _Experiment:
                 without_promotion = 0
             else:
                 without_promotion += 1
-            if outcome.has_ledger:
-                validation_round_path = round_dir(round_path / VALIDATION_DIR, round_index)
-                self.prior_history.append(load_promotion_ledger(validation_round_path))
+            # Every completed round enters the next proposer's history (R5),
+            # rebuilt from persisted markers on both paths (R7); a round that
+            # reached no validation still reports what was refused and why.
+            self.prior_history.append(
+                load_round_history(round_path, round_index, has_ledger=outcome.has_ledger)
+            )
+            # Non-gated OOLONG-real generalization check on the round-end
+            # incumbent (after any promotion is applied). Never touches the
+            # outcome, the ledger, or the patience counter.
+            if not replayed and self._real_check_due(round_index):
+                self._real_generalization_check(round_index, f"round_{round_index:02d}", incumbent)
             if without_promotion >= self.config.loop.patience:
                 stopped = STOP_PATIENCE
                 break
@@ -616,6 +836,9 @@ class _Experiment:
         # gets its one catch-up refresh here.
         if replay_unanalyzed:
             _run_post_round_analysis(self.out_dir)
+
+        if self._real_check_enabled():
+            self._real_generalization_check(self.config.loop.t + 1, "final", incumbent)
 
         frozen_path = _freeze_harness(incumbent, self.out_dir)
         return ExperimentResult(
@@ -693,6 +916,12 @@ class _Experiment:
         kwargs = round_config_kwargs(self.config)
         for governed_key in GOVERNED_ROUND_KEYS:
             kwargs.pop(governed_key)
+        mining_client_factory: tuple[str, dict[str, Any]] | None = None
+        if self.client_factory is not None:
+            dotted, factory_args = self.client_factory
+            mining_args = factory_args.get(STAGE_MINING)
+            if mining_args is not None:
+                mining_client_factory = (dotted, dict(mining_args))
         mining_config = RoundConfig(
             round_index=round_index,
             harness=incumbent,
@@ -700,6 +929,8 @@ class _Experiment:
             verifier=self.verifier,
             out_dir=mining_parent,
             attempts=self.config.loop.m,
+            run_workers=self.config.operational.mining_run_workers,
+            client_factory=mining_client_factory,
             **kwargs,
             **limits,
         )
@@ -721,7 +952,10 @@ class _Experiment:
                 meter.add(
                     aggregate_manifest_usage(load_manifest(mining_parent, round_index)[known:])
                 )
-            if result.over_budget:
+            # Actual spend and reservation-gated skipped work are independent
+            # outcomes. In particular, the final in-flight children can all
+            # land and push spend over budget while leaving no skipped ids.
+            if breaker.tripped:
                 raise MiningBudgetExceededError(
                     f"round {round_index} mining tripped the cumulative spend breaker at "
                     f"{result.spent:.6f} USD against candidate_budget "
@@ -735,6 +969,16 @@ class _Experiment:
                     "(b) lower the scale (splits.n_in, loop.m, caps.max_budget) and run in a "
                     "fresh out_dir. A resumable per-round budget allocation is a documented "
                     "deferral -- see this module's docstring."
+                )
+            if result.skipped_run_ids:
+                raise MiningDispatchStoppedError(
+                    f"round {round_index} mining stopped at the reservation gate with "
+                    f"{len(result.skipped_run_ids)} run(s) left to resume after spending "
+                    f"{result.spent:.6f} USD of candidate_budget "
+                    f"{self.caps.candidate_budget:.6f}. Re-run this output directory with "
+                    "operational.mining_run_workers = 1; the sequential path has no "
+                    "reservation gate, every completed run is persisted, and no automatic "
+                    "sequential fallback was dispatched."
                 )
 
     def _evidence_bundle(
@@ -776,7 +1020,7 @@ class _Experiment:
                 round_index,
                 miner,
                 split_id=split_file_name(
-                    SPLIT_ENVIRONMENT, SPLIT_LENGTH, ROLE_HELD_IN
+                    self.binding.name, self.binding.length, ROLE_HELD_IN
                 ).removesuffix(".jsonl"),
                 created_at=_interrupted_bundle_created_at(bundle_path),
             )
@@ -817,11 +1061,20 @@ class _Experiment:
         bundle: dict[str, Any],
     ) -> Path:
         """Stage 3: propose candidates, sealed by ``proposals_complete.json``."""
+        from shrlm.optimization.candidates import select_preflight_profile
+        from shrlm.optimization.proposal_evidence import load_proposal_evidence
+
+        profile = select_preflight_profile((bundle.get("config") or {}).get("verifier_config"))
         proposals_dir = round_path / PROPOSALS_DIR
         marker_path = round_path / PROPOSALS_MARKER_FILENAME
         if marker_path.exists():
             _load_marker(marker_path, PROPOSALS_MARKER_FORMAT)
             return proposals_dir
+        if (round_dir(round_path / VALIDATION_DIR, round_index) / "validation.json").exists():
+            raise ExperimentPersistenceError(
+                "validation is frozen without a proposal marker; refusing paid proposal work"
+            )
+        evidence = load_proposal_evidence(mining_round_path, bundle)
         cache_path = _operational_path(self.out_dir, self.config.operational.proposal_cache_path)
         with StageMeter(
             stage=STAGE_PROPOSAL,
@@ -831,28 +1084,81 @@ class _Experiment:
         ) as meter:
             proposer_lm = self._proposer()
             meter.watch(proposer_lm)
-            result = propose_round(
-                bundle,
-                incumbent,
-                proposer_lm,
-                proposals_dir,
-                round_index=round_index,
-                passing_behaviors=load_passing_behaviors(mining_round_path),
-                prior_history=self.prior_history,
-                config=proposer_config(self.config),
-                cache=ProposalCache(path=str(cache_path)),
-                workdir=round_path / WORK_DIR,
-            )
+            try:
+                result = propose_round(
+                    bundle,
+                    incumbent,
+                    proposer_lm,
+                    proposals_dir,
+                    round_index=round_index,
+                    preflight_profile=profile,
+                    caps=self.caps.s6_caps(),
+                    loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
+                    evidence=evidence,
+                    passing_behaviors=load_passing_behaviors(mining_round_path),
+                    prior_history=self.prior_history,
+                    config=proposer_config(self.config),
+                    cache=ProposalCache(path=str(cache_path)),
+                    workdir=round_path / WORK_DIR,
+                )
+            except (ProposalBudgetExhausted, ProposalRejection) as exc:
+                # Two deterministic stage failures close the round with zero
+                # candidates instead of escaping. A proposer that spent its
+                # output budget on reasoning (R6/KTD3) would only be re-billed
+                # by a re-ask, and one that exhausted its attempts on parse or
+                # validation failures replays the same cached responses on
+                # every resume -- so letting either escape crashes the run and
+                # re-crashes it on resume. Seal the stage as a failure with zero
+                # candidates; validation then sees an empty proposals directory
+                # and the round closes unpromoted, exactly as a round whose
+                # proposer wrote nothing.
+                kind = (
+                    "budget_exhausted"
+                    if isinstance(exc, ProposalBudgetExhausted)
+                    else "validation_exhausted"
+                )
+                print(
+                    f"round {round_index}: proposal stage failed with zero candidates "
+                    f"({exc}); sealing {marker_path.name} and continuing",
+                    file=sys.stderr,
+                )
+                payload = {
+                    "format": PROPOSALS_MARKER_FORMAT,
+                    "round": round_index,
+                    "candidate_ids": [],
+                    "prompt_sha256": None,
+                    "skipped_patterns": [],
+                    "n_materialization_failures": 0,
+                    "materialization_failures": [],
+                    "stage_failure": {
+                        "kind": kind,
+                        "error": str(exc),
+                        "n_attempts": len(exc.attempts),
+                    },
+                }
+            else:
+                payload = {
+                    "format": PROPOSALS_MARKER_FORMAT,
+                    "round": round_index,
+                    "candidate_ids": sorted(written.candidate_id for written in result.written),
+                    "prompt_sha256": result.prompt_sha256,
+                    "skipped_patterns": list(result.skipped_patterns),
+                    "n_materialization_failures": len(result.materialization_failures),
+                    # The reasons, not just the count (R4): a zero-candidate
+                    # round leaves no ledger, so this list is the only durable
+                    # record of what the proposer tried and why it was refused,
+                    # and the next round's history is rebuilt from it.
+                    "materialization_failures": [
+                        record.to_dict() for record in result.materialization_failures
+                    ],
+                }
+        payload["preflight_profile"] = profile
+        if "stage_failure" not in payload:
+            payload["preflight_failures"] = result.preflight_failures
+            payload["attempts"] = [attempt.to_dict() for attempt in result.attempts]
         _persist_once(
             marker_path,
-            {
-                "format": PROPOSALS_MARKER_FORMAT,
-                "round": round_index,
-                "candidate_ids": sorted(written.candidate_id for written in result.written),
-                "prompt_sha256": result.prompt_sha256,
-                "skipped_patterns": list(result.skipped_patterns),
-                "n_materialization_failures": len(result.materialization_failures),
-            },
+            payload,
             f"{marker_path} already seals a diverging candidate set for round "
             f"{round_index}; the persisted proposal cache should have made this "
             "impossible -- refusing to mix two proposal outcomes.",
@@ -894,12 +1200,151 @@ class _Experiment:
                     eval_config,
                     self.pconfig,
                     loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
+                    preflight_profile=_load_marker(
+                        round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT
+                    ).get("preflight_profile", "generic/v1"),
                 )
             finally:
                 # A crashed validation stage still persisted (and paid for)
                 # every run its manifests hold; charge the delta either way.
                 meter.add(_validation_usage(validation_round_path) - before)
         return validation
+
+    # -- OOLONG-real generalization check (non-gated, never feeds promotion) --
+
+    def _real_check_enabled(self) -> bool:
+        return (
+            self.binding.name == "oolong_synth"
+            and self.config.operational.real_check_every_n_rounds > 0
+        )
+
+    def _real_check_due(self, round_index: int) -> bool:
+        if not self._real_check_enabled():
+            return False
+        return round_index % self.config.operational.real_check_every_n_rounds == 0
+
+    def _real_generalization_check(self, round_index: int, tag: str, incumbent: Harness) -> None:
+        """Evaluate the current incumbent on the OOLONG-real check set.
+
+        A generalization probe, deliberately outside the promotion machinery:
+        real D&D transcripts are not cleanly decomposable and would add a second
+        uncontrolled noise source on top of the gate's known sensitivity. The
+        summary it writes is never read by the loop -- not by ``RoundOutcome``,
+        the promotion ledger, ``prior_history``, ``tau_*``, or the patience
+        counter. Crash-safe (skips a completed ``summary.json``) and fully
+        guarded: any failure is a stderr warning and a return, never a round
+        failure -- same contract as ``_run_post_round_analysis``.
+        """
+        check_dir = self.out_dir / OPT_DIR / REAL_CHECK_DIR / tag
+        summary_path = check_dir / REAL_CHECK_SUMMARY_FILENAME
+        if summary_path.exists():
+            return
+        try:
+            instances = _read_split(
+                self.splits_dir,
+                REAL_CHECK_ENVIRONMENT,
+                REAL_CHECK_LENGTH,
+                ROLE_REAL_CHECK,
+            )
+        except Exception as error:  # noqa: BLE001 -- isolation from the loop is the point
+            sys.stderr.write(f"OOLONG-real check skipped for {tag}: no check split ({error})\n")
+            return
+
+        verifier = OolongVerifier(task_set="real")
+        model_name = self.config.backends.runner.model
+        kwargs = round_config_kwargs(self.config)
+        kwargs.pop("attempts", None)
+        round_config = RoundConfig(
+            round_index=round_index,
+            harness=incumbent,
+            instances=instances,
+            verifier=verifier,
+            out_dir=check_dir,
+            **kwargs,
+        )
+        check_dir.mkdir(parents=True, exist_ok=True)
+        rows: list[dict[str, Any]] = []
+        with StageMeter(
+            stage=STAGE_REAL_CHECK,
+            stage_work_id=f"{REAL_CHECK_DIR}/{tag}",
+            round_index=round_index,
+            out_path=self.usage_path,
+        ) as meter:
+            try:
+                harnessed = build_round_rlm(round_config)
+                for instance in instances:
+                    outcome = execute_run(
+                        harnessed, instance, model_name=model_name, verifier=verifier
+                    )
+                    summary = outcome.completion.usage_summary
+                    cost = summary.total_cost
+                    meter.add(
+                        UsageTotals(
+                            input_tokens=int(summary.total_input_tokens),
+                            output_tokens=int(summary.total_output_tokens),
+                            cost=float(cost) if cost is not None else 0.0,
+                            lower_bound=bool(outcome.usage_lower_bound),
+                        )
+                    )
+                    verdict = outcome.verdict
+                    rows.append(
+                        {
+                            "instance_id": instance["id"],
+                            "answer_kind": instance["answer_kind"],
+                            "question_type": instance.get("question_type"),
+                            "n_episodes": instance.get("n_episodes"),
+                            "passed": bool(verdict.passed) if verdict else None,
+                            "score": continuous_score(instance, outcome.completion.response),
+                            "cost_usd": cost,
+                        }
+                    )
+            except Exception as error:  # noqa: BLE001 -- must never break the round
+                sys.stderr.write(
+                    f"OOLONG-real check failed for {tag}: {type(error).__name__}: {error}\n"
+                )
+                return
+        _write_real_check_summary(summary_path, tag, round_index, harness_hash(incumbent), rows)
+
+
+def _write_real_check_summary(
+    summary_path: Path,
+    tag: str,
+    round_index: int,
+    incumbent_hash: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Persist the per-answer-kind aggregate of one OOLONG-real check pass."""
+    by_kind: dict[str, dict[str, float]] = {}
+    for row in rows:
+        bucket = by_kind.setdefault(row["answer_kind"], {"n": 0, "score_sum": 0.0, "passed": 0})
+        bucket["n"] += 1
+        bucket["score_sum"] += float(row["score"])
+        bucket["passed"] += 1 if row["passed"] else 0
+    per_kind = {
+        kind: {
+            "n": int(bucket["n"]),
+            "mean_score": bucket["score_sum"] / bucket["n"] if bucket["n"] else 0.0,
+            "pass_rate": bucket["passed"] / bucket["n"] if bucket["n"] else 0.0,
+        }
+        for kind, bucket in sorted(by_kind.items())
+    }
+    n_total = len(rows)
+    payload = {
+        "format": REAL_CHECK_SUMMARY_FORMAT,
+        "tag": tag,
+        "round_index": round_index,
+        "incumbent_hash": incumbent_hash,
+        "n": n_total,
+        "mean_score": sum(float(row["score"]) for row in rows) / n_total if n_total else 0.0,
+        "pass_rate": sum(1 for row in rows if row["passed"]) / n_total if n_total else 0.0,
+        "per_answer_kind": per_kind,
+        "rows": rows,
+    }
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    tmp_path = summary_path.with_name(summary_path.name + ".tmp")
+    tmp_path.write_text(text)
+    os.replace(tmp_path, summary_path)
 
 
 def _validation_usage(validation_round_path: Path) -> UsageTotals:
@@ -1181,9 +1626,10 @@ def run_experiment(
             (``operational.validation_workers > 1``) spawns. Defaults to the
             ``GraphWalksVerifier`` path when ``verifier`` is the default; an
             injected verifier needs it whenever workers exceed 1.
-        client_factory: Test-only seam for those children: a dotted path plus
-            per-subject-id args the child installs on ``rlm.core.rlm.get_client``
-            (see ``shrlm.optimization.subject_worker``).
+        client_factory: Test-only seam for run children: a dotted path plus an
+            argument mapping. ``"mining"`` is reserved for mining children;
+            validation uses the existing per-subject-id entries. Each child
+            installs its selected args on ``rlm.core.rlm.get_client``.
 
     Returns:
         The ``ExperimentResult`` with every round's outcome and the frozen
@@ -1194,13 +1640,30 @@ def run_experiment(
             experiment's persisted one -- raised before any run executes.
         MiningBudgetExceededError: The mining spend breaker tripped; partial
             state is persisted and the invocation refuses to continue.
+        MiningDispatchStoppedError: Parallel mining's reservation gate left
+            an under-budget tail; completed state is persisted for a resume
+            with fewer workers.
         ExperimentPersistenceError: Persisted state contradicts itself or the
             configuration.
     """
+    # The sub-verifier pairs with the verifier: when the caller takes the
+    # selected environment's default for one, it gets that environment's default
+    # for the other (``resolve_env_binding`` keyed on ``config.loop.environment``
+    # -- GraphWalksVerifier/GraphWalksSubVerifier for "graphwalks",
+    # OolongVerifier/OolongSubVerifier for "oolong_synth", or
+    # OolongPairsVerifier/no sub-verifier for "oolong_pairs"). experiment_kimi ran
+    # with neither passed and therefore no grounding at all (bundle config
+    # sub_verifier_enabled=False). The ablation is still one call away -- pass
+    # the environment's verifier with sub_verifier=None.
+    if verifier is None:
+        binding = resolve_env_binding(config)
+        verifier = binding.verifier
+        if sub_verifier is None:
+            sub_verifier = binding.sub_verifier
     experiment = _Experiment(
         config=config,
         out_dir=Path(out_dir),
-        verifier=verifier if verifier is not None else GraphWalksVerifier(),
+        verifier=verifier,
         sub_verifier=sub_verifier,
         attributor_lm=attributor_lm,
         proposer_lm=proposer_lm,
@@ -1217,7 +1680,9 @@ __all__ = [
     "FROZEN_DIR",
     "FROZEN_HARNESS_FILENAME",
     "POST_ROUND_BATCH_TOOL",
+    "HISTORY_NOT_MATERIALIZED",
     "PROPOSALS_MARKER_FILENAME",
+    "load_round_history",
     "ROUND_MARKER_FILENAME",
     "STOP_MAX_ROUNDS",
     "STOP_PATIENCE",
@@ -1225,6 +1690,8 @@ __all__ = [
     "ExperimentResult",
     "IdentityMismatchError",
     "MiningBudgetExceededError",
+    "MiningDispatchStoppedError",
+    "OOLONG_PAIRS_VERIFIER_FACTORY",
     "RoundOutcome",
     "check_identity",
     "experiment_round_dir",

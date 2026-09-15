@@ -1,0 +1,5 @@
+label,bundle_path,round_index,round_complete,evidence_complete,taxonomy_version,included,exclusion_reason
+round_1,experiment_kimi/opt/round_01/mining/round_01/bundle.json,1,true,true,3.0.0,true,
+round_2,experiment_kimi/opt/round_02/mining/round_02/bundle.json,2,true,true,3.0.0,true,
+round_3,experiment_kimi/opt/round_03/mining/round_03/bundle.json,3,true,true,3.0.0,true,
+round_4,experiment_kimi/opt/round_04/mining/round_04/bundle.json,4,true,true,3.0.0,true,

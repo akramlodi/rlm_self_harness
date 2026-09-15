@@ -85,7 +85,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
-from rlm.utils.exceptions import TimeoutExceededError
+from rlm.core.types import RLMChatCompletion
+from rlm.utils.exceptions import HardDeadlineExceeded, HardDeadlineSignal, TimeoutExceededError
 from shrlm.harness_identity import harness_hash, serialize_harness
 from shrlm.optimization.bundle import round_dir
 from shrlm.optimization.candidates import (
@@ -148,24 +149,9 @@ HARD_DEADLINE_GRACE_SECONDS = 30.0
 _T = TypeVar("_T")
 
 
-class HardDeadlineExceeded(TimeoutExceededError):
-    """The hard wall-clock backstop fired: a run slice never returned control.
-
-    Subclasses ``TimeoutExceededError`` deliberately: the driver's per-run
-    limit handler (``driver.ROOT_LIMIT_EXCEPTIONS``) then persists it exactly
-    like the runtime's own timeout -- a failing RESOURCE_TERMINATED run whose
-    error string names this class -- with no driver change required.
-    """
-
-    def __init__(self, deadline: float):
-        super().__init__(
-            elapsed=deadline,
-            timeout=deadline,
-            message=(
-                f"hard wall-clock deadline exceeded: the run slice did not return "
-                f"within {deadline:.1f}s; candidate code likely hung inside a live call"
-            ),
-        )
+# ``HardDeadlineExceeded`` now lives beside ``HardDeadlineSignal`` in
+# ``rlm.utils.exceptions`` (the driver raises it too); re-exported here so
+# ``costs.HardDeadlineExceeded`` keeps working for existing imports.
 
 
 def hard_deadline_seconds(max_timeout: float | None) -> float | None:
@@ -196,12 +182,18 @@ def call_with_hard_deadline(fn: Callable[[], _T], deadline: float | None) -> _T:
         return fn()
 
     def _on_alarm(signum: int, frame: Any) -> None:
-        raise HardDeadlineExceeded(deadline)
+        # A BaseException so the REPL's and sub-call wrappers' ``except
+        # Exception`` cannot swallow it; ``execute_run`` persists it as a
+        # terminated run, and anything that escapes ``run_round`` is converted
+        # below into the ``HardDeadlineExceeded`` the slice handler expects.
+        raise HardDeadlineSignal(deadline)
 
     previous = signal.signal(signal.SIGALRM, _on_alarm)
     signal.setitimer(signal.ITIMER_REAL, deadline)
     try:
         return fn()
+    except HardDeadlineSignal as signal_:
+        raise HardDeadlineExceeded(signal_.deadline) from None
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0.0)
         signal.signal(signal.SIGALRM, previous)
@@ -287,7 +279,10 @@ def breaker_run_cost(entry: dict[str, Any], caps: ValidationCaps) -> float:
     cost = entry.get("cost")
     if cost is not None:
         return float(cost)
-    if entry.get("cause") == VerifierCause.RESOURCE_TERMINATED.value:
+    if entry.get("cause") in (
+        VerifierCause.RESOURCE_TERMINATED.value,
+        VerifierCause.RUNTIME_ERROR.value,
+    ):
         # A cost-less termination (e.g. timeout on a backend without cost
         # tracking) is priced at the worst a run may spend, never zero.
         return caps.max_budget
@@ -522,6 +517,35 @@ def _run_reservation(caps: ValidationCaps) -> float:
     return caps.max_budget * RUN_RESERVATION_FACTOR
 
 
+# Mirror of ``rlm.clients.openai._CONTENT_FILTER_MARKERS``. Duplicated rather
+# than imported: this module is imported by every run child on spawn, and
+# pulling the OpenAI SDK into that path costs ~0.2s per child.
+_CONTENT_FILTER_MARKERS = ("content_filter", "responsibleai", "content management policy")
+
+
+def failed_completion_verdict(completion: RLMChatCompletion) -> Verdict:
+    """Recover a failure from the trace alone; old traces use the legacy text rule."""
+    detail = completion.error or ""
+    if completion.execution_failure is not None:
+        failure = completion.execution_failure
+        return Verdict(
+            passed=False,
+            cause=VerifierCause(failure.cause),
+            gold="",
+            produced=completion.response,
+            detail=f"{failure.exception_type}: {failure.message}",
+        )
+    if any(marker in detail.lower() for marker in _CONTENT_FILTER_MARKERS):
+        return Verdict(
+            passed=False,
+            cause=VerifierCause.CONTENT_FILTERED,
+            gold="",
+            produced=completion.response,
+            detail=detail,
+        )
+    return _terminated_verdict(detail, completion.response)
+
+
 def _terminated_verdict(detail: str, produced: str = "") -> Verdict:
     """The failing verdict a terminated run carries.
 
@@ -561,8 +585,8 @@ def _adopt_orphan_traces(
         if completion is None:
             continue
         verdict = (
-            _terminated_verdict(str(completion.error), completion.response)
-            if completion.error
+            failed_completion_verdict(completion)
+            if completion.error or completion.execution_failure
             else config.verifier(instance, completion.response)
         )
         entry = append_child_run(
@@ -572,7 +596,7 @@ def _adopt_orphan_traces(
             attempt,
             completion,
             verdict,
-            usage_lower_bound=bool(completion.error),
+            usage_lower_bound=bool(completion.error or completion.execution_failure),
         )
         breaker.charge(entry, namespace=namespace)
         adopted.append(entry)
@@ -583,29 +607,27 @@ def _adopt_orphan_traces(
 def _dispatch_runs_concurrently(
     config: RoundConfig,
     breaker: CandidateSpendBreaker,
-    round_path: Path,
+    path: Path,
+    entries: list[dict[str, Any]],
+    pending: list[tuple[dict[str, Any], int]],
 ) -> GovernedRoundResult:
     """Execute this round's pending runs in bounded, concurrent child processes.
 
-    The parent owns every byte that is shared within the split: it prepares the
-    round, writes the one surface module every child imports, verifies the
-    persisted traces once, and appends every manifest line itself on reap
-    (KTD4, KTD6). A child's only footprint is its own per-run directory.
+    The parent owns every byte that is shared within the split: it writes the
+    one surface module every child imports, verifies persisted traces once,
+    and appends every manifest line itself on reap (KTD4, KTD6). A child's
+    only footprint is its own per-run directory. Common preparation and orphan
+    adoption happen before this branch is selected.
 
     Dispatch order is the pending list's order -- instance-major, attempt-minor
     -- and the reservation gate below is the only thing that stops it, so a
     round that stops early stops on a contiguous tail, the same shape the
     sequential path produces (R7).
     """
-    path, existing, pending = prepare_round(config)
-    namespace = str(round_path)
-    for entry in existing:
-        breaker.charge(entry, namespace=namespace)
-
-    entries = list(existing)
     if not pending:
         return _governed_result(config, breaker, entries)
 
+    namespace = str(path)
     require_backend_credential(config)
 
     # One surface module, written once by the parent. Letting each child
@@ -615,18 +637,6 @@ def _dispatch_runs_concurrently(
     expected_hash = harness_hash(config.harness)
     module_path = path / f"run_module_{expected_hash[:16]}.py"
     write_surface_module(serialization, module_path)
-
-    orphaned = _live_run_children(path)
-    if orphaned:
-        # The split claim alone is not enough: it names the parent, and a
-        # crashed parent's children outlive it by up to one watchdog interval.
-        # Dispatching now would put two live children on the same run id,
-        # both spending, both writing the same trace path.
-        raise SplitClaimedError(
-            f"{path} still has {len(orphaned)} run worker(s) alive from an earlier "
-            f"invocation (pids {sorted(orphaned)}); they are still paying for runs this "
-            "round would repeat. Wait for them to exit, or terminate them, then re-run."
-        )
 
     reservation = _run_reservation(breaker.caps)
     if reservation > breaker.caps.candidate_budget:
@@ -640,16 +650,11 @@ def _dispatch_runs_concurrently(
             f"candidate_budget ${breaker.caps.candidate_budget:.6f} cannot reserve even one "
             f"concurrent run (reservation ${reservation:.6f} = {RUN_RESERVATION_FACTOR:g} x "
             f"max_budget ${breaker.caps.max_budget:.6f}). Raise candidate_budget, lower "
-            "max_budget, or set validation_run_workers=1 to run this subject sequentially."
+            "max_budget, or set the applicable run-worker setting to 1 to run this "
+            "subject sequentially."
         )
 
-    adopted, claimed = _adopt_orphan_traces(path, pending, config, breaker, namespace)
-    entries.extend(adopted)
-    queue = deque(
-        (instance, attempt)
-        for instance, attempt in pending
-        if run_id_for(str(instance["id"]), attempt) not in claimed
-    )
+    queue = deque(pending)
 
     limits = {
         name: getattr(config, name)
@@ -706,11 +711,8 @@ def _dispatch_runs_concurrently(
                 except BaseException:
                     log.close()
                     raise
-                # Recorded before anything else can raise. A child that exists
-                # but is not in ``running`` is invisible to the cleanup handler
-                # below, so an interrupt landing in this window would leave it
-                # alive and still spending, with its log handle leaked too.
-                (run_path / RUN_PID_FILENAME).write_text(f"{process.pid}\n")
+                # Register before the pid marker write: once Popen succeeds,
+                # every later failure must flow through the cleanup handler.
                 running[run_id] = {
                     "process": process,
                     "log": log,
@@ -721,6 +723,7 @@ def _dispatch_runs_concurrently(
                     # a child that ignores or swallows SIGALRM is still reaped.
                     "expires": (time.monotonic() + deadline * 2) if deadline else None,
                 }
+                (run_path / RUN_PID_FILENAME).write_text(f"{process.pid}\n")
 
             if not running:
                 # Nothing in flight and the fill loop above placed nothing.
@@ -802,8 +805,8 @@ def _reap_run(
     completion = read_child_trace(trace_path_for(path, run_id))
     if completion is not None:
         verdict = (
-            _terminated_verdict(str(completion.error), completion.response)
-            if completion.error
+            failed_completion_verdict(completion)
+            if completion.error or completion.execution_failure
             else config.verifier(instance, completion.response)
         )
         return append_child_run(
@@ -813,7 +816,7 @@ def _reap_run(
             attempt=live["attempt"],
             completion=completion,
             verdict=verdict,
-            usage_lower_bound=bool(completion.error),
+            usage_lower_bound=bool(completion.error or completion.execution_failure),
         )
 
     # No usable trace. The run may still have spent money, so it is recorded as
@@ -932,19 +935,43 @@ def _run_governed_round_claimed(
     config: RoundConfig, breaker: CandidateSpendBreaker, round_path: Path
 ) -> GovernedRoundResult:
     """``run_governed_round``'s body, with this split's claim already held."""
+    orphaned = _live_run_children(round_path)
+    if orphaned:
+        # The split claim names only the parent. A crashed parent's children
+        # can outlive it, so every execution branch must refuse them before
+        # prepare_round rewrites the execution sidecar or any run is repeated.
+        raise SplitClaimedError(
+            f"{round_path} still has {len(orphaned)} run worker(s) alive from an earlier "
+            f"invocation (pids {sorted(orphaned)}); they are still paying for runs this "
+            "round would repeat. Wait for them to exit, or terminate them, then re-run."
+        )
+
+    path, existing, pending = prepare_round(config)
+    namespace = str(path)
+    for entry in existing:
+        breaker.charge(entry, namespace=namespace)
+    adopted, claimed = _adopt_orphan_traces(path, pending, config, breaker, namespace)
+    entries = [*existing, *adopted]
+    pending = [
+        (instance, attempt)
+        for instance, attempt in pending
+        if run_id_for(str(instance["id"]), attempt) not in claimed
+    ]
+
     if config.run_workers > 1:
-        return _dispatch_runs_concurrently(config, breaker, round_path)
-    namespace = str(round_path)
+        return _dispatch_runs_concurrently(config, breaker, path, entries, pending)
+
     deadline = hard_deadline_seconds(config.max_timeout)
     # The stop_after=0 slice executes no runs but does build the harness when
     # runs are pending -- candidate code that can itself hang, hence the guard.
+    known = len(entries)
     entries = _run_slice(
         config,
         stop_after=0,
         deadline=deadline,
-        known=len(load_manifest(config.out_dir, config.round_index)),
+        known=known,
     )
-    for entry in entries:
+    for entry in entries[known:]:
         breaker.charge(entry, namespace=namespace)
 
     while not breaker.tripped:

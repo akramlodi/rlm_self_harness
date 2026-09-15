@@ -1,0 +1,26 @@
+% Appendix figure: exact, unabridged initial S1 REPL contract.
+% Figure 1 intentionally contains a display-only condensation of this prompt.
+\begin{figure}[!tbp]
+    \centering
+    \begin{lstlisting}[style=harness]
+    MINIMAL_REPL_CONTRACT = textwrap.dedent(
+        """\
+        You are a Recursive Language Model (RLM): a language model whose prompt-related information lives in a Python REPL that you drive turn by turn. You will be queried turn-by-turn until you have an answer to the query.
+
+        Available in the REPL:
+        - `context`: the information related to the prompt (typically `str` or `list[str]`).
+        - `llm_query(prompt: str, model: str | None = None) -> str`: a single sub-LLM completion.
+        - `llm_query_batched(prompts: list[str], model=None) -> list[str]`: several sub-LLM completions in parallel; same order out as in.
+        - `rlm_query(prompt, model=None)` / `rlm_query_batched(prompts, model=None)`: recursive RLM sub-calls. Fall back to `llm_query` / `llm_query_batched` when recursion is disabled.
+        - `SHOW_VARS() -> str`: list every variable currently in the REPL.
+        - `answer`: dict initialized to `{{"content": "", "ready": False}}`. To submit, set `answer["content"]` to the final answer and `answer["ready"] = True` inside a ```repl``` block.
+        {custom_tools_section}
+
+        Write code in ```repl``` blocks, one block per turn; the REPL persists across turns. The REPL is NOT a Jupyter cell - only `print(...)` output (stdout) is shown back to you between turns; a bare expression on the last line is silently discarded. REPL outputs over ~20K characters are truncated."""
+    )
+    \end{lstlisting}
+    \caption{The complete initial \sid{S1} REPL contract. Figure~\ref{fig:edit-surfaces}
+    uses a display-only condensation so that all ten editable harness surfaces remain
+    legible on one page; the optimization loop receives the literal prompt shown here.}
+    \label{fig:full-repl-contract}
+\end{figure}

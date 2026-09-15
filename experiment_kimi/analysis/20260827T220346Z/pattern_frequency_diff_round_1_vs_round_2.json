@@ -1,0 +1,24 @@
+{
+  "after": {
+    "label": "round_2",
+    "n_runs": 48,
+    "path": "experiment_kimi/opt/round_02/mining/round_02/bundle.json"
+  },
+  "before": {
+    "label": "round_1",
+    "n_runs": 48,
+    "path": "experiment_kimi/opt/round_01/mining/round_01/bundle.json"
+  },
+  "created_at": "2026-08-27T22:03:46.871141+00:00",
+  "identity_hash": "bf56cc0e6ee4ce518243b049fbc5f846ea0f1ae48b9bd727b62884843450616b",
+  "new": 5,
+  "persisted_improved": 5,
+  "persisted_unchanged": 2,
+  "persisted_worsened": 3,
+  "resolved": 2,
+  "taxonomy_version_expected": "3.0.0",
+  "taxonomy_versions_seen": {
+    "3.0.0": 5
+  },
+  "total_signatures": 17
+}

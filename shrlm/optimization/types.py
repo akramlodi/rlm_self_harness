@@ -46,13 +46,35 @@ class TraceIntegrity(str, Enum):
 
 
 class AttributionErrorKind(str, Enum):
-    """Why an attribution failed: the model's response was unusable, or the
-    model was never reached at all. The distinction matters downstream --
-    transport failures are exempt from the attempts-audit demand and are
-    counted separately in the integrity report."""
+    """Why an attribution failed: the model's response was unusable, the model
+    was never reached at all, the provider refused to return one, or the
+    model spent its whole output budget without producing one. The
+    distinction matters downstream -- transport, content-filter, and
+    token-limit failures are exempt from the attempts-audit demand (none
+    produces a response to record), and transport failures are counted
+    separately in the integrity report."""
 
     REJECTION = "rejection"
     TRANSPORT = "transport"
+    # The provider's content filter blocked the response after the client
+    # exhausted its own retry ladder. Deterministic for a given digest, so
+    # unlike TRANSPORT it will not clear on a re-invocation: the round must
+    # record it and move on rather than checkpoint and wait for a retry.
+    CONTENT_FILTERED = "content_filtered"
+    # The client raised ``TokenLimitExceededError``: a reasoning model spent
+    # the output budget without emitting content (R6). Deterministic for the
+    # prompt at temperature 0, so it is routed exactly like CONTENT_FILTERED.
+    TOKEN_LIMIT = "token_limit"
+    # The run's failure is owned by the environment or substrate, not by the
+    # agent's behavior: a provider content-filter verdict, or a termination
+    # whose detail names no exhausted resource. Skipped BEFORE any attributor
+    # call (no attempts exist), so these never cluster into agent mechanisms
+    # and never reach the proposer as harness weaknesses. Time- and
+    # budget-caused terminations are deliberately NOT routed here: a run that
+    # exhausts its wall-clock limit or its spend cap did too much work for the
+    # limit, which IS a minable harness weakness (efficiency), and the verdict
+    # detail names which resource ran out.
+    ENVIRONMENT = "environment_caused"
 
 
 @dataclass
@@ -146,9 +168,11 @@ class CallNode:
     children: list["CallNode"] = field(default_factory=list)
     sub_verdict: bool | None = None
     skill_index: list[dict[str, str]] | None = None
+    error: str | None = None
+    usage_summary: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "node_id": self.node_id,
             "parent_id": self.parent_id,
             "kind": self.kind.value,
@@ -166,6 +190,11 @@ class CallNode:
                 None if self.skill_index is None else [dict(entry) for entry in self.skill_index]
             ),
         }
+        if self.error is not None:
+            result["error"] = self.error
+        if self.usage_summary is not None:
+            result["usage_summary"] = self.usage_summary
+        return result
 
 
 @dataclass
@@ -320,6 +349,24 @@ class FailureSignature:
         }
 
 
+@dataclass(frozen=True)
+class OperationEvidence:
+    """An observed operation; coordinates use the digest's displayed iteration index."""
+
+    node_id: str
+    observation: str
+    iteration_index: int | None = None
+    code_block_index: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"node_id": self.node_id, "observation": self.observation}
+        if self.iteration_index is not None:
+            result.update(
+                iteration_index=self.iteration_index, code_block_index=self.code_block_index
+            )
+        return result
+
+
 @dataclass
 class AttributionDetail:
     """
@@ -331,15 +378,22 @@ class AttributionDetail:
     failing_level_detail: str = ""
     causal_status_detail: str = ""
     agent_mechanism_detail: str = ""
+    operation_evidence: list[OperationEvidence] = field(default_factory=list)
+    verification_limits: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "symptom_summary": self.symptom_summary,
             "evidence_node_ids": list(self.evidence_node_ids),
             "failing_level_detail": self.failing_level_detail,
             "causal_status_detail": self.causal_status_detail,
             "agent_mechanism_detail": self.agent_mechanism_detail,
         }
+        # Keep legacy details byte-compatible when no new evidence was supplied.
+        if self.operation_evidence or self.verification_limits:
+            result["operation_evidence"] = [entry.to_dict() for entry in self.operation_evidence]
+            result["verification_limits"] = self.verification_limits
+        return result
 
 
 @dataclass(frozen=True)

@@ -195,7 +195,10 @@ def build_request(
     client_factory: tuple[str, dict[str, Any]] | None,
 ) -> dict[str, Any]:
     """The request document one child evaluates (KTD3)."""
+    from shrlm.optimization.validation import VALIDATION_PROTOCOL
+
     return {
+        "validation_protocol": VALIDATION_PROTOCOL,
         "format": REQUEST_FORMAT,
         "subject_id": subject_id,
         "harness": {"harness": harness_serialization, "hash": expected_hash},
@@ -279,10 +282,14 @@ def run_subject_worker(request_path: str | Path) -> dict[str, Any]:
 
         # Deferred: importing the validation module pulls the whole runtime.
         from shrlm.optimization.validation import (
+            VALIDATION_PROTOCOL,
             EvaluationConfig,
             ValidationSplits,
             evaluate_subject,
         )
+
+        if request.get("validation_protocol") != VALIDATION_PROTOCOL:
+            raise ValueError("subject request uses a legacy validation protocol")
 
         verifier = resolve_dotted(str(request["verifier_factory"]))()
         factory = _install_client_factory(request.get("client_factory"))
@@ -312,6 +319,11 @@ def run_subject_worker(request_path: str | Path) -> dict[str, Any]:
             backend=str(request["backend"]),
             backend_kwargs=dict(request["backend_kwargs"]),
             run_workers=int(request.get("run_workers", 1)),
+            client_factory=(
+                (request["client_factory"][0], request["client_factory"][1])
+                if request.get("client_factory") is not None
+                else None
+            ),
         )
         outcome = evaluate_subject(subject_id, harness, config)
         if isinstance(outcome, CandidateRejection):
@@ -397,6 +409,7 @@ def evaluate_subjects_in_processes(
         BASELINE_ID,
         SUMMARY_FILENAME,
         SubjectEvaluation,
+        check_subject_contract,
         load_summary,
         subject_dir,
     )
@@ -426,6 +439,9 @@ def evaluate_subjects_in_processes(
             "parent died without terminating its children. Wait for or kill those "
             "processes, then re-run to resume."
         )
+
+    for _index, subject_id, harness, _hash in queue:
+        check_subject_contract(subject_id, harness, config)
 
     split_instances = {split_id: instances for split_id, instances in config.splits.items()}
     factory_args = config.client_factory[1] if config.client_factory is not None else {}

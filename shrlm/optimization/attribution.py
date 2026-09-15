@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rlm.clients.base_lm import BaseLM
+from rlm.utils.exceptions import TokenLimitExceededError
 from shrlm.optimization.digest import TraceDigest
 from shrlm.optimization.grounding import GroundingResult
 from shrlm.optimization.taxonomy import (
@@ -35,17 +36,18 @@ from shrlm.optimization.types import (
     AttributionDetail,
     CallNode,
     FailureSignature,
+    OperationEvidence,
     Verdict,
     iter_nodes,
 )
 
-PROMPT_VERSION = "1.2.0"
+PROMPT_VERSION = "1.3.0"
 
 # Version of the validation logic in this module (validate, parse_enum,
 # extract_json_block). The validator's rejection text seeds re-asks, so a
 # change to it changes what later attempts are asked -- folding this into
 # config_sha256 keeps a validator change from replaying stale cached responses.
-VALIDATOR_VERSION = "1.0.0"
+VALIDATOR_VERSION = "1.1.0"
 
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_TRANSPORT_RETRIES = 3
@@ -80,6 +82,24 @@ def truncate_for_prompt(text: str, limit: int = PROMPT_RENDER_MAX_CHARS) -> str:
 # treated as plausibly transient and retried.
 NON_TRANSPORT_ERRORS = (TypeError, AttributeError, KeyError, ValueError)
 
+
+def _is_content_filter_error(exc: Exception) -> bool:
+    """Whether the client raised because a content filter blocked the response.
+
+    ``openai`` is imported here rather than at module scope to keep the
+    optimization package importable without the OpenAI SDK on the path, and to
+    keep it off the import path of anything that only needs the rest of this
+    module. A non-OpenAI backend simply never matches.
+    """
+    try:
+        import openai
+
+        from rlm.clients.openai import is_content_filter_error
+    except ImportError:  # pragma: no cover - backend without the OpenAI SDK
+        return False
+    return isinstance(exc, openai.BadRequestError) and is_content_filter_error(exc)
+
+
 ATTRIBUTOR_SYSTEM_PROMPT = """\
 You are analyzing one failed run of a recursive language model, in order to \
 describe *why* it failed in terms that generalize across runs.
@@ -96,6 +116,18 @@ Choose exactly one value from each vocabulary below. Use the literal string \
 value. If nothing fits, choose the "other"/"unattributed" member and explain \
 in the corresponding detail field -- do not stretch a member that does not fit.
 
+Separate these possibilities: records skipped, labels wrong or uncertain, and \
+predicate/aggregation wrong. Missing output elements alone do not prove missing \
+input coverage. Cite the operation that supports the mechanism: a skipped input \
+slice, parsing loss, ID coverage check, merge, or predicate. State the covered \
+universe (original input versus parsed records). Complete IDs and valid JSON do \
+not establish correct labels. Do not assert child correctness unless a check \
+actually verifies that claim; failing-level grounding alone is not such a check.
+Use other for a semantic mechanism outside the vocabulary. If the relevant \
+operation is not visible, state the limitation and use correlated or unattributed \
+rather than asserting a causal mechanism. Evidence citations resolve locations; \
+they do not independently prove causality.
+
 {taxonomy}
 {failing_level}
 
@@ -108,11 +140,19 @@ Respond with a single fenced JSON block and nothing else:
   "causal_status_detail": "<free text, required only for unattributed>",
   "agent_mechanism_detail": "<free text, required only for other>",{failing_level_field}
   "evidence_node_ids": ["<node_id from the sub-call table>"],
+  "operation_evidence": [{{"node_id": "r", "iteration_index": 1, \
+"code_block_index": 0, "observation": "<observed operation, at most 500 characters>"}}],
+  "verification_limits": "<what remains unverified, at most 500 characters>",
   "symptom_summary": "<one sentence describing the observed behavior>"
 }}
 ```
 
 {evidence_instruction}
+Supply at most four operation_evidence entries. Coordinates are the displayed \
+iteration index and zero-based code block index; cite r for root operations. \
+Omit both coordinates for a child prompt/return whose code is not displayed. \
+An empty operation_evidence list requires explicit verification_limits and \
+correlated/unattributed causal status. Never invent observations or coordinates.
 """
 
 FAILING_LEVEL_FIELD = '\n  "failing_level": "<value>",'
@@ -154,6 +194,43 @@ class AttributionTransportError(Exception):
     bounded retries. Distinct from AttributionRejection: the model never
     produced a judgable response, so the caller should checkpoint the round
     rather than record a rejected attribution."""
+
+    def __init__(self, message: str, attempts: list["AttributionAttempt"] | None = None):
+        super().__init__(message)
+        self.attempts: list[AttributionAttempt] = attempts or []
+
+
+class AttributionContentFiltered(Exception):
+    """The provider's content filter blocked the response, and the client had
+    already exhausted its own content-filter retry ladder.
+
+    Distinct from AttributionTransportError on one axis that decides what the
+    caller does: a transport failure is transient and clears on a re-invocation,
+    so checkpointing the round and retrying is the right move. A content-filter
+    block is deterministic for a given digest -- the same bytes are refused on
+    every attempt -- so checkpointing produces an unbounded restart loop that
+    makes no progress. The caller records the failure and continues the round.
+
+    Observed 2026-08-27 on Azure AI Foundry: one round-5 digest was refused on
+    every attempt, and the round-close integrity gate turned that into 100+
+    restarts with zero forward progress.
+    """
+
+    def __init__(self, message: str, attempts: list["AttributionAttempt"] | None = None):
+        super().__init__(message)
+        self.attempts: list[AttributionAttempt] = attempts or []
+
+
+class AttributionBudgetExhausted(Exception):
+    """The client raised ``TokenLimitExceededError``: the model spent its whole
+    output budget on reasoning and returned no content (R6/KTD3).
+
+    Same containment axis as AttributionContentFiltered: the exhaustion is
+    deterministic for the prompt at temperature 0, so re-sending only bills
+    the same exhaustion again, and checkpointing routes it into the round-close
+    gate's unbounded restart loop. The caller records the failure and continues
+    the round.
+    """
 
     def __init__(self, message: str, attempts: list["AttributionAttempt"] | None = None):
         super().__init__(message)
@@ -388,6 +465,15 @@ class LLMAttributor:
         retries the failure is converted to AttributionTransportError carrying
         the audit trail so far, so the caller can checkpoint instead of losing
         the round.
+
+        A content-filter block also propagates immediately, as
+        AttributionContentFiltered. The client has already exhausted its own
+        content-filter ladder by the time it raises, and the verdict is a
+        function of the bytes sent, so the retries here can only re-send the
+        same refused prompt and re-collect the same refusal. So does a
+        ``TokenLimitExceededError`` (reasoning exhausted the output budget), as
+        AttributionBudgetExhausted: deterministic for the prompt, so a re-send
+        is a re-bill.
         """
         last_error: Exception | None = None
         for retry in range(self.config.transport_retries):
@@ -395,7 +481,18 @@ class LLMAttributor:
                 return self.lm.completion(messages)
             except NON_TRANSPORT_ERRORS:
                 raise
+            except TokenLimitExceededError as exc:
+                raise AttributionBudgetExhausted(
+                    f"output budget exhausted on the attributor response: {exc}",
+                    attempts=list(attempts),
+                ) from exc
             except Exception as exc:
+                if _is_content_filter_error(exc):
+                    raise AttributionContentFiltered(
+                        f"content filter blocked the attributor response: "
+                        f"{type(exc).__name__}: {exc}",
+                        attempts=list(attempts),
+                    ) from exc
                 last_error = exc
                 if retry + 1 < self.config.transport_retries:
                     time.sleep(self.config.transport_backoff_seconds * (2**retry))
@@ -425,11 +522,67 @@ class LLMAttributor:
         if not isinstance(evidence, list):
             raise AttributionRejection("evidence_node_ids must be a list of node ids")
 
-        known = {node.node_id for node in iter_nodes(root)}
-        unknown = [node_id for node_id in evidence if node_id not in known]
+        if not all(isinstance(node_id, str) for node_id in evidence):
+            raise AttributionRejection("evidence_node_ids must contain strings")
+
+        by_id = {node.node_id: node for node in iter_nodes(root)}
+        unknown = [node_id for node_id in evidence if node_id not in by_id]
         if unknown:
             raise AttributionRejection(
                 f"evidence_node_ids contains identifiers that do not appear in the run: {unknown}"
+            )
+
+        operations = payload.get("operation_evidence")
+        limits = payload.get("verification_limits")
+        if not isinstance(operations, list) or len(operations) > 4:
+            raise AttributionRejection("operation_evidence must be a list of at most four entries")
+        if not isinstance(limits, str) or len(limits) > 500:
+            raise AttributionRejection(
+                "verification_limits must be a string of at most 500 characters"
+            )
+        if not operations and (
+            causal_status not in (CausalStatus.CORRELATED, CausalStatus.UNATTRIBUTED)
+            or not limits.strip()
+        ):
+            raise AttributionRejection(
+                "empty operation_evidence requires verification_limits and correlated/unattributed status"
+            )
+        checked_operations = []
+        for entry in operations:
+            if not isinstance(entry, dict):
+                raise AttributionRejection("operation_evidence entries must be objects")
+            node_id = entry.get("node_id")
+            observation = entry.get("observation")
+            if not isinstance(node_id, str) or node_id not in by_id:
+                raise AttributionRejection("operation_evidence node_id must appear in the run")
+            if (
+                not isinstance(observation, str)
+                or not observation.strip()
+                or len(observation) > 500
+            ):
+                raise AttributionRejection(
+                    "operation_evidence observation must contain 1–500 characters"
+                )
+            iteration_index, block_index = (
+                entry.get("iteration_index"),
+                entry.get("code_block_index"),
+            )
+            if iteration_index is not None or block_index is not None:
+                if (
+                    type(iteration_index) is not int
+                    or type(block_index) is not int
+                    or block_index < 0
+                    or not any(
+                        iteration.index == iteration_index
+                        and block_index < len(iteration.code_blocks)
+                        for iteration in by_id[node_id].iterations
+                    )
+                ):
+                    raise AttributionRejection(
+                        "operation_evidence coordinates do not appear in the run"
+                    )
+            checked_operations.append(
+                OperationEvidence(node_id, observation, iteration_index, block_index)
             )
 
         detail = AttributionDetail(
@@ -438,6 +591,8 @@ class LLMAttributor:
             failing_level_detail=str(payload.get("failing_level_detail", "")),
             causal_status_detail=str(payload.get("causal_status_detail", "")),
             agent_mechanism_detail=str(payload.get("agent_mechanism_detail", "")),
+            operation_evidence=checked_operations,
+            verification_limits=limits,
         )
         return causal_status, agent_mechanism, failing_level, detail
 

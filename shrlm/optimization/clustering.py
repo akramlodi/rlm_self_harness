@@ -15,8 +15,18 @@ records.
 from collections import Counter
 from dataclasses import dataclass
 
-from shrlm.optimization.taxonomy import CAUSAL_WEIGHT, AgentMechanism
-from shrlm.optimization.types import FailurePattern, FailureRecord
+from shrlm.optimization.taxonomy import (
+    CAUSAL_WEIGHT,
+    AgentMechanism,
+    CausalStatus,
+    FailingLevel,
+)
+from shrlm.optimization.types import (
+    AttributionErrorKind,
+    FailurePattern,
+    FailureRecord,
+    FailureSignature,
+)
 
 # Patterns with support below this are flagged, never dropped. A mechanism seen
 # once may still be real, and silently discarding it would misrepresent the
@@ -141,16 +151,65 @@ def shared_symptoms(records: list[FailureRecord]) -> list[str]:
             f"trace known to be missing sub-calls in {degraded}/{n} runs "
             "(lower bound; child-level attribution is understated here)"
         )
+    lines.extend(answer_shape_symptoms(records))
     return lines
 
 
+def answer_shape_symptoms(records: list[FailureRecord]) -> list[str]:
+    """
+    What the produced answers have in common, as arithmetic over the verdicts.
+
+    The tree statistics above were identical for every pattern of
+    experiment_kimi ("no sub-calls issued at all in n/n runs") and told the
+    proposer nothing; the discriminating facts were in the produced strings --
+    quoted items, a missing answer line, an empty list -- which it could only
+    see through truncated evidence quotes. Descriptive only: each line states a
+    count, never a remedy (``bundle.assert_no_prescription``).
+    """
+    n = len(records)
+    causes = Counter(
+        record.verdict.cause.value if record.verdict.cause is not None else "pass"
+        for record in records
+    )
+    lines = [
+        "verifier causes: "
+        + ", ".join(f"{cause} {count}/{n}" for cause, count in sorted(causes.items()))
+    ]
+    produced = [record.verdict.produced or "" for record in records]
+    quoted = sum(1 for text in produced if _bracket_list_has_quoted_items(text))
+    no_list = sum(1 for text in produced if "[" not in text.strip().split("\n")[-1])
+    empty = sum(1 for text in produced if text.strip().endswith("[]"))
+    if quoted:
+        lines.append(f"produced answer list carried quoted items in {quoted}/{n} runs")
+    if no_list:
+        lines.append(f"no bracketed answer list on the last produced line in {no_list}/{n} runs")
+    if empty:
+        lines.append(f"produced answer was the empty list in {empty}/{n} runs")
+    return lines
+
+
+def _bracket_list_has_quoted_items(text: str) -> bool:
+    last = text.strip().split("\n")[-1]
+    start, end = last.find("["), last.rfind("]")
+    if start < 0 or end <= start:
+        return False
+    body = last[start + 1 : end]
+    return any(item.strip()[:1] in ("'", '"') for item in body.split(",") if item.strip())
+
+
 def verifier_evidence(records: list[FailureRecord], limit: int = 3) -> list[str]:
-    """Concrete gold-versus-produced pairs, so the cause is inspectable."""
+    """Concrete produced-versus-gold pairs, so the cause is inspectable.
+
+    ``produced`` comes first: the proposer's prompt bounds each entry at
+    render time, and a 181-node gold list placed first hid the 20-character
+    produced string that carried the whole diagnosis (POST_MORTEM.md
+    section 6).
+    """
     lines = []
     for record in sorted(records, key=lambda r: r.instance_id)[:limit]:
         lines.append(
-            f"{record.instance_id}: expected {record.verdict.gold!r}, "
-            f"produced {record.verdict.produced!r}"
+            f"{record.instance_id}: produced {record.verdict.produced!r}, "
+            f"expected {record.verdict.gold!r}"
         )
     return lines
 
@@ -201,7 +260,80 @@ def cluster_failures(
             )
         )
 
-    return rank_patterns(patterns)
+    return rank_patterns(patterns) + environment_summary_patterns(records, config)
+
+
+# Symptom prefix that marks a synthetic environment-summary pattern. The
+# proposer prompt names this marker so the proposer can recognize summary
+# entries; nothing else in the pipeline branches on it.
+ENVIRONMENT_SUMMARY_MARKER = "environment summary (synthetic)"
+
+
+def environment_summary_patterns(
+    records: list[FailureRecord], config: ClusteringConfig | None = None
+) -> list[FailurePattern]:
+    """Low-actionability summary patterns over environment-skipped records.
+
+    Environment-owned failures never reach the attributor (``mining.
+    environment_caused``), so they cannot cluster into agent mechanisms.
+    Discarding them entirely, though, forecloses a legitimate edit class:
+    harness-side *handling* of environment failures (recovery-instruction
+    treatment of sub-call errors, for example). This function restores the
+    proposer-judgment layer as a ranking rather than a gate: one synthetic
+    pattern per verifier cause, honest about its nature (mechanism OTHER,
+    causal status UNATTRIBUTED, actionability 0.0, below the support floor,
+    symptoms prefixed with ``ENVIRONMENT_SUMMARY_MARKER``), appended after
+    every ranked real pattern so it is read last. The proposer may, at its
+    own judgment, propose harness-side handling against it -- or skip it,
+    which is the expected default.
+    """
+    config = config or ClusteringConfig()
+    skipped = [
+        record
+        for record in records
+        if record.attribution_error_kind is AttributionErrorKind.ENVIRONMENT
+    ]
+    if not skipped:
+        return []
+
+    by_cause: dict[str, list[FailureRecord]] = {}
+    for record in skipped:
+        assert record.verdict.cause is not None  # a failing verdict carries a cause
+        by_cause.setdefault(record.verdict.cause.value, []).append(record)
+
+    patterns = []
+    for cause_value in sorted(by_cause):
+        members = by_cause[cause_value]
+        instance_ids = sorted({record.instance_id for record in members})
+        reasons = sorted({record.attribution_error for record in members})
+        patterns.append(
+            FailurePattern(
+                signature=FailureSignature(
+                    verifier_cause=members[0].verdict.cause,
+                    failing_level=FailingLevel.UNDETERMINED,
+                    causal_status=CausalStatus.UNATTRIBUTED,
+                    agent_mechanism=AgentMechanism.OTHER,
+                ),
+                support=len(members),
+                instance_support=len(instance_ids),
+                instance_ids=sorted(record.instance_id for record in members),
+                representatives=instance_ids[: config.n_representatives],
+                shared_symptoms=[
+                    f"{ENVIRONMENT_SUMMARY_MARKER}: {len(members)} run(s) ended with "
+                    f"verifier cause {cause_value}; no agent behavior was recorded for "
+                    "these terminations and no per-run attribution was performed",
+                    "the terminations themselves are outside harness reach; a candidate "
+                    "against this pattern can only change harness-side handling around "
+                    "such terminations",
+                ],
+                verifier_evidence=reasons,
+                grounded_fraction=0.0,
+                surface=None,
+                actionability=0.0,
+                below_support_floor=True,
+            )
+        )
+    return patterns
 
 
 def rank_patterns(patterns: list[FailurePattern]) -> list[FailurePattern]:

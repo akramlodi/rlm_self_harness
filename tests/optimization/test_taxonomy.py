@@ -16,6 +16,7 @@ from shrlm.optimization.taxonomy import (
     FAILING_LEVEL_DOCS,
     MECHANISM_DOCS,
     MECHANISM_SURFACE,
+    MECHANISM_SURFACES,
     SURFACE_NAME,
     SURFACE_REACH,
     TAXONOMY_VERSION,
@@ -99,11 +100,13 @@ class TestCoverageInvariants:
     def test_other_has_no_surface_by_design(self):
         assert AgentMechanism.OTHER not in MECHANISM_SURFACE
 
-    def test_reachable_surfaces_are_exactly_the_ten_declared_surfaces(self):
+    def test_primary_surfaces_exclude_answer_only_middleware(self):
         # Compared against the harness declaration, not the enum, so a shrunken
         # or drifted mapping fails even if the enum drifts with it.
-        assert {surface.value for surface in MECHANISM_SURFACE.values()} == set(SURFACES)
-        assert set(MECHANISM_SURFACE.values()) == set(EditableSurface)
+        assert {surface.value for surface in MECHANISM_SURFACE.values()} == set(SURFACES) - {"S9"}
+        assert set(MECHANISM_SURFACE.values()) == set(EditableSurface) - {
+            EditableSurface.ANSWER_MIDDLEWARE
+        }
 
     def test_child_level_mechanisms_never_map_to_a_root_only_surface(self):
         for mechanism in CHILD_LEVEL_MECHANISMS:
@@ -142,7 +145,9 @@ class TestCoverageInvariants:
     def test_taxonomy_version_is_the_ten_surface_contract(self):
         # 3.0.0: S10 joined the surface contract (one new mechanism, one new
         # reach entry), so bundles written under 2.0.0 are not comparable.
-        assert TAXONOMY_VERSION == "3.0.0"
+        # 3.1.0: MECHANISM_SURFACES widened each mechanism to a set of eligible
+        # surfaces (primary unchanged) and made OTHER addressable.
+        assert TAXONOMY_VERSION == "3.2.0"
 
 
 class TestSkillsSurface:
@@ -253,3 +258,36 @@ class TestRenderedPromptText:
         # The failing-level menu is appended only in the ungrounded configuration.
         own_levels = {m.value for m in FailingLevel} - {m.value for m in AgentMechanism}
         assert not labels_in_block(render_taxonomy_block()) & own_levels
+
+
+class TestMechanismSurfaces:
+    """Taxonomy 3.1.0: every mechanism lists the surfaces it may be addressed
+    on, primary first; OTHER may be addressed anywhere."""
+
+    def test_primary_column_is_exactly_mechanism_surface(self):
+        for mechanism, primary in MECHANISM_SURFACE.items():
+            assert MECHANISM_SURFACES[mechanism][0] is primary
+
+    def test_every_mechanism_including_other_has_eligible_surfaces(self):
+        assert set(MECHANISM_SURFACES) == set(AgentMechanism)
+        for mechanism, surfaces in MECHANISM_SURFACES.items():
+            assert surfaces, mechanism
+            assert len(set(surfaces)) == len(surfaces), mechanism
+            assert all(isinstance(surface, EditableSurface) for surface in surfaces)
+
+    def test_other_may_be_addressed_on_any_surface(self):
+        assert set(MECHANISM_SURFACES[AgentMechanism.OTHER]) == set(EditableSurface)
+
+    def test_answer_middleware_and_skills_are_reachable_without_sub_calls(self):
+        # The no-recursion regime of experiment_kimi labelled every failure as
+        # one of these four; S9 and S10 must be reachable from at least one.
+        no_recursion = (
+            AgentMechanism.REPL_CONTRACT_MISUSE,
+            AgentMechanism.REPL_EXECUTION_FAULT,
+            AgentMechanism.WHOLE_INPUT_SUBCALL_COLLAPSE,
+            AgentMechanism.ITERATION_BUDGET_EXHAUSTION,
+        )
+        reachable = {s for m in no_recursion for s in MECHANISM_SURFACES[m]}
+        assert EditableSurface.ANSWER_MIDDLEWARE in reachable
+        assert EditableSurface.SKILLS in reachable
+        assert EditableSurface.EXECUTION_INSTRUCTION in reachable

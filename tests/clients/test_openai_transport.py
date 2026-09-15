@@ -8,7 +8,7 @@ unknown-cost call, never crash a multi-hour experiment on the first glitch.
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 
@@ -54,9 +54,25 @@ class ScriptedCreate:
         return self.responses.pop(0)
 
 
-def make_client() -> OpenAIClient:
+def make_client(response: Any = None, sampling_args: dict[str, Any] | None = None) -> OpenAIClient:
+    """An OpenRouter-shaped OpenAIClient with the SDK construction patched out.
+
+    ``response``, when given, is what the mocked ``chat.completions.create``
+    returns; ``sampling_args`` are forwarded to the constructor.
+    """
+    kwargs: dict[str, Any] = {}
+    if sampling_args is not None:
+        kwargs["sampling_args"] = sampling_args
     with patch("rlm.clients.openai.openai.OpenAI"), patch("rlm.clients.openai.openai.AsyncOpenAI"):
-        return OpenAIClient(api_key="test-key", model_name="test-model")
+        client = OpenAIClient(
+            api_key="test-key",
+            model_name="test-model",
+            base_url="https://openrouter.ai/api/v1",
+            **kwargs,
+        )
+    if response is not None:
+        client.client.chat.completions.create.return_value = response
+    return client
 
 
 class TestResponseDeficiency:
@@ -124,6 +140,25 @@ class TestBackoffShape:
             for _ in range(20):
                 delay = _transport_backoff_seconds(attempt)
                 assert 0 <= delay <= ceiling <= _TRANSPORT_BACKOFF_CAP_SECONDS
+
+    def test_rate_limit_backoff_draws_fresh_full_jitter_at_capped_ceilings(self) -> None:
+        from rlm.clients.openai import (
+            _RATE_LIMIT_BACKOFF_CAP_SECONDS,
+            _rate_limit_backoff_seconds,
+        )
+
+        attempts_and_ceilings = ((1, 2.0), (2, 4.0), (3, 8.0), (4, 16.0), (6, 60.0))
+        draws = [0.25, 1.25, 2.25, 3.25, 4.25]
+        with patch("rlm.clients.openai.random.uniform", side_effect=draws) as uniform:
+            actual = [
+                _rate_limit_backoff_seconds(attempt) for attempt, _ceiling in attempts_and_ceilings
+            ]
+
+        assert actual == draws
+        assert uniform.call_args_list == [
+            call(0, ceiling) for _attempt, ceiling in attempts_and_ceilings
+        ]
+        assert attempts_and_ceilings[-1][1] == _RATE_LIMIT_BACKOFF_CAP_SECONDS
 
 
 class TestContextOverflowMapping:

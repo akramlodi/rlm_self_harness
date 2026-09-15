@@ -27,6 +27,8 @@ import rlm.core.rlm as rlm_module
 import shrlm.experiment.analysis_io as analysis_io_module
 import shrlm.experiment.incumbent_quality as incumbent_quality_module
 import shrlm.experiment.orchestrator as orchestrator_module
+from shrlm.environments.oolong import OolongSubVerifier, OolongVerifier
+from shrlm.environments.oolong_pairs import OolongPairsVerifier
 from shrlm.experiment.analysis_io import (
     ANALYSIS_DIR,
     PROVENANCE_FILENAME,
@@ -51,16 +53,23 @@ from shrlm.experiment.orchestrator import (
     EVIDENCE_MARKER_FILENAME,
     FROZEN_DIR,
     FROZEN_HARNESS_FILENAME,
+    OOLONG_PAIRS_VERIFIER_FACTORY,
+    OOLONG_SYNTH_VERIFIER_FACTORY,
     POST_ROUND_BATCH_TOOL,
     PROPOSALS_MARKER_FILENAME,
+    PROPOSALS_MARKER_FORMAT,
+    REAL_CHECK_DIR,
     ROUND_MARKER_FILENAME,
+    ROUND_MARKER_FORMAT,
     STOP_MAX_ROUNDS,
     STOP_PATIENCE,
     ExperimentPersistenceError,
     IdentityMismatchError,
     MiningBudgetExceededError,
+    MiningDispatchStoppedError,
     check_identity,
     experiment_round_dir,
+    resolve_env_binding,
     run_experiment,
 )
 from shrlm.experiment.pattern_frequency_diff import BUNDLES_FILENAME
@@ -84,10 +93,16 @@ from shrlm.optimization.bundle import (
 )
 from shrlm.optimization.candidates import materialize_harness
 from shrlm.optimization.driver import TRACES_DIR, load_manifest
+from shrlm.optimization.promotion import DECISION_PROMOTED, MERGED_SUBJECT_ID
 from shrlm.optimization.proposal import _import_candidate_function
-from shrlm.optimization.validation import SPLIT_HELDIN, load_promotion_ledger
-from shrlm.rlm_harness import H0
+from shrlm.optimization.validation import SPLIT_HELDOUT, load_promotion_ledger
+from shrlm.rlm_harness import H0, H0_STAR
 from tests.mock_lm import MockLM
+from tests.optimization.run_worker_support import (
+    RUN_SCRIPTED_FACTORY,
+    observed_peak_concurrency,
+    write_script,
+)
 from tests.optimization.test_driver import ClientFactory, GoldVerifier, final
 
 # ---------------------------------------------------------------------------
@@ -208,6 +223,25 @@ max_scan = 100
 n_short = 1
 n_long = 1
 
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "rev-oolong-synth"
+subsets = []
+task_groups = ["counting", "user", "timeline"]
+context_lengths = [1024, 4096]
+max_scan = 100
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "toy_dnd"
+split = "test"
+dataset_revision = "rev-oolong-real"
+question_types = []
+episode_counts = [1, 2]
+max_scan = 100
+n_check = 2
+
 [backends.runner]
 backend = "openai"
 model = "runner-test"
@@ -256,7 +290,9 @@ def make_config(
     candidate_budget: float = 1.0,
     graphwalks_revision: str = "rev-gw",
     proposer_model: str = "proposer-test",
+    mining_run_workers: int = 1,
     validation_workers: int = 1,
+    initial_harness: str | None = None,
 ) -> ExperimentConfig:
     text = TOML_TEMPLATE.format(
         temperature=temperature,
@@ -268,9 +304,13 @@ def make_config(
         proposer_model=proposer_model,
     ).replace(
         "eval_repetitions = 1\n",
-        f"eval_repetitions = 1\nvalidation_workers = {validation_workers}\n",
+        "eval_repetitions = 1\n"
+        f"mining_run_workers = {mining_run_workers}\n"
+        f"validation_workers = {validation_workers}\n",
         1,
     )
+    if initial_harness is not None:
+        text = text.replace("[loop]\n", f'[loop]\ninitial_harness = "{initial_harness}"\n', 1)
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "experiment.toml"
     path.write_text(text)
@@ -309,6 +349,10 @@ def attribution(mechanism: str) -> str:
                 "failing_level": "root",
                 "evidence_node_ids": ["r"],
                 "symptom_summary": "the model answered without verifying",
+                "operation_evidence": [
+                    {"node_id": "r", "observation": "The root submitted the produced answer."}
+                ],
+                "verification_limits": "Intermediate results were not semantically verified.",
             }
         )
         + "\n```"
@@ -322,6 +366,9 @@ def proposer_batch(*edits: tuple[int, str]) -> str:
             "pattern_index": index,
             "edit": {"kind": "text", "new_text": new_text},
             "predicted_effect": "the root double-checks before answering",
+            "incumbent_behavior": "Submits the computed result.",
+            "observed_failure": "Does not cross-check the computed result.",
+            "behavioral_change": "Recompute the result before submitting.",
             "regression_risks": ["one extra turn per run"],
         }
         for index, new_text in edits
@@ -337,14 +384,25 @@ MERGE_TEXT = "Cover every input chunk and verify before answering. [merge]"
 # mining is 2 runs, each evaluated subject is (2 + 2) * 1 = 4 runs.
 MINING_FAIL = [final("WRONG"), final("WRONG")]
 MINING_FAIL_V2 = [final("WRONG-2"), final("WRONG-2")]
-SUBJECT_FAIL = [final("WRONG")] * 4
-SUBJECT_PASS = [final("RIGHT")] * 4
+SUBJECT_FAIL = [final("WRONG")] * 2
+SUBJECT_PASS = [final("RIGHT")] * 2
 
 
 def patch_runner(monkeypatch: pytest.MonkeyPatch, script: list[str]) -> ClientFactory:
     factory = ClientFactory(script)
     monkeypatch.setattr(rlm_module, "get_client", factory)
     return factory
+
+
+def mining_client_factory(
+    tmp_path: Path, script: list[str], **extra: Any
+) -> tuple[str, dict[str, Any]]:
+    """A run-child factory spec under the orchestrator's reserved mining key."""
+    script_path = write_script(tmp_path / "scripts" / "mining.json", script)
+    return (
+        RUN_SCRIPTED_FACTORY,
+        {"mining": {"script_path": str(script_path), **extra}},
+    )
 
 
 def run(
@@ -408,7 +466,7 @@ class TestFullExperiment:
         out = tmp_path / "exp"
         result, factory = self.run_two_promoted_rounds(config, out, monkeypatch)
 
-        assert factory.total_calls == 20  # (2 + 4 + 4) per round, nothing re-run
+        assert factory.total_calls == 12  # (2 + 4 + 4) per round, nothing re-run
         assert result.stopped == STOP_MAX_ROUNDS
         assert [outcome.promoted for outcome in result.rounds] == [True, True]
 
@@ -506,9 +564,27 @@ class TestPatience:
 
         assert result.stopped == STOP_PATIENCE
         assert [outcome.promoted for outcome in result.rounds] == [False, False]
-        assert factory.total_calls == 20  # two rounds ran, the third never started
+        assert factory.total_calls == 12  # two rounds ran, the third never started
         assert not experiment_round_dir(out, 3).exists()
         assert frozen_envelope(out)["hash"] == harness_hash(H0)
+
+
+class TestInitialHarness:
+    def test_loop_starts_from_the_configured_registry_harness(self, tmp_path, monkeypatch):
+        # Same shape as the patience test, but the config names H0*: with no
+        # promotion the frozen harness must be H0*, not the module's H0 floor.
+        config = make_config(tmp_path, t=2, patience=1, initial_harness="H0*")
+        assert config.loop.initial_harness == "H0*"
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_FAIL)
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
+        result = run(config, out, attributor, proposer)
+
+        assert result.stopped == STOP_PATIENCE
+        assert [outcome.promoted for outcome in result.rounds] == [False]
+        assert frozen_envelope(out)["hash"] == harness_hash(H0_STAR)
+        assert frozen_envelope(out)["hash"] != harness_hash(H0)
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +600,7 @@ class TestResumeMidMining:
         # The script covers only the first mining run: the second run's client
         # call raises, exactly like a crash mid-round.
         factory = patch_runner(monkeypatch, [final("WRONG")])
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, MockLM(responses=[]), MockLM(responses=[]))
         assert factory.total_calls == 2  # the crashing call itself is counted
         assert len(mining_manifest(out, 1)) == 1  # run 1 persisted before the crash
@@ -535,13 +611,76 @@ class TestResumeMidMining:
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
         result = run(config, out, attributor, proposer)
 
-        assert resumed.total_calls == 9  # 1 mining + 8 validation, run 1 never re-ran
+        assert resumed.total_calls == 5  # 1 mining + 8 validation, run 1 never re-ran
         entries = mining_manifest(out, 1)
         assert [entry["run_id"] for entry in entries] == [
             "graphwalks-short-0__a01",
             "graphwalks-short-1__a01",
         ]
         assert result.rounds[0].promoted
+
+
+class TestProposalBudgetExhaustion:
+    def test_reasoning_exhausted_proposer_seals_a_zero_candidate_round(self, tmp_path, monkeypatch):
+        """A proposer that spends its output budget on reasoning (the client's
+        ``TokenLimitExceededError``, R6/KTD3) is a deterministic stage failure:
+        asked once, sealed with zero candidates, and the experiment continues
+        to the next round instead of crashing or re-asking."""
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        config = make_config(tmp_path, t=1)
+        out = tmp_path / "exp"
+
+        def boom(prompt: Any) -> str:
+            raise TokenLimitExceededError(
+                tokens_used=16384,
+                token_limit=16384,
+                message="Azure Foundry output budget exhausted by reasoning",
+            )
+
+        factory = patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(response_fn=boom)
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 1  # raised once, never re-asked
+        assert factory.total_calls == 2  # mining only: nothing to validate
+        assert [outcome.promoted for outcome in result.rounds] == [False]
+        round_path = experiment_round_dir(out, 1)
+        marker = json.loads((round_path / PROPOSALS_MARKER_FILENAME).read_text())
+        assert marker["candidate_ids"] == []
+        assert marker["stage_failure"]["kind"] == "budget_exhausted"
+        assert "reasoning" in marker["stage_failure"]["error"]
+        assert marker["materialization_failures"] == []
+        assert (round_path / ROUND_MARKER_FILENAME).exists()
+
+    def test_validation_exhausted_proposer_seals_a_zero_candidate_round(
+        self, tmp_path, monkeypatch
+    ):
+        """A proposer that exhausts its attempt budget on malformed responses
+        (review finding #2) is a deterministic stage failure too: rejected
+        attempts are cached, so an escaping ProposalRejection would crash the
+        run and re-crash it on every resume. The round seals with zero
+        candidates and continues instead."""
+        config = make_config(tmp_path, t=1)
+        out = tmp_path / "exp"
+        bound_proposer_attempts(monkeypatch, 2)
+        factory = patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
+        proposer = MockLM(responses=["not json at all", "still not json"])
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 2  # asked, re-asked, then exhausted
+        assert factory.total_calls == 2  # mining only: nothing to validate
+        [outcome] = result.rounds
+        assert (outcome.has_ledger, outcome.promoted) == (False, False)
+        round_path = experiment_round_dir(out, 1)
+        marker = json.loads((round_path / PROPOSALS_MARKER_FILENAME).read_text())
+        assert marker["candidate_ids"] == []
+        assert marker["stage_failure"]["kind"] == "validation_exhausted"
+        assert marker["stage_failure"]["n_attempts"] == 2
+        assert "after 2 attempts" in marker["stage_failure"]["error"]
+        assert (round_path / ROUND_MARKER_FILENAME).exists()
 
 
 class TestResumeAfterBundle:
@@ -567,7 +706,7 @@ class TestResumeAfterBundle:
         result = run(config, out, second_attributor, proposer)
 
         assert second_attributor._call_count == 0  # bundle.json read back, never re-mined
-        assert resumed.total_calls == 8  # validation only
+        assert resumed.total_calls == 4  # validation only
         marker = json.loads((round_path / PROPOSALS_MARKER_FILENAME).read_text())
         assert marker["candidate_ids"] == ["r01-c01-s4"]
         assert result.rounds[0].promoted
@@ -602,7 +741,7 @@ class TestResumeAfterBundle:
         resealed = json.loads((round_path / PROPOSALS_MARKER_FILENAME).read_text())
         assert resealed["candidate_ids"] == sealed["candidate_ids"]
         assert resealed["prompt_sha256"] == sealed["prompt_sha256"]
-        assert resumed.total_calls == 8
+        assert resumed.total_calls == 4
         assert result.rounds[0].promoted
 
 
@@ -617,9 +756,7 @@ class TestMergedPromotion:
             monkeypatch,
             MINING_FAIL  # two failures with distinct mechanisms -> two patterns
             + SUBJECT_FAIL  # baseline
-            + SUBJECT_PASS  # candidate 1
-            + SUBJECT_PASS  # candidate 2
-            + SUBJECT_PASS,  # merged re-evaluation
+            + SUBJECT_PASS,  # combined candidate
         )
         attributor = MockLM(
             responses=[attribution("incomplete_coverage"), attribution("skipped_verification")]
@@ -634,7 +771,7 @@ class TestMergedPromotion:
         out = tmp_path / "exp"
         result, factory = self.run_merged_round(config, out, monkeypatch)
 
-        assert factory.total_calls == 18  # 2 mining + 4 subjects x 4 runs
+        assert factory.total_calls == 6  # 2 mining + 4 subjects x 4 runs
         assert result.rounds[0].promoted
         _, decision = load_promotion_ledger(validation_round_path(out, 1))
         assert decision["promoted_subject_id"] == "merged"
@@ -734,6 +871,263 @@ class TestMiningSpendBreaker:
 
 
 # ---------------------------------------------------------------------------
+# Parallel mining inside the loop (parallel-mining U4)
+# ---------------------------------------------------------------------------
+
+
+class TestParallelMiningStage:
+    def test_two_workers_use_children_reach_two_live_runs_and_complete_the_round(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path / "config", mining_run_workers=2)
+        out = tmp_path / "exp"
+        witness = tmp_path / "witness"
+        # Mining runs in children. The parent script is therefore validation only.
+        parent = patch_runner(monkeypatch, SUBJECT_FAIL + SUBJECT_PASS)
+
+        result = run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))]),
+            loaders=LOADERS,
+            client_factory=mining_client_factory(
+                tmp_path,
+                [final("WRONG")],
+                witness_dir=str(witness),
+                hold=0.3,
+            ),
+        )
+
+        assert parent.total_calls == 4
+        assert observed_peak_concurrency(witness) == 2
+        assert [outcome.promoted for outcome in result.rounds] == [True]
+        manifest = mining_manifest(out, 1)
+        assert len(manifest) == 2
+        mining_path = mining_round_path(out, 1)
+        assert sorted(path.name for path in (mining_path / "run_workers").iterdir()) == sorted(
+            entry["run_id"] for entry in manifest
+        )
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/mining"]
+        assert usage.cost == pytest.approx(0.002)
+        assert usage.lower_bound is False
+
+    def test_one_worker_stays_in_process_and_creates_no_child_artifacts(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path / "config", mining_run_workers=1)
+        out = tmp_path / "exp"
+        parent = patch_runner(monkeypatch, MINING_FAIL)
+
+        run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders=LOADERS,
+            # If the worker-1 path consulted this child seam, it would crash.
+            client_factory=(RUN_SCRIPTED_FACTORY, {"mining": {"crash": True}}),
+        )
+
+        assert parent.total_calls == 2
+        assert not (mining_round_path(out, 1) / "run_workers").exists()
+
+    def test_workers_one_and_two_preserve_mining_evidence_and_proposal_prompt(
+        self, tmp_path, monkeypatch
+    ):
+        sequential_config = make_config(tmp_path / "seq-config", mining_run_workers=1)
+        parallel_config = make_config(tmp_path / "par-config", mining_run_workers=2)
+        sequential_out = tmp_path / "sequential"
+        parallel_out = tmp_path / "parallel"
+
+        patch_runner(monkeypatch, MINING_FAIL)
+        run_experiment(
+            sequential_config,
+            sequential_out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders=LOADERS,
+        )
+
+        parent = patch_runner(monkeypatch, [])
+        run_experiment(
+            parallel_config,
+            parallel_out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders=LOADERS,
+            client_factory=mining_client_factory(tmp_path, [final("WRONG")]),
+        )
+        assert parent.total_calls == 0
+
+        def outputs(out: Path) -> tuple[Any, Any, str]:
+            mining_path = mining_round_path(out, 1)
+            manifest = sorted(
+                (scrub_clock(entry) for entry in mining_manifest(out, 1)),
+                key=lambda entry: entry["run_id"],
+            )
+            records = [scrub_clock(record) for record in read_jsonl(mining_path / RECORDS_FILENAME)]
+            proposal_marker = json.loads(
+                (experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text()
+            )
+            return manifest, records, str(proposal_marker["prompt_sha256"])
+
+        sequential_outputs = outputs(sequential_out)
+        parallel_outputs = outputs(parallel_out)
+        assert parallel_outputs == sequential_outputs
+
+    def test_generated_code_incumbent_mines_in_children(self, tmp_path):
+        config = make_config(tmp_path / "config", mining_run_workers=2)
+        out = tmp_path / "exp"
+        middleware = _import_candidate_function(
+            S9_SOURCE, "redirect_empty", tmp_path / "generated", "S9"
+        )
+        promoted = replace(H0, name="r01-c01-s9", answer_middleware=middleware)
+        experiment = orchestrator_module._Experiment(
+            config=config,
+            out_dir=out,
+            verifier=GoldVerifier(),
+            sub_verifier=None,
+            attributor_lm=None,
+            proposer_lm=None,
+            loaders=LOADERS,
+            client_factory=mining_client_factory(tmp_path, [final("WRONG")]),
+        )
+        experiment.splits = orchestrator_module.ValidationSplits(
+            heldin=fake_loader("graphwalks")(
+                config, "short", config.splits.n_in, config.splits.seed
+            ),
+            heldout=fake_loader("graphwalks-heldout")(
+                config, "short", config.splits.n_ho, config.splits.seed
+            ),
+        )
+
+        experiment._mine_runs(out / "mining", 2, promoted)
+
+        manifest = load_manifest(out / "mining", 2)
+        assert len(manifest) == 2
+        assert (round_dir(out / "mining", 2) / "run_workers").is_dir()
+
+    def test_under_budget_reservation_stop_resumes_only_tail_with_worker_one(
+        self, tmp_path, monkeypatch
+    ):
+        # One reservation is 2x max_budget. At exactly that budget the first
+        # child may run, but its realised spend leaves no room for the second.
+        config = make_config(tmp_path / "config", mining_run_workers=2, candidate_budget=0.02)
+        out = tmp_path / "exp"
+        parent = patch_runner(monkeypatch, [final("WRONG")])
+        dispatches = 0
+        real_dispatch = orchestrator_module.run_governed_round
+
+        def counted_dispatch(*args: Any, **kwargs: Any) -> Any:
+            nonlocal dispatches
+            dispatches += 1
+            return real_dispatch(*args, **kwargs)
+
+        monkeypatch.setattr(orchestrator_module, "run_governed_round", counted_dispatch)
+        with pytest.raises(MiningDispatchStoppedError) as excinfo:
+            run_experiment(
+                config,
+                out,
+                verifier=GoldVerifier(),
+                attributor_lm=MockLM(responses=[]),
+                proposer_lm=MockLM(responses=[]),
+                loaders=LOADERS,
+                client_factory=mining_client_factory(tmp_path, [final("WRONG")]),
+            )
+
+        assert dispatches == 1
+        assert parent.total_calls == 0
+        assert len(mining_manifest(out, 1)) == 1
+        message = str(excinfo.value)
+        assert "1 run(s)" in message
+        assert "operational.mining_run_workers = 1" in message
+        assert "sequential path has no reservation gate" in message
+        assert "resume" in message.lower()
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/mining"]
+        assert usage.cost == pytest.approx(0.001)
+
+        # The worker count is identity-exempt, so the same output directory can
+        # resume sequentially. Only the unpersisted tail executes; the evidence
+        # and proposal stages then finish normally from the complete manifest.
+        sequential_config = make_config(
+            tmp_path / "resume-config", mining_run_workers=1, candidate_budget=0.02
+        )
+        tail = patch_runner(monkeypatch, [final("WRONG")])
+        result = run_experiment(
+            sequential_config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders=LOADERS,
+        )
+
+        assert dispatches == 2
+        assert tail.total_calls == 1
+        assert len(mining_manifest(out, 1)) == 2
+        assert [outcome.promoted for outcome in result.rounds] == [False]
+        round_path = experiment_round_dir(out, 1)
+        assert (mining_round_path(out, 1) / EVIDENCE_MARKER_FILENAME).exists()
+        assert (round_path / PROPOSALS_MARKER_FILENAME).exists()
+        usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/mining"]
+        assert usage.cost == pytest.approx(0.002)
+
+    def test_actual_overspend_wins_when_a_tail_run_is_also_skipped(self, tmp_path):
+        config = make_config(tmp_path / "config", mining_run_workers=2, candidate_budget=0.04)
+        out = tmp_path / "exp"
+        experiment = orchestrator_module._Experiment(
+            config=config,
+            out_dir=out,
+            verifier=GoldVerifier(),
+            sub_verifier=None,
+            attributor_lm=None,
+            proposer_lm=None,
+            loaders=LOADERS,
+            client_factory=mining_client_factory(tmp_path, [final("WRONG")], cost_per_call=0.03),
+        )
+        experiment.splits = orchestrator_module.ValidationSplits(
+            heldin=fake_loader("graphwalks")(config, "short", 3, config.splits.seed),
+            heldout=fake_loader("graphwalks-heldout")(config, "short", 1, config.splits.seed),
+        )
+
+        with pytest.raises(MiningBudgetExceededError, match=r"1 run\(s\) were skipped"):
+            experiment._mine_runs(out / "mining", 1, H0)
+
+        manifest = load_manifest(out / "mining", 1)
+        assert len(manifest) == 2
+        assert sorted(entry["instance_id"] for entry in manifest) == [
+            "graphwalks-short-0",
+            "graphwalks-short-1",
+        ]
+
+    def test_actual_overspend_raises_even_when_every_run_completed(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path / "config", mining_run_workers=2, candidate_budget=0.04)
+        out = tmp_path / "exp"
+        parent = patch_runner(monkeypatch, [])
+
+        with pytest.raises(MiningBudgetExceededError):
+            run_experiment(
+                config,
+                out,
+                verifier=GoldVerifier(),
+                attributor_lm=MockLM(responses=[]),
+                proposer_lm=MockLM(responses=[]),
+                loaders=LOADERS,
+                client_factory=mining_client_factory(
+                    tmp_path, [final("WRONG")], cost_per_call=0.03
+                ),
+            )
+
+        assert parent.total_calls == 0
+        assert len(mining_manifest(out, 1)) == 2
+
+
+# ---------------------------------------------------------------------------
 # The evidence stage's completion marker (bundle.json is not one)
 # ---------------------------------------------------------------------------
 
@@ -784,7 +1178,7 @@ class TestEvidenceCrashWindow:
         result = run(config, out, replay_attributor, proposer)
 
         assert replay_attributor._call_count == 0  # attributions replay from the cache
-        assert resumed.total_calls == 8  # validation only: mining runs stay persisted
+        assert resumed.total_calls == 4  # validation only: mining runs stay persisted
         assert len(read_jsonl(mining_round / RECORDS_FILENAME)) == 2
         assert len(read_jsonl(mining_round / ATTRIBUTIONS_FILENAME)) == 2
         marker = json.loads((mining_round / EVIDENCE_MARKER_FILENAME).read_text())
@@ -818,7 +1212,7 @@ class TestCrashedStageUsage:
         config = make_config(tmp_path)
         out = tmp_path / "exp"
         patch_runner(monkeypatch, [final("WRONG")])  # the second run's call raises
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, MockLM(responses=[]), MockLM(responses=[]))
 
         assert len(mining_manifest(out, 1)) == 1
@@ -838,7 +1232,7 @@ class TestCrashedStageUsage:
         patch_runner(monkeypatch, MINING_FAIL + [final("WRONG")] * 2)
         attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, attributor, proposer)
 
         usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
@@ -857,7 +1251,6 @@ class TestParallelValidationStage:
     ):
         from shrlm.experiment.orchestrator import _validation_usage
         from tests.optimization.test_validation import (
-            GOLD_VERIFIER_FACTORY,
             parallel_client_factory,
         )
 
@@ -879,7 +1272,7 @@ class TestParallelValidationStage:
             attributor_lm=attributor,
             proposer_lm=proposer,
             loaders=LOADERS,
-            verifier_factory=GOLD_VERIFIER_FACTORY,
+            verifier_factory="tests.optimization.test_driver:GoldVerifier",
             client_factory=client_factory,
         )
 
@@ -890,7 +1283,7 @@ class TestParallelValidationStage:
 
         usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
         persisted = _validation_usage(validation_round_path(out, 1))
-        assert usage.input_tokens == persisted.input_tokens == 80  # 8 runs x 10 tokens
+        assert usage.input_tokens == persisted.input_tokens == 40  # 8 runs x 10 tokens
         assert usage.cost == persisted.cost
         assert usage.lower_bound is False
 
@@ -900,7 +1293,6 @@ class TestParallelValidationStage:
         from shrlm.experiment.orchestrator import _validation_usage
         from shrlm.optimization.subject_worker import SubjectWorkerError
         from tests.optimization.test_validation import (
-            GOLD_VERIFIER_FACTORY,
             parallel_client_factory,
         )
 
@@ -920,13 +1312,13 @@ class TestParallelValidationStage:
                 attributor_lm=attributor,
                 proposer_lm=proposer,
                 loaders=LOADERS,
-                verifier_factory=GOLD_VERIFIER_FACTORY,
+                verifier_factory="tests.optimization.test_driver:GoldVerifier",
                 client_factory=(factory_path, args),
             )
 
         usage = read_stage_usage(out / STAGE_USAGE_FILE)["round_01/validation"]
         persisted = _validation_usage(validation_round_path(out, 1))
-        assert usage.input_tokens == persisted.input_tokens == 40  # the baseline's 4 runs
+        assert usage.input_tokens == persisted.input_tokens == 20  # the baseline's 4 runs
         assert usage.lower_bound is True
 
     def test_injected_verifier_without_a_factory_is_refused_before_any_write(
@@ -1045,7 +1437,7 @@ class TestContradictoryPersistedState:
         records, _ = load_promotion_ledger(validation_path)
         promoted = [record for record in records if record["decision"] == "promoted"]
         envelope_path = validation_path / str(
-            promoted[0]["links"]["splits"][SPLIT_HELDIN]["harness"]
+            promoted[0]["links"]["splits"][SPLIT_HELDOUT]["harness"]
         )
         envelope = json.loads(envelope_path.read_text())
         envelope["harness"]["surfaces"]["S4_verification_instruction"] = "edited after the fact"
@@ -1098,23 +1490,63 @@ class TestContradictoryPersistedState:
 # ---------------------------------------------------------------------------
 
 EMPTY_BATCH = "```json\n[]\n```"
+# A policy edit that sets nothing: the merged runtime policy is byte-identical
+# to the incumbent's, so the candidate fails materialization as a no-op.
+NO_OP_POLICY_BATCH = (
+    "```json\n"
+    + json.dumps(
+        [
+            {
+                "pattern_index": 0,
+                "edit": {"kind": "policy", "runtime_policy": {}},
+                "predicted_effect": "the root double-checks before answering",
+                "incumbent_behavior": "Submits the computed result.",
+                "observed_failure": "No cross-check is performed.",
+                "behavioral_change": "Recompute before submitting.",
+                "regression_risks": ["one extra turn per run"],
+            }
+        ]
+    )
+    + "\n```"
+)
+
+
+def spy_prior_history(monkeypatch: pytest.MonkeyPatch) -> list[list[tuple[list, dict]]]:
+    """Capture the ``prior_history`` each ``propose_round`` call receives."""
+    captured: list[list[tuple[list, dict]]] = []
+    real_propose_round = orchestrator_module.propose_round
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        captured.append(
+            [(list(records), dict(decision)) for records, decision in kwargs["prior_history"]]
+        )
+        return real_propose_round(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator_module, "propose_round", spy)
+    return captured
+
+
+def bound_proposer_attempts(monkeypatch: pytest.MonkeyPatch, max_attempts: int) -> None:
+    """max_attempts is not reachable from ExperimentConfig (the default is 8
+    and the mock LM raises once its list empties), so bound the re-ask loop at
+    the orchestrator's factory seam."""
+    from shrlm.optimization.proposal import ProposerConfig
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "proposer_config",
+        lambda config: ProposerConfig(k=config.loop.k, max_attempts=max_attempts),
+    )
 
 
 class TestZeroCandidateRound:
-    def test_no_candidates_means_no_ledger_no_promotion_and_no_prior_history(
+    def test_no_candidates_means_no_ledger_no_promotion_and_a_records_free_history_entry(
         self, tmp_path, monkeypatch
     ):
         config = make_config(tmp_path, t=2)
         out = tmp_path / "exp"
 
-        histories: list[int] = []
-        real_propose_round = orchestrator_module.propose_round
-
-        def spy(*args: Any, **kwargs: Any) -> Any:
-            histories.append(len(kwargs["prior_history"]))
-            return real_propose_round(*args, **kwargs)
-
-        monkeypatch.setattr(orchestrator_module, "propose_round", spy)
+        captured = spy_prior_history(monkeypatch)
         factory = patch_runner(
             monkeypatch,
             MINING_FAIL  # round 1: mined, but the proposer offers nothing
@@ -1126,7 +1558,7 @@ class TestZeroCandidateRound:
         proposer = MockLM(responses=[EMPTY_BATCH, proposer_batch((0, TEXT_ROUND_2))])
         result = run(config, out, attributor, proposer)
 
-        assert factory.total_calls == 12  # 2 + 2 mining runs, then 8 validation runs
+        assert factory.total_calls == 8  # 2 + 2 mining runs, then 8 validation runs
         first, second = result.rounds
         assert (first.has_ledger, first.promoted) == (False, False)
         assert (second.has_ledger, second.promoted) == (True, True)
@@ -1143,8 +1575,265 @@ class TestZeroCandidateRound:
         )
         # A ledger-less round creates no validation round directory at all...
         assert not validation_round_path(out, 1).exists()
-        # ...and contributes no prior history to the next round's proposal.
-        assert histories == [0, 0]
+        # ...but still contributes one history entry to the next round's
+        # proposal (R5): no records, and the round's own outcome as decision.
+        assert [len(entry) for entry in captured] == [0, 1]
+        [(records, decision)] = captured[1]
+        assert records == []
+        assert (decision["round"], decision["promoted"]) == (1, False)
+
+    def test_a_no_op_only_proposer_seals_its_failure_records_in_the_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """A proposer that only ever re-emits the incumbent is re-asked, then
+        closes the round with zero candidates -- and the marker keeps WHY (R4):
+        surface, reason, and the candidate's predicted effect, not just a count."""
+        config = make_config(tmp_path, t=1)
+        out = tmp_path / "exp"
+        bound_proposer_attempts(monkeypatch, 2)
+        factory = patch_runner(monkeypatch, list(MINING_FAIL))
+        attributor = MockLM(responses=[attribution("iteration_budget_exhaustion")] * 2)
+        proposer = MockLM(responses=[NO_OP_POLICY_BATCH, NO_OP_POLICY_BATCH])
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 2  # re-asked once, then exhausted
+        assert factory.total_calls == 2  # mining only: nothing to validate
+        [outcome] = result.rounds
+        assert (outcome.has_ledger, outcome.promoted) == (False, False)
+        marker = json.loads((experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text())
+        assert marker["candidate_ids"] == []
+        assert marker["n_materialization_failures"] == 1
+        [record] = marker["materialization_failures"]
+        assert (record["pattern_index"], record["surface"]) == (0, "S6")
+        assert "no surface" in record["reason"]
+        assert record["predicted_effect"] == "the root double-checks before answering"
+        assert 0 not in marker["skipped_patterns"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-round memory (R5-R7): the next round's proposer sees every prior
+# round, including rounds that reached no validation, with each attempted
+# edit's surface, predicted effect, outcome, and reason.
+# ---------------------------------------------------------------------------
+
+NO_OP_ROUND_SCRIPT = MINING_FAIL + MINING_FAIL_V2 + SUBJECT_FAIL + SUBJECT_PASS
+
+
+def no_op_then_promote_mocks() -> tuple[MockLM, MockLM]:
+    """Round 1: an S6 pattern, proposer no-ops twice. Round 2: an S4 pattern,
+    a real text edit that promotes."""
+    attributor = MockLM(
+        responses=[attribution("iteration_budget_exhaustion")] * 2
+        + [attribution("skipped_verification")] * 2
+    )
+    proposer = MockLM(
+        responses=[NO_OP_POLICY_BATCH, NO_OP_POLICY_BATCH, proposer_batch((0, TEXT_ROUND_2))]
+    )
+    return attributor, proposer
+
+
+class TestCrossRoundHistory:
+    def test_a_no_op_round_reaches_the_next_proposer_with_its_reason(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path, t=2)
+        out = tmp_path / "exp"
+        bound_proposer_attempts(monkeypatch, 2)
+        captured = spy_prior_history(monkeypatch)
+        factory = patch_runner(monkeypatch, list(NO_OP_ROUND_SCRIPT))
+        attributor, proposer = no_op_then_promote_mocks()
+        result = run(config, out, attributor, proposer)
+
+        assert proposer._call_count == 3
+        assert factory.total_calls == 8
+        assert [outcome.promoted for outcome in result.rounds] == [False, True]
+        assert captured[0] == []
+        [(records, decision)] = captured[1]
+        assert (decision["round"], decision["promoted"]) == (1, False)
+        [record] = records
+        assert record["decision"] == orchestrator_module.HISTORY_NOT_MATERIALIZED
+        assert record["surface"] == "S6"
+        assert record["predicted_effect"] == "the root double-checks before answering"
+        assert any("no surface" in reason for reason in record["reasons"])
+
+    def test_a_promoted_round_reaches_the_next_proposer_with_predicted_effects(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path, t=2)
+        out = tmp_path / "exp"
+        captured = spy_prior_history(monkeypatch)
+        patch_runner(
+            monkeypatch,
+            MINING_FAIL
+            + SUBJECT_FAIL
+            + SUBJECT_PASS
+            + MINING_FAIL_V2
+            + SUBJECT_FAIL
+            + SUBJECT_PASS,
+        )
+        attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
+        proposer = MockLM(
+            responses=[proposer_batch((0, TEXT_ROUND_1)), proposer_batch((0, TEXT_ROUND_2))]
+        )
+        result = run(config, out, attributor, proposer)
+
+        assert [outcome.promoted for outcome in result.rounds] == [True, True]
+        [(records, decision)] = captured[1]
+        assert (decision["round"], decision["promoted"]) == (1, True)
+        by_subject = {record["subject_id"]: record for record in records}
+        candidate = by_subject["r01-c01-s4"]
+        assert candidate["decision"] == DECISION_PROMOTED
+        assert candidate["predicted_effect"] == "the root double-checks before answering"
+
+    def test_resume_rebuilds_the_same_history_entry_byte_for_byte(self, tmp_path, monkeypatch):
+        """R7: a resumed experiment hands round 2 exactly the entry the
+        uninterrupted run did, because both read the same persisted markers."""
+        bound_proposer_attempts(monkeypatch, 2)
+
+        # Uninterrupted run.
+        config_a = make_config(tmp_path / "a", t=2)
+        captured_a = spy_prior_history(monkeypatch)
+        patch_runner(monkeypatch, list(NO_OP_ROUND_SCRIPT))
+        run(config_a, tmp_path / "a" / "exp", *no_op_then_promote_mocks())
+
+        # Same run, crashed at round 2's first mining call, then resumed.
+        config_b = make_config(tmp_path / "b", t=2)
+        out_b = tmp_path / "b" / "exp"
+        patch_runner(monkeypatch, list(MINING_FAIL))
+        with pytest.raises(OSError):
+            run(
+                config_b,
+                out_b,
+                MockLM(responses=[attribution("iteration_budget_exhaustion")] * 2),
+                MockLM(responses=[NO_OP_POLICY_BATCH, NO_OP_POLICY_BATCH]),
+            )
+        captured_b = spy_prior_history(monkeypatch)
+        patch_runner(monkeypatch, MINING_FAIL_V2 + SUBJECT_FAIL + SUBJECT_PASS)
+        result = run(
+            config_b,
+            out_b,
+            MockLM(responses=[attribution("skipped_verification")] * 2),
+            MockLM(responses=[proposer_batch((0, TEXT_ROUND_2))]),
+        )
+
+        assert [outcome.promoted for outcome in result.rounds] == [False, True]
+        assert json.dumps(captured_b[0], sort_keys=True) == json.dumps(
+            captured_a[1], sort_keys=True
+        )
+
+
+class TestRoundHistoryLoader:
+    """``load_round_history`` against synthetic persisted rounds."""
+
+    def write_round(
+        self,
+        round_path: Path,
+        round_index: int,
+        *,
+        marker_extra: dict[str, Any] | None = None,
+        ledger: list[dict[str, Any]] | None = None,
+        proposals: dict[str, dict[str, Any]] | None = None,
+        promoted: bool = False,
+    ) -> None:
+        from shrlm.optimization.proposal import PROPOSAL_FILENAME, PROPOSAL_FORMAT
+        from shrlm.optimization.validation import (
+            DECISION_FILENAME,
+            DECISION_FORMAT,
+            LEDGER_RECORD_FORMAT,
+            PROMOTIONS_FILENAME,
+        )
+
+        round_path.mkdir(parents=True)
+        (round_path / ROUND_MARKER_FILENAME).write_text(
+            json.dumps(
+                {
+                    "format": ROUND_MARKER_FORMAT,
+                    "round": round_index,
+                    "promoted": promoted,
+                    "promoted_harness_hash": "hash" if promoted else None,
+                    "has_ledger": ledger is not None,
+                }
+            )
+        )
+        marker = {
+            "format": PROPOSALS_MARKER_FORMAT,
+            "round": round_index,
+            "candidate_ids": sorted(proposals or {}),
+            "prompt_sha256": "p",
+            "skipped_patterns": [],
+            "n_materialization_failures": 0,
+        }
+        marker.update(marker_extra or {})
+        (round_path / PROPOSALS_MARKER_FILENAME).write_text(json.dumps(marker))
+        for candidate_id, payload in (proposals or {}).items():
+            candidate_dir = round_path / "proposals" / candidate_id
+            candidate_dir.mkdir(parents=True)
+            (candidate_dir / PROPOSAL_FILENAME).write_text(
+                json.dumps({"format": PROPOSAL_FORMAT, **payload})
+            )
+        if ledger is not None:
+            ledger_dir = round_dir(round_path / "validation", round_index)
+            ledger_dir.mkdir(parents=True)
+            (ledger_dir / PROMOTIONS_FILENAME).write_text(
+                "\n".join(json.dumps({"format": LEDGER_RECORD_FORMAT, **row}) for row in ledger)
+                + "\n"
+            )
+            (ledger_dir / DECISION_FILENAME).write_text(
+                json.dumps(
+                    {
+                        "format": DECISION_FORMAT,
+                        "promoted": promoted,
+                        "promoted_harness_hash": "hash" if promoted else None,
+                    }
+                )
+            )
+
+    def test_a_legacy_marker_without_failures_and_no_ledger_yields_no_records(self, tmp_path):
+        round_path = experiment_round_dir(tmp_path, 4)
+        self.write_round(round_path, 4)
+        records, decision = orchestrator_module.load_round_history(round_path, 4, has_ledger=False)
+        assert records == []
+        assert (decision["round"], decision["promoted"]) == (4, False)
+
+    def test_ledger_records_and_marker_failures_merge_for_a_partial_batch(self, tmp_path):
+        round_path = experiment_round_dir(tmp_path, 2)
+        failure = {
+            "pattern_index": 1,
+            "surface": "S6",
+            "reason": "declared surface S6 but the materialized harness changes no surface",
+            "predicted_effect": "fewer wasted iterations",
+        }
+        self.write_round(
+            round_path,
+            2,
+            marker_extra={"materialization_failures": [failure], "n_materialization_failures": 1},
+            ledger=[
+                {"subject_id": "baseline", "decision": "rejected", "reasons": []},
+                {
+                    "subject_id": "r02-c01-s4",
+                    "surface": "S4",
+                    "decision": "rejected",
+                    "reasons": ["heldout did not improve"],
+                },
+                {
+                    "subject_id": MERGED_SUBJECT_ID,
+                    "decision": "rejected",
+                    "reasons": ["heldout did not improve"],
+                    "merge": {"role": "merged", "constituent_ids": ["r02-c01-s4"]},
+                },
+            ],
+            proposals={"r02-c01-s4": {"surface": "S4", "predicted_effect": "verifies first"}},
+        )
+        records, decision = orchestrator_module.load_round_history(round_path, 2, has_ledger=True)
+
+        assert decision["round"] == 2
+        by_subject = {record["subject_id"]: record for record in records}
+        assert by_subject["r02-c01-s4"]["predicted_effect"] == "verifies first"
+        assert "predicted_effect" not in by_subject["baseline"]  # no proposal.json
+        assert "predicted_effect" not in by_subject[MERGED_SUBJECT_ID]  # merged: none either
+        refused = by_subject["pattern 1 on S6"]
+        assert refused["decision"] == orchestrator_module.HISTORY_NOT_MATERIALIZED
+        assert refused["surface"] == "S6"
+        assert refused["reasons"] == [failure["reason"]]
+        assert refused["predicted_effect"] == "fewer wasted iterations"
 
 
 # ---------------------------------------------------------------------------
@@ -1468,7 +2157,7 @@ class TestPostRoundAnalysisOnResume:
         patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_PASS)
         attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
-        with pytest.raises(IndexError):
+        with pytest.raises(OSError):
             run(config, out, attributor, proposer)
         assert len(snapshots(out)) == 1  # round 1's refresh, and nothing else
 
@@ -1484,3 +2173,378 @@ class TestPostRoundAnalysisOnResume:
         assert len(refreshed) == 2
         provenance = json.loads((refreshed[-1] / PROVENANCE_FILENAME).read_text())
         assert provenance["rounds"] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# OOLONG-synth as the loop environment; the non-gated OOLONG-real check
+# ---------------------------------------------------------------------------
+
+
+def oolong_real_fake_loader(
+    config: ExperimentConfig, length: str, limit: int, seed: int
+) -> list[dict[str, Any]]:
+    """Fake OOLONG-real check instances -- shaped so OolongVerifier("real") can
+    grade them (answer_kind / answer_raw), unlike the generic fake_loader."""
+    return [
+        {
+            "id": f"oolong-real-{index}",
+            "question": "Total number of rolls in this episode?",
+            "prompt": f"episode transcript {index}",
+            "answer_kind": "numeric",
+            "answer_raw": "[2]",
+            "question_type": "singledoc_rolls",
+            "n_episodes": 1,
+        }
+        for index in range(limit)
+    ]
+
+
+def _oolong_config(tmp_path: Path, *, real_check: int = 0, t: int = 1) -> ExperimentConfig:
+    cfg = make_config(tmp_path, t=t)
+    return replace(
+        cfg,
+        loop=replace(cfg.loop, environment="oolong_synth"),
+        operational=replace(cfg.operational, real_check_every_n_rounds=real_check),
+    )
+
+
+class _FakeUsageSummary:
+    total_input_tokens = 5
+    total_output_tokens = 5
+    total_cost = 0.0001
+
+
+class _FakeCompletion:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.usage_summary = _FakeUsageSummary()
+
+
+class _FakeOutcome:
+    def __init__(self, completion: _FakeCompletion, verdict: Any) -> None:
+        self.completion = completion
+        self.verdict = verdict
+        self.usage_lower_bound = False
+
+
+def _fake_real_execute_run(
+    harnessed: Any, instance: dict[str, Any], *, model_name: str, verifier: Any = None
+) -> _FakeOutcome:
+    response = "FINAL: 2"  # matches the fake loader's answer_raw "[2]"
+    completion = _FakeCompletion(response)
+    return _FakeOutcome(completion, verifier(instance, response) if verifier else None)
+
+
+class TestOolongEnvironment:
+    def test_resolve_env_binding_selects_oolong(self, tmp_path):
+        binding = resolve_env_binding(_oolong_config(tmp_path))
+        assert (binding.name, binding.length) == ("oolong_synth", "short")
+        assert isinstance(binding.verifier, OolongVerifier) and binding.verifier.task_set == "synth"
+        assert isinstance(binding.sub_verifier, OolongSubVerifier)
+        assert binding.verifier_factory == OOLONG_SYNTH_VERIFIER_FACTORY
+
+    def test_resolve_env_binding_selects_oolong_pairs(self, tmp_path):
+        config = make_config(tmp_path)
+        config = replace(config, loop=replace(config.loop, environment="oolong_pairs"))
+
+        binding = resolve_env_binding(config)
+
+        assert (binding.name, binding.length) == ("oolong_pairs", "short")
+        assert isinstance(binding.verifier, OolongPairsVerifier)
+        assert binding.sub_verifier is None
+        assert binding.verifier_factory == OOLONG_PAIRS_VERIFIER_FACTORY
+
+    def test_parallel_oolong_pairs_validation_resolves_the_default_factory(self, tmp_path):
+        config = load_config(
+            "full", path=Path("configs/experiment_oolong_pairs_DeepSeekV4Flash.toml")
+        )
+        binding = resolve_env_binding(config)
+
+        experiment = orchestrator_module._Experiment(
+            config=config,
+            out_dir=tmp_path / "exp",
+            verifier=binding.verifier,
+            sub_verifier=binding.sub_verifier,
+            attributor_lm=None,
+            proposer_lm=None,
+            loaders=None,
+        )
+
+        assert config.operational.validation_workers > 1
+        assert experiment.verifier_factory == OOLONG_PAIRS_VERIFIER_FACTORY
+
+    def test_offline_round_mines_and_validates_oolong_synth_only(self, tmp_path, monkeypatch):
+        config = _oolong_config(tmp_path, real_check=0, t=1)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL)
+        result = run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders={"oolong_synth": fake_loader("oolong_synth")},
+        )
+        splits = out / SPLITS_DIR
+        assert (splits / split_file_name("oolong_synth", "short", "held_in")).exists()
+        assert not (splits / split_file_name("graphwalks", "short", "held_in")).exists()
+        assert result.frozen_path.exists()
+
+    def test_real_check_writes_summary_without_touching_promotion(self, tmp_path, monkeypatch):
+        config = _oolong_config(tmp_path, real_check=1, t=1)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL)
+        monkeypatch.setattr(orchestrator_module, "build_round_rlm", lambda round_config: object())
+        monkeypatch.setattr(orchestrator_module, "execute_run", _fake_real_execute_run)
+        run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders={
+                "oolong_synth": fake_loader("oolong_synth"),
+                "oolong_real": oolong_real_fake_loader,
+            },
+        )
+        round_summary = out / "opt" / REAL_CHECK_DIR / "round_01" / "summary.json"
+        final_summary = out / "opt" / REAL_CHECK_DIR / "final" / "summary.json"
+        assert round_summary.exists() and final_summary.exists()
+        payload = json.loads(round_summary.read_text())
+        assert payload["per_answer_kind"]["numeric"]["n"] >= 1
+        assert payload["pass_rate"] == 1.0
+        assert payload["mean_score"] == 1.0
+        # Zero candidates -> no ledger, no promotion; the check touched none of it.
+        assert not validation_round_path(out, 1).exists()
+        marker = json.loads((experiment_round_dir(out, 1) / ROUND_MARKER_FILENAME).read_text())
+        assert marker["promoted"] is False and marker["has_ledger"] is False
+        # ...but it IS metered.
+        stages = {record["stage"] for record in read_jsonl(out / STAGE_USAGE_FILE)}
+        assert "real_check" in stages
+
+    def test_real_check_absent_when_disabled(self, tmp_path, monkeypatch):
+        config = _oolong_config(tmp_path, real_check=0, t=1)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL)
+        run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders={"oolong_synth": fake_loader("oolong_synth")},
+        )
+        assert not (out / "opt" / REAL_CHECK_DIR).exists()
+        assert not (out / SPLITS_DIR / split_file_name("oolong_real", "short", "check")).exists()
+
+
+@pytest.mark.parametrize("subject_workers,run_workers", [(1, 1), (1, 2), (2, 1), (2, 2)])
+def test_runtime_failed_proposal_finishes_experiment(
+    tmp_path, monkeypatch, subject_workers, run_workers
+):
+    from tests.optimization.test_validation import parallel_client_factory
+
+    config = make_config(tmp_path, validation_workers=subject_workers, t=2, patience=1)
+    config = replace(
+        config, operational=replace(config.operational, validation_run_workers=run_workers)
+    )
+    out = tmp_path / "exp"
+    source = """def accept_answer(answer, repl_inventory):
+    import re
+    if answer in ("RIGHT", "WRONG"):
+        re.findall(r"\\d+", ("str", 100))
+    return AnswerDecision.accept(answer)
+"""
+    proposal = (
+        "```json\n"
+        + json.dumps(
+            [
+                {
+                    "pattern_index": 0,
+                    "surface": "S9",
+                    "edit": {"kind": "code", "source": source},
+                    "predicted_effect": "normalize the final answer",
+                    "incumbent_behavior": "Submits the result directly.",
+                    "observed_failure": "The result contract is not checked.",
+                    "behavioral_change": "Check the result contract before submission.",
+                    "regression_risks": ["runtime error"],
+                }
+            ]
+        )
+        + "\n```"
+    )
+    patch_runner(monkeypatch, MINING_FAIL + SUBJECT_PASS * 2)
+    factories = parallel_client_factory(
+        tmp_path, {"baseline": SUBJECT_PASS, "r01-c01-s9": SUBJECT_PASS}
+    )
+    if subject_workers == 1:
+        factories = (factories[0], factories[1]["baseline"])
+    result = run_experiment(
+        config,
+        out,
+        verifier=GoldVerifier(),
+        attributor_lm=MockLM(responses=[attribution("premature_termination")] * 2),
+        proposer_lm=MockLM(responses=[proposal]),
+        loaders=LOADERS,
+        verifier_factory="tests.optimization.test_driver:GoldVerifier",
+        client_factory=factories,
+    )
+    assert len(result.rounds) == 1  # patience stops normally after the failed proposal
+    assert not result.rounds[0].promoted
+    assert frozen_envelope(out)["hash"] == harness_hash(H0)
+    summary = json.loads(
+        (validation_round_path(out, 1) / "r01-c01-s9" / "summary.json").read_text()
+    )
+    heldout = summary["splits"][SPLIT_HELDOUT]
+    assert heldout["n_runs"] == heldout["n_runtime_errors"] == 2
+    assert heldout["pass_count"] == 0
+    assert load_promotion_ledger(validation_round_path(out, 1))
+    # A completed experiment resumes without repeating mining or validation.
+    idle = patch_runner(monkeypatch, [])
+    resumed = run_experiment(
+        config,
+        out,
+        verifier=GoldVerifier(),
+        attributor_lm=MockLM(responses=[]),
+        proposer_lm=MockLM(responses=[]),
+        loaders=LOADERS,
+        verifier_factory="tests.optimization.test_driver:GoldVerifier",
+        client_factory=factories,
+    )
+    assert resumed.final_harness_hash == result.final_harness_hash
+    assert idle.total_calls == 0
+
+
+def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch):
+    import re
+
+    config = make_config(tmp_path, t=2)
+    config = replace(
+        config,
+        loop=replace(config.loop, environment="oolong_pairs"),
+        environments=replace(
+            config.environments, oolong_pairs=replace(config.environments.oolong_pairs, n_short=5)
+        ),
+    )
+    out = tmp_path / "exp"
+
+    def pair_loader(config, length, limit, seed):
+        return [
+            {
+                "id": f"pairs-{length}-{i}",
+                "prompt": "classify input rows",
+                "question": f"TASK_SENTINEL_{i}: count labels by user and apply dates",
+                "gold_pairs": [(11, 22), (11, 33), (22, 33)],
+            }
+            for i in range(limit)
+        ]
+
+    class RepairProposer(MockLM):
+        def __init__(self):
+            super().__init__(responses=[])
+            self.prompts = []
+            self.s9_index = None
+
+        def completion(self, prompt):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 3:
+                return "[]"
+            if len(self.prompts) == 1:
+                indices = {
+                    json.loads(signature)["agent_mechanism"]: int(index)
+                    for index, signature in re.findall(
+                        r"\[(\d+)\] eligible surfaces: [^\n]+\n  signature: ([^\n]+)",
+                        prompt[0]["content"],
+                    )
+                }
+                self.s9_index = indices["premature_termination"]
+                s2 = {
+                    "pattern_index": indices["incomplete_coverage"],
+                    "surface": "S2",
+                    "edit": {"kind": "text", "new_text": "Classify records with stable row IDs."},
+                    "predicted_effect": "Preserve record identity and coverage",
+                    "incumbent_behavior": "Submits the result directly.",
+                    "observed_failure": "The result contract is not checked.",
+                    "behavioral_change": "Check the result contract before submission.",
+                    "regression_risks": [],
+                }
+                condition = "answer.startswith('[')"
+                items = [s2]
+            else:
+                # A different branch that the synthetic contract cannot exhaustively prove safe.
+                condition = "answer.count('(') == 3"
+                items = []
+            items.append(
+                {
+                    "pattern_index": self.s9_index,
+                    "surface": "S9",
+                    "edit": {
+                        "kind": "code",
+                        "source": f"def middleware(answer, repl_inventory):\n    if {condition}:\n"
+                        "        return AnswerDecision.accept()\n    return AnswerDecision.accept(answer)\n",
+                    },
+                    "predicted_effect": "Preserve valid answers",
+                    "incumbent_behavior": "Submits the result directly.",
+                    "observed_failure": "The result contract is not checked.",
+                    "behavioral_change": "Check the result contract before submission.",
+                    "regression_risks": ["branch error"],
+                }
+            )
+            return json.dumps(items)
+
+    proposer = RepairProposer()
+    factory = patch_runner(
+        monkeypatch,
+        [final("[(11, 22)]")] * 4
+        + [final("[(11, 22), (11, 33), (22, 33)]")] * 2
+        + [final("[(11, 22)]")] * 2,
+    )
+    result = run_experiment(
+        config,
+        out,
+        attributor_lm=MockLM(
+            responses=[attribution("incomplete_coverage"), attribution("premature_termination")] * 2
+        ),
+        proposer_lm=proposer,
+        loaders={**LOADERS, "oolong_pairs": pair_loader},
+    )
+    assert len(result.rounds) == 2
+    assert factory.total_calls == 8  # mining + baseline + one combined batch + next mining
+    marker = json.loads((experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text())
+    assert marker["preflight_profile"] == "oolong-pairs/v1"
+    assert len(marker["candidate_ids"]) == 2
+    assert len(marker["attempts"]) == 2
+    assert "bracketed_pair" in marker["attempts"][0]["violation"]
+    validation = validation_round_path(out, 1)
+    assert not list(validation.glob("*/heldin"))
+    assert not (validation / "r01-c01-s2").exists()
+    history_prompt = proposer.prompts[2][0]["content"]
+    assert "the model answered without verifying" in history_prompt
+    assert "mean_f1_all_attempts" in history_prompt and "n_runtime_errors" in history_prompt
+    assert "AnswerDecision.accept() missing" in history_prompt
+    assert "Preserve record identity and coverage" in history_prompt
+    assert "Preserve valid answers" in history_prompt
+    heldout_ids = {
+        str(instance["id"])
+        for instance in orchestrator_module._read_split(
+            out / SPLITS_DIR, "oolong_pairs", "short", "held_out"
+        )
+    }
+    assert all(
+        f"TASK_SENTINEL_{instance_id.rsplit('-', 1)[-1]}" not in history_prompt
+        for instance_id in heldout_ids
+    )
+    snapshots_before = {
+        p: p.read_bytes() for p in validation.rglob("*.json") if p.name != "surfaces.py"
+    }
+    idle = patch_runner(monkeypatch, [])
+    replay = run_experiment(
+        config,
+        out,
+        attributor_lm=MockLM(responses=[]),
+        proposer_lm=MockLM(responses=[]),
+        loaders={**LOADERS, "oolong_pairs": pair_loader},
+    )
+    assert replay.final_harness_hash == result.final_harness_hash
+    assert idle.total_calls == 0
+    assert snapshots_before == {p: p.read_bytes() for p in snapshots_before}

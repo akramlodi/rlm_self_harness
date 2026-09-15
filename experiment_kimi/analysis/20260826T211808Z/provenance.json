@@ -1,0 +1,171 @@
+{
+  "analysis_revision": "9a54b362c7e6d937bd5c4fcdc20f33e207e24c4e",
+  "created_at": "2026-08-26T21:18:08.182334+00:00",
+  "eval_sets": [],
+  "format": "shrlm-analysis-provenance/v1",
+  "identity_hash": "bf56cc0e6ee4ce518243b049fbc5f846ea0f1ae48b9bd727b62884843450616b",
+  "identity_source": "config",
+  "legacy_derived": false,
+  "rounds": [
+    1,
+    2,
+    3
+  ],
+  "sources": [
+    {
+      "kind": "file",
+      "path": "config.json",
+      "sha256": "06c95aecb7d30a46856071b6ae02256c68b4978765d6c2f2aa309e1de77d8afd"
+    },
+    {
+      "kind": "file",
+      "path": "configs/experiment.toml",
+      "sha256": "b73a4d6d821999618e2a7f33f9eb985fcd9df158d3a484275051adea258e0fed"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/mining/round_01/bundle.json",
+      "sha256": "e82876d8d1a94ae648671db649189195196e9f8104f8973f458c822191ce9220"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/mining/round_01/evidence_complete.json",
+      "sha256": "cd1e676a5de6cc68c65d9a257e0349d97c56c44ec095e9366d2d683fe9adfacf"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/mining/round_01/instances.jsonl",
+      "sha256": "b9d4f878cf4033be29976a5f615d48759c8d713d60bc1c988312b07985e98812"
+    },
+    {
+      "kind": "directory",
+      "n_files": 48,
+      "path": "opt/round_01/mining/round_01/runs",
+      "sha256": "a2c8f8f31c364110ea869593f908c7aa1b23c4056a51936b044854dbd7c377ff"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/mining/round_01/runs.jsonl",
+      "sha256": "9b3c6cb6a7790e45ae08802713e728699da34c6523596d8805177df44df9dcde"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/round.json",
+      "sha256": "850110146f93a9879b7a9d13b8d952f3e138067e2886bc2095f451ecb047b811"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/validation/round_01/decision.json",
+      "sha256": "5923f5031a6ad92ac5e86c141913a14e18bd715e5d0b4cfb54f546101e6a278d"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_01/validation/round_01/promotions.jsonl",
+      "sha256": "0c738a7c1fb135a16f1566aee7bfa1aef221e141e2c8d0181ae98d988394e650"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_02/mining/round_02/bundle.json",
+      "sha256": "f8394c0d8d4156a53741e47a3c2686952f95ad32132a6f96fce5398749cc2e62"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_02/mining/round_02/evidence_complete.json",
+      "sha256": "1ddd8082d51233704be46ee15d64bcdf3ef9824f1345e890ec11b4997e266bc8"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_02/mining/round_02/instances.jsonl",
+      "sha256": "b9d4f878cf4033be29976a5f615d48759c8d713d60bc1c988312b07985e98812"
+    },
+    {
+      "kind": "directory",
+      "n_files": 48,
+      "path": "opt/round_02/mining/round_02/runs",
+      "sha256": "c37df1329f6be1ce23fe24c3c5204e40c851049810176fc6b9f4a27811e8ed7d"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_02/mining/round_02/runs.jsonl",
+      "sha256": "4eb1bdbe682b513efb0f6d3af92eb855995f8696bf83554ae1c1697e4cba8c44"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_02/round.json",
+      "sha256": "0c3efde68ef6f77cba35c6a670c7ceeffb1aea62a8f575d723d4f9f7872672ac"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_02/validation/round_02/decision.json",
+      "sha256": "8f68293b2e5a1362122b201f49e906b509c270cec9720238abadb19f5cdb06bc"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_02/validation/round_02/promotions.jsonl",
+      "sha256": "a4b332b7d3ba5a3b36c2eb8a8a86ccfb7baf2270c70ddfc6f7036fb3fde38432"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_03/mining/round_03/bundle.json",
+      "sha256": "ece5f16d54d1b868b91b322b75fc8818a9e83ab66e1f130837a9c66a4f67b276"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_03/mining/round_03/evidence_complete.json",
+      "sha256": "5572075df9d19b6b402351bd75e0914258823e8e31202ba7fa3ef0164477fe0e"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_03/mining/round_03/instances.jsonl",
+      "sha256": "b9d4f878cf4033be29976a5f615d48759c8d713d60bc1c988312b07985e98812"
+    },
+    {
+      "kind": "directory",
+      "n_files": 48,
+      "path": "opt/round_03/mining/round_03/runs",
+      "sha256": "331aff9de3f0e01146209bb512af0de27a24feb09119433ac8417f5d091d21ea"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_03/mining/round_03/runs.jsonl",
+      "sha256": "1d173d1338ca93fb92c82fd8490df27b7968ec6058d5be31646fe97d4337ffeb"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_03/round.json",
+      "sha256": "4ba7cf878ba52f251bb93c6fdc40625202896b1a4da52ba627307742cee9addd"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_03/validation/round_03/decision.json",
+      "sha256": "baa9748ed591940ea715f830a41d079e08fc01b14918a25932d5d05a76c7030b"
+    },
+    {
+      "kind": "file",
+      "path": "opt/round_03/validation/round_03/promotions.jsonl",
+      "sha256": "00cfeb3fdc1c84fc526571fa6a586753b442695b1d0ee8914c518ac6fb503e6e"
+    }
+  ],
+  "tools": [
+    {
+      "error": null,
+      "name": "collapse_and_attribution_optimization",
+      "ok": true
+    },
+    {
+      "error": null,
+      "name": "incumbent_quality",
+      "ok": true
+    },
+    {
+      "error": null,
+      "name": "surface_activity",
+      "ok": true
+    },
+    {
+      "error": null,
+      "name": "pattern_frequency_diff",
+      "ok": true
+    }
+  ]
+}

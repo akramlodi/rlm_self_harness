@@ -1,19 +1,8 @@
-"""End-to-end tests for U6's ``validate_round``: the whole stage as one call.
+"""End-to-end coverage of fixed-batch held-out validation.
 
-``validate_round`` composes loader -> evaluation -> promotion -> merged
-re-evaluation -> ledger (R9, R7 orchestration) over real ``proposal.json``
-artifacts on disk, gated by the real U1 loader (subprocess and all), evaluated
-under the MockLM seam, and ledgered by the U5 writer. The scripted round here
-is the plan's capstone scenario: four fabricated candidates -- two genuinely
-better on disjoint surfaces (so a merge is built and re-evaluated), one
-regressing, one over-budget -- plus one loader-rejected proposal, asserting
-that the merged harness is what promotes and that the ledger records every
-candidate. Variants pin the merge-failure (promotes nothing, constituents
-``merged_failed``), the single-winner path (promoted without re-evaluation),
-the degenerate rounds (zero loadable candidates -> no model calls; an
-all-rejected round still persists a rejection-only ledger, while an empty
-proposals directory leaves nothing on disk), and idempotent re-invocation
-(same ledger, zero new model calls).
+Four disjoint proposals and a loader rejection exercise composition, one
+shared score, unscored constituent records, rejection without fallback,
+single/empty rounds, audit links, replay, and worker equivalence.
 """
 
 from dataclasses import replace
@@ -27,9 +16,7 @@ from shrlm.harness_identity import harness_hash
 from shrlm.optimization.candidates import GATE_BASE_HASH
 from shrlm.optimization.costs import ValidationCaps
 from shrlm.optimization.promotion import (
-    DECISION_ACCEPTED,
-    DECISION_MERGED_FAILED,
-    DECISION_OVER_BUDGET,
+    DECISION_BUNDLED,
     DECISION_PROMOTED,
     DECISION_REJECTED,
     MERGED_SUBJECT_ID,
@@ -70,13 +57,11 @@ CAPS = ValidationCaps(
 
 BURN = "Scanning the document, no answer yet."
 
-# Per-subject scripts, 2 instances x 2 splits x 1 rep: held-in first.
-BASELINE_SCRIPT = [final("RIGHT"), final("WRONG"), final("RIGHT"), final("WRONG")]  # 1/2, 1/2
-REGRESS_SCRIPT = [final("WRONG")] * 4  # 0/2, 0/2
-S2_SCRIPT = [final("RIGHT"), final("RIGHT"), final("RIGHT"), final("WRONG")]  # 2/2, 1/2
-S3_SCRIPT = [final("RIGHT"), final("WRONG"), final("RIGHT"), final("RIGHT")]  # 1/2, 2/2
-MERGED_PASSES = [final("RIGHT")] * 4  # 2/2, 2/2
-MERGED_FAILS = [final("WRONG")] * 4  # 0/2, 0/2
+# Two held-out instances, one repetition, for each evaluated subject.
+BASELINE_SCRIPT = [final("RIGHT"), final("WRONG")]
+MERGED_PASSES = [final("RIGHT")] * 2
+MERGED_FAILS = [final("WRONG")] * 2
+CONSTITUENT_IDS = ("cand-burn", "cand-regress", "cand-s2", "cand-s3")
 
 
 def make_config(tmp_path: Path, **overrides: Any) -> EvaluationConfig:
@@ -138,7 +123,7 @@ def seed_merge_proposals(proposals_dir: Path) -> None:
 
 def merge_round_script(merged_script: list[str]) -> list[str]:
     """Evaluation order: baseline, cand-burn, cand-regress, cand-s2, cand-s3, merged."""
-    return BASELINE_SCRIPT + [BURN] * 6 + REGRESS_SCRIPT + S2_SCRIPT + S3_SCRIPT + merged_script
+    return BASELINE_SCRIPT + merged_script
 
 
 def run_merge_round(
@@ -154,18 +139,18 @@ def run_merge_round(
 
 
 # ---------------------------------------------------------------------------
-# The capstone: two disjoint winners merge, re-evaluate, and promote
+# The capstone: four disjoint edits compose before evaluation
 # ---------------------------------------------------------------------------
 
 
 class TestMergePromotion:
-    def test_merged_harness_is_built_reevaluated_and_promoted(self, tmp_path, monkeypatch):
+    def test_batch_harness_is_composed_evaluated_and_promoted(self, tmp_path, monkeypatch):
         _config, result, factory = run_merge_round(tmp_path, monkeypatch, MERGED_PASSES)
 
-        # 4 baseline + 6 burn + 4 regress + 4 s2 + 4 s3 + 4 merged re-evaluation.
-        assert factory.total_calls == 26
+        # 2 baseline + 2 combined candidate held-out runs.
+        assert factory.total_calls == 4
         assert result.plan.kind == PLAN_MERGE
-        assert result.plan.constituent_ids == ("cand-s2", "cand-s3")
+        assert result.plan.constituent_ids == CONSTITUENT_IDS
         assert result.promoted
         assert result.promoted_harness is not None
         # The promotion artifact carries BOTH edits, composed onto H0.
@@ -207,24 +192,16 @@ class TestMergePromotion:
         assert "surface" in bad
         assert bad["surface"] is None
 
-        assert by_id["cand-burn"]["decision"] == DECISION_OVER_BUDGET
-        # Never scored, but the loader knew its surface, so the ledger has it.
-        assert by_id["cand-burn"]["surface"] == "S5"
-        regress = by_id["cand-regress"]
-        assert regress["decision"] == DECISION_REJECTED
-        assert regress["reasons"]
-        assert regress["surface"] == "S4"
-
-        for constituent_id, surface in (("cand-s2", "S2"), ("cand-s3", "S3")):
+        for constituent_id, surface in zip(CONSTITUENT_IDS, ("S5", "S4", "S2", "S3"), strict=True):
             record = by_id[constituent_id]
-            assert record["decision"] == DECISION_ACCEPTED
+            assert record["decision"] == DECISION_BUNDLED
             assert record["merge"]["role"] == "constituent"
-            assert record["merge"]["constituent_ids"] == ["cand-s2", "cand-s3"]
-            # Threaded from the LoadedCandidate through ``assess_round``, whose
-            # surfaces mapping is keyed by candidate id while a scored subject
-            # is looked up by subject id -- these two assertions are what pin
-            # that ``evaluate_subject`` keeps the two names equal.
+            assert record["merge"]["constituent_ids"] == list(CONSTITUENT_IDS)
             assert record["surface"] == surface
+            assert record["rule"] is None and record["band"] is None
+            assert record["links"] is None
+            assert record["batch_subject_id"] == MERGED_SUBJECT_ID
+            assert not (result.round_path / constituent_id).exists()
 
         merged = by_id[MERGED_SUBJECT_ID]
         assert merged["decision"] == DECISION_PROMOTED
@@ -252,10 +229,10 @@ class TestMergePromotion:
         assert decision["promoted"] is False
         assert decision["promoted_subject_id"] is None
         by_id = {record["subject_id"]: record for record in records}
-        for constituent_id in ("cand-s2", "cand-s3"):
+        for constituent_id in CONSTITUENT_IDS:
             record = by_id[constituent_id]
-            assert record["decision"] == DECISION_MERGED_FAILED
-            assert any("promotes nothing" in reason for reason in record["reasons"])
+            assert record["decision"] == DECISION_BUNDLED
+            assert record["rule"] is None
         assert by_id[MERGED_SUBJECT_ID]["decision"] == DECISION_REJECTED
 
 
@@ -276,11 +253,9 @@ class TestSinglePromotion:
 
         result = validate_round(H0, proposals_dir, config)
 
-        # Baseline (4) + the candidate (4): a single winner is never re-run.
-        assert factory.total_calls == 8
+        # Baseline (2) + candidate (2): a single edit is never re-run.
+        assert factory.total_calls == 4
         assert result.plan.kind == PLAN_SINGLE
-        assert result.merge_evaluation is None
-        assert result.merge_decision is None
         assert result.promoted
         assert result.promoted_harness is not None
         assert result.promoted_harness.decomposition_instruction.endswith("[s2]")
@@ -436,22 +411,14 @@ class TestParallelStageEquivalence:
         seq_root = tmp_path / "sequential"
         seq_root.mkdir()
         _config, sequential, factory = run_merge_round(seq_root, monkeypatch, MERGED_PASSES)
-        assert factory.total_calls == 26
+        assert factory.total_calls == 4
 
         par_root = tmp_path / "parallel"
         proposals_dir = par_root / "proposals"
         seed_merge_proposals(proposals_dir)
-        # The merged re-evaluation stays in-process (R3): the parent's seam
-        # scripts only it; the five subjects read per-subject scripts.
-        merged_only = ClientFactory(MERGED_PASSES)
+        merged_only = ClientFactory([])
         monkeypatch.setattr(rlm_module, "get_client", merged_only)
-        scripts = {
-            BASELINE_ID: BASELINE_SCRIPT,
-            "cand-burn": [BURN] * 6,
-            "cand-regress": REGRESS_SCRIPT,
-            "cand-s2": S2_SCRIPT,
-            "cand-s3": S3_SCRIPT,
-        }
+        scripts = {BASELINE_ID: BASELINE_SCRIPT, MERGED_SUBJECT_ID: MERGED_PASSES}
         config = make_config(
             par_root,
             workers=3,
@@ -460,7 +427,7 @@ class TestParallelStageEquivalence:
         )
         parallel = validate_round(H0, proposals_dir, config)
 
-        assert merged_only.total_calls == 4
+        assert merged_only.total_calls == 0
         assert parallel.plan.kind == PLAN_MERGE
         assert parallel.promoted_harness_hash == sequential.promoted_harness_hash
         assert parallel.ledger is not None and sequential.ledger is not None
@@ -477,7 +444,7 @@ class TestParallelStageEquivalence:
             parallel.ledger.decision_path.read_bytes()
             == sequential.ledger.decision_path.read_bytes()
         )
-        for subject_id in (BASELINE_ID, "cand-burn", "cand-regress", "cand-s2", "cand-s3"):
+        for subject_id in (BASELINE_ID, MERGED_SUBJECT_ID):
             seq_summary = sequential.round_path / subject_id / "summary.json"
             par_summary = parallel.round_path / subject_id / "summary.json"
             assert par_summary.read_bytes() == seq_summary.read_bytes(), subject_id

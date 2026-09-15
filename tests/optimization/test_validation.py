@@ -39,19 +39,15 @@ from shrlm.optimization.costs import (
 )
 from shrlm.optimization.driver import RoundConfig, run_round, sha256_file
 from shrlm.optimization.promotion import (
-    DECISION_OVER_BUDGET,
     DECISION_PROMOTED,
     DECISION_REJECTED,
-    MERGED_SUBJECT_ID,
-    PLAN_MERGE,
     PLAN_NONE,
     PLAN_SINGLE,
     PromotionConfig,
     PromotionPlan,
-    apply_merge_verdict,
     assess_round,
     decide_subject,
-    plan_promotion,
+    plan_batch,
     promote_decision,
 )
 from shrlm.optimization.subject_worker import (
@@ -67,12 +63,12 @@ from shrlm.optimization.validation import (
     DECISION_FILENAME,
     EVAL_ROUND_INDEX,
     PROMOTIONS_FILENAME,
-    SPLIT_HELDIN,
     SPLIT_HELDOUT,
     SUMMARY_FILENAME,
     EvaluationConfig,
     SubjectEvaluation,
     ValidationSplits,
+    check_subject_contract,
     evaluate_subject,
     evaluate_validation_round,
     load_promotion_ledger,
@@ -118,7 +114,7 @@ class ScriptedLM(MockLM):
     def completion(self, prompt: str | dict[str, Any]) -> str:
         self._call_count += 1
         if not self._script:
-            raise IndexError("ScriptedLM: script exhausted")
+            raise OSError("ScriptedLM: script exhausted")
         return self._script.pop(0)
 
     def get_usage_summary(self) -> UsageSummary:
@@ -235,17 +231,8 @@ def read_manifest(round_path: Path) -> list[dict[str, Any]]:
 
 
 def full_round_script() -> list[str]:
-    """Baseline all-pass; cand-a passes 3/4 held-in and 2/4 held-out; cand-b all-pass.
-
-    Run order per split is instance-major, attempt-minor: hi-1 a1, hi-1 a2,
-    hi-2 a1, hi-2 a2.
-    """
-    return (
-        [final("RIGHT")] * 8
-        + [final("RIGHT"), final("RIGHT"), final("WRONG"), final("RIGHT")]
-        + [final("WRONG"), final("WRONG"), final("RIGHT"), final("RIGHT")]
-        + [final("RIGHT")] * 8
-    )
+    """Four held-out runs each: baseline 4/4, cand-a 2/4, cand-b 4/4."""
+    return [final("RIGHT")] * 4 + [final("WRONG")] * 2 + [final("RIGHT")] * 6
 
 
 def run_full_evaluation(
@@ -303,7 +290,7 @@ class TestLayoutAndSplits:
         evaluation = evaluate_subject(BASELINE_ID, H0, config)
 
         assert isinstance(evaluation, SubjectEvaluation)
-        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+        for split_id in (SPLIT_HELDOUT,):
             nested = (
                 split_dir(config.out_dir, config.round_index, BASELINE_ID, split_id) / "round_00"
             )
@@ -349,10 +336,10 @@ class TestFullEvaluation:
     def test_every_subject_split_persists_its_runs(self, tmp_path, monkeypatch):
         config, result, factory = run_full_evaluation(tmp_path, monkeypatch)
 
-        assert factory.total_calls == 24
+        assert factory.total_calls == 12
         for evaluation in [result.baseline, *result.candidates]:
             assert isinstance(evaluation, SubjectEvaluation)
-            for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            for split_id in (SPLIT_HELDOUT,):
                 nested = (
                     split_dir(config.out_dir, config.round_index, evaluation.subject_id, split_id)
                     / f"round_{EVAL_ROUND_INDEX:02d}"
@@ -372,14 +359,14 @@ class TestFullEvaluation:
         }
 
         expectations = {
-            BASELINE_ID: {SPLIT_HELDIN: 4, SPLIT_HELDOUT: 4},
-            "cand-a": {SPLIT_HELDIN: 3, SPLIT_HELDOUT: 2},
-            "cand-b": {SPLIT_HELDIN: 4, SPLIT_HELDOUT: 4},
+            BASELINE_ID: {SPLIT_HELDOUT: 4},
+            "cand-a": {SPLIT_HELDOUT: 2},
+            "cand-b": {SPLIT_HELDOUT: 4},
         }
         for subject_id, expected in expectations.items():
             summary = by_id[subject_id].summary
             assert summary["outcome"] == OUTCOME_COMPLETED
-            assert summary["spent"] == pytest.approx(8 * COST_PER_CALL)
+            assert summary["spent"] == pytest.approx(4 * COST_PER_CALL)
             for split_id, pass_count in expected.items():
                 split_summary = summary["splits"][split_id]
                 assert split_summary["n_runs"] == 4
@@ -391,7 +378,7 @@ class TestFullEvaluation:
     def test_aggregates_are_recomputable_from_disk_alone(self, tmp_path, monkeypatch):
         config, result, _factory = run_full_evaluation(tmp_path, monkeypatch)
         for evaluation in [result.baseline, *result.candidates]:
-            for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            for split_id in (SPLIT_HELDOUT,):
                 split_path = split_dir(
                     config.out_dir, config.round_index, evaluation.subject_id, split_id
                 )
@@ -447,16 +434,18 @@ class TestResume:
         limits = governed_limits("cand-a", harness.runtime_policy, CAPS)
         assert not isinstance(limits, CandidateRejection)
 
-        # Simulate a crash after three of the four held-in runs persisted.
+        check_subject_contract("cand-a", harness, config)
+
+        # Simulate a crash after three of the four held-out runs persisted.
         first = ClientFactory([final("RIGHT")] * 3)
         monkeypatch.setattr(rlm_module, "get_client", first)
         run_round(
             RoundConfig(
                 round_index=EVAL_ROUND_INDEX,
                 harness=harness,
-                instances=config.splits.heldin,
+                instances=config.splits.heldout,
                 verifier=GoldVerifier(),
-                out_dir=split_dir(config.out_dir, config.round_index, "cand-a", SPLIT_HELDIN),
+                out_dir=split_dir(config.out_dir, config.round_index, "cand-a", SPLIT_HELDOUT),
                 backend="openai",
                 backend_kwargs={"model_name": "validation-test"},
                 attempts=config.repetitions,
@@ -471,12 +460,12 @@ class TestResume:
         evaluation = evaluate_subject("cand-a", harness, config)
 
         assert isinstance(evaluation, SubjectEvaluation)
-        # Only the missing runs executed: 1 held-in + 4 held-out.
-        assert resumed.total_calls == 5
-        assert evaluation.summary["splits"][SPLIT_HELDIN]["n_runs"] == 4
+        # Only the missing runs executed: 1 held-out + 4 held-out.
+        assert resumed.total_calls == 1
+        assert evaluation.summary["splits"][SPLIT_HELDOUT]["n_runs"] == 4
         assert evaluation.summary["splits"][SPLIT_HELDOUT]["n_runs"] == 4
         assert evaluation.summary["outcome"] == OUTCOME_COMPLETED
-        assert evaluation.summary["spent"] == pytest.approx(8 * COST_PER_CALL)
+        assert evaluation.summary["spent"] == pytest.approx(4 * COST_PER_CALL)
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +485,7 @@ class TestBudget:
 
         assert isinstance(evaluation, SubjectEvaluation)
         assert evaluation.summary["outcome"] == OUTCOME_COMPLETED
-        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+        for split_id in (SPLIT_HELDOUT,):
             split_summary = evaluation.summary["splits"][split_id]
             assert split_summary["n_runs"] == 1
             assert split_summary["pass_count"] == 0
@@ -522,7 +511,7 @@ class TestBudget:
 
         evaluation = evaluate_subject("cand-solo", candidate_harness("solo"), config)
 
-        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+        for split_id in (SPLIT_HELDOUT,):
             assert evaluation.summary["splits"][split_id]["run_workers"] == 1
             split_path = split_dir(config.out_dir, config.round_index, "cand-solo", split_id)
             assert split_aggregate(split_path)["run_workers"] == 1
@@ -542,32 +531,23 @@ class TestBudget:
 
         evaluate_subject("cand-priced", candidate_harness("priced"), config)
 
-        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+        for split_id in (SPLIT_HELDOUT,):
             split_path = split_dir(config.out_dir, config.round_index, "cand-priced", split_id)
             aggregate = split_aggregate(split_path)
             assert aggregate["n_resource_terminated"] == 1
             assert aggregate["total_cost"] == pytest.approx(2 * COST_PER_CALL)
 
-    def test_breaker_is_cumulative_across_both_splits(self, tmp_path, monkeypatch):
+    def test_breaker_stops_remaining_heldout_runs(self, tmp_path, monkeypatch):
         caps = replace(CAPS, candidate_budget=0.0015)
         factory = ClientFactory([final("RIGHT")] * 4)
         monkeypatch.setattr(rlm_module, "get_client", factory)
-        config = make_config(tmp_path, caps=caps, repetitions=1)
-
+        config = make_config(tmp_path, caps=caps, repetitions=1, splits=make_splits(4))
         evaluation = evaluate_subject("cand-a", candidate_harness("cand-a"), config)
-
-        assert isinstance(evaluation, SubjectEvaluation)
-        # The breaker tripped after the second held-in run; held-out never ran.
         assert factory.total_calls == 2
-        assert evaluation.summary["outcome"] == OUTCOME_OVER_BUDGET
         assert evaluation.over_budget
-        heldin = evaluation.summary["splits"][SPLIT_HELDIN]
         heldout = evaluation.summary["splits"][SPLIT_HELDOUT]
-        assert heldin["n_runs"] == 2
-        assert heldin["skipped_run_ids"] == []
-        assert heldout["n_runs"] == 0
-        assert heldout["pass_rate"] is None
-        assert heldout["skipped_run_ids"] == ["ho-1__a01", "ho-2__a01"]
+        assert heldout["n_runs"] == 2
+        assert heldout["skipped_run_ids"] == ["ho-3__a01", "ho-4__a01"]
 
     def test_over_cap_policy_comes_back_as_a_structured_rejection(self, tmp_path, monkeypatch):
         idle = ClientFactory([])
@@ -609,12 +589,11 @@ def subject_calls(config: EvaluationConfig, subject_id: str) -> int:
 
 
 PARALLEL_SCRIPTS: dict[str, list[str]] = {
-    BASELINE_ID: [final("RIGHT")] * 8,
-    "cand-a": [final("RIGHT"), final("RIGHT"), final("WRONG"), final("RIGHT")]
-    + [final("WRONG"), final("WRONG"), final("RIGHT"), final("RIGHT")],
-    "cand-b": [final("RIGHT")] * 8,
-    "cand-c": [final("WRONG")] * 8,
-    "cand-d": [final("RIGHT")] * 8,
+    BASELINE_ID: [final("RIGHT")] * 4,
+    "cand-a": [final("WRONG"), final("WRONG"), final("RIGHT"), final("RIGHT")],
+    "cand-b": [final("RIGHT")] * 4,
+    "cand-c": [final("WRONG")] * 4,
+    "cand-d": [final("RIGHT")] * 4,
 }
 
 
@@ -649,10 +628,9 @@ class TestParallelSubjects:
         assert idle.total_calls == 0
         assert result.baseline.subject_id == BASELINE_ID
         assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b", "cand-c", "cand-d"]
-        assert result.baseline.summary["splits"][SPLIT_HELDIN]["pass_count"] == 4
+        assert result.baseline.summary["splits"][SPLIT_HELDOUT]["pass_count"] == 4
         cand_a = result.candidates[0]
         assert isinstance(cand_a, SubjectEvaluation)
-        assert cand_a.summary["splits"][SPLIT_HELDIN]["pass_count"] == 3
         assert cand_a.summary["splits"][SPLIT_HELDOUT]["pass_count"] == 2
         cand_c = result.candidates[2]
         assert isinstance(cand_c, SubjectEvaluation)
@@ -662,7 +640,7 @@ class TestParallelSubjects:
             assert load_summary(subject_path)["subject_id"] == subject_id
             assert (subject_path / REQUEST_FILENAME).exists()
             assert (subject_path / LOG_FILENAME).exists()
-            assert subject_calls(config, subject_id) == 8
+            assert subject_calls(config, subject_id) == 4
         observed = max_concurrency(concurrency_dir)
         assert 2 <= observed <= 3, observed
 
@@ -695,7 +673,7 @@ class TestParallelSubjects:
         for left, right in zip(seq.candidates, par.candidates, strict=True):
             assert isinstance(left, SubjectEvaluation) and isinstance(right, SubjectEvaluation)
             assert left.summary_path.read_bytes() == right.summary_path.read_bytes()
-            for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+            for split_id in (SPLIT_HELDOUT,):
                 seq_manifest = read_manifest(
                     split_dir(seq_config.out_dir, 1, left.subject_id, split_id) / "round_00"
                 )
@@ -746,7 +724,7 @@ class TestParallelSubjects:
         )
         result = evaluate_validation_round(H0, parallel_candidates(), fixed)
         assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b", "cand-c", "cand-d"]
-        assert subject_calls(fixed, "cand-c") == 8
+        assert subject_calls(fixed, "cand-c") == 4
         for subject_id in (BASELINE_ID, "cand-a", "cand-b", "cand-d"):
             assert subject_calls(fixed, subject_id) == 0
         assert idle.total_calls == 0
@@ -754,7 +732,7 @@ class TestParallelSubjects:
     def test_caps_gate_rejects_in_the_parent_without_spawning(self, tmp_path, monkeypatch):
         idle = ClientFactory([])
         monkeypatch.setattr(rlm_module, "get_client", idle)
-        scripts = {BASELINE_ID: [final("RIGHT")] * 8, "cand-ok": [final("RIGHT")] * 8}
+        scripts = {BASELINE_ID: [final("RIGHT")] * 4, "cand-ok": [final("RIGHT")] * 8}
         config = make_config(
             tmp_path,
             workers=2,
@@ -797,7 +775,7 @@ class TestParallelSubjects:
 
         monkeypatch.setattr(subprocess, "Popen", refuse)
         _config, result, factory = run_full_evaluation(tmp_path, monkeypatch)
-        assert factory.total_calls == 24
+        assert factory.total_calls == 12
         assert [c.subject_id for c in result.candidates] == ["cand-a", "cand-b"]
 
     def test_an_interrupt_terminates_live_children_and_propagates(self, tmp_path, monkeypatch):
@@ -1040,13 +1018,11 @@ class TestSubCallAggregation:
         evaluation = evaluate_subject(BASELINE_ID, H0, config)
 
         assert isinstance(evaluation, SubjectEvaluation)
-        heldin = evaluation.summary["splits"][SPLIT_HELDIN]
         heldout = evaluation.summary["splits"][SPLIT_HELDOUT]
-        assert heldin["total_sub_calls"] == 1
-        assert heldin["mean_sub_calls"] == pytest.approx(1.0)
-        assert heldout["total_sub_calls"] == 0
+        assert heldout["total_sub_calls"] == 1
+        assert heldout["mean_sub_calls"] == pytest.approx(1.0)
         # Recomputable from the persisted traces alone.
-        split_path = split_dir(config.out_dir, config.round_index, BASELINE_ID, SPLIT_HELDIN)
+        split_path = split_dir(config.out_dir, config.round_index, BASELINE_ID, SPLIT_HELDOUT)
         assert split_aggregate(split_path)["total_sub_calls"] == 1
 
     def test_skill_loads_are_counted_beside_sub_calls(self, tmp_path, monkeypatch):
@@ -1076,15 +1052,12 @@ class TestSubCallAggregation:
         evaluation = evaluate_subject("cand-skilled", skilled, config)
 
         assert isinstance(evaluation, SubjectEvaluation)
-        heldin = evaluation.summary["splits"][SPLIT_HELDIN]
         heldout = evaluation.summary["splits"][SPLIT_HELDOUT]
-        assert heldin["total_skill_loads"] == 1
-        assert heldin["mean_skill_loads"] == pytest.approx(1.0)
-        assert heldin["total_sub_calls"] == 0
-        assert heldout["total_skill_loads"] == 0
-        assert heldout["mean_skill_loads"] == pytest.approx(0.0)
+        assert heldout["total_skill_loads"] == 1
+        assert heldout["mean_skill_loads"] == pytest.approx(1.0)
+        assert heldout["total_sub_calls"] == 0
         # The two counts sit side by side in the same per-split aggregate.
-        for split_summary in (heldin, heldout):
+        for split_summary in (heldout,):
             assert {
                 "total_sub_calls",
                 "mean_sub_calls",
@@ -1092,7 +1065,7 @@ class TestSubCallAggregation:
                 "mean_skill_loads",
             } <= set(split_summary)
         # Recomputable from the persisted traces alone.
-        split_path = split_dir(config.out_dir, config.round_index, "cand-skilled", SPLIT_HELDIN)
+        split_path = split_dir(config.out_dir, config.round_index, "cand-skilled", SPLIT_HELDOUT)
         assert split_aggregate(split_path)["total_skill_loads"] == 1
 
     def test_an_empty_s10_reports_zero_skill_loads(self, tmp_path, monkeypatch):
@@ -1103,7 +1076,7 @@ class TestSubCallAggregation:
         evaluation = evaluate_subject(BASELINE_ID, H0, config)
 
         assert isinstance(evaluation, SubjectEvaluation)
-        for split_id in (SPLIT_HELDIN, SPLIT_HELDOUT):
+        for split_id in (SPLIT_HELDOUT,):
             split_summary = evaluation.summary["splits"][split_id]
             assert split_summary["total_skill_loads"] == 0
             assert split_summary["mean_skill_loads"] == pytest.approx(0.0)
@@ -1115,6 +1088,39 @@ class TestSubCallAggregation:
 
 
 class TestSummaryPersistence:
+    @pytest.mark.parametrize("runtime_errors", [0, 1])
+    def test_resume_legacy_summary_without_runtime_error_count(
+        self, tmp_path, monkeypatch, runtime_errors
+    ):
+        import shrlm.optimization.validation as validation
+
+        factory = ClientFactory([final("RIGHT")])
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(tmp_path, splits=make_splits(1), repetitions=1)
+        first = evaluate_subject(BASELINE_ID, H0, config)
+        legacy = json.loads(first.summary_path.read_text())
+        for split in legacy["splits"].values():
+            del split["n_runtime_errors"]
+        saved = json.dumps(legacy, indent=2, sort_keys=True) + "\n"
+        first.summary_path.write_text(saved)
+
+        aggregate = validation.split_aggregate
+
+        def updated_aggregate(path):
+            return {**aggregate(path), "n_runtime_errors": runtime_errors}
+
+        monkeypatch.setattr(validation, "split_aggregate", updated_aggregate)
+        idle = ClientFactory([])
+        monkeypatch.setattr(rlm_module, "get_client", idle)
+        if runtime_errors:
+            with pytest.raises(ValueError, match="diverging summary"):
+                evaluate_subject(BASELINE_ID, H0, config)
+        else:
+            resumed = evaluate_subject(BASELINE_ID, H0, config)
+            assert resumed.summary == first.summary
+        assert idle.total_calls == 0
+        assert first.summary_path.read_text() == saved
+
     def test_divergent_summary_rewrite_is_refused(self, tmp_path, monkeypatch):
         factory = ClientFactory([final("RIGHT")] * 2)
         monkeypatch.setattr(rlm_module, "get_client", factory)
@@ -1168,23 +1174,20 @@ def single_promotion_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> d
     the single winner); cand-burn burns its per-run budget on every run and
     trips the candidate breaker before its second held-out run.
     """
-    script = (
-        [final("RIGHT"), final("WRONG"), final("RIGHT"), final("WRONG")]
-        + [final("RIGHT")] * 4
-        + [BURN] * 6
-    )
+    script = [final("RIGHT"), final("WRONG")] + [final("RIGHT")] * 2
     factory = ClientFactory(script)
     monkeypatch.setattr(rlm_module, "get_client", factory)
-    config = make_config(tmp_path, caps=LEDGER_CAPS, repetitions=1)
+    config = make_config(
+        tmp_path, caps=replace(LEDGER_CAPS, candidate_budget=0.0025), repetitions=1
+    )
     cand_a = fake_candidate("cand-a", candidate_harness("cand-a"))
-    cand_burn = fake_candidate("cand-burn", candidate_harness("burn"))
-    evaluation = evaluate_validation_round(H0, [cand_a, cand_burn], config)
+    evaluation = evaluate_validation_round(H0, [cand_a], config)
 
     rejection = loader_rejection()
     pconfig = PromotionConfig()
     decisions = [decide_subject(evaluation.baseline.summary, rejection, pconfig)]
     decisions += assess_round(evaluation, pconfig)
-    plan = plan_promotion(H0, decisions, [cand_a, cand_burn])
+    plan = plan_batch(H0, [cand_a])
     assert plan.kind == PLAN_SINGLE
     decisions = [promote_decision(d) if d.accepted else d for d in decisions]
     return {
@@ -1197,48 +1200,12 @@ def single_promotion_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> d
     }
 
 
-def merge_promotion_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """A round whose two disjoint-surface winners merge, re-evaluate, and promote."""
-    script = (
-        [final("RIGHT"), final("WRONG"), final("RIGHT"), final("WRONG")]  # baseline 1/2, 1/2
-        + [final("RIGHT"), final("RIGHT"), final("RIGHT"), final("WRONG")]  # cand-s2 2/2, 1/2
-        + [final("RIGHT"), final("WRONG"), final("RIGHT"), final("RIGHT")]  # cand-s3 1/2, 2/2
-        + [final("RIGHT")] * 4  # merged 2/2, 2/2
-    )
-    factory = ClientFactory(script)
-    monkeypatch.setattr(rlm_module, "get_client", factory)
-    config = make_config(tmp_path, caps=LEDGER_CAPS, repetitions=1)
-    cand_s2 = fake_candidate("cand-s2", candidate_harness("s2"))
-    cand_s3 = fake_candidate(
-        "cand-s3",
-        replace(H0, execution_instruction=H0.execution_instruction + "\n[s3]"),
-        surface="S3",
-    )
-    evaluation = evaluate_validation_round(H0, [cand_s2, cand_s3], config)
-
-    pconfig = PromotionConfig()
-    decisions = assess_round(evaluation, pconfig)
-    plan = plan_promotion(H0, decisions, [cand_s2, cand_s3])
-    assert plan.kind == PLAN_MERGE
-    merged_eval = evaluate_subject(MERGED_SUBJECT_ID, plan.harness, config)
-    assert isinstance(merged_eval, SubjectEvaluation)
-    merge_decision = decide_subject(evaluation.baseline.summary, merged_eval, pconfig)
-    final_merge, final_decisions = apply_merge_verdict(plan, merge_decision, decisions)
-    return {
-        "evaluation": evaluation,
-        "decisions": final_decisions,
-        "plan": plan,
-        "merge_evaluation": merged_eval,
-        "merge_decision": final_merge,
-    }
-
-
 def assert_subject_links_resolve(
     round_path: Path, links: dict[str, Any], expected_hash: str
 ) -> None:
     """One subject's ledger links, walked audit-style down to sha-verified traces."""
     assert (round_path / links["summary"]).is_file()
-    assert set(links["splits"]) == {SPLIT_HELDIN, SPLIT_HELDOUT}
+    assert set(links["splits"]) == {SPLIT_HELDOUT}
     for split_links in links["splits"].values():
         nested = round_path / split_links["round_dir"]
         harness_file = round_path / split_links["harness"]
@@ -1262,7 +1229,7 @@ class TestPromotionLedger:
         )
 
         records, _decision = load_promotion_ledger(pieces["evaluation"].round_path)
-        assert [record["subject_id"] for record in records] == ["cand-bad", "cand-a", "cand-burn"]
+        assert [record["subject_id"] for record in records] == ["cand-bad", "cand-a"]
         by_id = {record["subject_id"]: record for record in records}
 
         bad = by_id["cand-bad"]
@@ -1273,16 +1240,9 @@ class TestPromotionLedger:
 
         promoted = by_id["cand-a"]
         assert promoted["decision"] == DECISION_PROMOTED
-        assert promoted["rule"][SPLIT_HELDIN]["delta"] == 1
         assert promoted["rule"][SPLIT_HELDOUT]["delta"] == 1
         assert promoted["band"]["mean_cost"]["within"] is True
         assert promoted["harness_hash"] == pieces["cand_a"].harness_hash
-
-        burn = by_id["cand-burn"]
-        assert burn["decision"] == DECISION_OVER_BUDGET
-        assert "over budget" in burn["reasons"][0]
-        assert burn["rule"] is None
-        assert burn["links"] is not None  # partial evaluations still link
 
     def test_decision_json_names_the_single_promotion(self, tmp_path, monkeypatch):
         pieces = single_promotion_round(tmp_path, monkeypatch)
@@ -1315,7 +1275,7 @@ class TestPromotionLedger:
         round_path = pieces["evaluation"].round_path
         records, decision = load_promotion_ledger(round_path)
         linked = [record for record in records if record["links"] is not None]
-        assert len(linked) == 2  # cand-a and cand-burn; cand-bad has nothing on disk
+        assert len(linked) == 1  # only the measured candidate has evaluation links
         for record in linked:
             assert_subject_links_resolve(round_path, record["links"], record["harness_hash"])
         assert_subject_links_resolve(
@@ -1349,43 +1309,6 @@ class TestPromotionLedger:
                 loader_rejections=[pieces["rejection"]],
             )
 
-    def test_merged_promotion_is_named_and_linked(self, tmp_path, monkeypatch):
-        pieces = merge_promotion_round(tmp_path, monkeypatch)
-        ledger = write_promotion_ledger(
-            pieces["evaluation"],
-            pieces["decisions"],
-            pieces["plan"],
-            merge_evaluation=pieces["merge_evaluation"],
-            merge_decision=pieces["merge_decision"],
-        )
-
-        round_path = pieces["evaluation"].round_path
-        records, decision = load_promotion_ledger(round_path)
-        assert [record["subject_id"] for record in records] == [
-            "cand-s2",
-            "cand-s3",
-            MERGED_SUBJECT_ID,
-        ]
-        by_id = {record["subject_id"]: record for record in records}
-
-        merged = by_id[MERGED_SUBJECT_ID]
-        assert merged["decision"] == DECISION_PROMOTED
-        assert merged["harness_hash"] == pieces["plan"].harness_hash
-        assert merged["merge"] == {
-            "role": "merged",
-            "constituent_ids": ["cand-s2", "cand-s3"],
-        }
-        assert_subject_links_resolve(round_path, merged["links"], merged["harness_hash"])
-        for constituent_id in ("cand-s2", "cand-s3"):
-            assert by_id[constituent_id]["merge"]["role"] == "constituent"
-
-        assert decision["plan"] == PLAN_MERGE
-        assert decision["promoted"] is True
-        assert decision["promoted_subject_id"] == MERGED_SUBJECT_ID
-        assert decision["promoted_harness_hash"] == pieces["plan"].harness_hash
-        assert decision["constituent_ids"] == ["cand-s2", "cand-s3"]
-        assert ledger.decision == decision
-
     def test_no_promotion_round_still_ledgers(self, tmp_path, monkeypatch):
         # Baseline all-pass; the lone candidate regresses on both splits.
         script = [final("RIGHT")] * 4 + [
@@ -1402,15 +1325,15 @@ class TestPromotionLedger:
 
         pconfig = PromotionConfig()
         decisions = assess_round(evaluation, pconfig)
-        plan = plan_promotion(H0, decisions, [cand_a])
-        assert plan.kind == PLAN_NONE
+        plan = plan_batch(H0, [cand_a])
+        assert plan.kind == PLAN_SINGLE
         write_promotion_ledger(evaluation, decisions, plan)
 
         records, decision = load_promotion_ledger(evaluation.round_path)
         assert [record["subject_id"] for record in records] == ["cand-a"]
         assert records[0]["decision"] == DECISION_REJECTED
         assert records[0]["reasons"]
-        assert decision["plan"] == PLAN_NONE
+        assert decision["plan"] == PLAN_SINGLE
         assert decision["promoted"] is False
         assert decision["promoted_subject_id"] is None
         assert decision["promoted_harness_hash"] is None
@@ -1484,19 +1407,14 @@ class TestPromotionLedger:
 
     def test_writer_demands_exact_decision_coverage(self, tmp_path, monkeypatch):
         pieces = single_promotion_round(tmp_path, monkeypatch)
-        missing = [d for d in pieces["decisions"] if d.subject_id != "cand-burn"]
-        with pytest.raises(ValueError, match="cand-burn"):
+        missing = [d for d in pieces["decisions"] if d.subject_id != "cand-a"]
+        with pytest.raises(ValueError, match="cand-a"):
             write_promotion_ledger(
                 pieces["evaluation"],
                 missing,
                 pieces["plan"],
                 loader_rejections=[pieces["rejection"]],
             )
-
-    def test_writer_demands_a_merge_leg_exactly_for_merge_plans(self, tmp_path, monkeypatch):
-        pieces = merge_promotion_round(tmp_path, monkeypatch)
-        with pytest.raises(ValueError, match="merge"):
-            write_promotion_ledger(pieces["evaluation"], pieces["decisions"], pieces["plan"])
 
 
 if __name__ == "__main__":
@@ -1530,7 +1448,7 @@ class TestSubjectOutcomeReflectsSkippedRuns:
         caps = replace(CAPS, candidate_budget=COST_PER_CALL * 1.5)
         factory = ClientFactory([final("RIGHT")] * 8)
         monkeypatch.setattr(rlm_module, "get_client", factory)
-        config = make_config(tmp_path, caps=caps, splits=make_splits(2), repetitions=1)
+        config = make_config(tmp_path, caps=caps, splits=make_splits(4), repetitions=1)
 
         evaluation = evaluate_subject("cand-trunc", candidate_harness("trunc"), config)
 
@@ -1542,3 +1460,29 @@ class TestSubjectOutcomeReflectsSkippedRuns:
         ]
         assert skipped
         assert evaluation.summary["outcome"] == OUTCOME_OVER_BUDGET
+
+
+def test_zero_trajectory_runtime_failure_aggregates_full_denominator(tmp_path, monkeypatch):
+    import shrlm.optimization.driver as driver
+
+    original = driver.build_round_rlm
+
+    def build(config):
+        harnessed = original(config)
+        harnessed.logger._run_metadata = None
+
+        def fail(prompt, **kwargs):
+            raise TypeError("early harness failure")
+
+        monkeypatch.setattr(harnessed.rlm, "completion", fail)
+        return harnessed
+
+    monkeypatch.setattr(driver, "build_round_rlm", build)
+    config = make_config(tmp_path, splits=make_splits(1), repetitions=2)
+    evaluation = evaluate_subject("early-failure", H0, config)
+    summary = evaluation.summary["splits"][SPLIT_HELDOUT]
+    assert summary["n_runs"] == summary["n_runtime_errors"] == 2
+    assert summary["pass_count"] == summary["total_sub_calls"] == 0
+    assert summary["n_resource_terminated"] == 0
+    assert summary["total_cost"] == 0
+    assert evaluation.summary["spent"] == pytest.approx(config.caps.max_budget * 2)

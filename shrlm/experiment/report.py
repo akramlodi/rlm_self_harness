@@ -35,7 +35,7 @@ Measured section
 Extrapolation (KTD6)
     Run counts are derived from config, never hardcoded::
 
-        runs/round = m*n_in + v(K+1)(n_in+n_ho) + p_merge*v(n_in+n_ho)
+        runs/round = m*n_in + 2*v*n_ho
         eval runs at a length = eval_conditions
             * sum(env test-role size at that length, from splits.split_plan)
             * eval_repetitions
@@ -537,24 +537,13 @@ def eval_test_sizes(config: ExperimentConfig) -> dict[str, int]:
 
 
 def run_counts(config: ExperimentConfig) -> RunCounts:
-    """``m*n_in + v(K+1)(n_in+n_ho) + p_merge*v(n_in+n_ho)`` per round, plus the grid.
+    """Full-run estimate: ``m*n_in + 2*v*n_ho`` per nonempty valid round, plus the grid.
 
-    The merge leg is the last term: a promoting round re-evaluates the merged
-    harness over both splits, up to ``v(n_in+n_ho)`` further runs, assumed to
-    happen in a ``report.p_merge`` fraction of rounds. The evaluation grid uses
-    ``report.eval_conditions`` -- the FULL experiment's condition count (B1/H0,
-    H0*, lambda-RLM, SH-RLM) -- not however many conditions this scaffold
-    measured -- times
-    the test-role instance count summed across every configured environment
-    (see ``eval_test_sizes``), not the source split alone.
-    """
+    Empty rounds cost mining only; budget stops can execute fewer runs. The legacy
+    ``report.p_merge`` input is unused. Final evaluation still uses the configured
+    condition count and test-role sizes across all environments."""
     loop, splits = config.loop, config.splits
-    subjects = splits.n_in + splits.n_ho
-    per_round = (
-        loop.m * splits.n_in
-        + loop.v * (loop.k + 1) * subjects
-        + config.report.p_merge * loop.v * subjects
-    )
+    per_round = loop.m * splits.n_in + 2 * loop.v * splits.n_ho
     conditions = config.report.eval_conditions
     repetitions = config.operational.eval_repetitions
     eval_sizes = eval_test_sizes(config)

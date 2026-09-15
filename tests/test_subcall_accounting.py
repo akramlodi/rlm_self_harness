@@ -415,3 +415,46 @@ class TestSubcallBudgetHeadroom:
         third = parent._subcall("three")
 
         assert "budget exhausted" in third.response.lower()
+
+
+class TestConcurrentChildrenShareTheRemainder:
+    def test_a_batch_share_scales_each_childs_budget(self, live, monkeypatch):
+        """Siblings spawned by one ``rlm_query_batched`` all read the same
+        ``_cumulative_cost`` snapshot; handing each the whole remainder let a
+        batch of N spend N x the cap (observed 2026-08-29: $2.78 of $1.00)."""
+        from rlm.core.subcall_context import budget_share
+
+        handed_out: list[float | None] = []
+
+        class RecordingChild:
+            last_completion_usage = None
+
+            def __init__(self, *args, **kwargs):
+                handed_out.append(kwargs.get("max_budget"))
+
+            def completion(self, prompt, root_prompt=None):
+                return live.RLMChatCompletion(
+                    root_model="m",
+                    prompt=prompt,
+                    response="done",
+                    usage_summary=usage(live, "m", calls=1, cost=0.0),
+                    execution_time=0.0,
+                )
+
+            def close(self):
+                pass
+
+        parent = an_rlm(live, max_depth=3, max_budget=1.00)
+        monkeypatch.setattr(live, "RLM", RecordingChild)
+
+        with budget_share(0.25):
+            parent._subcall("one")
+        parent._subcall("two", budget_fraction=0.5)
+        parent._subcall("three")
+
+        assert handed_out == [pytest.approx(0.25), pytest.approx(0.50), pytest.approx(1.00)]
+
+    def test_an_invalid_share_is_refused(self, live, monkeypatch):
+        parent = an_rlm(live, max_depth=3, max_budget=1.00)
+        with pytest.raises(ValueError):
+            parent._subcall("one", budget_fraction=0.0)

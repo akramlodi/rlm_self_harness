@@ -32,7 +32,7 @@ class MockLM(BaseLM):
         self._call_count += 1
         if self._responses is not None:
             if not self._responses:
-                raise IndexError("MockLM: no more responses in list")
+                raise OSError("MockLM: no more responses in list")
             return self._responses.pop(0)
         if self._response_fn is not None:
             return self._response_fn(prompt)

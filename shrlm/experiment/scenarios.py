@@ -214,8 +214,19 @@ class Recommendation:
 
 
 def configured_environments(config: ExperimentConfig) -> tuple[str, ...]:
-    """The environment names the config declares, in declaration order."""
-    return tuple(field.name for field in fields(config.environments))
+    """The leaf test-environment names the config declares, in declaration order.
+
+    A leaf environment section carries a ``dataset_repo`` and produces test
+    splits (``graphwalks``, ``oolong_pairs``). The ``oolong`` section is a
+    container (``synth`` / ``real`` sub-tables) selected only when
+    ``loop.environment == "oolong_synth"`` and is skipped here: it has no test
+    bucket of its own, so the long-coverage gate must not demand one.
+    """
+    return tuple(
+        field.name
+        for field in fields(config.environments)
+        if hasattr(getattr(config.environments, field.name), "dataset_repo")
+    )
 
 
 def validity_gates(config: ExperimentConfig, buckets: Sequence[RunBucket]) -> list[dict[str, str]]:

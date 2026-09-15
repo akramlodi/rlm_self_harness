@@ -1,0 +1,6 @@
+{
+  "format": "shrlm-subject-worker-result/v1",
+  "ok": true,
+  "subject_id": "r02-c02-s2",
+  "summary_path": "experiment_kimi/opt/round_02/validation/round_02/r02-c02-s2/summary.json"
+}

@@ -7,7 +7,9 @@ re-ask loop -- accepted or rejected -- is kept with its raw response and named
 violation, so an unattributed record still carries a full audit trail. In
 per-depth aggregate digest mode the prompt stops demanding node ids the table
 cannot show. And a transient LM failure is retried, then checkpointed by the
-miner rather than raised through a round.
+miner rather than raised through a round -- while a content-filter block, which
+is deterministic and so never clears on a retry, is recorded and stepped over
+instead.
 """
 
 import json
@@ -17,6 +19,8 @@ import pytest
 
 import shrlm.optimization.attribution as attribution_module
 from shrlm.optimization.attribution import (
+    AttributionBudgetExhausted,
+    AttributionContentFiltered,
     AttributionRejection,
     AttributionTransportError,
     AttributorConfig,
@@ -50,6 +54,10 @@ def canned_attribution(evidence: list[str] | None = None) -> str:
         "failing_level": "root",
         "evidence_node_ids": ["r"] if evidence is None else evidence,
         "symptom_summary": "the merge step dropped a sub-result",
+        "operation_evidence": [
+            {"node_id": "r", "observation": "The root submitted the produced answer."}
+        ],
+        "verification_limits": "Intermediate results were not semantically verified.",
     }
     return "```json\n" + json.dumps(payload) + "\n```"
 
@@ -63,6 +71,10 @@ OFF_VOCABULARY = (
             "failing_level": "root",
             "evidence_node_ids": ["r"],
             "symptom_summary": "made up a label",
+            "operation_evidence": [
+                {"node_id": "r", "observation": "The root submitted the produced answer."}
+            ],
+            "verification_limits": "Intermediate results were not semantically verified.",
         }
     )
     + "\n```"
@@ -78,6 +90,23 @@ GROUNDED = GroundingResult(
 
 # No backoff sleeps in tests; retry counts are what is under test.
 FAST_CONFIG = AttributorConfig(transport_backoff_seconds=0.0)
+
+
+def _content_filter_error() -> Exception:
+    """The 400 Azure raises once its content filter blocks a response, as the
+    client re-raises it after exhausting its own content-filter ladder."""
+    import httpx
+    import openai as openai_sdk
+
+    response = httpx.Response(
+        400, request=httpx.Request("POST", "https://example.openai.azure.com/openai/v1/chat")
+    )
+    return openai_sdk.BadRequestError(
+        "The response was filtered due to the prompt triggering Azure OpenAI's "
+        "content management policy. Error code: content_filter",
+        response=response,
+        body=None,
+    )
 
 
 class RecordingLM(MockLM):
@@ -110,6 +139,40 @@ def attribution_inputs(run: dict[str, Any] | None = None) -> tuple[TraceDigest, 
         verdict=make_verdict(),
     )
     return digest, root, make_verdict()
+
+
+def test_operation_evidence_is_validated_and_preserves_verification_limits():
+    _, root, _ = attribution_inputs()
+    payload = json.loads(canned_attribution().split("```json\n")[1].split("\n```")[0])
+    payload["operation_evidence"] = [
+        {
+            "node_id": "r",
+            "iteration_index": root.iterations[0].index,
+            "code_block_index": 0,
+            "observation": "The root consumed the returned records.",
+        }
+    ]
+    payload["verification_limits"] = "Record coverage is visible; label correctness is unverified."
+    attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)
+    *_, detail = attributor.validate(payload, root, UNGROUNDED)
+    assert detail.to_dict()["operation_evidence"] == payload["operation_evidence"]
+    assert detail.to_dict()["verification_limits"] == payload["verification_limits"]
+    payload["operation_evidence"][0]["code_block_index"] = 999
+    with pytest.raises(AttributionRejection, match="operation_evidence"):
+        attributor.validate(payload, root, UNGROUNDED)
+
+
+def test_causal_diagnosis_needs_operation_evidence():
+    _, root, _ = attribution_inputs()
+    payload = json.loads(canned_attribution().split("```json\n")[1].split("\n```")[0])
+    payload["operation_evidence"] = []
+    payload["verification_limits"] = "The operation is not visible."
+    attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)
+    with pytest.raises(AttributionRejection, match="operation_evidence"):
+        attributor.validate(payload, root, UNGROUNDED)
+    payload["causal_status"] = "unattributed"
+    *_, detail = attributor.validate(payload, root, UNGROUNDED)
+    assert detail.verification_limits == payload["verification_limits"]
 
 
 def wide_run(n_children: int = 41) -> dict[str, Any]:
@@ -187,6 +250,10 @@ class TestReAskAudit:
                     "failing_level": "root",
                     "evidence_node_ids": ["r"],
                     "symptom_summary": "a huge made-up label",
+                    "operation_evidence": [
+                        {"node_id": "r", "observation": "The root submitted the produced answer."}
+                    ],
+                    "verification_limits": "Intermediate results were not semantically verified.",
                 }
             )
             + "\n```"
@@ -306,6 +373,10 @@ class TestModeSeparation:
             "agent_mechanism": "lossy_aggregation",
             "evidence_node_ids": ["r"],
             "symptom_summary": "a sub-call returned a wrong local result",
+            "operation_evidence": [
+                {"node_id": "r", "observation": "The root submitted the produced answer."}
+            ],
+            "verification_limits": "Intermediate results were not semantically verified.",
         }
 
         with pytest.raises(AttributionRejection, match="failing_level") as excinfo:
@@ -401,6 +472,98 @@ class TestTransportResilience:
         assert result.bundle.totals.n_unattributed == 1
 
 
+class TestContentFilterContainment:
+    """A content-filter block is deterministic in the digest's bytes, so unlike
+    a transport failure it never clears on a re-invocation. It must be recorded
+    and stepped over, never routed through the checkpoint path -- doing so
+    stalls the round forever (observed 2026-08-27: 100+ restarts, no progress).
+    """
+
+    def test_content_filter_propagates_immediately_without_retrying(self):
+        lm = RecordingLM([_content_filter_error()] * 3)
+        attributor = LLMAttributor(lm, config=FAST_CONFIG)
+        digest, root, verdict = attribution_inputs()
+
+        with pytest.raises(AttributionContentFiltered, match="content filter blocked"):
+            attributor.attribute(digest, root, verdict, UNGROUNDED)
+        # One call, not transport_retries: the client already exhausted its own
+        # content-filter ladder, and the same bytes draw the same refusal.
+        assert lm._call_count == 1
+
+    def test_mine_records_the_block_and_keeps_the_round_clean(self):
+        lm = RecordingLM([canned_attribution(), _content_filter_error()])
+        miner = WeaknessMiner(
+            verifier=_failing_verifier, attributor=LLMAttributor(lm, config=FAST_CONFIG)
+        )
+        runs = [
+            ({"id": "inst-1", "question": "q"}, as_completion(shallow_run())),
+            ({"id": "inst-2", "question": "q"}, as_completion(shallow_run())),
+        ]
+
+        result = miner.mine(runs, round_index=1, harness_version="H0", split_id="held_in_v1")
+
+        attributed, filtered = result.records
+        assert attributed.signature is not None
+        assert filtered.instance_id == "inst-2" and filtered.attribution_failed
+        assert filtered.attribution_error.startswith("content filtered:")
+        assert filtered.attribution_error_kind is AttributionErrorKind.CONTENT_FILTERED
+        assert filtered.signature is None  # no label the model never produced
+        # Visible in the totals, absent from errors: the round closes.
+        assert result.bundle.totals.n_unattributed == 1
+        assert result.errors == []
+
+
+class TestBudgetExhaustionContainment:
+    """A reasoning-exhausted response (the client's ``TokenLimitExceededError``,
+    R6/KTD3) is deterministic for the prompt at temperature 0: re-sending
+    bills the same exhaustion again, and routing it through the round-close
+    gate is the same unbounded restart loop as a content-filter block."""
+
+    @staticmethod
+    def _budget_error() -> Exception:
+        from rlm.utils.exceptions import TokenLimitExceededError
+
+        return TokenLimitExceededError(
+            tokens_used=16384,
+            token_limit=16384,
+            message="Azure Foundry output budget exhausted by reasoning",
+        )
+
+    def test_token_limit_propagates_immediately_without_retrying(self):
+        lm = RecordingLM([self._budget_error()] * 3)
+        attributor = LLMAttributor(lm, config=FAST_CONFIG)
+        digest, root, verdict = attribution_inputs()
+
+        with pytest.raises(AttributionBudgetExhausted, match="reasoning") as excinfo:
+            attributor.attribute(digest, root, verdict, UNGROUNDED)
+        assert lm._call_count == 1
+        assert excinfo.value.attempts == []
+
+    def test_mine_records_the_exhaustion_and_keeps_the_round_clean(self):
+        lm = RecordingLM([canned_attribution(), self._budget_error()])
+        miner = WeaknessMiner(
+            verifier=_failing_verifier, attributor=LLMAttributor(lm, config=FAST_CONFIG)
+        )
+        runs = [
+            ({"id": "inst-1", "question": "q"}, as_completion(shallow_run())),
+            ({"id": "inst-2", "question": "q"}, as_completion(shallow_run())),
+        ]
+
+        result = miner.mine(runs, round_index=1, harness_version="H0", split_id="held_in_v1")
+
+        attributed, exhausted = result.records
+        assert attributed.signature is not None
+        assert exhausted.instance_id == "inst-2" and exhausted.attribution_failed
+        assert exhausted.attribution_error.startswith("token limit:")
+        assert exhausted.attribution_error_kind is AttributionErrorKind.TOKEN_LIMIT
+        assert exhausted.signature is None
+        # Visible in the totals, absent from errors: the round-close gate is
+        # not held, and the integrity report does not count it as transport.
+        assert result.bundle.totals.n_unattributed == 1
+        assert result.errors == []
+        assert result.bundle.integrity.n_transport_errors == 0
+
+
 class TestAttributorConfigValidation:
     def test_zero_transport_retries_is_rejected_at_construction(self):
         with pytest.raises(ValueError, match="transport_retries must be >= 1"):
@@ -427,8 +590,11 @@ class TestMiningAuditSurfaces:
         assert set(result.digest_texts) == {record.digest_sha256}
         assert "instance_id: inst-1" in result.digest_texts[record.digest_sha256]
         (prompt_sha,) = result.attributor_prompts
+        # A shallow run has no descendants, so its level is grounded
+        # (NO_RECURSION) without a sub-verifier: the grounded prompt applies.
+        assert record.level_grounded is True
         assert result.attributor_prompts[prompt_sha] == miner.attributor.system_prompt(
-            False, no_subcalls=True
+            True, no_subcalls=True
         )
         assert result.raw_attributions[0]["prompt_sha256"] == prompt_sha
         assert result.errors == []

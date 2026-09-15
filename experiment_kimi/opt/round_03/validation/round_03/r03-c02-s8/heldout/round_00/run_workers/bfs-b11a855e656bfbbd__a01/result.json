@@ -1,0 +1,8 @@
+{
+  "detail": null,
+  "format": "shrlm-run-worker-result/v1",
+  "ok": true,
+  "run_id": "bfs-b11a855e656bfbbd__a01",
+  "terminated": false,
+  "usage_lower_bound": false
+}

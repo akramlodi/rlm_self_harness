@@ -10,6 +10,8 @@ import hashlib
 import json
 from typing import Any
 
+import pytest
+
 from shrlm.optimization.attribution import LLMAttributor
 from shrlm.optimization.digest import (
     DIGEST_VERSION,
@@ -18,6 +20,7 @@ from shrlm.optimization.digest import (
     build_digest,
     head_tail,
     render_child_table,
+    render_header,
 )
 from shrlm.optimization.grounding import GroundingResult
 from shrlm.optimization.mining import WeaknessMiner
@@ -55,6 +58,19 @@ def digest_of_nested_run(cfg: DigestConfig | None = None) -> TraceDigest:
         verdict=make_verdict(),
         cfg=cfg,
     )
+
+
+def test_unknown_verifier_observations_remain_available_in_heldin_diagnosis():
+    _, stats = walk(as_completion(shallow_run()))
+    verdict = Verdict(
+        False,
+        VerifierCause.WRONG_VALUE,
+        "expected",
+        "produced",
+        detail="custom verifier: wrong relation order",
+    )
+    header = render_header("held-in", "task", verdict, stats, verifier_environment="custom")
+    assert "verifier_detail: custom verifier: wrong relation order" in header
 
 
 def call_node(node_id: str, prompt: str, response: str, depth: int = 1) -> CallNode:
@@ -148,6 +164,34 @@ class TestCoverage:
 
 
 class TestRenderedSections:
+    @pytest.mark.parametrize("environment", ["oolong_pairs", "graphwalks", None])
+    def test_pair_metrics_are_specific_to_the_verifier_environment(self, environment):
+        from shrlm.environments.oolong_pairs import OolongPairsVerifier
+
+        verifier = OolongPairsVerifier()
+        verdict = verifier({"gold_pairs": [(1, 2), (1, 3)]}, "[(1, 2)]")
+
+        class ConfiguredVerifier:
+            def config(self):
+                return {"environment": environment}
+
+        captured = []
+
+        def respond(messages):
+            captured.append(messages[-1]["content"])
+            return scripted_response(messages)
+
+        miner = WeaknessMiner(
+            verifier=ConfiguredVerifier(), attributor=LLMAttributor(MockLM(response_fn=respond))
+        )
+        miner.record_failure(
+            {"id": "test", "question": "predicate"}, as_completion(shallow_run()), verdict
+        )
+        assert ("pair_diagnostics:" in captured[0]) == (environment == "oolong_pairs")
+        if environment == "oolong_pairs":
+            assert "'f1': 0.667" in captured[0]
+            assert "'missing': 1" in captured[0]
+
     def test_header_carries_the_verifier_outcome(self):
         digest = digest_of_nested_run()
         assert "instance_id: run-nested" in digest.text
@@ -447,6 +491,10 @@ def scripted_response(messages: Any) -> str:
         "failing_level": "no_recursion",
         "evidence_node_ids": ["r"],
         "symptom_summary": "scripted attributor following the documented rule",
+        "operation_evidence": [
+            {"node_id": "r", "observation": "The root submitted the produced answer."}
+        ],
+        "verification_limits": "Intermediate results were not semantically verified.",
     }
     return "```json\n" + json.dumps(payload) + "\n```"
 
@@ -513,7 +561,7 @@ class TestDigestVersion:
     def test_version_bumped_for_the_skill_lines(self):
         # 1.1.0 was the n/a aggregate rendering; 1.2.0 adds the
         # available_skills / loaded_skills pair under a non-empty index.
-        assert DIGEST_VERSION == "1.2.0"
+        assert DIGEST_VERSION == "1.4.0"
 
     def test_digest_version_is_recorded_per_bundle(self):
         lm = MockLM(response_fn=scripted_response)
@@ -524,8 +572,8 @@ class TestDigestVersion:
             harness_version="H0",
             split_id="held_in_v1",
         )
-        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.2.0"
-        assert result.bundle.to_dict()["config"]["digest_version"] == "1.2.0"
+        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.4.0"
+        assert result.bundle.to_dict()["config"]["digest_version"] == "1.4.0"
 
     def test_attribution_cache_key_does_not_include_digest_version(self):
         # DIGEST_VERSION reaches bundle ids via MiningConfig.digest_version

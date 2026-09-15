@@ -338,3 +338,115 @@ class TestLoaderInjection:
         splits_dir = materialize_splits(config, tmp_path, loaders={"graphwalks": fake_loader})
         held_in = (splits_dir / split_file_name("graphwalks", "short", "held_in")).read_text()
         assert held_in == instance_lines(instances_by_length["short"][:24])
+
+
+class TestOolongSynthEnvironment:
+    """``loop.environment == "oolong_synth"`` mines/validates the OOLONG-synth
+    pool; GraphWalks is never materialized."""
+
+    @pytest.fixture
+    def oolong_config(self) -> ExperimentConfig:
+        return load_config("full", path=Path("configs/experiment_oolong.toml"))
+
+    def test_split_plan_holds_only_the_selected_environment(self, oolong_config):
+        plan = split_plan(oolong_config)
+        assert set(plan) == {"oolong_synth", "oolong_real"}  # real_check_every_n_rounds = 2 > 0
+        assert plan["oolong_synth"]["short"] == {
+            "held_in": oolong_config.splits.n_in,
+            "held_out": oolong_config.splits.n_ho,
+            "test": oolong_config.splits.test_short,
+        }
+        assert plan["oolong_real"]["short"] == {
+            "check": oolong_config.environments.oolong.real.n_check
+        }
+
+    def test_real_check_absent_from_plan_when_disabled(self, oolong_config):
+        disabled = replace(
+            oolong_config,
+            operational=replace(oolong_config.operational, real_check_every_n_rounds=0),
+        )
+        assert set(split_plan(disabled)) == {"oolong_synth"}
+
+    def test_materializes_oolong_only_and_skips_graphwalks(self, oolong_config, tmp_path):
+        seen: list[str] = []
+
+        def fake_loader(
+            cfg: ExperimentConfig, length: str, limit: int, seed: int
+        ) -> list[dict[str, Any]]:
+            seen.append(length)
+            return [
+                {"id": f"oolong-{length}-i{index:03d}", "prompt": f"p{index}"}
+                for index in range(limit)
+            ]
+
+        splits_dir = materialize_splits(
+            oolong_config,
+            tmp_path,
+            loaders={
+                "graphwalks": pytest.fail,  # must never be called on an OOLONG run
+                "oolong_synth": fake_loader,
+                "oolong_real": fake_loader,
+            },
+        )
+        for role in ("held_in", "held_out", "test"):
+            assert (splits_dir / split_file_name("oolong_synth", "short", role)).exists()
+        assert (splits_dir / split_file_name("oolong_real", "short", "check")).exists()
+        assert not (splits_dir / split_file_name("graphwalks", "short", "held_in")).exists()
+        manifest = json.loads((splits_dir / MANIFEST_FILE).read_text())
+        assert set(manifest["environments"]) == {"oolong_synth", "oolong_real"}
+
+
+class TestOolongPairsEnvironment:
+    def test_split_plan_partitions_the_finite_short_pool_and_keeps_long_for_test(self, config):
+        pairs_config = replace(
+            config,
+            loop=replace(config.loop, environment="oolong_pairs"),
+            splits=replace(config.splits, n_in=15, n_ho=15, test_short=10, test_long=40),
+        )
+
+        assert split_plan(pairs_config) == {
+            "oolong_pairs": {
+                "short": {"held_in": 15, "held_out": 15, "test": 10},
+                "long": {"test": 40},
+            }
+        }
+
+    def test_split_plan_rejects_counts_above_the_pinned_inventory(self, config):
+        short_overflow = replace(
+            config,
+            loop=replace(config.loop, environment="oolong_pairs"),
+            splits=replace(config.splits, n_in=15, n_ho=15, test_short=11, test_long=41),
+        )
+
+        with pytest.raises(ValueError, match=r"short roles require 41.*pool to 40"):
+            split_plan(short_overflow)
+
+        long_overflow = replace(
+            short_overflow,
+            splits=replace(short_overflow.splits, test_short=10),
+        )
+        with pytest.raises(ValueError, match=r"long test requires 41.*pool to 40"):
+            split_plan(long_overflow)
+
+    def test_materializes_only_the_selected_pair_pools(self, tmp_path):
+        config = load_config(
+            "full", path=Path("configs/experiment_oolong_pairs_DeepSeekV4Flash.toml")
+        )
+
+        splits_dir = materialize_splits(
+            config,
+            tmp_path,
+            loaders={
+                "oolong_pairs": lambda cfg, length, limit, seed: make_fake_instances(length, limit)
+            },
+        )
+
+        expected_counts = {
+            "oolong_pairs_short_held_in.jsonl": 10,
+            "oolong_pairs_short_held_out.jsonl": 10,
+            "oolong_pairs_short_test.jsonl": 20,
+            "oolong_pairs_long_test.jsonl": 40,
+        }
+        manifest = json.loads((splits_dir / MANIFEST_FILE).read_text())
+        files = manifest["environments"]["oolong_pairs"]["files"]
+        assert {name: details["count"] for name, details in files.items()} == expected_counts

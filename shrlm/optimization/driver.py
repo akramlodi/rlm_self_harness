@@ -63,15 +63,21 @@ import hashlib
 import json
 import os
 import time
+import traceback
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from rlm.core.types import ModelUsageSummary, RLMChatCompletion, UsageSummary
+from rlm.core.types import ExecutionFailure, ModelUsageSummary, RLMChatCompletion, UsageSummary
 from rlm.utils.exceptions import (
     BudgetExceededError,
+    CancellationError,
+    ClientInitializationError,
     ErrorThresholdExceededError,
+    HardDeadlineExceeded,
+    HardDeadlineSignal,
     TimeoutExceededError,
     TokenLimitExceededError,
 )
@@ -395,6 +401,29 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
         entries.append(entry)
     _reject_mixed_accounting(manifest_path, entries)
     return entries
+
+
+def canonical_manifest_entries(
+    entries: Sequence[dict[str, Any]], instances: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Order manifest entries by persisted instance position, then attempt."""
+    instance_positions = {
+        str(instance["id"]): position for position, instance in enumerate(instances)
+    }
+    for entry in entries:
+        instance_id = str(entry["instance_id"])
+        if instance_id not in instance_positions:
+            raise RoundPersistenceError(
+                f"manifest run {entry['run_id']!r} references instance {instance_id!r}, "
+                f"which {INSTANCES_FILE} does not contain"
+            )
+    return sorted(
+        entries,
+        key=lambda entry: (
+            instance_positions[str(entry["instance_id"])],
+            int(entry["attempt"]),
+        ),
+    )
 
 
 def _accounting_version_of(entry: dict[str, Any]) -> str:
@@ -859,12 +888,8 @@ def execute_run(
     """
     prompt = instance["prompt"]
     run_started = time.perf_counter()
-    try:
-        run = harnessed.completion(prompt)
-        completion = run.completion
-        verdict = verifier(instance, completion.response) if verifier is not None else None
-        return RunOutcome(completion=completion, verdict=verdict, usage_lower_bound=False)
-    except ROOT_LIMIT_EXCEPTIONS as error:
+
+    def _terminated(error: Exception, cause: VerifierCause) -> RunOutcome:
         completion = _partial_completion(
             prompt=prompt,
             trajectory=harnessed.logger.get_trajectory(),
@@ -877,13 +902,98 @@ def execute_run(
             completion=completion,
             verdict=Verdict(
                 passed=False,
-                cause=VerifierCause.RESOURCE_TERMINATED,
+                cause=cause,
                 gold="",
                 produced=completion.response,
                 detail=f"{type(error).__name__}: {error}",
             ),
             usage_lower_bound=True,
         )
+
+    try:
+        try:
+            run = harnessed.completion(prompt)
+            completion = run.completion
+        except ROOT_LIMIT_EXCEPTIONS:
+            raise
+        except Exception as error:
+            origin = error.__traceback__
+            while origin is not None and origin.tb_next is not None:
+                origin = origin.tb_next
+            origin_module = origin.tb_frame.f_globals.get("__name__", "") if origin else ""
+            if origin_module.startswith(("rlm.clients.", "rlm.environments.")):
+                # First-party adapters also raise plain built-in exceptions
+                # for provider/sandbox failures; their class MRO cannot tell.
+                raise
+            # SDK/transport errors and host resource failures are operational.
+            # Inspect the MRO so optional SDKs need not be imported on worker
+            # startup, and subclasses defined by callers retain their meaning.
+            provider_modules = (
+                "openai",
+                "anthropic",
+                "google.genai",
+                "google.api_core",
+                "httpx",
+                "httpcore",
+                "requests",
+                "urllib3",
+                "botocore",
+                "portkey_ai",
+            )
+            if isinstance(
+                error, (CancellationError, ClientInitializationError, OSError, MemoryError)
+            ) or any(
+                cls.__module__ == module or cls.__module__.startswith(module + ".")
+                for cls in type(error).__mro__
+                for module in provider_modules
+            ):
+                raise
+            outcome = _terminated(error, VerifierCause.RUNTIME_ERROR)
+            outcome.completion.execution_failure = ExecutionFailure(
+                cause="runtime_error",
+                exception_type=type(error).__name__,
+                message=str(error),
+                traceback="".join(traceback.format_exception(error)),
+            )
+            return outcome
+        verdict = verifier(instance, completion.response) if verifier is not None else None
+        return RunOutcome(completion=completion, verdict=verdict, usage_lower_bound=False)
+    except ROOT_LIMIT_EXCEPTIONS as error:
+        return _terminated(error, VerifierCause.RESOURCE_TERMINATED)
+    except HardDeadlineSignal as signal_:
+        # The wall-clock backstop (a BaseException so no inner ``except
+        # Exception`` can swallow it) is persisted exactly like the runtime's
+        # own timeout: partial completion, recorded usage, RESOURCE_TERMINATED.
+        error = HardDeadlineExceeded(signal_.deadline, message=str(signal_))
+        return _terminated(error, VerifierCause.RESOURCE_TERMINATED)
+    except Exception as error:
+        # A content filter that survived the client's CONTENT_FILTER_ATTEMPTS
+        # retries is deterministic for this prompt, so re-running it will never
+        # succeed. Containing it here makes mining behave like validation, where
+        # the same provider refusal has always been a recorded run failure
+        # rather than a fatal error: a mining run in the ORCHESTRATOR's own
+        # process previously took the whole experiment down with it (observed
+        # 2026-08-26, round 3, 47/48 runs in). Any other 400 is a real bug and
+        # still propagates.
+        # Imported HERE, not at module scope: run_worker children import this
+        # module on every spawn, and pulling the OpenAI SDK into that path cost
+        # 0.06s -> 0.23s per child (measured 2026-08-26) -- enough to make a
+        # child miss a tight deadline. By the time this handler runs the SDK is
+        # already imported by the client that raised, so the cost here is nil.
+        import openai
+
+        from rlm.clients.openai import is_content_filter_error
+
+        if isinstance(error, openai.RateLimitError):
+            # The client already retried RATE_LIMIT_ATTEMPTS times with backoff;
+            # a 429 that still escapes is the provider refusing this run, not a
+            # bug. Persisting it here keeps the usage the run did record: a
+            # child that instead crashed left no trace and was charged the flat
+            # per-run ceiling (observed 2026-08-30: nine phantom $1.00 charges).
+            return _terminated(error, VerifierCause.RESOURCE_TERMINATED)
+        if not isinstance(error, openai.BadRequestError) or not is_content_filter_error(error):
+            raise
+        return _terminated(error, VerifierCause.CONTENT_FILTERED)
 
 
 def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dict[str, Any]]:
@@ -956,7 +1066,6 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
 # The mining phase: disk in, evidence bundle out
 # ---------------------------------------------------------------------------
 
-
 def load_round_runs(
     out_dir: Path | str, round_index: int
 ) -> tuple[
@@ -969,33 +1078,28 @@ def load_round_runs(
     Returns aligned ``(instance, completion)`` pairs, verdicts, and manifest
     entries. Every trace is sha-verified before it is trusted. Harness-backed
     rounds and non-harness methods such as lambda-RLM share these artifacts;
-    their identity envelopes intentionally differ.
+    their identity envelopes intentionally differ. Results follow persisted
+    instance order, then attempt, regardless of manifest append order.
     """
     path = round_dir(out_dir, round_index)
-    instances = {
-        str(instance["id"]): instance
+    ordered_instances = [
+        json.loads(line)
         for line in (path / INSTANCES_FILE).read_text().splitlines()
         if line.strip()
-        for instance in [json.loads(line)]
-    }
+    ]
+    instances = {str(instance["id"]): instance for instance in ordered_instances}
 
     runs: list[tuple[dict[str, Any], RLMChatCompletion]] = []
     verdicts: list[Verdict] = []
     entries: list[dict[str, Any]] = []
-    for entry in _load_manifest(path):
+    for entry in canonical_manifest_entries(_load_manifest(path), ordered_instances):
         trace_path = verify_trace(path, entry)
         instance_id = str(entry["instance_id"])
-        if instance_id not in instances:
-            raise RoundPersistenceError(
-                f"manifest run {entry['run_id']!r} references instance {instance_id!r}, "
-                f"which {INSTANCES_FILE} does not contain"
-            )
         completion = RLMChatCompletion.from_dict(json.loads(trace_path.read_text()))
         runs.append((instances[instance_id], completion))
         verdicts.append(Verdict.from_dict(entry["verdict"]))
         entries.append(entry)
     return runs, verdicts, entries
-
 
 def load_round(
     out_dir: Path | str, round_index: int
@@ -1155,6 +1259,7 @@ __all__ = [
     "TRACES_DIR",
     "RoundConfig",
     "RoundPersistenceError",
+    "canonical_manifest_entries",
     "instance_lines",
     "load_manifest",
     "load_round",

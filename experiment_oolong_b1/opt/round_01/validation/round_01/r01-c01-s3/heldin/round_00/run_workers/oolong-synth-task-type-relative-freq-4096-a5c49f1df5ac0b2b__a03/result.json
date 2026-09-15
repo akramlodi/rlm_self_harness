@@ -1,0 +1,8 @@
+{
+  "detail": null,
+  "format": "shrlm-run-worker-result/v1",
+  "ok": true,
+  "run_id": "oolong-synth-task-type-relative-freq-4096-a5c49f1df5ac0b2b__a03",
+  "terminated": false,
+  "usage_lower_bound": false
+}

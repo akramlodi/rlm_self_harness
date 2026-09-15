@@ -74,6 +74,57 @@ The config's `model` value must equal your Foundry **deployment name** (the cata
 default is `Kimi-K2.5`). In every configuration the launcher refuses to start — and
 spends nothing — if a required credential or attestation is missing.
 
+Note (applies to every Azure Foundry deployment, Kimi-K2.5 included): an empty
+completion arriving with `finish_reason='length'` is classified once as token-limit
+exhaustion (`TokenLimitExceededError` -> `resource_terminated`, spend kept) instead of
+entering the empty-content retry ladder — a length cut is deterministic for the prompt,
+so a retry only re-bills the same outcome. Empty completions with other finish reasons
+keep the retry ladder as before.
+
+The `SHRLM_VERIFIED_PRICING` attestation is **per config**, matched against the
+selected config's `[pricing.list_price]`:
+
+| Config | Attestation |
+|---|---|
+| `configs/experiment_kimiK25.toml`, `configs/experiment_oolong.toml` (Kimi-K2.5) | `SHRLM_VERIFIED_PRICING='0.60/3.00'` |
+| `configs/experiment_oolong_gptoss.toml` (gpt-oss-120b) | `SHRLM_VERIFIED_PRICING='0.15/0.6'` |
+
+### Live pytest tiers and the gpt-oss ladder
+
+Paid pytest items are marked `live` and are **deselected** (never executed) unless
+`SHRLM_RUN_LIVE=1` is exported and `CI` is unset; once selected, module-level skip
+gates still name any missing credential or attestation in `-rs` output.
+`SHRLM_EXPERIMENT_CONFIG=<path-to-toml>` points every live tier — the client live
+class, the smoke live round, both recursion tiers, and
+`examples/experiment_smoke.py` via `--config` — at that config; unset, each tier
+keeps its own default (the shipped smoke profile, `configs/experiment_kimiK25.toml`,
+or `configs/experiment_oolong.toml`).
+
+The gpt-oss live gate ladder (run the steps in order; each must pass before the
+next spends more):
+
+```bash
+export AZURE_API_KEY=... AZURE_FOUNDRY_ENDPOINT=https://<your-resource>.services.ai.azure.com
+export SHRLM_RUN_LIVE=1 SHRLM_VERIFIED_PRICING='0.15/0.6'   # verify in the portal first
+export SHRLM_EXPERIMENT_CONFIG=configs/experiment_oolong_gptoss.toml
+
+# 1. Probe (~7 calls, < $0.05): reasoning contract, sampling args, cost synthesis
+uv run python examples/experiment_smoke.py --probe \
+    --config configs/experiment_oolong_gptoss.toml --out-dir ./smoke_gptoss
+# 2. Client live (~4 calls, < $0.05): azure_gptoss rows must show PASSED in -rs
+uv run pytest -rs -m live tests/clients/test_azure_foundry.py
+# 3. Recursion live (4 runs x $0.40 max, budgeted separately -- up to $1.60 on
+#    top of the $5 smoke-tier ceiling): sub-calls, token and wall-time columns
+uv run pytest -rs -m live tests/experiment/test_oolong_recursion_live.py -s
+# 4. Smoke live: the whole loop, three roles, cost provenance
+uv run python examples/experiment_smoke.py --live \
+    --config configs/experiment_oolong_gptoss.toml --out-dir ./smoke_gptoss_live
+# 5. Dry run ($0): identity, model @ rate, probe verdict round-trip
+uv run python examples/run_experiment.py --dry-run \
+    --config configs/experiment_oolong_gptoss.toml \
+    --out-dir ./experiment_oolong_gptoss --probe-json ./smoke_gptoss/probe.json
+```
+
 ### The four configurations
 
 | | Smoke | Qwen (main) | Ox | Kimi-K2.5 (Azure) |
@@ -119,6 +170,25 @@ uv run python examples/run_experiment.py --config configs/experiment_kimiK25.tom
 Interrupting with Ctrl-C loses nothing — re-run the same command and the experiment
 resumes at its exact stage boundary. The Qwen and Ox experiments can run concurrently
 from the same checkout: they share nothing but the (read-only) datasets and the API key.
+
+### Proposal quality and OOLONG-Pairs feedback
+
+Proposal generation now checks edited candidates locally and can repair failed
+members once while retaining valid siblings; repair can move the same failed
+pattern to another eligible, unoccupied surface. Diagnoses cite operations and
+verification limits, and the proposer sees the relevant caller and consumer code.
+Each proposal explains the incumbent behavior, remaining failure and concrete change.
+OOLONG-Pairs guidance encourages consistent record-ID contracts, coverage checks
+before lossy mapping, and Python aggregation before pair construction.
+Rejected candidates with comparable recorded quality gains remain visible as
+potentially promising in history, using F1 for pairs/GraphWalks and score for OOLONG.
+Exact outcomes and regressions remain visible, and `v=1` provides no causal guarantee.
+Validation still uses one baseline and one combined candidate on held-out data.
+See the [proposal contract](shrlm/docs/harness-proposal-interface.md),
+[metric definitions](shrlm/docs/experiment-metrics.md), and
+[OOLONG-Pairs investigation](docs/analysis/oolong-pairs-2026-09-13/README.md).
+The [methodology note](docs/analysis/2026-09-14-proposal-quality-methodology-notes.md)
+records these changes for a future paper update.
 
 ### How the analysis populates
 
