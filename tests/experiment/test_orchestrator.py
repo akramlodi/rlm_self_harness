@@ -242,6 +242,14 @@ episode_counts = [1, 2]
 max_scan = 100
 n_check = 2
 
+[environments.ruler]
+generator_version = "test-v1"
+task_types = ["niah_multikey", "variable_tracking"]
+short_target_tokens = 200
+long_target_tokens = 400
+chars_per_token = 4.0
+distractor_density_multiplier = 1.0
+
 [backends.runner]
 backend = "openai"
 model = "runner-test"

@@ -157,6 +157,25 @@ episode_counts = [1, 2, 3]
 max_scan = 40000
 n_check = 20
 
+[environments.ruler]
+# RULER (arXiv:2404.06654), families 1-3 only (NIAH/Variable-Tracking/
+# Aggregation; the QA family is out of scope -- it needs external downloads).
+# Purely generated in-process: no dataset_repo/dataset_revision to pin.
+generator_version = "v1"
+task_types = [
+    "niah_multikey", "niah_multivalue", "niah_multiquery",
+    "variable_tracking", "common_words_extraction", "frequent_words_extraction",
+]
+# niah_single deliberately excluded from the default mined pool: frontier
+# models saturate it near 100% even at long lengths (the reason vanilla RULER
+# is "not hard enough"); it stays implemented for harness/test sanity only.
+short_target_tokens = 65536 # mining/validation pool
+long_target_tokens = 1048576 # held-out eval, decomposition-forcing; assumes a
+# conservative ~128K-256K real deployed context window and targets 4-8x that --
+# CONFIRM/ADJUST once the actual deployed window for the target model is known.
+chars_per_token = 4.0
+distractor_density_multiplier = 1.0
+
 # All three roles run azure_foundry / Kimi-K2.5 in its default thinking mode.
 # To switch to the OpenRouter Qwen3-30B-A3B-Instruct-2507 comparison backbone,
 # edit these three role tables plus [decoding] and [pricing].

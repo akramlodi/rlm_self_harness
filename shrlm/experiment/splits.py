@@ -43,6 +43,7 @@ from shrlm.environments.oolong import (
     load_oolong_synth_from_config,
 )
 from shrlm.environments.oolong_pairs import load_oolong_pairs_from_config
+from shrlm.environments.ruler import load_ruler_from_config
 from shrlm.experiment.config import ExperimentConfig
 from shrlm.experiment.errors import ExperimentError
 
@@ -123,11 +124,25 @@ def load_oolong_real_split(
     return load_oolong_real_from_config(config, n=limit, seed=seed)
 
 
+def load_ruler_split(
+    config: ExperimentConfig, length: str, limit: int, seed: int
+) -> list[dict[str, Any]]:
+    """The RULER loader wiring: config -> ``load_ruler_from_config`` arguments.
+
+    Unlike GraphWalks/OOLONG-Pairs, RULER is unboundedly generated (no fixed
+    upstream pool), so there is no coverage pre-check to run here.
+    """
+    if length not in LENGTHS:
+        raise ValueError(f"unknown split length {length!r}; expected one of {LENGTHS}")
+    return load_ruler_from_config(config, n=limit, seed=seed, length=length)
+
+
 DEFAULT_LOADERS: dict[str, LoaderFn] = {
     "graphwalks": load_graphwalks_split,
     "oolong_pairs": load_oolong_pairs_split,
     "oolong_synth": load_oolong_synth_split,
     "oolong_real": load_oolong_real_split,
+    "ruler": load_ruler_split,
 }
 
 
@@ -204,6 +219,17 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "long": {"test": splits.test_long},
             }
         }
+    if config.loop.environment == "ruler":
+        return {
+            "ruler": {
+                "short": {
+                    "held_in": splits.n_in,
+                    "held_out": splits.n_ho,
+                    "test": splits.test_short,
+                },
+                "long": {"test": splits.test_long},
+            }
+        }
     raise ValueError(f"unsupported loop.environment {config.loop.environment!r} in split_plan")
 
 
@@ -225,6 +251,8 @@ def dataset_revision_for(config: ExperimentConfig, environment: str) -> str:
         return str(config.environments.oolong.synth.dataset_revision)
     if environment == "oolong_real":
         return str(config.environments.oolong.real.dataset_revision)
+    if environment == "ruler":
+        return str(config.environments.ruler.generator_version)
     if not hasattr(config.environments, environment):
         raise ValueError(
             f"unknown environment {environment!r} in loaders; the config defines "

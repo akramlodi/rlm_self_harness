@@ -303,10 +303,30 @@ class OolongConfig:
 
 
 @dataclass(frozen=True)
+class RulerConfig:
+    """RULER (arXiv:2404.06654), families 1-3 only (NIAH/Variable-Tracking/
+    Aggregation; the QA family is out of scope -- it needs external downloads).
+    Purely generated in-process -- no external dataset, so no
+    ``dataset_repo``/``dataset_revision`` pin; ``generator_version`` stands in
+    for that provenance role instead, mirroring ``mrcrv2``'s own precedent.
+    Short (mined/validated) and long (eval-only, decomposition-forcing) each
+    get their own target-tokens value, mirroring GraphWalks' short/long split
+    shape rather than OOLONG-synth's single length-diverse pool."""
+
+    generator_version: str
+    task_types: tuple[str, ...]
+    short_target_tokens: int
+    long_target_tokens: int
+    chars_per_token: float
+    distractor_density_multiplier: float
+
+
+@dataclass(frozen=True)
 class EnvironmentsConfig:
     graphwalks: GraphWalksConfig
     oolong_pairs: OolongPairsConfig
     oolong: OolongConfig
+    ruler: RulerConfig
 
 
 @dataclass(frozen=True)
@@ -556,14 +576,15 @@ def _validate_initial_harness(loop: LoopConfig) -> LoopConfig:
     return loop
 
 
-SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_pairs", "oolong_synth")
+SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_pairs", "oolong_synth", "ruler")
 
 
 def _validate_environment(loop: LoopConfig) -> LoopConfig:
     """Reject a ``[loop] environment`` the orchestrator cannot mine/validate.
 
-    ``graphwalks``, ``oolong_pairs``, and ``oolong_synth`` are supported as the
-    mined/validated pool. The OOLONG-real check remains evaluation-only.
+    ``graphwalks``, ``oolong_pairs``, ``oolong_synth``, and ``ruler`` are
+    supported as the mined/validated pool. The OOLONG-real check remains
+    evaluation-only.
     """
     if loop.environment not in SELECTABLE_ENVIRONMENTS:
         raise ValueError(
@@ -657,11 +678,13 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     tuplify(promotion_table, "sub_call_band")
 
     env_table = raw["environments"]
-    check_keys(env_table, ("graphwalks", "oolong_pairs", "oolong"), "environments")
+    check_keys(env_table, ("graphwalks", "oolong_pairs", "oolong", "ruler"), "environments")
     graphwalks_table = dict(env_table["graphwalks"])
     tuplify(graphwalks_table, "problem_types")
     oolong_pairs_table = dict(env_table["oolong_pairs"])
     tuplify(oolong_pairs_table, "task_ids")
+    ruler_table = dict(env_table["ruler"])
+    tuplify(ruler_table, "task_types")
 
     oolong_env_table = env_table["oolong"]
     check_keys(oolong_env_table, ("synth", "real"), "environments.oolong")
@@ -744,6 +767,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
                 ),
                 real=build_section(OolongRealConfig, oolong_real_table, "environments.oolong.real"),
             ),
+            ruler=build_section(RulerConfig, ruler_table, "environments.ruler"),
         ),
         backends=BackendsConfig(
             runner=build_section(EndpointConfig, backends_table["runner"], "backends.runner"),

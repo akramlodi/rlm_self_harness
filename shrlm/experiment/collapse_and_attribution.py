@@ -97,6 +97,7 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.environments.graphwalks import GraphWalksSubVerifier
+from shrlm.environments.ruler import RulerSubVerifier
 from shrlm.experiment.analysis_io import (
     Snapshot,
     add_snapshot_parent_argument,
@@ -133,7 +134,10 @@ from shrlm.optimization.walker import walk
 # together instead of silently diverging.
 
 # oolong_pairs deliberately has no SubVerifier; see this module's docstring.
-SUB_VERIFIERS: dict[str, SubVerifier] = {"graphwalks": GraphWalksSubVerifier()}
+SUB_VERIFIERS: dict[str, SubVerifier] = {
+    "graphwalks": GraphWalksSubVerifier(),
+    "ruler": RulerSubVerifier(),
+}
 
 PHASE_OPTIMIZATION = "optimization"
 PHASE_EVALUATION = "evaluation"

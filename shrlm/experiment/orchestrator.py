@@ -119,6 +119,7 @@ from shrlm.environments.oolong import (
     continuous_score,
 )
 from shrlm.environments.oolong_pairs import OolongPairsVerifier
+from shrlm.environments.ruler import RulerSubVerifier, RulerVerifier
 from shrlm.experiment.config import (
     GOVERNED_ROUND_KEYS,
     ExperimentConfig,
@@ -254,6 +255,7 @@ STAGE_REAL_CHECK = "real_check"
 GRAPHWALKS_VERIFIER_FACTORY = "shrlm.environments.graphwalks:GraphWalksVerifier"
 OOLONG_PAIRS_VERIFIER_FACTORY = "shrlm.environments.oolong_pairs:OolongPairsVerifier"
 OOLONG_SYNTH_VERIFIER_FACTORY = "shrlm.environments.oolong:make_synth_verifier"
+RULER_VERIFIER_FACTORY = "shrlm.environments.ruler:make_ruler_verifier"
 
 
 @dataclass(frozen=True)
@@ -303,6 +305,14 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
             verifier=OolongPairsVerifier(),
             sub_verifier=None,
             verifier_factory=OOLONG_PAIRS_VERIFIER_FACTORY,
+        )
+    if environment == "ruler":
+        return EnvBinding(
+            name="ruler",
+            length=SPLIT_LENGTH,
+            verifier=RulerVerifier(),
+            sub_verifier=RulerSubVerifier(),
+            verifier_factory=RULER_VERIFIER_FACTORY,
         )
     raise ValueError(f"resolve_env_binding: unsupported loop.environment {environment!r}")
 
@@ -751,6 +761,8 @@ class _Experiment:
             return OOLONG_PAIRS_VERIFIER_FACTORY
         if isinstance(self.verifier, OolongVerifier) and self.verifier.task_set == "synth":
             return OOLONG_SYNTH_VERIFIER_FACTORY
+        if type(self.verifier) is RulerVerifier:
+            return RULER_VERIFIER_FACTORY
         raise ValueError(
             f"operational.validation_workers={self.config.operational.validation_workers} "
             "evaluates validation subjects in child processes, which rebuild the verifier "
