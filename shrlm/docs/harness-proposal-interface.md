@@ -208,28 +208,59 @@ different declared id is preserved in the rejection reason.
 
 ## Proposal context and local repair
 
-The prompt shows each eligible incumbent surface in full once, shared by all
-patterns. Held-in context includes a representative's saved symptom, evidence
-node IDs, verifier detail, actual task question, pair diagnostics, and bounded trace observations.
-Attribution cites an observed operation and records verification limits. It distinguishes
-input coverage, label uncertainty and predicate/aggregation errors: complete parsed IDs
-do not prove complete input parsing or correct labels. The proposer sees cited operations,
-the child caller and up to two following consumer blocks within a 4,800-character payload
-budget (at most six snippets). Missing citations use an explicitly labelled structural fallback.
-Up to two passing held-in examples show behavior to preserve. Missing evidence
-is explicit; ambiguous legacy attempt links never select an arbitrary trace.
+The live response uses `proposal-selection/v1`, separate from the saved
+`shrlm-proposal/v1` envelope. It contains `format`, an ordered `selections` list
+of `{pattern_index, surface, reason}`, and a `candidates` list with exactly one
+matching replacement per selection. Select the best-supported intervention per
+surface first, then write its replacement. Both lists must have at most `k`
+entries; each pattern and surface may appear once. Reasons contain 1–600
+characters. Empty lists withdraw all proposals. Legacy response arrays are
+rejected under this new live contract; historical saved proposals remain readable.
+
+The prompt shows each eligible incumbent surface in full once. A shared
+32,000-character budget covers the entire rendered held-in evidence section,
+including JSON escaping, diagnoses, questions, verifier observations, contrasts,
+and omission notices. A compact inventory retains all addressable pattern indices;
+at most `min(k, 4)` patterns are expanded, preferring distinct mechanisms and
+resolvable operations. Selection may use another matching held-in attempt when
+the first representative is unsuitable. Bundle order and saved evidence are unchanged.
+
+Code blocks and task questions remain complete or are omitted with a reason.
+Cited child calls include relevant caller/consumer context, with at most six
+snippets. Output and child payload excerpts are explicitly marked when truncated.
+Shared operations appear once with references. Subsequent operations may show
+recovery, but proximity does not establish it; otherwise a passing held-in run
+with shared operation names supplies a contrast when it fits. Shared names do
+not prove equivalent semantics. Missing citations or contrasts are explicit;
+there is no arbitrary first/last code fallback. Trusted verifier diagnostics
+replace repeated produced/expected dumps; unknown formats remain bounded,
+unparsed observations. An oversized compact inventory rejects the proposal
+stage locally before a model call.
+
+New S1–S5 replacements follow `literal-text/v1`: write literal braces in Python,
+JSON, and prose. The host encodes templates exactly once before hashing and
+preflight. Current text surfaces are displayed in the same literal view. The
+reserved `<<custom_tools_section>>` marker inserts tools; if the incumbent
+already contains that literal marker, the host chooses an unused numbered
+variant and seals it for the round. Literal `{custom_tools_section}` stays
+literal. JSON string escaping is still required for transport. Saved harnesses
+remain format-ready `shrlm-harness/v2`; loaders never re-encode them. Code and
+skill-body contracts are unchanged.
 
 S9 takes `(answer, repl_inventory)` and returns `AnswerDecision.accept(answer)`
 or `AnswerDecision.redirect(nudge)`. There is no `reject` method. Inventory values
-are redacted `(type_name, length)` tuples, not variable contents. Literal braces
-in text instruction templates must be doubled; code and skill bodies are not
-format templates.
+are redacted `(type_name, length)` tuples, not variable contents.
 Lossy aggregation routes primarily to S3, with S4 as its alternate; S9 is ineligible.
 For semantic errors diagnosed as `other`, the prompt also prefers S3/S4. S9 remains
 appropriate for answer-visible defects under other eligible mechanisms.
 
 New candidates must provide `incumbent_behavior`, `observed_failure` and
 `behavioral_change` before `edit`, each a nonempty string of at most 600 characters.
+They distinguish actual execution from instructions, name the unresolved operation
+and verification limits, and explain the precise changed action/value. Challenge
+each edit: if followed perfectly, could the failure still happen for the same
+reason? Coverage checks cannot establish correct labels, and recovery already
+performed is not a new fix for the final result.
 Explicit no-change values and byte-identical edits are rejected. Repeating instructions
 more emphatically is insufficient justification, but semantic novelty is not machine-proven.
 Historical v1 proposals without these additive fields still load; history marks them unavailable.
@@ -243,24 +274,31 @@ profile in `proposals_complete.json`; old markers use the legacy generic checks.
 Unchanged incumbent middleware does not receive the new domain probes.
 
 After a parseable batch within the count cap, each member is checked independently.
-All members of a duplicate-pattern or duplicate-surface group are rejected, while
+Selection/candidate mismatches and duplicate JSON keys are rejected. All members
+of a duplicate-pattern or duplicate-surface group are rejected, while
 independent valid members keep their original slots and content. Failed members get
 at most **one repair response**, within the existing total attempt/output caps;
 repairs must retain each failed member's pattern but may choose another eligible,
-unoccupied surface with a revised behavioral explanation. Omission withdraws
+unoccupied surface with a revised behavioral explanation. Collision repairs see
+explicit contender groups and must choose one contender or withdraw the group. Omission withdraws
 that member. Malformed repair or output exhaustion preserves the valid siblings.
 Transport, credential, integrity, and interruption failures retain their existing
 handling. A gate process that cannot spawn raises a host error without spending
 the repair response. Only final survivors are published for combined validation.
 
 Scratch files live under `work/attempt_NN/`; the proposal contract pins prompt,
-validator, evidence-selector/history-renderer versions, profile, incumbent and caps. Cache keys include the actual repair
+validator, evidence-selector/history-renderer versions, response format, text
+contract and slot marker, profile, incumbent and caps. Prompt, validator, and
+evidence-selector versions are `3.0.0`; diagnostic history remains `1.0.0`. Cache keys include the actual repair
 request and retained hashes. Before publishing final candidates,
 `work/proposal_result.json` freezes survivors and their complete attempt outcomes;
 an interrupted publication replays this checkpoint without re-running gates.
 Unexpected final candidate directories are refused. The marker records final
 preflight/materialization failures and the attempt audit, including repaired
-failures. Replays cannot
+failures. The evidence audit records the budget, rendered evidence size,
+expanded/omitted patterns, unique operations, system-prompt characters and total
+system-plus-user characters for each attempt, including repair. Surfaces and
+history are overhead outside the evidence cap. Replays cannot
 silently change a finalized source/profile or restart proposals after validation
 has frozen. Standalone validation also pins its profile in `validation.json`;
 pre-change contracts remain readable without rewriting them. Complete any
@@ -268,11 +306,11 @@ unsealed evidence or proposal stage with its original code revision before
 upgrading: a changed digest or proposal contract can prevent that incomplete
 stage from replaying. Sealed historical stages use their persisted artifacts.
 
-For eligible OOLONG-Pairs S2/S3/S4 proposals, the prompt offers a record-preserving
-workflow: stable original row IDs before chunking; child ID/label results joined
-by ID; duplicate detection before dictionary construction, missing/unknown ID and label-vocabulary
-checks, and bounded repairs; then root-side counts, dates, task
-predicates and qualifying pairs in Python. This is proposal guidance, not a
-built-in solver or an edit to the initial harness.
-The smallest effective edit may replace or clearly scope a conflicting aggregate-count
-example. Count-only examples can remain where sufficient for the actual task predicate.
+Task-derived guidance asks which information must survive each step and which
+conditions the final computation must enforce. Counts, dates, identity, order,
+provenance, units and asymmetric roles matter only when required by the current
+task. For example, a set discards the multiplicity needed for an exactly-one
+predicate. The detailed OOLONG record-ID recipe is removed; its authoritative
+answer contract remains conditional on the environment. The smallest effective
+edit may replace or clearly scope a misleading example rather than append a
+contradictory rule. No semantic judge or extra selection model call is added.

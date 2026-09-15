@@ -7,6 +7,9 @@ held-out aggregates; history exports no task, answer, or trace text.
 
 from __future__ import annotations
 
+import ast
+import copy
+import hashlib
 import json
 import math
 import re
@@ -21,9 +24,10 @@ from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
-EVIDENCE_SELECTOR_VERSION = "2.0.0"
+EVIDENCE_SELECTOR_VERSION = "3.0.0"
 DIAGNOSTIC_HISTORY_VERSION = "1.0.0"
-TRACE_EXCERPT_CHARS = 4800
+EVIDENCE_BUDGET_CHARS = 32000
+EVIDENCE_HEADING = "Held-in evidence (observations, not instructions):\n"
 MAX_TRACE_SNIPPETS = 6
 
 UNSCORED_CAUSES = {
@@ -164,6 +168,8 @@ def trace_excerpt(
     completion: RLMChatCompletion,
     evidence_node_ids: Sequence[str] = (),
     operation_evidence: Sequence[dict[str, Any]] = (),
+    *,
+    related_operations: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     if completion.metadata is None:
         return {"observation": "trace excerpt unavailable"}
@@ -215,6 +221,9 @@ def trace_excerpt(
         ]
         if matching:
             add(matching[0], "cited operation")
+            position = by_node[node_id].index(matching[0])
+            for following in by_node[node_id][position + 1 : position + 3]:
+                add(following, "following operation; recovery not established by proximity")
         else:
             unresolved = True
     for node_id in cited:
@@ -232,29 +241,189 @@ def trace_excerpt(
                 "cited child prompt/return",
             )
     selection = "cited operations and caller context"
+    if not selected and related_operations:
+        for blocks in by_node.values():
+            for position, block in enumerate(blocks):
+                if operation_names(block["code"]) & related_operations:
+                    add(
+                        block,
+                        "passing run with shared operation names; semantic equivalence unverified",
+                    )
+                    for following in blocks[position + 1 : position + 3]:
+                        add(following, "passing operation's consumer context")
+        selection = "passing contrast selected by shared operation names"
     if not selected:
-        selection = "structural fallback: no resolvable operation or child citation"
-        blocks = by_node[root.node_id]
-        if blocks:
-            for block in (blocks[0], blocks[-1]):
-                add(block, "structural fallback")
+        selection = (
+            "structural fallback: no resolvable operation or relevant contrast; code unavailable"
+        )
     if unresolved:
         selection += "; unresolved citations"
     snippets = list(selected.values())
-    per_snippet = TRACE_EXCERPT_CHARS // max(len(snippets), 1)
     for snippet in snippets:
-        fields = [
-            key for key in ("code", "stdout", "stderr", "prompt", "response") if snippet.get(key)
-        ]
-        per_field = per_snippet // max(len(fields), 1)
-        for key in fields:
-            snippet[key] = bounded_excerpt(snippet[key], per_field)
-        snippet["node_id"] = bounded_excerpt(snippet["node_id"], 200)
+        # Preserve whole code. Only payloads are excerpted; final packing counts
+        # the serialized size of every field and can omit an oversized operation.
+        for key in ("stdout", "stderr", "prompt", "response"):
+            if snippet.get(key):
+                snippet[key] = bounded_excerpt(snippet[key], 1200)
+        if "code" in snippet:
+            snippet["code_complete"] = True
     return {
         "observation": "partial observed behavior; labels and causal effectiveness are not verified",
         "selection": selection,
         "snippets": snippets,
         "observed_child_calls": len(root.children),
+    }
+
+
+def operation_names(code: str) -> frozenset[str]:
+    """A conservative operation-name overlap, never a claim of equal semantics."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return frozenset()
+    generic = {
+        "print",
+        "len",
+        "str",
+        "int",
+        "float",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "range",
+        "enumerate",
+        "zip",
+        "sorted",
+    }
+    return frozenset(
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id not in generic
+    )
+
+
+class EvidenceBudgetExceeded(ValueError):
+    """Even the compact inventory exceeds the local evidence budget."""
+
+
+def context_operations(context: dict[str, Any]) -> frozenset[str]:
+    return frozenset(
+        name
+        for snippet in context.get("trace", {}).get("snippets", [])
+        for name in operation_names(snippet.get("code", ""))
+    )
+
+
+def pack_evidence(
+    inventory: list[dict[str, Any]],
+    evidence: dict[str, Any],
+    *,
+    k: int,
+    budget: int = EVIDENCE_BUDGET_CHARS,
+) -> tuple[str, dict[str, Any]]:
+    """Pack whole examples deterministically, measuring actual rendered characters."""
+    section: dict[str, Any] = {
+        "inventory": inventory,
+        "expanded": {},
+        "operations": {},
+        "passing": [],
+        "passing_ids": evidence.get("passing_ids", []),
+        "passing_status": evidence.get("passing_status", "no passing runs observed"),
+        "omitted": {
+            str(row["index"]): "not expanded: mechanism limit or lower priority"
+            for row in inventory
+        },
+        "contrast_status": "no relevant passing contrast available; following operations may show recovery, but proximity does not establish it",
+    }
+
+    def render(value: dict[str, Any]) -> str:
+        return EVIDENCE_HEADING + json.dumps(value, sort_keys=True)
+
+    if len(render(section)) > budget:
+        raise EvidenceBudgetExceeded("compact evidence inventory exceeds rendered evidence budget")
+
+    def options(index: int) -> list[dict[str, Any]]:
+        return evidence.get("alternatives", {}).get(index) or [
+            evidence.get("patterns", {}).get(
+                index, {"diagnosis": "representative evidence unavailable"}
+            )
+        ]
+
+    def grounded(row: dict[str, Any]) -> bool:
+        return any(c.get("trace", {}).get("snippets") for c in options(row["index"]))
+
+    ranked = sorted(
+        inventory, key=lambda row: (not grounded(row), -int(row.get("support") or 0), row["index"])
+    )
+    first, repeats, seen = [], [], set()
+    for row in ranked:
+        mechanism = row["signature"].get("agent_mechanism")
+        (repeats if mechanism in seen else first).append(row)
+        seen.add(mechanism)
+
+    def with_context(
+        value: dict[str, Any], context: dict[str, Any], identity: str
+    ) -> dict[str, Any]:
+        context = copy.deepcopy(context)
+        trace = context.get("trace", {})
+        snippets = trace.get("snippets", [])
+        refs = []
+        for snippet in snippets:
+            source = [
+                context.get("run_id", identity),
+                snippet.get("node_id"),
+                snippet.get("iteration_index"),
+                snippet.get("code_block_index"),
+                "code" if "code" in snippet else "child",
+            ]
+            key = hashlib.sha256(json.dumps(source).encode()).hexdigest()[:16]
+            value["operations"].setdefault(key, {"source": source, **snippet})
+            refs.append({"operation_ref": key})
+        if snippets:
+            trace["snippets"] = refs
+        return context
+
+    expanded_indices = []
+    for row in first + repeats:
+        if len(expanded_indices) >= min(k, 4):
+            break
+        index = row["index"]
+        section["omitted"][str(index)] = "complete evidence exceeds remaining budget"
+        for context in options(index):
+            trial = copy.deepcopy(section)
+            trial["expanded"][str(index)] = with_context(trial, context, f"pattern-{index}")
+            del trial["omitted"][str(index)]
+            if len(render(trial)) > budget:
+                continue
+            # Reserve the first useful contrast alongside its failure, before
+            # filling remaining space with more mechanisms.
+            if not trial["passing"]:
+                names = context_operations(context)
+                for passing in evidence.get("passing", []):
+                    if not names.intersection(context_operations(passing)):
+                        continue
+                    contrasted = copy.deepcopy(trial)
+                    contrasted["passing"].append(with_context(contrasted, passing, "passing"))
+                    contrasted["contrast_status"] = (
+                        "passing held-in run shares operation names; equivalence and intermediate correctness are unverified"
+                    )
+                    if len(render(contrasted)) <= budget:
+                        trial = contrasted
+                        break
+            section = trial
+            expanded_indices.append(index)
+            break
+    rendered = render(section)
+    return rendered, {
+        "evidence_selector_version": EVIDENCE_SELECTOR_VERSION,
+        "evidence_budget_chars": budget,
+        "evidence_chars": len(rendered),
+        "expanded_patterns": expanded_indices,
+        "omitted_patterns": section["omitted"],
+        "operation_count": len(section["operations"]),
     }
 
 
@@ -282,11 +451,13 @@ def load_proposal_evidence(
     if (mining_round_path / "runs.jsonl").exists():
         runs, verdicts, _, entries = read_persisted_round(mining_round_path)
     contexts = {}
-    is_pairs = (bundle.get("config", {}).get("verifier_config") or {}).get(
-        "environment"
-    ) == "oolong_pairs"
+    alternatives = {}
+    environment = (bundle.get("config", {}).get("verifier_config") or {}).get("environment")
+    is_pairs = environment == "oolong_pairs"
     for index, pattern in enumerate(bundle.get("patterns", [])):
-        representative_ids = pattern.get("representatives") or []
+        representative_ids = dict.fromkeys(
+            [*pattern.get("representatives", []), *pattern.get("instance_ids", [])]
+        )
         candidates = [
             record
             for instance_id in representative_ids
@@ -297,70 +468,102 @@ def load_proposal_evidence(
         if not candidates:
             contexts[index] = {"diagnosis": "representative evidence unavailable"}
             continue
-        record = candidates[0]
-        detail = record.get("detail") or {}
-        instance = by_instance.get(str(record["instance_id"]), {})
-        verdict = Verdict.from_dict(record["verdict"])
-        context = {
-            "symptom_summary": head_tail(detail.get("symptom_summary", "unavailable"), 2000),
-            "evidence_node_ids": detail.get("evidence_node_ids", []),
-            "operation_evidence": detail.get("operation_evidence", []),
-            "verification_limits": head_tail(detail.get("verification_limits", "unavailable"), 500),
-            "level_grounded": record.get("level_grounded", False),
-            "task_question": head_tail(str(instance.get("question", "unavailable")), 8000),
-            "verifier_detail": bounded_excerpt(verdict.detail, 2000),
-        }
-        if is_pairs:
-            context["pair_diagnostics"] = pair_diagnostics(verdict)
-            if context["pair_diagnostics"]["scored"]:
-                from shrlm.environments.oolong_pairs import extract_answer_pairs
+        alternatives[index] = []
+        for record in sorted(
+            candidates, key=lambda r: (str(r.get("run_id", "")), str(r["instance_id"]))
+        ):
+            detail = record.get("detail") or {}
+            instance = by_instance.get(str(record["instance_id"]), {})
+            verdict = Verdict.from_dict(record["verdict"])
+            context = {
+                "symptom_summary": head_tail(detail.get("symptom_summary", "unavailable"), 2000),
+                "evidence_node_ids": detail.get("evidence_node_ids", []),
+                "operation_evidence": detail.get("operation_evidence", []),
+                "verification_limits": head_tail(
+                    detail.get("verification_limits", "unavailable"), 500
+                ),
+                "level_grounded": record.get("level_grounded", False),
+                "task_question": str(instance.get("question", "unavailable")),
+                "verifier_outcome": {
+                    "passed": verdict.passed,
+                    "cause": verdict.cause.value if verdict.cause else None,
+                },
+                "verifier_detail": "unparsed: " + bounded_excerpt(verdict.detail, 2000),
+            }
+            quality = aggregate_quality_diagnostics([verdict], environment)
+            if quality["mean"] is not None:
+                context["quality_diagnostics"] = quality
+            if quality["n_measured"]:
+                del context["verifier_detail"]
+            if environment in {"oolong_pairs", "graphwalks"}:
+                context["pair_diagnostics"] = pair_diagnostics(verdict)
+            if is_pairs:
+                if context["pair_diagnostics"]["scored"]:
+                    from shrlm.environments.oolong_pairs import extract_answer_pairs
 
-                gold = set(extract_answer_pairs(verdict.gold) or [])
-                produced = set(extract_answer_pairs(verdict.produced) or [])
-                context["missing_examples"] = sorted(gold - produced)[:3]
-                context["extra_examples"] = sorted(produced - gold)[:3]
-        if record.get("run_id"):
-            matches = [i for i, entry in enumerate(entries) if entry["run_id"] == record["run_id"]]
-        else:
-            matches = [
-                i
-                for i, entry in enumerate(entries)
-                if str(entry["instance_id"]) == str(record["instance_id"])
-                and entry["verdict"] == record["verdict"]
-            ]
-        context["trace"] = {"observation": "trace unavailable: missing or ambiguous run linkage"}
-        if len(matches) == 1:
-            selected = matches[0]
-            entry = entries[selected]
-            if str(entry["instance_id"]) != str(record["instance_id"]):
-                raise ValueError("record instance_id disagrees with linked run")
-            for key in ("trace_path", "trace_sha256"):
-                if record.get(key) and record[key] != entry.get(key):
-                    raise ValueError(f"record {key} disagrees with manifest")
-            if verdict.to_dict() != verdicts[selected].to_dict():
-                raise ValueError("record verdict disagrees with linked run")
-            context["trace"] = trace_excerpt(
-                runs[selected][1],
-                detail.get("evidence_node_ids", []),
-                detail.get("operation_evidence", []),
+                    gold = set(extract_answer_pairs(verdict.gold) or [])
+                    produced = set(extract_answer_pairs(verdict.produced) or [])
+                    context["missing_examples"] = sorted(gold - produced)[:3]
+                    context["extra_examples"] = sorted(produced - gold)[:3]
+            if record.get("run_id"):
+                matches = [
+                    i for i, entry in enumerate(entries) if entry["run_id"] == record["run_id"]
+                ]
+            else:
+                matches = [
+                    i
+                    for i, entry in enumerate(entries)
+                    if str(entry["instance_id"]) == str(record["instance_id"])
+                    and entry["verdict"] == record["verdict"]
+                ]
+            context["trace"] = {
+                "observation": "trace unavailable: missing or ambiguous run linkage"
+            }
+            if len(matches) == 1:
+                selected = matches[0]
+                entry = entries[selected]
+                if str(entry["instance_id"]) != str(record["instance_id"]):
+                    raise ValueError("record instance_id disagrees with linked run")
+                for key in ("trace_path", "trace_sha256"):
+                    if record.get(key) and record[key] != entry.get(key):
+                        raise ValueError(f"record {key} disagrees with manifest")
+                if verdict.to_dict() != verdicts[selected].to_dict():
+                    raise ValueError("record verdict disagrees with linked run")
+                context["run_id"] = entry["run_id"]
+                context["trace"] = trace_excerpt(
+                    runs[selected][1],
+                    detail.get("evidence_node_ids", []),
+                    detail.get("operation_evidence", []),
+                )
+            alternatives[index].append(context)
+        alternatives[index].sort(
+            key=lambda c: (
+                not bool(c.get("trace", {}).get("snippets")),
+                not c.get("level_grounded", False),
+                str(c.get("run_id", "")),
             )
-        contexts[index] = context
+        )
+        contexts[index] = alternatives[index][0]
+
     passing = []
     seen = set()
-    for (instance, completion), verdict in zip(runs, verdicts, strict=True):
+    related = frozenset(
+        name for context in contexts.values() for name in context_operations(context)
+    )
+    for (instance, completion), verdict, entry in zip(runs, verdicts, entries, strict=True):
         if verdict.passed and str(instance["id"]) not in seen:
             seen.add(str(instance["id"]))
             passing.append(
                 {
                     "instance_id": str(instance["id"]),
-                    "task_question": head_tail(str(instance.get("question", "unavailable")), 8000),
-                    "trace": trace_excerpt(completion),
+                    "task_question": str(instance.get("question", "unavailable")),
+                    "run_id": entry["run_id"],
+                    "trace": trace_excerpt(completion, related_operations=related),
                 }
             )
-            if len(passing) == 2:
-                break
     return {
         "patterns": contexts,
+        "alternatives": alternatives,
         "passing": passing,
         "passing_status": "observed held-in examples"
         if passing

@@ -19,12 +19,12 @@ from shrlm.harness_identity import serialize_harness
 from shrlm.optimization.candidates import LoadedCandidate, changed_surfaces, load_candidates
 from shrlm.optimization.driver import RoundPersistenceError
 from shrlm.optimization.proposal import (
-    OOLONG_RECORD_GUIDANCE,
     SKILL_BODY_MAX_CHARS,
     SKILL_DESCRIPTION_MAX_CHARS,
     SKILL_MAX_ENTRIES,
     SKILL_NAME_MAX_CHARS,
     SKILL_TOTAL_MAX_CHARS,
+    TASK_REASONING_GUIDANCE,
     MaterializationFailure,
     ProposalBudgetExhausted,
     ProposalCache,
@@ -32,7 +32,7 @@ from shrlm.optimization.proposal import (
     ProposerConfig,
     _candidate_id,
     build_candidate,
-    extract_json_array,
+    extract_proposal_response,
     load_passing_behaviors,
     materialize_candidate_harness,
     propose_round,
@@ -149,31 +149,131 @@ SKILLS_ITEM = skills_item()
 
 
 def canned_batch(*items: dict[str, Any]) -> str:
-    return "```json\n" + json.dumps(list(items)) + "\n```"
+    defaults = {"text": "S4", "policy": "S6", "code": "S7", "repl_helper": "S8", "skills": "S10"}
+    candidates = [
+        {
+            **item,
+            "surface": item.get("surface", defaults.get(item.get("edit", {}).get("kind"), "S4")),
+        }
+        for item in items
+    ]
+    return json.dumps(
+        {
+            "format": "proposal-selection/v1",
+            "selections": [
+                {
+                    "pattern_index": item["pattern_index"],
+                    "surface": item["surface"],
+                    "reason": "The cited operation lacks this check.",
+                }
+                for item in candidates
+            ],
+            "candidates": candidates,
+        }
+    )
 
 
-# ---------------------------------------------------------------------------
-# extract_json_array
-# ---------------------------------------------------------------------------
+def test_extract_proposal_response_fenced_and_unfenced():
+    response = canned_batch(TEXT_ITEM)
+    expected = json.loads(response)
+    assert extract_proposal_response("```json\n" + response + "\n```") == expected
+    assert extract_proposal_response("answer: " + response + " done") == expected
 
 
-def test_extract_json_array_fenced():
-    assert extract_json_array(canned_batch(TEXT_ITEM)) == [TEXT_ITEM]
+@pytest.mark.parametrize(
+    "response",
+    [
+        "[]",
+        "{}",
+        '{"format":"proposal-selection/v1","selections":[],"candidates":[],"candidates":[]}',
+    ],
+)
+def test_extract_proposal_response_rejects_ambiguous_or_legacy(response):
+    with pytest.raises(ProposalRejection):
+        extract_proposal_response(response)
 
 
-def test_extract_json_array_unfenced_falls_back_to_bracket_span():
-    text = "here is my answer: " + json.dumps([TEXT_ITEM]) + " done"
-    assert extract_json_array(text) == [TEXT_ITEM]
+def test_selection_mismatch_preserves_sibling(tmp_path):
+    payload = json.loads(canned_batch(TEXT_ITEM, POLICY_ITEM))
+    payload["selections"][1]["surface"] = "S7"
+    lm = MockLM(responses=[json.dumps(payload), canned_batch()])
+    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert [w.surface for w in result.written] == ["S4"]
+    assert len(result.attempts) == 2
+    assert "selection" in result.attempts[0].violation
 
 
-def test_extract_json_array_rejects_non_array():
-    with pytest.raises(ProposalRejection, match="array"):
-        extract_json_array("```json\n{}\n```")
+def test_duplicate_member_json_key_preserves_sibling(tmp_path):
+    response = canned_batch(TEXT_ITEM, POLICY_ITEM).replace(
+        '"enabled": true', '"enabled": false, "enabled": true'
+    )
+    result = propose_round(
+        BUNDLE,
+        H0,
+        MockLM(responses=[response, canned_batch()]),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+    )
+    assert [w.surface for w in result.written] == ["S4"]
+    assert "duplicate JSON" in result.attempts[0].violation
 
 
-def test_extract_json_array_rejects_bad_json():
-    with pytest.raises(ProposalRejection, match="not valid JSON"):
-        extract_json_array("```json\n[1, 2,\n```")
+def test_orphan_selection_cannot_supply_a_replacement(tmp_path):
+    payload = json.loads(canned_batch(TEXT_ITEM, POLICY_ITEM))
+    payload["selections"][1].update(payload["candidates"].pop())
+    result = propose_round(
+        BUNDLE,
+        H0,
+        MockLM(responses=[json.dumps(payload), canned_batch()]),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+    )
+    assert [w.surface for w in result.written] == ["S4"]
+    assert "no matching candidate" in result.attempts[0].violation
+
+
+def test_inventory_overflow_rejects_before_model_call(tmp_path):
+    pattern = {**PATTERN_TEXT, "signature": {**PATTERN_TEXT["signature"], "extra": "x" * 40000}}
+    lm = MockLM(responses=[])
+    with pytest.raises(ProposalRejection, match="inventory exceeds"):
+        propose_round({**BUNDLE, "patterns": [pattern]}, H0, lm, tmp_path / "proposals")
+    assert lm._call_count == 0
+
+
+def test_collision_repair_selects_one_contender_and_retains_sibling(tmp_path):
+    bundle = {
+        **BUNDLE,
+        "patterns": [
+            make_pattern("incomplete_coverage"),
+            make_pattern("lossy_aggregation"),
+            make_pattern("lossy_aggregation"),
+        ],
+    }
+    sibling = {**TEXT_ITEM, "pattern_index": 0, "surface": "S2"}
+    first = {**TEXT_ITEM, "pattern_index": 1, "surface": "S3"}
+    second = {**TEXT_ITEM, "pattern_index": 2, "surface": "S3"}
+    prompts = []
+    responses = iter([canned_batch(sibling, first, second), canned_batch(first)])
+
+    def response(prompt):
+        prompts.append(prompt)
+        return next(responses)
+
+    result = propose_round(
+        bundle, H0, MockLM(response_fn=response), tmp_path / "proposals", workdir=tmp_path / "work"
+    )
+    assert [w.surface for w in result.written] == ["S2", "S3"]
+    assert len(prompts) == 2
+    assert 'Collision groups: {"S3":[1,2]}' in prompts[1][1]["content"]
+    assert "never resubmit both" in prompts[1][1]["content"]
+    assert result.evidence_audit["evidence_chars"] <= 32000
+    assert result.evidence_audit["attempt_prompt_chars"] == [
+        sum(len(message["content"]) for message in prompt) for prompt in prompts
+    ]
+    idle = MockLM(responses=[])
+    replay = propose_round(bundle, H0, idle, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert replay.evidence_audit == result.evidence_audit
+    assert idle._call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -334,26 +434,23 @@ def test_explicit_absent_behavioral_change_is_rejected(change):
         validate_candidate_spec(item, ALL_PATTERNS)
 
 
-@pytest.mark.parametrize(
-    "rows,valid",
-    [
-        ([(2, "b"), (1, "a")], True),
-        ([(1, "a"), (1, "b")], False),
-        ([(1, "a")], False),
-        ([(1, "a"), (3, "b")], False),
-        ([(1, "a"), (2, "unknown")], False),
-    ],
-)
-def test_record_guidance_example_checks_rows_before_mapping(rows, valid):
-    code = OOLONG_RECORD_GUIDANCE.split("```python\n")[1].split("```")[0]
-    namespace = {"returned_rows": rows, "record_ids": [1, 2], "task_labels": {"a", "b"}}
-    if valid:
-        exec(code, namespace)
-        assert namespace["labels_by_id"] == {1: "a", 2: "b"}
-    else:
-        with pytest.raises(AssertionError):
-            exec(code, namespace)
-        assert "labels_by_id" not in namespace
+@pytest.mark.parametrize("environment", ["oolong_pairs", "oolong", "graphwalks"])
+def test_task_guidance_compares_execution_and_preserves_information(environment):
+    prompt, _ = render_prompt(
+        [PATTERN_TEXT],
+        serialize_harness(H0),
+        [],
+        [],
+        4,
+        verifier_config={"environment": environment},
+    )
+    assert TASK_REASONING_GUIDANCE in prompt
+    assert "wrong-but-valid labels" in prompt
+    assert "unresolved operation" in prompt
+    assert "asymmetric roles" in prompt
+    assert "exactly-one" in prompt
+    assert "original row ordinal" not in prompt
+    assert "labels_by_id" not in prompt
 
 
 def test_behavioral_fields_persist_and_legacy_loader_remains_compatible(tmp_path):
@@ -458,8 +555,7 @@ def test_render_prompt_includes_surfaces_patterns_and_fallbacks():
     # Taxonomy 3.1.0: every recognized mechanism is addressable, OTHER included,
     # and each pattern advertises its eligible surfaces with the primary first.
     assert [index for index, _ in addressable] == [0, 1, 2, 3, 4, 5, 6]
-    assert "eligible surfaces: S4" in rendered
-    assert "-- primary" in rendered
+    assert '"eligible_surfaces": ["S4"' in rendered
 
 
 def test_render_prompt_passing_and_history_blocks():
@@ -785,7 +881,7 @@ def test_propose_round_malformed_repair_seals_original_failures(tmp_path):
 
 def test_propose_round_empty_bundle_no_crash(tmp_path):
     empty_bundle = {"bundle_id": "empty", "patterns": []}
-    lm = MockLM(model_name="mock-proposer", responses=["```json\n[]\n```"])
+    lm = MockLM(model_name="mock-proposer", responses=[canned_batch()])
     result = propose_round(empty_bundle, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
     assert result.written == []
     assert result.skipped_patterns == []
@@ -1330,7 +1426,9 @@ def test_duplicate_surfaces_reask_before_materialization(tmp_path):
 @pytest.mark.parametrize("failure", ["unchanged", "malformed", "duplicate"])
 def test_repair_retargets_failed_pattern_and_preserves_independent_member(tmp_path, failure):
     patterns = [make_pattern("incomplete_coverage"), make_pattern("lossy_aggregation")]
-    retained = edit_item(0, {"kind": "text", "new_text": "Check record IDs before mapping."})
+    retained = edit_item(
+        0, {"kind": "text", "new_text": "Check record IDs before mapping."}, surface="S2"
+    )
     failed = edit_item(1, {"kind": "text", "new_text": H0.execution_instruction}, surface="S3")
     batch = [retained, failed]
     if failure == "malformed":
@@ -1490,13 +1588,48 @@ def test_invalid_repair_preserves_survivor_and_stops(tmp_path, repair):
     assert len(result.materialization_failures) == 1
 
 
-def test_prompt_brace_error_repairs_locally(tmp_path):
-    bad = edit_item(0, {"kind": "text", "new_text": 'Return {"record_id": 1}'})
-    fixed = edit_item(0, {"kind": "text", "new_text": 'Return {{"record_id": 1}}'})
-    lm = MockLM(responses=[canned_batch(bad), canned_batch(fixed)])
+def test_literal_braces_need_no_model_repair(tmp_path):
+    item = edit_item(0, {"kind": "text", "new_text": 'Return {"record_id": 1}'})
+    lm = MockLM(responses=[canned_batch(item)])
     result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
-    assert len(result.attempts) == 2 and len(result.written) == 1
-    assert "record_id" in result.attempts[0].violation
+    assert len(result.attempts) == 1 and len(result.written) == 1
+    loaded, rejected = load_candidates(tmp_path / "proposals", H0)
+    assert not rejected
+    assert isinstance(loaded[0], LoadedCandidate)
+    assert loaded[0].harness.verification_instruction.format() == item["edit"]["new_text"]
+
+
+@pytest.mark.parametrize(
+    "literal", ['{"x": 1}', "{1, 2}", 'f"{rid}: {len(rows)}"', "{{x}}", "{", "}"]
+)
+def test_materialization_encodes_literal_text_once(literal, tmp_path):
+    spec = validate_candidate_spec(
+        edit_item(0, {"kind": "text", "new_text": literal}), ALL_PATTERNS
+    )
+    candidate, serialized = build_candidate(H0, serialize_harness(H0), spec, tmp_path)
+    assert candidate.verification_instruction.format() == literal
+    assert changed_surfaces(serialize_harness(H0), serialized) == ["S4"]
+
+
+def test_literal_surface_display_preserves_live_and_literal_slots(tmp_path):
+    from shrlm.optimization.proposal import literal_surface_text, text_slot_marker
+
+    incumbent = replace(
+        H0,
+        verification_instruction="{{custom_tools_section}} {custom_tools_section} <<custom_tools_section>> {{x}}",
+    )
+    before = serialize_harness(incumbent)
+    marker = text_slot_marker(before)
+    assert marker != "<<custom_tools_section>>"
+    literal = literal_surface_text(incumbent.verification_instruction, marker)
+    assert "{custom_tools_section}" in literal
+    spec = validate_candidate_spec(
+        edit_item(0, {"kind": "text", "new_text": literal}), ALL_PATTERNS
+    )
+    restored = materialize_candidate_harness(incumbent, spec, tmp_path)
+    assert serialize_harness(restored) == before
+    with pytest.raises(MaterializationFailure, match="no surface"):
+        build_candidate(incumbent, before, spec, tmp_path)
 
 
 def test_changed_profile_refused_before_proposal_calls(tmp_path):
@@ -1515,14 +1648,31 @@ def test_changed_profile_refused_before_proposal_calls(tmp_path):
     assert idle._call_count == 0
 
 
-@pytest.mark.parametrize("version", ["EVIDENCE_SELECTOR_VERSION", "DIAGNOSTIC_HISTORY_VERSION"])
+@pytest.mark.parametrize(
+    "version",
+    [
+        "EVIDENCE_SELECTOR_VERSION",
+        "DIAGNOSTIC_HISTORY_VERSION",
+        "TEXT_CONTRACT",
+        "RESPONSE_FORMAT_VERSION",
+    ],
+)
 def test_changed_evidence_contract_refuses_paid_replay(tmp_path, monkeypatch, version):
+    import shrlm.optimization.proposal as proposal_module
     import shrlm.optimization.proposal_evidence as evidence_module
 
     propose_round(
-        BUNDLE, H0, MockLM(responses=["[]"]), tmp_path / "proposals", workdir=tmp_path / "work"
+        BUNDLE,
+        H0,
+        MockLM(responses=[canned_batch()]),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
     )
-    monkeypatch.setattr(evidence_module, version, "changed")
+    monkeypatch.setattr(
+        evidence_module if hasattr(evidence_module, version) else proposal_module,
+        version,
+        "changed",
+    )
     idle = MockLM(responses=[])
     with pytest.raises(ValueError, match="contract changed"):
         propose_round(BUNDLE, H0, idle, tmp_path / "proposals", workdir=tmp_path / "work")
@@ -1546,7 +1696,7 @@ def test_repair_rejects_occupied_ineligible_unrelated_or_unexplained_target(
         make_pattern("lossy_aggregation"),
         PATTERN_TEXT,
     ]
-    keep = edit_item(0, {"kind": "text", "new_text": "Check record IDs."})
+    keep = edit_item(0, {"kind": "text", "new_text": "Check record IDs."}, surface="S2")
     failed = edit_item(1, {"kind": "text", "new_text": H0.execution_instruction}, surface="S3")
     repair = edit_item(
         index,
@@ -1599,7 +1749,7 @@ def test_repair_output_budget_exhaustion_keeps_survivor_and_replays(tmp_path):
 
 def test_empty_repair_withdraws_failed_slot_without_replacing_survivor(tmp_path):
     no_op = edit_item(1, {"kind": "policy", "runtime_policy": {}})
-    lm = MockLM(responses=[canned_batch(no_op, TEXT_ITEM), "[]"])
+    lm = MockLM(responses=[canned_batch(no_op, TEXT_ITEM), canned_batch()])
     result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
     assert len(result.attempts) == 2
     assert [w.candidate_id for w in result.written] == ["r00-c02-s4"]
