@@ -171,7 +171,7 @@ def _alarm_available() -> bool:
     return hasattr(signal, "SIGALRM") and threading.current_thread() is threading.main_thread()
 
 
-def _call_with_hard_deadline(fn: Callable[[], _T], deadline: float | None) -> _T:
+def call_with_hard_deadline(fn: Callable[[], _T], deadline: float | None) -> _T:
     """Run ``fn`` under a SIGALRM hard deadline, restoring alarm state after.
 
     With no deadline, or where SIGALRM cannot bind (``_alarm_available``), the
@@ -361,7 +361,7 @@ def _run_slice(
     before the alarm landed, the reloaded manifest is simply returned.
     """
     try:
-        return _call_with_hard_deadline(lambda: run_round(config, stop_after=stop_after), deadline)
+        return call_with_hard_deadline(lambda: run_round(config, stop_after=stop_after), deadline)
     except HardDeadlineExceeded as error:
         persisted = load_manifest(config.out_dir, config.round_index)
         if len(persisted) == known:
@@ -1008,6 +1008,7 @@ __all__ = [
     "SplitClaimedError",
     "ValidationCaps",
     "breaker_run_cost",
+    "call_with_hard_deadline",
     "governed_limits",
     "hard_deadline_seconds",
     "run_governed_round",

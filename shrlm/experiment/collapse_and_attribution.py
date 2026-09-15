@@ -17,7 +17,7 @@ for the full writeup):
    / ``causal_status``, which this script does not compute, need one).
 
 Given both, this script re-walks every run's persisted trace directly (via
-``shrlm.optimization.driver.load_round``, the same rehydration
+``shrlm.optimization.driver.load_round_runs``, the same rehydration
 ``split_aggregate`` already uses for sub-call counts) rather than reading
 ``records.jsonl``'s failures-only figures. That makes ``collapse_rate`` a true
 outcome-independent rate (matching the proposal's own framing: "how often the
@@ -114,7 +114,13 @@ from shrlm.experiment.rounds import (
 )
 from shrlm.optimization.bundle import BUNDLE_FILENAME
 from shrlm.optimization.clustering import COLLAPSE_RATIO_THRESHOLD as COLLAPSE_THRESHOLD
-from shrlm.optimization.driver import INSTANCES_FILE, MANIFEST_FILE, TRACES_DIR, load_round
+from shrlm.optimization.driver import (
+    INSTANCES_FILE,
+    MANIFEST_FILE,
+    TRACES_DIR,
+    load_round,
+    load_round_runs,
+)
 from shrlm.optimization.grounding import apply_sub_verifier
 from shrlm.optimization.taxonomy import FailingLevel
 from shrlm.optimization.types import SubVerifier
@@ -373,7 +379,9 @@ def compute_group_metrics(
     child_count = sum(1 for level in failure_levels if level is FailingLevel.CHILD)
     no_recursion_count = sum(1 for level in failure_levels if level is FailingLevel.NO_RECURSION)
     ungrounded_count = sum(1 for level in failure_levels if level is None)
-    attribution_known = len(failure_levels)  # 0 when unattributed OR no failures -- both mean "no share"
+    attribution_known = len(
+        failure_levels
+    )  # 0 when unattributed OR no failures -- both mean "no share"
 
     return GroupMetrics(
         n_runs=len(runs),
@@ -383,7 +391,9 @@ def compute_group_metrics(
         collapse_rate=(collapsed / n_walked) if n_walked else None,
         root_failure_share=(root_count / attribution_known) if attribution_known else None,
         child_failure_share=(child_count / attribution_known) if attribution_known else None,
-        no_recursion_failure_share=(no_recursion_count / attribution_known) if attribution_known else None,
+        no_recursion_failure_share=(no_recursion_count / attribution_known)
+        if attribution_known
+        else None,
         ungrounded_share=(ungrounded_count / attribution_known) if attribution_known else None,
         sub_verifier_available=(sub_verifier is not None) if environment_known else None,
     )
@@ -521,7 +531,7 @@ def collapse_and_attribution_evaluation(
                 sub_verifier_available=(sub_verifier is not None) if environment_known else None
             )
         else:
-            runs, verdicts, _envelope, _entries = load_round(record.set_path, EVAL_ROUND_INDEX)
+            runs, verdicts, _entries = load_round_runs(record.set_path, EVAL_ROUND_INDEX)
             metrics = compute_group_metrics(
                 runs, verdicts, sub_verifier, environment_known=environment_known
             )

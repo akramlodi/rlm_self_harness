@@ -3,7 +3,8 @@
   "conditions": {
     "b1": {
       "condition_id": "b1",
-      "harness_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "method_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "method_kind": "harness",
       "outcome": "completed",
       "source": {
         "kind": "registry",
@@ -14,7 +15,8 @@
         "graphwalks_long": {
           "attempts": 1,
           "environment": "graphwalks",
-          "harness_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "method_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "method_kind": "harness",
           "input_tokens": 30000,
           "instances_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
           "length": "long",
@@ -38,7 +40,8 @@
         "graphwalks_short": {
           "attempts": 1,
           "environment": "graphwalks",
-          "harness_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "method_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "method_kind": "harness",
           "input_tokens": 2000,
           "instances_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
           "length": "short",
@@ -62,7 +65,8 @@
         "oolong_pairs_long": {
           "attempts": 1,
           "environment": "oolong_pairs",
-          "harness_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "method_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "method_kind": "harness",
           "input_tokens": 30000,
           "instances_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
           "length": "long",
@@ -86,7 +90,8 @@
         "oolong_pairs_short": {
           "attempts": 1,
           "environment": "oolong_pairs",
-          "harness_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "method_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "method_kind": "harness",
           "input_tokens": 2000,
           "instances_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
           "length": "short",
@@ -111,7 +116,8 @@
     },
     "sh_rlm": {
       "condition_id": "sh_rlm",
-      "harness_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "method_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "method_kind": "harness",
       "outcome": "completed",
       "source": {
         "kind": "frozen",
@@ -122,7 +128,8 @@
         "graphwalks_long": {
           "attempts": 1,
           "environment": "graphwalks",
-          "harness_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "method_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "method_kind": "harness",
           "input_tokens": 30000,
           "instances_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
           "length": "long",
@@ -146,7 +153,8 @@
         "graphwalks_short": {
           "attempts": 1,
           "environment": "graphwalks",
-          "harness_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "method_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "method_kind": "harness",
           "input_tokens": 2000,
           "instances_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
           "length": "short",
@@ -170,7 +178,8 @@
         "oolong_pairs_long": {
           "attempts": 1,
           "environment": "oolong_pairs",
-          "harness_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "method_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "method_kind": "harness",
           "input_tokens": 30000,
           "instances_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
           "length": "long",
@@ -194,7 +203,8 @@
         "oolong_pairs_short": {
           "attempts": 1,
           "environment": "oolong_pairs",
-          "harness_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "method_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "method_kind": "harness",
           "input_tokens": 2000,
           "instances_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
           "length": "short",
@@ -219,7 +229,7 @@
     }
   },
   "eval_repetitions": 1,
-  "format": "shrlm-eval-summary/v1",
+  "format": "shrlm-eval-summary/v2",
   "identity_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "profile": "smoke",
   "test_sets": [

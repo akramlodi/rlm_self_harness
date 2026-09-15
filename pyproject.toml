@@ -66,6 +66,8 @@ test = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["shrlm/baselines/upstream/lambda_rlm.py"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = [

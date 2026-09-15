@@ -83,12 +83,12 @@ POINT_INPUT_TOKENS = (
     OPTIMIZATION_RUNS * SHORT_MEAN_INPUT
     + EVAL_SHORT_RUNS * SHORT_MEAN_INPUT
     + EVAL_LONG_RUNS * LONG_MEAN_INPUT
-)  # 22_188_000
+)  # 28_128_000
 POINT_OUTPUT_TOKENS = (
     OPTIMIZATION_RUNS * SHORT_MEAN_OUTPUT
     + EVAL_SHORT_RUNS * SHORT_MEAN_OUTPUT
     + EVAL_LONG_RUNS * LONG_MEAN_OUTPUT
-)  # 1_363_800
+)  # 1_672_800
 
 
 @pytest.fixture
@@ -646,5 +646,6 @@ def test_batch_projection_is_independent_of_k_and_legacy_merge_probability(confi
 def test_deepseek_profile_has_twenty_validation_runs_per_full_round():
     config = load_config("full", path="configs/experiment_oolong_pairs_DeepSeekV4Flash.toml")
     assert config.loop.v == 1
-    assert config.splits.n_in == config.splits.n_ho == 10
+    assert config.splits.n_in == 20
+    assert config.splits.n_ho == 10
     assert run_counts(config).runs_per_round - config.loop.m * config.splits.n_in == 20

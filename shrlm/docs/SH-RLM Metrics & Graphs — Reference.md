@@ -41,7 +41,7 @@
 - Root-vs-child failure attribution share, per condition × split
 
 **Integrity / audit requirements**
-- `harness_hash` re-verified against the freeze-time hash
+- `method_kind` + `method_hash` identify every evaluated inference method; harness-backed methods still re-verify the underlying harness against its freeze-time hash
 - `instances_sha256` / `split_file` proving the exact frozen test split was used, byte-identical across conditions
 - `usage_lower_bound` flag and `skipped_run_ids` surfaced wherever the spend breaker tripped, rather than silently averaged into the headline numbers
 

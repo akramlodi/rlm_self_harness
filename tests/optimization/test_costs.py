@@ -37,6 +37,7 @@ from shrlm.optimization.costs import (
     SplitClaimedError,
     ValidationCaps,
     breaker_run_cost,
+    call_with_hard_deadline,
     claim_split,
     governed_limits,
     hard_deadline_seconds,
@@ -515,6 +516,9 @@ class TestHardDeadlineBackstop:
         assert hard_deadline_seconds(60.0) == pytest.approx(
             60.0 * costs_module.HARD_DEADLINE_FACTOR + costs_module.HARD_DEADLINE_GRACE_SECONDS
         )
+
+    def test_public_deadline_helper_runs_without_a_deadline(self):
+        assert call_with_hard_deadline(lambda: "completed", None) == "completed"
 
     def test_hung_run_terminates_persists_charges_and_the_round_continues(
         self, tmp_path, monkeypatch

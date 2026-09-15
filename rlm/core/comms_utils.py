@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from rlm.core.types import RLMChatCompletion
+from rlm.utils.exceptions import TimeoutExceededError
 
 # =============================================================================
 # Message Dataclasses
@@ -220,6 +221,11 @@ def send_lm_request(
             request.depth = depth
         response_data = socket_request(address, request.to_dict(), timeout)
         return LMResponse.from_dict(response_data)
+    except TimeoutExceededError:
+        # A hard-deadline SIGALRM can land while socket_request is blocked in
+        # recv(). It terminates the enclosing run, so it must not become an
+        # ordinary in-band transport error after the one-shot alarm is consumed.
+        raise
     except Exception as e:
         return LMResponse.error_response(f"Request failed: {e}")
 
@@ -263,5 +269,7 @@ def send_lm_request_batched(
             else LMResponse.success_response(chat_completion)
             for chat_completion in response.chat_completions
         ]
+    except TimeoutExceededError:
+        raise
     except Exception as e:
         return [LMResponse.error_response(f"Request failed: {e}")] * len(prompts)

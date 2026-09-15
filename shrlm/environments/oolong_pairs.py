@@ -558,17 +558,19 @@ _GOLD_FNS: dict[int, _GoldFn] = {
 }
 
 
-def compute_gold_pairs(
+def compute_pairs(
     task_id: int,
     by_user: dict[int, UserInstances],
     window_id: Any = "<unknown>",
     max_gold_pairs: int = MAX_GOLD_PAIRS_PER_WINDOW,
 ) -> list[tuple[int, int]]:
-    """Programmatically compute the gold (user_id_1, user_id_2) pairs for `task_id`.
+    """Compute the pairs specified by the public task rule for ``task_id``.
 
-    `by_user` maps each user id to the list of (label, date) instances
-    belonging to that user, built from the OOLONG ground-truth labels. Pairs
-    are deduplicated, lower id first, and returned in sorted order.
+    ``by_user`` maps each user id to ``(label, date)`` instances. The mapping
+    may contain dataset labels while materializing gold, or model-predicted
+    labels while running a paper-style symbolic pairwise baseline. The task
+    rules are public prompt semantics; this function never reads a gold answer.
+    Pairs are deduplicated, lower id first, and returned in sorted order.
 
     `window_id` and `max_gold_pairs` back the `MAX_GOLD_PAIRS_PER_WINDOW`
     fail-fast guard (see `_symmetric_pairs`/`_asymmetric_pairs`); `window_id`
@@ -578,6 +580,16 @@ def compute_gold_pairs(
     if task_id not in _GOLD_FNS:
         raise ValueError(f"Unknown OOLONG-Pairs task_id: {task_id} (expected 1-20)")
     return _GOLD_FNS[task_id](by_user, window_id, max_gold_pairs)
+
+
+def compute_gold_pairs(
+    task_id: int,
+    by_user: dict[int, UserInstances],
+    window_id: Any = "<unknown>",
+    max_gold_pairs: int = MAX_GOLD_PAIRS_PER_WINDOW,
+) -> list[tuple[int, int]]:
+    """Backward-compatible grading name for :func:`compute_pairs`."""
+    return compute_pairs(task_id, by_user, window_id, max_gold_pairs)
 
 
 # =============================================================================

@@ -39,9 +39,11 @@ from typing import Any
 
 import pytest
 
+import shrlm.baselines.upstream.lambda_rlm as upstream_lambda
 from examples import experiment_smoke
 from shrlm.experiment.config import ExperimentConfig, load_config
 from shrlm.experiment.evaluation import (
+    CONDITION_LAMBDA_RLM,
     DEFAULT_CONDITIONS,
     EVAL_DIR,
     EVAL_SUMMARY_FILENAME,
@@ -208,14 +210,25 @@ def optimization_script() -> list[str]:
     return script
 
 
-def evaluation_script() -> list[str]:
-    """Every condition x test set x instance, answered correctly, in order."""
+def harness_evaluation_script() -> list[str]:
+    """Every harness condition x test set x instance, answered correctly."""
     per_condition = [
         final(gold_answer(instance))
         for environment, length in EVAL_SET_ORDER
         for instance in fixture_instances(environment, length, "test")
     ]
-    return per_condition * len(DEFAULT_CONDITIONS)
+    n_harness_conditions = len(DEFAULT_CONDITIONS) - 1
+    return per_condition * n_harness_conditions
+
+
+def lambda_evaluation_script() -> list[str]:
+    """λ-RLM's task-detection and answer calls for every test instance."""
+    return [
+        response
+        for environment, length in EVAL_SET_ORDER
+        for instance in fixture_instances(environment, length, "test")
+        for response in ("2", gold_answer(instance))
+    ]
 
 
 def n_optimization_runs() -> int:
@@ -223,7 +236,12 @@ def n_optimization_runs() -> int:
 
 
 def n_evaluation_runs() -> int:
-    return len(evaluation_script())
+    """Persisted eval runs; one λ-RLM run contains two scripted model calls."""
+    return len(harness_evaluation_script()) + len(lambda_evaluation_script()) // 2
+
+
+def n_evaluation_model_calls() -> int:
+    return len(harness_evaluation_script()) + len(lambda_evaluation_script())
 
 
 # ---------------------------------------------------------------------------
@@ -234,10 +252,17 @@ def n_evaluation_runs() -> int:
 class SmokeRun:
     """What one full mock smoke produced, for the assertions below to read."""
 
-    def __init__(self, config: ExperimentConfig, out_dir: Path, factory: ClientFactory) -> None:
+    def __init__(
+        self,
+        config: ExperimentConfig,
+        out_dir: Path,
+        factory: ClientFactory,
+        lambda_factory: ClientFactory,
+    ) -> None:
         self.config = config
         self.out_dir = out_dir
         self.factory = factory
+        self.lambda_factory = lambda_factory
 
 
 @pytest.fixture(scope="module")
@@ -254,8 +279,10 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setenv("OPENROUTER_API_KEY", OPENROUTER_KEY_SENTINEL)
         block_network(monkeypatch)
-        factory = ClientFactory(optimization_script() + evaluation_script())
+        factory = ClientFactory(optimization_script() + harness_evaluation_script())
+        lambda_factory = ClientFactory(lambda_evaluation_script())
         monkeypatch.setattr(rlm_module, "get_client", factory)
+        monkeypatch.setattr(upstream_lambda, "get_client", lambda_factory)
 
         pre_materialize_splits(config, out_dir)
         run_experiment(
@@ -266,7 +293,7 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
             loaders=LOADERS,
         )
         run_evaluation(config, DEFAULT_CONDITIONS, out_dir, loaders=LOADERS)
-    return SmokeRun(config, out_dir, factory)
+    return SmokeRun(config, out_dir, factory, lambda_factory)
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +303,13 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
 
 class TestSmokePipeline:
     def test_every_scripted_run_executed_and_nothing_else_did(self, smoke: SmokeRun):
-        assert smoke.factory.total_calls == n_optimization_runs() + n_evaluation_runs()
+        assert smoke.factory.total_calls == n_optimization_runs() + len(harness_evaluation_script())
+        assert smoke.lambda_factory.total_calls == len(lambda_evaluation_script())
+        assert smoke.factory.total_calls + smoke.lambda_factory.total_calls == (
+            n_optimization_runs() + n_evaluation_model_calls()
+        )
         assert smoke.factory.script == []  # the script is exactly consumed
+        assert smoke.lambda_factory.script == []
 
     def test_directory_contract(self, smoke: SmokeRun):
         out = smoke.out_dir
@@ -299,6 +331,10 @@ class TestSmokePipeline:
                 path = out / EVAL_DIR / condition / f"{environment}_{length}" / "round_00"
                 assert (path / "runs.jsonl").exists(), path
                 assert (path / "instances.jsonl").exists(), path
+                identity_file = (
+                    "method.json" if condition == CONDITION_LAMBDA_RLM else "harness.json"
+                )
+                assert (path / identity_file).exists(), path
 
     def test_both_environments_at_both_lengths_were_evaluated(self, smoke: SmokeRun):
         summary = json.loads((smoke.out_dir / EVAL_DIR / EVAL_SUMMARY_FILENAME).read_text())
@@ -656,10 +692,10 @@ class TestLiveSmokeGuards:
     def test_configured_live_budgets_stay_under_the_five_dollar_ceiling(self):
         config = experiment_smoke.live_config()
 
-        # One mining + two validation + three final-evaluation breakers.
-        assert experiment_smoke.breaker_count(config) == 6
-        governed = 6 * (config.caps.candidate_budget + config.caps.max_budget)
-        assert governed == pytest.approx(2.64)
+        # One mining + two validation + four final-evaluation breakers.
+        assert experiment_smoke.breaker_count(config) == 7
+        governed = 7 * (config.caps.candidate_budget + config.caps.max_budget)
+        assert governed == pytest.approx(3.08)
 
         # Ungoverned: 18 attribution + 24 proposal calls, plus two probes.
         # Stage calls use the char-cap input bound; probes have a smaller bound.
@@ -670,46 +706,48 @@ class TestLiveSmokeGuards:
         ) / 1_000_000
         assert experiment_smoke.ungoverned_call_count(config) == 44
         assert experiment_smoke.ungoverned_call_ceiling(config) == pytest.approx(per_call)
-        # Literal sanity pin at the shipped Qwen list rate ($0.10 / $0.30 per
-        # 1M): (49,152 x 0.10 + 4,096 x 0.30) / 1e6 = $0.0061440 per call.
         assert per_call == pytest.approx(0.0061440)
+
         probe_spend = experiment_smoke.probe_spend_bound_usd(config)
         assert probe_spend == pytest.approx(0.0026624)
         ungoverned = 42 * experiment_smoke.ungoverned_call_ceiling(config) + probe_spend
         assert ungoverned == pytest.approx(0.2607104)
 
         assert experiment_smoke.spend_ceiling(config) == pytest.approx(governed + ungoverned)
-        # The standalone --probe invocation (run FIRST) spends two more
-        # ungoverned calls on top of the --live run's own probe.
+        assert experiment_smoke.spend_ceiling(config) == pytest.approx(3.3407104)
+
+        # The standalone --probe invocation is additional to the probe already
+        # included in the full --live invocation.
         probe_reserve = experiment_smoke.standalone_probe_reserve_usd(config)
         assert probe_reserve == pytest.approx(probe_spend)
-        # The proven figure is cumulative: this invocation plus the standalone
-        # probe reserve plus the $0.60 U4 pytest live reserve, under the one
-        # $5 ceiling. Literal sanity pin: 2.64 + 0.2607104 + 0.0026624 + 0.60.
+
         cumulative = (
             experiment_smoke.spend_ceiling(config)
             + probe_reserve
             + experiment_smoke.PYTEST_LIVE_RESERVE_USD
         )
-        assert cumulative < 5.0
+
+        assert cumulative == pytest.approx(3.9433728)
         assert cumulative < experiment_smoke.SPEND_CEILING_USD
         assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(cumulative)
-        assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(3.5033728)
+
+        # Batched validation means increasing k does not add spend breakers.
         more_proposals = replace(config, loop=replace(config.loop, k=4))
-        assert experiment_smoke.breaker_count(more_proposals) == 6
+        assert experiment_smoke.breaker_count(more_proposals) == 7
 
     def test_the_ceiling_scales_with_the_round_count(self):
         """Every per-round breaker and per-round LM call is armed t times."""
         config = experiment_smoke.live_config()
         three_rounds = replace(config, loop=replace(config.loop, t=3))
 
-        # 3 x (1 mining + 2 validation subjects) + 3 evaluation conditions.
-        assert experiment_smoke.breaker_count(three_rounds) == 12
+        # 3 x (1 mining + 2 validation subjects) + 4 evaluation conditions.
+        assert experiment_smoke.breaker_count(three_rounds) == 13
+
         # 2 probe + 3 x (18 attribution + 24 proposal) calls.
         assert experiment_smoke.ungoverned_call_count(three_rounds) == 2 + 3 * 42
         assert experiment_smoke.spend_ceiling(three_rounds) > experiment_smoke.spend_ceiling(config)
-        # A three-round smoke is not affordable under the $5 ceiling, and the
-        # arithmetic says so rather than discovering it while spending.
+
+        # A three-round smoke is not affordable under the $5 ceiling.
         with pytest.raises(experiment_smoke.SmokeError, match="ceiling"):
             experiment_smoke.check_budget_arithmetic(three_rounds)
 

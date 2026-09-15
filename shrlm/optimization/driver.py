@@ -474,7 +474,7 @@ def _reject_mixed_accounting(manifest_path: Path, entries: list[dict[str, Any]])
         )
 
 
-def _verify_trace(path: Path, entry: dict[str, Any]) -> Path:
+def verify_trace(path: Path, entry: dict[str, Any]) -> Path:
     """Check one manifest entry's trace file exists and matches its sha256."""
     trace_path = path / str(entry["trace_path"])
     if not trace_path.exists():
@@ -526,7 +526,7 @@ def _partial_completion(
     limit exceptions carry no cost of their own, so usage stays empty, token
     counts stay zero, and the breaker prices the run at its per-run ceiling.
 
-    ``usage_lower_bound`` (see ``_persist_run``) stays true for a terminated
+    ``usage_lower_bound`` (see ``persist_run``) stays true for a terminated
     run either way: a request killed in flight, a response with a deficient
     body, and a route that reports no cost are all still genuinely unrecorded.
     The published figure removes the large systematic loss; it does not make
@@ -564,7 +564,7 @@ def _partial_completion(
     )
 
 
-def _persist_run(
+def persist_run(
     path: Path,
     run_id: str,
     instance_id: str,
@@ -647,7 +647,7 @@ def append_child_run(
 ) -> dict[str, Any]:
     """Record a run whose trace a child already wrote, without rewriting it.
 
-    The sibling of ``_persist_run`` for the concurrent path. The bytes on disk
+    The sibling of ``persist_run`` for the concurrent path. The bytes on disk
     are the child's; the parent hashes exactly those bytes rather than
     re-serializing the rehydrated completion, so the recorded sha256 describes
     the file a reader will actually load. Re-serializing could differ in
@@ -760,7 +760,7 @@ def persist_interrupted_run(
                 produced=completion.response,
                 detail=f"{type(error).__name__}: {error}",
             )
-            return _persist_run(
+            return persist_run(
                 path,
                 candidate_run_id,
                 instance_id,
@@ -811,7 +811,7 @@ def prepare_round(
 
     existing = _load_manifest(path)
     for entry in existing:
-        _verify_trace(path, entry)
+        verify_trace(path, entry)
     done = {str(entry["run_id"]) for entry in existing}
 
     pending = [
@@ -1047,7 +1047,7 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
         # persists. Narrow explicitly rather than leave the guarantee implicit.
         assert outcome.verdict is not None
         entries.append(
-            _persist_run(
+            persist_run(
                 path,
                 run_id_for(instance_id, attempt),
                 instance_id,
@@ -1066,23 +1066,22 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
 # The mining phase: disk in, evidence bundle out
 # ---------------------------------------------------------------------------
 
-
-def load_round(
+def load_round_runs(
     out_dir: Path | str, round_index: int
 ) -> tuple[
     list[tuple[dict[str, Any], RLMChatCompletion]],
     list[Verdict],
-    dict[str, Any],
     list[dict[str, Any]],
 ]:
-    """Read a persisted round back: (instance, completion) pairs, aligned
-    verdicts, the harness envelope, and the aligned manifest entries (the
-    source of each run's run_id / trace_path / trace_sha256). Every trace is
-    sha-verified before it is trusted, so mining cannot silently consume a
-    modified file. Results follow persisted instance order, then attempt,
-    regardless of manifest append order."""
+    """Read a persisted method round without assuming its identity format.
+
+    Returns aligned ``(instance, completion)`` pairs, verdicts, and manifest
+    entries. Every trace is sha-verified before it is trusted. Harness-backed
+    rounds and non-harness methods such as lambda-RLM share these artifacts;
+    their identity envelopes intentionally differ. Results follow persisted
+    instance order, then attempt, regardless of manifest append order.
+    """
     path = round_dir(out_dir, round_index)
-    envelope = json.loads((path / HARNESS_FILE).read_text())
     ordered_instances = [
         json.loads(line)
         for line in (path / INSTANCES_FILE).read_text().splitlines()
@@ -1094,12 +1093,26 @@ def load_round(
     verdicts: list[Verdict] = []
     entries: list[dict[str, Any]] = []
     for entry in canonical_manifest_entries(_load_manifest(path), ordered_instances):
-        trace_path = _verify_trace(path, entry)
+        trace_path = verify_trace(path, entry)
         instance_id = str(entry["instance_id"])
         completion = RLMChatCompletion.from_dict(json.loads(trace_path.read_text()))
         runs.append((instances[instance_id], completion))
         verdicts.append(Verdict.from_dict(entry["verdict"]))
         entries.append(entry)
+    return runs, verdicts, entries
+
+def load_round(
+    out_dir: Path | str, round_index: int
+) -> tuple[
+    list[tuple[dict[str, Any], RLMChatCompletion]],
+    list[Verdict],
+    dict[str, Any],
+    list[dict[str, Any]],
+]:
+    """Read a persisted harness round, including its harness envelope."""
+    path = round_dir(out_dir, round_index)
+    envelope = json.loads((path / HARNESS_FILE).read_text())
+    runs, verdicts, entries = load_round_runs(out_dir, round_index)
     return runs, verdicts, envelope, entries
 
 
@@ -1241,7 +1254,9 @@ def _persist_mining_artifacts(path: Path, result: MiningResult) -> None:
 
 
 __all__ = [
+    "INSTANCES_FILE",
     "ROOT_LIMIT_EXCEPTIONS",
+    "TRACES_DIR",
     "RoundConfig",
     "RoundPersistenceError",
     "canonical_manifest_entries",
@@ -1249,9 +1264,11 @@ __all__ = [
     "load_manifest",
     "load_round",
     "mine_round",
+    "persist_run",
     "persist_interrupted_run",
     "round_dir",
     "run_id_for",
     "run_round",
     "sha256_file",
+    "verify_trace",
 ]
