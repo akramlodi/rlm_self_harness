@@ -289,7 +289,9 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
             config,
             out_dir,
             attributor_lm=MockLM(responses=[attribution(mechanism) for mechanism in MECHANISMS]),
-            proposer_lm=MockLM(responses=[proposer_batch((0, MERGE_TEXT), (1, MERGE_TEXT))]),
+            proposer_lm=MockLM(
+                responses=[proposer_batch((0, MERGE_TEXT), (1, MERGE_TEXT), surfaces=("S4", "S2"))]
+            ),
             loaders=LOADERS,
         )
         run_evaluation(config, DEFAULT_CONDITIONS, out_dir, loaders=LOADERS)

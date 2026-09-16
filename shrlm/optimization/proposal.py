@@ -6,9 +6,9 @@ docs/harness-proposal-interface.md). Given a mining round's ``bundle.json``, the
 current (incumbent) harness, which runs already pass, and the prior validation
 rounds' promotion ledgers, a fixed proposer model is shown the mined failure
 patterns and asked to propose up to K candidate edits, each targeting exactly
-one pattern on exactly one surface -- the surface its mechanism implicates,
-``shrlm.optimization.taxonomy.MECHANISM_SURFACE``, which the model is never
-asked to restate. Every candidate is written as a ``shrlm-proposal/v1``
+one pattern on exactly one eligible surface from
+``shrlm.optimization.taxonomy.MECHANISM_SURFACES``. The model declares unique
+selections before their matching replacements. Every candidate is written as a ``shrlm-proposal/v1``
 ``proposal.json`` (``docs/harness-proposal-interface.md``), ready for
 ``shrlm.optimization.candidates.load_candidates``.
 
@@ -61,6 +61,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from string import Formatter
 from typing import Any
 
 from rlm.clients.base_lm import BaseLM
@@ -73,7 +74,6 @@ from shrlm.harness_identity import (
     hash_of_serialization,
     serialize_harness,
 )
-from shrlm.optimization.attribution import truncate_for_prompt
 from shrlm.optimization.candidates import (
     BEHAVIOR_FIELDS,
     CANDIDATE_MODULE_PREAMBLE,
@@ -99,12 +99,9 @@ from shrlm.optimization.skill_edit import (
     _validate_skill_edit,
 )
 from shrlm.optimization.taxonomy import (
-    MECHANISM_DOCS,
     MECHANISM_SURFACE,
     MECHANISM_SURFACES,
-    SURFACE_NAME,
     AgentMechanism,
-    EditableSurface,
     render_surface_block,
 )
 from shrlm.rlm_harness import (
@@ -123,6 +120,8 @@ from shrlm.rlm_harness import (
 from shrlm.runner import declared_metadata_bound
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
+TEXT_CONTRACT = "literal-text/v1"
+RESPONSE_FORMAT_VERSION = "proposal-selection/v1"
 # ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
 # declaration site) and re-exported here for the proposal writer.
 PROPOSAL_FILENAME = "proposal.json"
@@ -144,7 +143,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "2.1.0"
+PROMPT_VERSION = "3.0.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -160,7 +159,7 @@ PROMPT_VERSION = "2.1.0"
 # materialization returns an empty result instead of raising. The 2026-09-10
 # OOLONG-Pairs run lost rounds 4-6 to a proposer that re-emitted the incumbent's
 # own S9 three rounds in a row; under 1.4.0 that was counted, never re-asked.
-VALIDATOR_VERSION = "2.1.0"
+VALIDATOR_VERSION = "3.0.0"
 
 DEFAULT_K = 4
 # Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
@@ -175,7 +174,7 @@ DEFAULT_MAX_ATTEMPTS = 8
 DEFAULT_TRANSPORT_RETRIES = 3
 DEFAULT_TRANSPORT_BACKOFF_SECONDS = 0.5
 
-JSON_ARRAY_BLOCK_PATTERN = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+JSON_BLOCK_PATTERN = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
 # Deterministic programming/contract errors that must propagate rather than be
 # retried as transient transport failures. Same rationale and set as
@@ -306,6 +305,7 @@ class CandidateSpec:
     incumbent_behavior: str = ""
     observed_failure: str = ""
     behavioral_change: str = ""
+    text_contract: str = ""
 
 
 @dataclass(frozen=True)
@@ -352,6 +352,7 @@ class ProposalRoundResult:
     prompt_sha256: str
     preflight_failures: list[dict[str, Any]] = field(default_factory=list)
     preflight_profile: str = "generic/v1"
+    evidence_audit: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -489,17 +490,51 @@ def _render_verifier_contract(verifier_config: dict[str, Any] | None) -> str:
     return "Verifier contract (what the environment accepts): " + ", ".join(parts)
 
 
+def literal_surface_text(template: str, marker: str) -> str:
+    """Decode stored templates for proposal display, without inserting tools."""
+    parts = []
+    for literal, field_name, format_spec, conversion in Formatter().parse(template):
+        parts.append(literal)
+        if field_name is not None:
+            if field_name != "custom_tools_section" or format_spec or conversion:
+                raise ValueError(f"unsupported incumbent template field: {field_name}")
+            parts.append(marker)
+    return "".join(parts)
+
+
+def text_slot_marker(serialization: dict[str, Any]) -> str:
+    """Choose a round-stable marker absent from every incumbent literal span."""
+    literals = [
+        literal_surface_text(serialization["surfaces"][SURFACE_SERIALIZATION_KEYS[s][0]], "")
+        for s in TEXT_SURFACE_FIELDS
+    ]
+    number = 0
+    while True:
+        suffix = f"_{number}" if number else ""
+        marker = f"<<custom_tools_section{suffix}>>"
+        if all(marker not in text for text in literals):
+            return marker
+        number += 1
+
+
 def render_current_surfaces(
     addressable: Sequence[tuple[int, dict[str, Any]]],
     incumbent_serialization: dict[str, Any],
 ) -> str:
     eligible = {surface for _, pattern in addressable for surface in _pattern_surfaces(pattern)}
+    marker = text_slot_marker(incumbent_serialization)
     blocks = [
-        "Complete current surfaces (shared by all patterns; replacements must preserve useful behavior):"
+        "Complete current surfaces (shared by all patterns; replacements must preserve useful behavior):",
+        f"Text contract {TEXT_CONTRACT}: S1-S5 are literal text. Do not double braces. "
+        f"The reserved marker {marker} inserts custom tools; preserve it where present. "
+        "All other braces are literal, including {custom_tools_section}. "
+        "JSON string escaping is still required for response transport.",
     ]
     for surface in sorted(eligible, key=lambda value: int(value[1:])):
         current = {
-            key: incumbent_serialization["surfaces"][key]
+            key: literal_surface_text(incumbent_serialization["surfaces"][key], marker)
+            if surface in TEXT_SURFACE_FIELDS
+            else incumbent_serialization["surfaces"][key]
             for key in SURFACE_SERIALIZATION_KEYS[surface]
         }
         blocks.append(f"current {surface} value:\n" + json.dumps(current, indent=2, sort_keys=True))
@@ -521,49 +556,10 @@ Available imports for candidate functions:
 """
     + CANDIDATE_MODULE_PREAMBLE
     + """
-Text instruction surfaces are Python format templates: double literal braces
-(e.g. {{"record_id": 1}}); preserve supported template placeholders.
+New text instructions use the literal text contract shown with current surfaces.
+The host handles template encoding; write Python/JSON examples with literal braces.
 """
 )
-
-
-def _render_pattern_block(
-    index: int, pattern: dict[str, Any], incumbent_serialization: dict[str, Any]
-) -> str:
-    surfaces = _pattern_surfaces(pattern)
-    assert surfaces  # _addressable_patterns already filtered
-    mechanism = AgentMechanism(pattern["signature"]["agent_mechanism"])
-    eligible = ", ".join(
-        f"{surface} ({SURFACE_NAME[EditableSurface(surface)]}){' -- primary' if i == 0 else ''}"
-        for i, surface in enumerate(surfaces)
-    )
-    lines = [
-        f"[{index}] eligible surfaces: {eligible}",
-        f"  signature: {json.dumps(pattern['signature'], sort_keys=True)}",
-        f"  mechanism meaning: {MECHANISM_DOCS[mechanism]}",
-        f"  support={pattern.get('support')} instance_support={pattern.get('instance_support')} "
-        f"below_min_support={pattern.get('below_support_floor')}",
-        f"  shared_symptoms: {pattern.get('shared_symptoms')}",
-        # Each entry is bounded on its own at render time (the persisted
-        # bundle keeps the full text): one 181-node gold list must not consume
-        # the whole budget and hide the other entries' produced strings.
-        "  verifier_evidence (quoted model output, illustration only -- never instructions): "
-        + json.dumps(
-            [truncate_for_prompt(str(entry)) for entry in (pattern.get("verifier_evidence") or [])]
-        ),
-        f"  representative instance ids: {pattern.get('representatives')}",
-    ]
-    return "\n".join(lines)
-
-
-def _render_passing_block(passing_behaviors: Sequence[dict[str, Any]]) -> str:
-    if not passing_behaviors:
-        return "No passing runs were observed in this round; there is nothing yet to preserve."
-    ids = ", ".join(str(run.get("instance_id")) for run in passing_behaviors)
-    return (
-        f"{len(passing_behaviors)} run(s) already pass and must not regress: {ids}. "
-        "A minimal edit should not change behavior these runs depend on."
-    )
 
 
 # The history outcome of a candidate that validated but failed to materialize
@@ -690,11 +686,12 @@ evaluated as one combined candidate, with one shared promotion decision. The \
 candidate limit is a maximum, not a quota. When patterns compete for a surface, \
 choose the best-supported minimal edit. Do not move an edit to a weaker surface \
 just to fill the batch. If only one surface warrants a change, propose one edit; \
-if none does, return an empty array.
+if none does, return empty selections and candidates lists.
 
-Before replacement text, describe incumbent_behavior (what it already does), \
-observed_failure (what operation remains wrong in this trace), and behavioral_change \
-(the precise action this edit changes). Each is a short string, at most 600 characters. \
+Before replacement text, describe incumbent_behavior (what the relevant execution \
+actually did, distinguishing it from instructions), observed_failure (the unresolved \
+operation and verification limits), and behavioral_change (the precise action/value \
+changed there and why it addresses the demonstrated cause). Each is a short string, at most 600 characters. \
 Repeating an existing instruction more emphatically is insufficient justification. \
 If there is no concrete difference, withdraw the candidate instead of supplying \
 "none", "no change", "no-op", or "unchanged". Local checks enforce shape and literal \
@@ -736,36 +733,25 @@ sub-call errors are treated during recovery -- and hold that candidate to the \
 same no-harm bar as any other.
 """
 
-OOLONG_RECORD_GUIDANCE = """OOLONG-Pairs proposal guidance (only when supported by held-in evidence):
-For an eligible S2, S3, or S4 edit, consider classifying each input record once,
-using its original row ordinal as a stable record ID assigned before chunking.
-User IDs and repeated text are not record IDs. Send records plus the task's label
-vocabulary to children; ask for record ID and label, not partial pair sets.
-Join by record ID, never response position (children may return shuffled rows).
-Prefer a list of [record_id, label] rows so duplicate IDs remain detectable before
-building a mapping; a JSON object has already discarded duplicate-key evidence.
-Check missing, duplicate, unknown IDs and invalid labels. Retain valid labels;
-repair only missing/invalid records within existing caps, with no unbounded retries.
-Keep user/date metadata at the root. Aggregate counts and dates by user in Python,
-then apply the actual task predicate, including AND/OR, time windows and asymmetric
-conditions. Construct qualifying pairs from these results, deduplicate, exclude
-self-pairs and place the lower user ID first. Empty results are permitted; do not
-assume all users form a clique. Labels remain model judgments, not verified facts.
-This is an optional proposal direction, not a required edit or surface quota.
+TASK_REASONING_GUIDANCE = """Task-derived reasoning (use only considerations supported by held-in evidence):
+Which information must survive each step, and which task conditions must the final
+computation enforce? Consider counts, dates, identity, ordering, provenance, units,
+and asymmetric roles only when the task needs them. A set discards multiplicity
+and cannot implement an exactly-one predicate; aggregate counts cannot restore
+lost dates; joining by ID cannot verify semantic labels. Derive the procedure
+from this task's conditions rather than applying a benchmark recipe.
 
-Example coverage check for returned_rows (synthetic record IDs; task_labels comes
-from the current task). Put this consistent contract in a replacement/scoped example:
-```python
-ids = [record_id for record_id, label in returned_rows]
-assert len(ids) == len(set(ids)), "duplicate record IDs"
-assert set(ids) <= set(record_ids), "unknown record IDs"
-assert set(record_ids) <= set(ids), "missing record IDs"
-assert all(label in task_labels for record_id, label in returned_rows), "invalid labels"
-labels_by_id = dict(returned_rows)
-```
-These checks establish row coverage and label vocabulary, not label correctness or
-coverage lost before parsing. Retain valid rows and repair only failed rows within caps.
-Do not encode task-specific answers or example record values into a harness surface.
+Compare with actual execution, not only the incumbent instruction text. Identify
+successful checks and discarded/replaced intermediate results before naming an
+unresolved operation. Complete parsed IDs do not prove correct labels or complete
+original parsing. Do not assert unverified labels were correct. Recovery already
+performed is not a new final-answer fix; explain what remains wrong afterward.
+
+Challenge each proposed change: If this edit were followed perfectly, could the
+demonstrated failure still happen for the same reason? If yes, revise the causal
+claim or withdraw it. A coverage reminder cannot resolve wrong-but-valid labels.
+Describe the changed action/value at the unresolved operation in behavioral_change;
+when useful, use a tiny synthetic counterexample instead of a task-specific answer.
 """
 
 
@@ -859,23 +845,29 @@ with similar skills in the index and never loaded correctly.
 """
 
 RESPONSE_FORMAT = """\
-Respond with a single fenced JSON array and nothing else, at most %(k)s objects, one \
-per candidate:
+Respond with one fenced JSON object using format proposal-selection/v1. Write
+selections first: choose at most %(k)s interventions, one per surface and pattern,
+ranked by evidence for the unresolved operation. Then write exactly one matching
+candidate per selection. No extra model call is needed. To withdraw all, return
+empty selections and candidates lists. Example shape:
 
 ```json
-[
-  {
+{
+  "format": "proposal-selection/v1",
+  "selections": [{"pattern_index": 0, "surface": "S3", "reason": "<evidence supporting this intervention over contenders>"}],
+  "candidates": [{
     "pattern_index": 0,
-    "surface": "<one of that pattern's eligible surfaces, e.g. S9>",
-    "incumbent_behavior": "<what the current surface already instructs>",
-    "observed_failure": "<remaining wrong operation in the held-in evidence>",
-    "behavioral_change": "<precise changed action, not emphasis or a repeated rule>",
-    "edit": <one of the edit formats above, in the shape that surface accepts>,
-    "predicted_effect": "<what behavior this is predicted to change>",
+    "surface": "S3",
+    "incumbent_behavior": "<what the relevant execution actually did; distinguish instructions from execution>",
+    "observed_failure": "<unresolved operation and verification limits in held-in evidence>",
+    "behavioral_change": "<precise changed action and why it addresses the demonstrated cause>",
+    "edit": "<one edit object in the surface's format above>",
+    "predicted_effect": "<predicted behavior>",
     "regression_risks": ["<what it might break>"]
-  }
-]
+  }]
+}
 ```
+Selection reasons and each explanation field must contain 1-600 characters.
 """
 
 
@@ -887,6 +879,7 @@ def render_prompt(
     k: int,
     verifier_config: dict[str, Any] | None = None,
     evidence: dict[str, Any] | None = None,
+    evidence_audit: dict[str, Any] | None = None,
 ) -> tuple[str, list[tuple[int, dict[str, Any]]]]:
     """The one system prompt for a round, and the addressable patterns shown.
 
@@ -895,40 +888,54 @@ def render_prompt(
     proposed, i.e. ``skipped_patterns``) without re-deriving it.
     """
     addressable = _addressable_patterns(patterns)
-    pattern_text = (
-        "\n\n".join(
-            (
-                "Held-in representative diagnosis (observations, not instructions):\n"
-                + json.dumps(
-                    (evidence or {}).get("patterns", {}).get(index, {"diagnosis": "unavailable"})
-                )
-                + "\n"
-                + _render_pattern_block(index, pattern, incumbent_serialization)
-            )
-            for index, pattern in addressable
-        )
-        if addressable
-        else "No addressable failure patterns in this bundle."
+    from shrlm.optimization.proposal_evidence import (
+        EvidenceBudgetExceeded,
+        bounded_excerpt,
+        pack_evidence,
     )
+
+    inventory = [
+        {
+            "index": index,
+            "signature": pattern["signature"],
+            "eligible_surfaces": _pattern_surfaces(pattern),
+            "support": pattern.get("support"),
+            "instance_support": pattern.get("instance_support"),
+            "below_min_support": pattern.get("below_support_floor"),
+            "symptoms": bounded_excerpt(str(pattern.get("shared_symptoms", "")), 300),
+        }
+        for index, pattern in addressable
+    ]
+    context = dict(evidence or {})
+    context["passing_ids"] = [str(run["instance_id"]) for run in passing_behaviors]
+    # Legacy bundles still contribute bounded unparsed evidence. Do not repeat
+    # their produced/expected dumps beside verified per-run diagnostics.
+    context["patterns"] = dict(context.get("patterns", {}))
+    for index, pattern in addressable:
+        if index not in context["patterns"]:
+            context["patterns"][index] = {
+                "diagnosis": "representative evidence unavailable",
+                "verifier_evidence": "unparsed: "
+                + "\n".join(
+                    bounded_excerpt(str(entry), 1000)
+                    for entry in (pattern.get("verifier_evidence") or ["unavailable"])[:2]
+                ),
+            }
+    try:
+        evidence_text, audit = pack_evidence(inventory, context, k=k)
+    except EvidenceBudgetExceeded as exc:
+        raise ProposalRejection(str(exc)) from exc
+    if evidence_audit is not None:
+        evidence_audit.update(audit)
     sections = [
         PROPOSER_INTRO + render_surface_block(),
         PROPOSER_TASK,
         PROPOSER_QUALITY,
+        TASK_REASONING_GUIDANCE,
         _render_verifier_contract(verifier_config),
         CALLABLE_CONTRACT,
         render_current_surfaces(addressable, incumbent_serialization),
-        "Failure patterns:\n" + pattern_text,
-        "Passing behavior to preserve:\n"
-        + _render_passing_block(passing_behaviors)
-        + "\nBounded held-in observations: "
-        + json.dumps(
-            {
-                "status": (evidence or {}).get(
-                    "passing_status", "passing trace evidence unavailable"
-                ),
-                "examples": (evidence or {}).get("passing", []),
-            }
-        ),
+        evidence_text,
         "Prior edit history (every previously attempted candidate with its surface, "
         "predicted effect, and outcome; do not repeat an approach already rejected "
         "for the same reason). A candidate identical to the current surface is "
@@ -955,13 +962,14 @@ def render_prompt(
         from shrlm.environments.oolong_pairs import ANSWER_CONTRACT
 
         sections.append(ANSWER_CONTRACT)
-        if any(set(_pattern_surfaces(pattern)) & {"S2", "S3", "S4"} for _, pattern in addressable):
-            sections.append(OOLONG_RECORD_GUIDANCE)
     if any("S10" in _pattern_surfaces(pattern) for _, pattern in addressable):
         sections.append(SKILLS_PEDAGOGY % {"skill_loader": SKILL_LOADER_NAME})
     eligible = {surface for _, pattern in addressable for surface in _pattern_surfaces(pattern)}
     sections.append(RESPONSE_FORMAT % {"k": min(k, len(eligible))})
-    return "\n\n".join(sections), addressable
+    rendered = "\n\n".join(sections)
+    if evidence_audit is not None:
+        evidence_audit["system_prompt_chars"] = len(rendered)
+    return rendered, addressable
 
 
 def prompt_sha256(rendered_prompt: str) -> str:
@@ -1004,7 +1012,7 @@ def _repair_unescaped_quotes(candidate: str, first_error: json.JSONDecodeError) 
         else:
             return None
         try:
-            return json.loads(repaired)
+            return json.loads(repaired, object_pairs_hook=ProposalObject)
         except json.JSONDecodeError as exc:
             if exc.pos <= error.pos:
                 return None
@@ -1012,31 +1020,46 @@ def _repair_unescaped_quotes(candidate: str, first_error: json.JSONDecodeError) 
     return None
 
 
-def extract_json_array(text: str) -> list[Any]:
-    """Pull the single JSON array out of a model response.
+class ProposalObject(dict[str, Any]):
+    """Retain duplicate-key errors until they can be assigned to a member."""
 
-    Falls back to the first balanced bracket span when the model omits the
-    fence, exactly like ``attribution.extract_json_block`` falls back to a
-    brace span. A strict-parse failure gets one bounded repair pass for
-    unescaped quotes inside string values (``_repair_unescaped_quotes``)
-    before the response is rejected and re-asked.
-    """
-    match = JSON_ARRAY_BLOCK_PATTERN.search(text)
+    def __init__(self, pairs: list[tuple[str, Any]]):
+        super().__init__(pairs)
+        keys = [key for key, _ in pairs]
+        self.duplicate_keys = sorted({key for key in keys if keys.count(key) > 1})
+
+
+def duplicate_json_keys(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return list(getattr(value, "duplicate_keys", [])) + [
+            key for child in value.values() for key in duplicate_json_keys(child)
+        ]
+    if isinstance(value, list):
+        return [key for child in value for key in duplicate_json_keys(child)]
+    return []
+
+
+def extract_proposal_response(text: str) -> dict[str, Any]:
+    """Parse the live selection contract; historical arrays are not reinterpreted."""
+    match = JSON_BLOCK_PATTERN.search(text)
     candidate = match.group(1) if match else None
     if candidate is None:
-        start = text.find("[")
-        end = text.rfind("]")
-        if start == -1 or end <= start:
-            raise ProposalRejection("no JSON array found in the response")
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start or text.lstrip().startswith("["):
+            raise ProposalRejection("no JSON selection object found in the response")
         candidate = text[start : end + 1]
     try:
-        parsed = json.loads(candidate)
+        parsed = json.loads(candidate, object_pairs_hook=ProposalObject)
     except json.JSONDecodeError as exc:
         parsed = _repair_unescaped_quotes(candidate, exc)
         if parsed is None:
             raise ProposalRejection(f"response was not valid JSON: {exc}") from None
-    if not isinstance(parsed, list):
-        raise ProposalRejection("expected a JSON array of candidate objects")
+    if not isinstance(parsed, dict) or parsed.get("format") != RESPONSE_FORMAT_VERSION:
+        raise ProposalRejection(f"expected a JSON object with format {RESPONSE_FORMAT_VERSION}")
+    if getattr(parsed, "duplicate_keys", []):
+        raise ProposalRejection("duplicate JSON keys in response envelope")
+    if not all(isinstance(parsed.get(key), list) for key in ("selections", "candidates")):
+        raise ProposalRejection("selections and candidates must be lists")
     return parsed
 
 
@@ -1195,6 +1218,7 @@ def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> Candid
         predicted_effect=effect,
         regression_risks=list(risks),
         **{name: item[name] for name in BEHAVIOR_FIELDS},
+        text_contract=TEXT_CONTRACT,
     )
 
 
@@ -1277,7 +1301,10 @@ def materialize_candidate_harness(
 
     if kind == EDIT_KIND_TEXT:
         field_name = TEXT_SURFACE_FIELDS[spec.surface]
-        return replace(incumbent, **{field_name: edit["new_text"]})
+        marker = text_slot_marker(serialize_harness(incumbent))
+        encoded = edit["new_text"].replace("{", "{{").replace("}", "}}")
+        encoded = encoded.replace(marker, "{custom_tools_section}")
+        return replace(incumbent, **{field_name: encoded})
 
     if kind == EDIT_KIND_POLICY:
         return replace(incumbent, runtime_policy=dict(edit["runtime_policy"]))
@@ -1380,7 +1407,15 @@ def write_proposal(
         "predicted_effect": spec.predicted_effect,
         **{name: getattr(spec, name) for name in BEHAVIOR_FIELDS if getattr(spec, name)},
         "regression_risks": list(spec.regression_risks),
-        "provenance": {"model": model_name, "prompt_sha256": prompt_sha},
+        "provenance": {
+            "model": model_name,
+            "prompt_sha256": prompt_sha,
+            **(
+                {"text_contract": spec.text_contract, "response_format": RESPONSE_FORMAT_VERSION}
+                if spec.text_contract
+                else {}
+            ),
+        },
     }
     directory = Path(proposals_dir) / candidate_id
     directory.mkdir(parents=True, exist_ok=True)
@@ -1432,6 +1467,8 @@ def config_material(config: ProposerConfig, lm: BaseLM) -> dict[str, Any]:
         "max_attempts": config.max_attempts,
         "prompt_version": config.prompt_version,
         "validator_version": config.validator_version,
+        "text_contract": TEXT_CONTRACT,
+        "response_format": RESPONSE_FORMAT_VERSION,
     }
 
 
@@ -1522,6 +1559,7 @@ def publish_proposal_result(
         prompt_sha256=state["prompt_sha256"],
         preflight_failures=state["preflight_failures"],
         preflight_profile=state["preflight_profile"],
+        evidence_audit=state.get("evidence_audit", {}),
     )
 
 
@@ -1532,6 +1570,7 @@ def validate_batch_members(
     retained: list[tuple[int, CandidateSpec, dict[str, Any]]],
     failed_slots: dict[int, int] | None,
     failed_sources: list[Any],
+    selections: list[Any],
 ) -> tuple[list[tuple[int, CandidateSpec]], list[dict[str, Any]]]:
     """Reject conflicting groups while keeping independent valid members."""
     identities = []
@@ -1553,6 +1592,33 @@ def validate_batch_members(
         if failed_slots is not None:
             position = failed_slots.get(index, position)
         try:
+            duplicates = duplicate_json_keys(item)
+            if duplicates:
+                raise ProposalRejection(f"duplicate JSON keys in candidate: {duplicates}")
+            matching = [
+                selection
+                for selection in selections
+                if isinstance(selection, dict)
+                and type(selection.get("pattern_index")) is int
+                and selection["pattern_index"] == index
+                and selection.get("surface") == surface
+            ]
+            if len(matching) != 1:
+                raise ProposalRejection("candidate must match exactly one selection")
+            selection = matching[0]
+            if duplicate_json_keys(selection):
+                raise ProposalRejection("duplicate JSON keys in selection")
+            reason = selection.get("reason")
+            if not isinstance(reason, str) or not reason.strip() or len(reason) > 600:
+                raise ProposalRejection("selection reason must contain 1-600 characters")
+            if sum(isinstance(s, dict) and s.get("surface") == surface for s in selections) > 1:
+                raise ProposalRejection(f"surface {surface} was selected more than once")
+            if sum(isinstance(s, dict) and s.get("pattern_index") == index for s in selections) > 1:
+                raise ProposalRejection(f"pattern_index {index} was selected more than once")
+            if not isinstance(item, dict) or "surface" not in item:
+                raise ProposalRejection("candidate must explicitly name its selected surface")
+            if item.get("edit") is None:
+                raise ProposalRejection("selection has no matching candidate replacement")
             if index is not None and sum(i == index for i, _ in identities) > 1:
                 raise ProposalRejection(f"pattern_index {index} was proposed more than once")
             if surface is not None and sum(s == surface for _, s in identities) > 1:
@@ -1647,6 +1713,7 @@ def propose_round(
 
     patterns = bundle.get("patterns", [])
     incumbent_serialization = serialize_harness(incumbent)
+    evidence_audit: dict[str, Any] = {}
     rendered_prompt, addressable = render_prompt(
         patterns,
         incumbent_serialization,
@@ -1655,6 +1722,7 @@ def propose_round(
         config.k,
         verifier_config=(bundle.get("config") or {}).get("verifier_config"),
         evidence=evidence,
+        evidence_audit=evidence_audit,
     )
     system_sha = prompt_sha256(rendered_prompt)
     cfg_sha = config_sha256(config, lm)
@@ -1671,6 +1739,9 @@ def propose_round(
     )
 
     contract = {
+        "text_contract": TEXT_CONTRACT,
+        "text_slot_marker": text_slot_marker(incumbent_serialization),
+        "response_format": RESPONSE_FORMAT_VERSION,
         "evidence_selector_version": EVIDENCE_SELECTOR_VERSION,
         "diagnostic_history_version": DIAGNOSTIC_HISTORY_VERSION,
         "prompt_sha256": system_sha,
@@ -1729,7 +1800,7 @@ def propose_round(
         user = (
             "Propose your candidates now."
             if not rejection
-            else f"Your previous response was rejected: {rejection}\nRespond again with a corrected JSON array."
+            else f"Your previous response was rejected: {rejection}\nRespond again with a corrected selection object."
         )
         if repairing:
             retained = [
@@ -1744,7 +1815,39 @@ def propose_round(
                 "One repair response only. Return replacements only for the failed original "
                 "patterns; omit a failed member to withdraw it. You may choose another eligible, "
                 "unoccupied surface for that same pattern. Explain the revised behavioral change "
-                "when retargeting. Keep retained edits unchanged; no new patterns.\nRetained: "
+                "when retargeting. Keep retained edits unchanged; no new patterns. "
+                "Return selections followed by candidates. For each collision group, explicitly "
+                "select one contender or withdraw the group; never resubmit both contenders "
+                "or merge unrelated mechanisms into one replacement.\nCollision groups: "
+                + canonical_json(
+                    {
+                        surface: [
+                            item["pattern_index"]
+                            for item in failed_sources
+                            if item.get("surface") == surface
+                        ]
+                        for surface in sorted(
+                            {
+                                item["surface"]
+                                for item in failed_sources
+                                if isinstance(item.get("surface"), str)
+                            }
+                        )
+                        if sum(item.get("surface") == surface for item in failed_sources) > 1
+                    }
+                )
+                + "\nEligible unoccupied surfaces: "
+                + canonical_json(
+                    {
+                        str(index): [
+                            s
+                            for s in _pattern_surfaces(patterns[index])
+                            if s not in {r["surface"] for r in retained}
+                        ]
+                        for index in failed_slots
+                    }
+                )
+                + "\nRetained: "
                 + canonical_json(retained)
                 + "\nFailed sources: "
                 + canonical_json(failed_sources)
@@ -1757,6 +1860,9 @@ def propose_round(
         key = _cache_key(request_sha, bundle_id, cfg_sha, attempt)
         response = cache.get(key)
         cached = response is not None
+        evidence_audit.setdefault("attempt_prompt_chars", []).append(
+            len(rendered_prompt) + len(user)
+        )
         try:
             budget_failure = cache.get(key + ":budget_exhausted")
             if budget_failure is not None:
@@ -1783,10 +1889,12 @@ def propose_round(
             break
 
         try:
-            raw_items = extract_json_array(response)
-            if len(raw_items) > config.k:
+            parsed = extract_proposal_response(response)
+            selections = parsed["selections"]
+            raw_items = parsed["candidates"]
+            if max(len(raw_items), len(selections)) > config.k:
                 raise ProposalRejection(
-                    f"response proposed {len(raw_items)} candidates, more than the allowed {config.k}"
+                    f"response proposed {max(len(raw_items), len(selections))} entries, more than the allowed {config.k}"
                 )
         except ProposalRejection as exc:
             rejection = str(exc)
@@ -1795,6 +1903,23 @@ def propose_round(
                 break
             continue
 
+        # An orphan selection is an attributable member failure, not a reason
+        # to discard independent replacements. Retain it in the repair sources.
+        for selection in selections:
+            if not isinstance(selection, dict) or not any(
+                isinstance(item, dict)
+                and item.get("pattern_index") == selection.get("pattern_index")
+                and item.get("surface") == selection.get("surface")
+                for item in raw_items
+            ):
+                raw_items.append(
+                    {
+                        "pattern_index": selection.get("pattern_index"),
+                        "surface": selection.get("surface"),
+                    }
+                    if isinstance(selection, dict)
+                    else selection
+                )
         slots, local_failures = validate_batch_members(
             raw_items,
             patterns,
@@ -1802,6 +1927,7 @@ def propose_round(
             materialized,
             failed_slots if repairing else None,
             failed_sources,
+            selections,
         )
         if repairing and local_failures and not slots:
             rejection = "; ".join(failure["reason"] for failure in local_failures)
@@ -1908,6 +2034,7 @@ def propose_round(
         "prompt_sha256": system_sha,
         "preflight_failures": preflight_failures,
         "preflight_profile": profile,
+        "evidence_audit": evidence_audit,
     }
     # Freeze before the first final directory is written. A replay never re-runs
     # nondeterministic/time-limited gates to decide which paid batch to admit.

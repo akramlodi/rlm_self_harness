@@ -1155,6 +1155,7 @@ class _Experiment:
         payload["preflight_profile"] = profile
         if "stage_failure" not in payload:
             payload["preflight_failures"] = result.preflight_failures
+            payload["evidence_audit"] = result.evidence_audit
             payload["attempts"] = [attempt.to_dict() for attempt in result.attempts]
         _persist_once(
             marker_path,

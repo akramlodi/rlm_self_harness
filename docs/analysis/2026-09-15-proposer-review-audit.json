@@ -1,0 +1,243 @@
+{
+  "experiment": "experiment_oolong_pairs_dsv4f_20260914_111506",
+  "source_commit": "fcc62f6e5c564772570936e5fa14aaa5424f0ca0",
+  "prompt_reconstruction": [
+    {
+      "round": 1,
+      "prompt_chars": 157881,
+      "hash_matches": true,
+      "patterns": 12
+    },
+    {
+      "round": 2,
+      "prompt_chars": 169363,
+      "hash_matches": true,
+      "patterns": 13
+    },
+    {
+      "round": 3,
+      "prompt_chars": 173945,
+      "hash_matches": true,
+      "patterns": 13
+    }
+  ],
+  "proposal_attempts": [
+    {
+      "surface": "S2",
+      "pattern_index": 0,
+      "incumbent_behavior": "S2 gives a worked example for label statistics over line-oriented context, splitting into chunks and having each child classify every line and return counts, then merging in Python. It says to use rlm_query for counting tasks and llm_query for direct reads.",
+      "observed_failure": "Root sends 188 questions to 4 llm_leaf calls for classification, but one user's questions were misclassified (numeric value/location missed), causing 31 missing pairs. No verification that all 188 labels are correct before proceeding.",
+      "behavioral_change": "Replace the worked example with one that uses stable record IDs (row ordinals) assigned before chunking, asks children to return [record_id, label] rows, and includes a coverage check (no missing/duplicate IDs, valid labels) before aggregation. This makes coverage gaps detectable and repairable.",
+      "predicted_effect": "Roots will assign stable record IDs before chunking, request [record_id, label] rows from children, and run a coverage check (no missing/duplicate IDs, valid labels) before aggregation. This makes coverage gaps detectable and repairable, preventing the silent omission of misclassified or unlabeled records.",
+      "regression_risks": [
+        "Roots that already pass may adopt the new pattern and spend extra iterations on coverage checks, but the check is O(n) and adds no sub-calls. The pattern is a replacement example, not a mandatory rule; roots that already work can ignore it. No passing run depends on the old example's exact text."
+      ],
+      "label": "round_01-a1-1-S2",
+      "chars": 2678,
+      "newlines": 54,
+      "literal_backslash_n": 4,
+      "format": "KeyError: 'len(labels_by_id)'",
+      "code_blocks": 0,
+      "syntax": []
+    },
+    {
+      "surface": "S3",
+      "pattern_index": 5,
+      "incumbent_behavior": "S3 execution_instruction is empty, providing no guidance on how to handle sub-call results that return aggregate counts instead of per-line labels.",
+      "observed_failure": "Root sends chunk 2 to an rlm_child that returns aggregate counts (e.g., {'abbreviation': 21}) instead of per-line JSON. Root detects this and redoes the chunk, but the redo's labels are never verified for correctness, leading to 45 spurious pairs.",
+      "behavioral_change": "Add instruction to verify that each sub-call result matches the requested format (per-record labels, not aggregate counts) before merging, and to re-run with a corrected prompt if the format is wrong.",
+      "predicted_effect": "Roots will check that each sub-call result matches the requested per-record format before merging, catching aggregate-count responses early and re-running with a corrected prompt. This prevents lossy aggregation from contaminating the final label set.",
+      "regression_risks": [
+        "Roots that already pass may spend an extra iteration checking format, but the check is a simple isinstance/type check and adds negligible cost. No passing run depends on the current empty S3."
+      ],
+      "label": "round_01-a1-2-S3",
+      "chars": 507,
+      "newlines": 0,
+      "literal_backslash_n": 0,
+      "format": "ok",
+      "code_blocks": 0,
+      "syntax": []
+    },
+    {
+      "surface": "S3",
+      "pattern_index": 7,
+      "incumbent_behavior": "S3 execution_instruction is empty, providing no guidance on pair generation format or deduplication.",
+      "observed_failure": "Root generates pairs by iterating over two user lists without enforcing lower-ID-first ordering or deduplication, producing self-pairs and duplicate reverse-order pairs (209 pairs instead of 153).",
+      "behavioral_change": "Add instruction to generate pairs using sorted unique user lists, nested loops with i<j, and deduplication via set, then format as (lower, higher).",
+      "predicted_effect": "Roots will generate pairs using sorted unique user lists with i<j loops and set deduplication, eliminating self-pairs and reverse duplicates. This fixes the 153 extra spurious pairs caused by incorrect pair generation logic.",
+      "regression_risks": [
+        "Roots that already generate pairs correctly will see no change because the instruction is additive guidance, not a mandatory override. The pair-generation code they already write satisfies these constraints. No passing run depends on the current empty S3."
+      ],
+      "label": "round_01-a1-3-S3",
+      "chars": 947,
+      "newlines": 7,
+      "literal_backslash_n": 0,
+      "format": "ok",
+      "code_blocks": 0,
+      "syntax": []
+    },
+    {
+      "surface": "S2",
+      "pattern_index": 0,
+      "incumbent_behavior": "S2 gives a worked example for label statistics over line-oriented context, splitting into chunks and having each child classify every line and return counts, then merging in Python. It says to use rlm_query for counting tasks and llm_query for direct reads.",
+      "observed_failure": "Root sends 188 questions to 4 llm_leaf calls for classification, but one user's questions were misclassified (numeric value/location missed), causing 31 missing pairs. No verification that all 188 labels are correct before proceeding.",
+      "behavioral_change": "Replace the worked example with one that uses stable record IDs (row ordinals) assigned before chunking, asks children to return [record_id, label] rows, and includes a coverage check (no missing/duplicate IDs, valid labels) before aggregation. All braces in the example are doubled to survive prompt formatting.",
+      "predicted_effect": "Roots will assign stable record IDs before chunking, request [record_id, label] rows from children, and run a coverage check (no missing/duplicate IDs, valid labels) before aggregation. This makes coverage gaps detectable and repairable, preventing the silent omission of misclassified or unlabeled records.",
+      "regression_risks": [
+        "Roots that already pass may adopt the new pattern and spend extra iterations on coverage checks, but the check is O(n) and adds no sub-calls. The pattern is a replacement example, not a mandatory rule; roots that already work can ignore it. No passing run depends on the old example's exact text."
+      ],
+      "label": "round_01-a2-1-S2",
+      "chars": 2680,
+      "newlines": 54,
+      "literal_backslash_n": 4,
+      "format": "ok",
+      "code_blocks": 1,
+      "syntax": [
+        "ok"
+      ]
+    },
+    {
+      "surface": "S3",
+      "pattern_index": 5,
+      "incumbent_behavior": "S3 execution_instruction is empty, providing no guidance on how to handle sub-call results that return aggregate counts instead of per-line labels.",
+      "observed_failure": "Root sends chunk 2 to an rlm_child that returns aggregate counts (e.g., {'abbreviation': 21}) instead of per-line JSON. Root detects this and redoes the chunk, but the redo's labels are never verified for correctness, leading to 45 spurious pairs.",
+      "behavioral_change": "Add instruction to verify that each sub-call result matches the requested format (per-record labels, not aggregate counts) before merging, and to re-run with a corrected prompt if the format is wrong.",
+      "predicted_effect": "Roots will check that each sub-call result matches the requested per-record format before merging, catching aggregate-count responses early and re-running with a corrected prompt. This prevents lossy aggregation from contaminating the final label set.",
+      "regression_risks": [
+        "Roots that already pass may spend an extra iteration checking format, but the check is a simple isinstance/type check and adds negligible cost. No passing run depends on the current empty S3."
+      ],
+      "label": "round_01-a2-2-S3",
+      "chars": 507,
+      "newlines": 0,
+      "literal_backslash_n": 0,
+      "format": "ok",
+      "code_blocks": 0,
+      "syntax": []
+    },
+    {
+      "surface": "S3",
+      "pattern_index": 7,
+      "incumbent_behavior": "S3 execution_instruction is empty, providing no guidance on pair generation format or deduplication.",
+      "observed_failure": "Root generates pairs by iterating over two user lists without enforcing lower-ID-first ordering or deduplication, producing self-pairs and duplicate reverse-order pairs (209 pairs instead of 153).",
+      "behavioral_change": "Add instruction to generate pairs using sorted unique user lists, nested loops with i<j, and deduplication via set, then format as (lower, higher).",
+      "predicted_effect": "Roots will generate pairs using sorted unique user lists with i<j loops and set deduplication, eliminating self-pairs and reverse duplicates. This fixes the 153 extra spurious pairs caused by incorrect pair generation logic.",
+      "regression_risks": [
+        "Roots that already generate pairs correctly will see no change because the instruction is additive guidance, not a mandatory override. The pair-generation code they already write satisfies these constraints. No passing run depends on the current empty S3."
+      ],
+      "label": "round_01-a2-3-S3",
+      "chars": 947,
+      "newlines": 7,
+      "literal_backslash_n": 0,
+      "format": "ok",
+      "code_blocks": 0,
+      "syntax": []
+    },
+    {
+      "surface": "S2",
+      "pattern_index": 0,
+      "incumbent_behavior": "S2 gives a worked example for label statistics that splits into chunks, has each child classify every line and return counts, then merges in Python. It says to use rlm_query for counting tasks.",
+      "observed_failure": "Children return aggregate counts or shuffled JSON objects; root never verifies all 188 records have labels before proceeding, leading to silent omissions and misclassifications.",
+      "behavioral_change": "Replace the worked example with one that assigns stable record IDs before chunking, requests [record_id, label] rows from children, and includes a coverage check (no missing/duplicate IDs, valid labels) before aggregation. All braces doubled for prompt formatting.",
+      "predicted_effect": "Roots will assign stable record IDs before chunking, request [record_id, label] rows from children, and run a coverage check (no missing/duplicate IDs, valid labels) before aggregation. This makes coverage gaps detectable and repairable, preventing the silent omission of misclassified or unlabeled records. Children returning aggregate counts instead of per-record labels will fail the coverage check, triggering a repair.",
+      "regression_risks": [
+        "Roots that previously used the 'return counts' pattern for pure counting tasks (where per-record labels aren't needed) may now use the more verbose per-record format, increasing token usage slightly.",
+        "The coverage check adds a small computational overhead (set operations on ~188 IDs).",
+        "Roots that correctly used the old pattern for tasks requiring only aggregate counts may now include unnecessary record IDs, but this does not change correctness."
+      ],
+      "label": "round_02-a1-1-S2",
+      "chars": 3434,
+      "newlines": 70,
+      "literal_backslash_n": 7,
+      "format": "KeyError: '\\\\\"record_id\\\\\"'",
+      "code_blocks": 0,
+      "syntax": []
+    },
+    {
+      "surface": "S2",
+      "pattern_index": 0,
+      "incumbent_behavior": "S2 gives a worked example for label statistics that splits into chunks, has each child classify every line and return counts, then merges in Python. It says to use rlm_query for counting tasks.",
+      "observed_failure": "Children return aggregate counts or shuffled JSON objects; root never verifies all 188 records have labels before proceeding, leading to silent omissions and misclassifications.",
+      "behavioral_change": "Replace the worked example with one that assigns stable record IDs before chunking, requests [record_id, label] rows from children, and includes a coverage check (no missing/duplicate IDs, valid labels) before aggregation. All literal braces in the example are doubled to survive prompt formatting.",
+      "predicted_effect": "Roots will assign stable record IDs before chunking, request [record_id, label] rows from children, and run a coverage check (no missing/duplicate IDs, valid labels) before aggregation. This makes coverage gaps detectable and repairable, preventing the silent omission of misclassified or unlabeled records. Children returning aggregate counts instead of per-record labels will fail the coverage check, triggering a repair.",
+      "regression_risks": [
+        "Roots that previously used the 'return counts' pattern for pure counting tasks (where per-record labels aren't needed) may now use the more verbose per-record format, increasing token usage slightly.",
+        "The coverage check adds a small computational overhead (set operations on ~188 IDs).",
+        "Roots that correctly used the old pattern for tasks requiring only aggregate counts may now include unnecessary record IDs, but this does not change correctness."
+      ],
+      "label": "round_02-a2-1-S2",
+      "chars": 3440,
+      "newlines": 70,
+      "literal_backslash_n": 7,
+      "format": "KeyError: 'rid'",
+      "code_blocks": 0,
+      "syntax": []
+    },
+    {
+      "surface": "S2",
+      "pattern_index": 0,
+      "incumbent_behavior": "S2 gives a worked example for label statistics over line-oriented context, splitting into chunks and having each child classify every line and return counts, then merging in Python. It says to use rlm_query for counting tasks and llm_query for direct reads.",
+      "observed_failure": "Root sends 188 questions to 4 child calls for classification, but one user's questions were misclassified (none as entity/human being), causing 9 missing pairs. No verification that all records were classified or that labels are valid before proceeding.",
+      "behavioral_change": "Replace the worked example with one that assigns stable record IDs (row ordinals) before chunking, asks children to return [record_id, label] rows, and includes a coverage check (no missing/duplicate IDs, valid labels) before aggregation. All braces in the example are doubled to survive prompt formatting.",
+      "predicted_effect": "Roots will assign stable record IDs before chunking, request [record_id, label] rows from children, and run a coverage check (no missing/duplicate IDs, valid labels) before aggregation. This makes coverage gaps detectable and repairable, preventing the silent omission of misclassified or unlabeled records. Children returning aggregate counts instead of per-record labels will fail the coverage check, triggering a repair.",
+      "regression_risks": [
+        "Roots that previously worked with aggregate-count responses may now fail the coverage check and need to re-run with per-record format, increasing sub-calls slightly.",
+        "The coverage check adds a small Python overhead, but this is negligible compared to LLM call costs.",
+        "Roots that already use record IDs but format them differently may need to adapt, but the example is guidance not enforcement."
+      ],
+      "label": "round_03-a1-1-S2",
+      "chars": 3307,
+      "newlines": 72,
+      "literal_backslash_n": 4,
+      "format": "KeyError: 'rid'",
+      "code_blocks": 0,
+      "syntax": []
+    },
+    {
+      "surface": "S2",
+      "pattern_index": 0,
+      "incumbent_behavior": "S2 gives a worked example for label statistics over line-oriented context, splitting into chunks and having each child classify every line and return counts, then merging in Python. It says to use rlm_query for counting tasks and llm_query for direct reads.",
+      "observed_failure": "Root sends 188 questions to 4 child calls for classification, but one user's questions were misclassified (none as entity/human being), causing 9 missing pairs. No verification that all records were classified or that labels are valid before proceeding.",
+      "behavioral_change": "Replace the worked example with one that assigns stable record IDs (row ordinals) before chunking, asks children to return [record_id, label] rows, and includes a coverage check (no missing/duplicate IDs, valid labels) before aggregation. All braces in the example are doubled to survive prompt formatting, and the variable name 'rid' is replaced with 'rec_id' to avoid the KeyError on the placeholder 'rid'.",
+      "predicted_effect": "Roots will assign stable record IDs before chunking, request [record_id, label] rows from children, and run a coverage check (no missing/duplicate IDs, valid labels) before aggregation. This makes coverage gaps detectable and repairable, preventing the silent omission of misclassified or unlabeled records. Children returning aggregate counts instead of per-record labels will fail the coverage check, triggering a repair.",
+      "regression_risks": [
+        "Roots that previously worked with aggregate-count responses may now fail the coverage check and need to re-run with per-record format, increasing sub-calls slightly.",
+        "The coverage check adds a small Python overhead, but this is negligible compared to LLM call costs.",
+        "Roots that already use record IDs but format them differently may need to adapt, but the example is guidance not enforcement."
+      ],
+      "label": "round_03-a2-1-S2",
+      "chars": 3322,
+      "newlines": 72,
+      "literal_backslash_n": 4,
+      "format": "KeyError: 'rec_id'",
+      "code_blocks": 0,
+      "syntax": []
+    }
+  ],
+  "synthetic_coverage_probes": [
+    {
+      "case": "correct rows",
+      "result": "passes checks"
+    },
+    {
+      "case": "valid but wrong labels",
+      "result": "passes checks"
+    },
+    {
+      "case": "duplicate ID",
+      "result": "AssertionError: duplicate record IDs"
+    },
+    {
+      "case": "missing ID",
+      "result": "AssertionError: missing record IDs"
+    },
+    {
+      "case": "unknown label",
+      "result": "AssertionError: invalid labels"
+    }
+  ],
+  "ndjson_probe": {
+    "input": "Two newline-separated JSON row arrays",
+    "result": "JSONDecodeError: Extra data: line 2 column 1 (char 16)"
+  },
+  "note": "Read-only audit. Synthetic checks establish local behavior, not effectiveness of any proposed improvement. No experiment artifacts changed and no model calls made."
+}
