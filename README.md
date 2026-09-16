@@ -177,9 +177,13 @@ Proposal generation now checks edited candidates locally and can repair failed
 members once while retaining valid siblings; repair can move the same failed
 pattern to another eligible, unoccupied surface. Diagnoses cite operations and
 verification limits, and the proposer sees the relevant caller and consumer code.
-Each proposal explains the incumbent behavior, remaining failure and concrete change.
-OOLONG-Pairs guidance encourages consistent record-ID contracts, coverage checks
-before lossy mapping, and Python aggregation before pair construction.
+The proposer selects one intervention per surface before writing replacements.
+Each proposal compares actual execution with the unresolved operation and explains
+why the change addresses its cause. Task-derived reasoning asks which information
+must survive and which conditions the final computation must enforce.
+The host encodes literal instruction text once; models no longer escape template braces.
+A shared 32,000-character evidence budget keeps a compact pattern inventory and
+expands a few complete operations, including relevant contrasts when available.
 Rejected candidates with comparable recorded quality gains remain visible as
 potentially promising in history, using F1 for pairs/GraphWalks and score for OOLONG.
 Exact outcomes and regressions remain visible, and `v=1` provides no causal guarantee.

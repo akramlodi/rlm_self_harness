@@ -12,7 +12,6 @@ from shrlm.harness_identity import serialize_harness
 from shrlm.optimization.driver import RoundPersistenceError, load_round, run_round
 from shrlm.optimization.proposal import render_prompt
 from shrlm.optimization.proposal_evidence import (
-    TRACE_EXCERPT_CHARS,
     aggregate_pair_diagnostics,
     aggregate_quality_diagnostics,
     compare_quality_diagnostics,
@@ -195,6 +194,60 @@ def test_cited_call_reveals_later_coverage_check_and_child_contract():
     assert excerpt == trace_excerpt(coverage_trace(), ["r/i2/b0/c0"] * 5)
 
 
+def test_evidence_packing_bounds_rendered_text_and_deduplicates_operations():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    context = {
+        "run_id": "held-in-a",
+        "task_question": "Preserve counts",
+        "trace": trace_excerpt(coverage_trace(), ["r/i2/b0/c0"]),
+    }
+    patterns = [
+        {
+            "index": i,
+            "signature": {"agent_mechanism": f"mechanism-{i}"},
+            "eligible_surfaces": ["S3"],
+            "support": 3,
+        }
+        for i in range(6)
+    ]
+    evidence = {"patterns": {i: context for i in range(6)}, "passing": []}
+    rendered, audit = pack_evidence(patterns, evidence, k=4, budget=6000)
+    assert len(rendered) <= 6000
+    assert audit["evidence_chars"] == len(rendered)
+    assert len(audit["expanded_patterns"]) <= 4
+    assert rendered.count("results = rlm_query_batched(chunks)") == 1
+    assert len(json.loads(rendered.split("\n", 1)[1])["inventory"]) == 6
+    assert pack_evidence(patterns, evidence, k=4, budget=6000) == (rendered, audit)
+
+
+def test_oversized_operation_uses_alternative_without_cutting_code():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    huge = {
+        "task_question": "task",
+        "trace": {"snippets": [{"code": "HUGE" * 20000, "node_id": "r"}]},
+    }
+    small = {
+        "task_question": "task",
+        "trace": {"snippets": [{"code": "counts = count(records)", "node_id": "r"}]},
+    }
+    inventory = [
+        {
+            "index": 0,
+            "signature": {"agent_mechanism": "lossy_aggregation"},
+            "eligible_surfaces": ["S3"],
+            "support": 2,
+        }
+    ]
+    text, audit = pack_evidence(
+        inventory, {"patterns": {0: huge}, "alternatives": {0: [huge, small]}}, k=4, budget=2000
+    )
+    assert "counts = count(records)" in text
+    assert "HUGE" not in text
+    assert audit["expanded_patterns"] == [0]
+
+
 def test_explicit_operation_wins_and_unresolvable_citation_is_labelled():
     excerpt = trace_excerpt(
         coverage_trace(),
@@ -251,14 +304,10 @@ def test_nested_operation_keeps_its_node_and_payload_budget():
     )
     assert excerpt["snippets"][0]["node_id"] == "r/i0/b0/c0"
     assert "missing =" in excerpt["snippets"][0]["code"]
-    assert (
-        sum(
-            len(s.get(k, ""))
-            for s in excerpt["snippets"]
-            for k in ("code", "stdout", "stderr", "prompt", "response")
-        )
-        <= TRACE_EXCERPT_CHARS
-    )
+    # Code remains complete; payload fields can be bounded. The final rendered
+    # evidence pack, rather than equal per-field slices, owns the total budget.
+    original = child["metadata"]["iterations"][4]["code_blocks"][0]["code"]
+    assert excerpt["snippets"][0]["code"] == original
     assert "truncated" in json.dumps(excerpt)
 
 
@@ -294,14 +343,14 @@ def test_saved_metrics_and_all_attempt_denominators():
     )
 
 
-def mining_fixture(tmp_path, monkeypatch, *, attempts=2):
+def mining_fixture(tmp_path, monkeypatch, *, attempts=2, produced="[(1, 2)]"):
     instance = {
         "id": "held-in",
         "question": "ACTUAL PREDICATE and LABEL VOCABULARY",
         "prompt": "classify rows",
         "gold_pairs": [(1, 2), (1, 3)],
     }
-    factory = ClientFactory([final("[(1, 2)]")] * attempts)
+    factory = ClientFactory([final(produced)] * attempts)
     monkeypatch.setattr(rlm_module, "get_client", factory)
     config = make_round_config(
         tmp_path, instances=[instance], attempts=attempts, verifier=OolongPairsVerifier()
@@ -337,7 +386,9 @@ def test_evidence_joins_exact_attempt_and_does_not_rewrite_artifacts(tmp_path, m
     before = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in path.rglob("*") if p.is_file()}
     evidence = load_proposal_evidence(path, bundle)
     context = evidence["patterns"][0]
-    assert context["symptom_summary"] == "diagnosis 1"
+    expected = next(record for record in records if record["run_id"] == context["run_id"])
+    assert context["symptom_summary"] == expected["detail"]["symptom_summary"]
+    assert len(evidence["alternatives"][0]) == 2
     assert context["missing_examples"] == [(1, 3)]
     assert context["pair_diagnostics"]["metrics"]["f1"] == 0.667
     assert context["task_question"] == "ACTUAL PREDICATE and LABEL VOCABULARY"
@@ -352,9 +403,9 @@ def test_evidence_joins_exact_attempt_and_does_not_rewrite_artifacts(tmp_path, m
         verifier_config=OolongPairsVerifier().config(),
         evidence=evidence,
     )
-    assert "diagnosis 1" in prompt and "ACTUAL PREDICATE" in prompt
-    assert "original row ordinal" in prompt
-    assert "never response position" in prompt
+    assert context["symptom_summary"] in prompt and "ACTUAL PREDICATE" in prompt
+    assert "original row ordinal" not in prompt
+    assert "unparsed:" not in prompt
     assert evidence["passing"] == []
     record = dict(records[0], run_id=None, trace_path=None, trace_sha256=None)
     (path / "records.jsonl").write_text(json.dumps(record))
@@ -368,6 +419,15 @@ def test_trace_integrity_failure_is_not_an_optional_evidence_fallback(tmp_path, 
     (path / records[0]["trace_path"]).write_text("{}")
     with pytest.raises(RoundPersistenceError, match="sha|hash"):
         load_proposal_evidence(path, bundle)
+
+
+def test_known_terminal_zero_retains_unparsed_failure_detail(tmp_path, monkeypatch):
+    path, bundle, records = mining_fixture(tmp_path, monkeypatch, attempts=1, produced="[]")
+    context = load_proposal_evidence(path, bundle)["patterns"][0]
+    assert context["quality_diagnostics"]["n_known_zero"] == 1
+    assert context["quality_diagnostics"]["mean"] == 0
+    assert context["verifier_outcome"] == {"passed": False, "cause": "wrong_format"}
+    assert records[0]["verdict"]["detail"] in context["verifier_detail"]
 
 
 def test_history_keeps_heldout_payloads_out_and_preserves_saved_bytes(tmp_path, monkeypatch):
@@ -434,7 +494,7 @@ def test_runtime_error_messages_are_structural_only():
     assert "omitted" in result["message"]
 
 
-def test_record_recipe_is_conditional_on_environment_and_eligible_surface(monkeypatch):
+def test_task_reasoning_replaces_recipe_on_every_surface(monkeypatch):
     from shrlm.optimization.proposal import MECHANISM_SURFACES
     from shrlm.optimization.taxonomy import AgentMechanism, EditableSurface
 
@@ -452,5 +512,58 @@ def test_record_recipe_is_conditional_on_environment_and_eligible_surface(monkey
         verifier_config=OolongPairsVerifier().config(),
     )
     assert "original row ordinal" not in prompt
+    assert "Which information must survive each step" in prompt
     prompt, _ = render_prompt([PATTERN_TEXT], serialize_harness(H0), [], [], 4)
     assert "original row ordinal" not in prompt
+
+
+def test_evidence_budget_counts_escaping_and_keeps_relevant_contrast():
+    from shrlm.optimization.proposal_evidence import EVIDENCE_HEADING, pack_evidence
+
+    def context(run_id, code):
+        return {
+            "run_id": run_id,
+            "task_question": "Keep each task condition intact.",
+            "trace": {
+                "snippets": [
+                    {
+                        "node_id": "r",
+                        "iteration_index": 0,
+                        "code_block_index": 0,
+                        "code": code,
+                        "code_complete": True,
+                    }
+                ]
+            },
+        }
+
+    code = 'result = classify("\\\\quoted")\n' * 25
+    failed = context("failed", code)
+    passed = context("passed", "result = classify(inputs)\nverify(result)\n")
+    unrelated = context("unrelated", "x = unrelated_operation()")
+    inventory = [{"index": 7, "signature": {"agent_mechanism": "lossy_aggregation"}, "support": 3}]
+    evidence = {"patterns": {7: failed}, "passing": [unrelated, passed]}
+    rendered, audit = pack_evidence(inventory, evidence, k=4, budget=3200)
+    section = json.loads(rendered.removeprefix(EVIDENCE_HEADING))
+    assert audit["evidence_chars"] == len(rendered) <= 3200
+    assert section["passing"][0]["run_id"] == "passed"
+    assert "unrelated_operation" not in rendered
+    assert "unverified" in section["contrast_status"]
+    assert code in [operation["code"] for operation in section["operations"].values()]
+    exact, _ = pack_evidence(inventory, evidence, k=4, budget=len(rendered))
+    assert exact == rendered
+
+
+def test_oversized_question_is_omitted_whole_with_inventory_preserved():
+    from shrlm.optimization.proposal_evidence import EVIDENCE_HEADING, pack_evidence
+
+    inventory = [{"index": 9, "signature": {"agent_mechanism": "lossy_aggregation"}}]
+    question = "QUESTION_SENTINEL" * 1000
+    rendered, audit = pack_evidence(
+        inventory, {"patterns": {9: {"task_question": question}}}, k=4, budget=2000
+    )
+    section = json.loads(rendered.removeprefix(EVIDENCE_HEADING))
+    assert section["inventory"] == inventory
+    assert not section["expanded"]
+    assert "QUESTION_SENTINEL" not in rendered
+    assert "exceeds remaining budget" in audit["omitted_patterns"]["9"]

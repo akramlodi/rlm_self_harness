@@ -367,11 +367,12 @@ def attribution(mechanism: str) -> str:
     )
 
 
-def proposer_batch(*edits: tuple[int, str]) -> str:
+def proposer_batch(*edits: tuple[int, str], surfaces: tuple[str, ...] = ("S4",)) -> str:
     """A canned proposer response: one full-replacement text edit per pattern."""
     items = [
         {
             "pattern_index": index,
+            "surface": surfaces[index],
             "edit": {"kind": "text", "new_text": new_text},
             "predicted_effect": "the root double-checks before answering",
             "incumbent_behavior": "Submits the computed result.",
@@ -381,7 +382,24 @@ def proposer_batch(*edits: tuple[int, str]) -> str:
         }
         for index, new_text in edits
     ]
-    return "```json\n" + json.dumps(items) + "\n```"
+    return selected_batch(items)
+
+
+def selected_batch(items: list[dict]) -> str:
+    return json.dumps(
+        {
+            "format": "proposal-selection/v1",
+            "selections": [
+                {
+                    "pattern_index": item["pattern_index"],
+                    "surface": item["surface"],
+                    "reason": "The cited operation lacks this check.",
+                }
+                for item in items
+            ],
+            "candidates": items,
+        }
+    )
 
 
 TEXT_ROUND_1 = "Verify every claim against the stored evidence before answering. [r1]"
@@ -771,7 +789,9 @@ class TestMergedPromotion:
         )
         # Both patterns are text surfaces (S2 and S4); the same replacement
         # text on each makes the merged harness independent of pattern order.
-        proposer = MockLM(responses=[proposer_batch((0, MERGE_TEXT), (1, MERGE_TEXT))])
+        proposer = MockLM(
+            responses=[proposer_batch((0, MERGE_TEXT), (1, MERGE_TEXT), surfaces=("S2", "S4"))]
+        )
         return run(config, out, attributor, proposer), factory
 
     def test_merged_harness_promotes_and_freezes(self, tmp_path, monkeypatch):
@@ -1497,25 +1517,22 @@ class TestContradictoryPersistedState:
 # A round whose proposal stage seals zero candidates
 # ---------------------------------------------------------------------------
 
-EMPTY_BATCH = "```json\n[]\n```"
+EMPTY_BATCH = selected_batch([])
 # A policy edit that sets nothing: the merged runtime policy is byte-identical
 # to the incumbent's, so the candidate fails materialization as a no-op.
-NO_OP_POLICY_BATCH = (
-    "```json\n"
-    + json.dumps(
-        [
-            {
-                "pattern_index": 0,
-                "edit": {"kind": "policy", "runtime_policy": {}},
-                "predicted_effect": "the root double-checks before answering",
-                "incumbent_behavior": "Submits the computed result.",
-                "observed_failure": "No cross-check is performed.",
-                "behavioral_change": "Recompute before submitting.",
-                "regression_risks": ["one extra turn per run"],
-            }
-        ]
-    )
-    + "\n```"
+NO_OP_POLICY_BATCH = selected_batch(
+    [
+        {
+            "pattern_index": 0,
+            "surface": "S6",
+            "edit": {"kind": "policy", "runtime_policy": {}},
+            "predicted_effect": "the root double-checks before answering",
+            "incumbent_behavior": "Submits the computed result.",
+            "observed_failure": "No cross-check is performed.",
+            "behavioral_change": "Recompute before submitting.",
+            "regression_risks": ["one extra turn per run"],
+        }
+    ]
 )
 
 
@@ -2363,23 +2380,19 @@ def test_runtime_failed_proposal_finishes_experiment(
         re.findall(r"\\d+", ("str", 100))
     return AnswerDecision.accept(answer)
 """
-    proposal = (
-        "```json\n"
-        + json.dumps(
-            [
-                {
-                    "pattern_index": 0,
-                    "surface": "S9",
-                    "edit": {"kind": "code", "source": source},
-                    "predicted_effect": "normalize the final answer",
-                    "incumbent_behavior": "Submits the result directly.",
-                    "observed_failure": "The result contract is not checked.",
-                    "behavioral_change": "Check the result contract before submission.",
-                    "regression_risks": ["runtime error"],
-                }
-            ]
-        )
-        + "\n```"
+    proposal = selected_batch(
+        [
+            {
+                "pattern_index": 0,
+                "surface": "S9",
+                "edit": {"kind": "code", "source": source},
+                "predicted_effect": "normalize the final answer",
+                "incumbent_behavior": "Submits the result directly.",
+                "observed_failure": "The result contract is not checked.",
+                "behavioral_change": "Check the result contract before submission.",
+                "regression_risks": ["runtime error"],
+            }
+        ]
     )
     patch_runner(monkeypatch, MINING_FAIL + SUBJECT_PASS * 2)
     factories = parallel_client_factory(
@@ -2424,8 +2437,6 @@ def test_runtime_failed_proposal_finishes_experiment(
 
 
 def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch):
-    import re
-
     config = make_config(tmp_path, t=2)
     config = replace(
         config,
@@ -2456,14 +2467,15 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
         def completion(self, prompt):
             self.prompts.append(prompt)
             if len(self.prompts) == 3:
-                return "[]"
+                return EMPTY_BATCH
             if len(self.prompts) == 1:
+                from shrlm.optimization.proposal_evidence import EVIDENCE_HEADING
+
+                section = prompt[0]["content"].split(EVIDENCE_HEADING, 1)[1]
+                evidence, _ = json.JSONDecoder().raw_decode(section)
                 indices = {
-                    json.loads(signature)["agent_mechanism"]: int(index)
-                    for index, signature in re.findall(
-                        r"\[(\d+)\] eligible surfaces: [^\n]+\n  signature: ([^\n]+)",
-                        prompt[0]["content"],
-                    )
+                    row["signature"]["agent_mechanism"]: row["index"]
+                    for row in evidence["inventory"]
                 }
                 self.s9_index = indices["premature_termination"]
                 s2 = {
@@ -2498,7 +2510,7 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
                     "regression_risks": ["branch error"],
                 }
             )
-            return json.dumps(items)
+            return selected_batch(items)
 
     proposer = RepairProposer()
     factory = patch_runner(

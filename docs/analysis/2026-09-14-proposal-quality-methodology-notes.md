@@ -7,7 +7,7 @@ type: docs
 # Proposal quality changes for a future paper update
 
 This note records the motivation and implemented methodological changes following `experiment_oolong_pairs_dsv4f_20260913_132607`.
-The changes below are implemented in this follow-up and verified with offline tests and read-only replay of saved artifacts. No experiment using the new optimization loop has been run.
+The September 14 changes below were implemented and verified with offline tests and read-only replay of saved artifacts. At that note's writing time, no experiment using them had been run; the subsequent experiment is reviewed in the September 15 section at the end.
 The repository's paper is behind the implementation; this note preserves material for a later paper update without editing that draft.
 
 ## Observations motivating the changes
@@ -106,4 +106,94 @@ Experiment directories may remain local artifacts; the numerical summary and nam
 
 The new reader reproduces the recorded round-3 all-attempt means (0.6388 and 0.7561), marks the rejected candidate potentially promising, and retains exact passes, costs, malformed counts and the rise in extra pairs. The revised excerpt selector includes the round-4 `Missing indices: []` observation using the existing child citations. These checks read the saved experiment without rewriting it. Synthetic tests cover the same cases, non-F1 scores, unknown legacy measurements, incompatible comparisons, retained proposal bytes and bounded retargeting.
 
-Live contracts are attribution prompt 1.3.0 / validator 1.1.0, taxonomy 3.2.0, digest 1.4.0, proposal prompt/validator 2.1.0, evidence selector 2.0.0 and diagnostic history 1.0.0. The additive proposal envelope remains v1. New live responses require the new fields; completed historical artifacts remain readable.
+The September 14 iteration used attribution prompt 1.3.0 / validator 1.1.0, taxonomy 3.2.0, digest 1.4.0, proposal prompt/validator 2.1.0, evidence selector 2.0.0 and diagnostic history 1.0.0. The additive proposal envelope remains v1. New live responses require the new fields; completed historical artifacts remain readable.
+
+## Next round of proposer improvements: September 15
+
+The five changes in this section are **implemented and checked offline**. Their effect on live proposal quality and promotions remains unmeasured.
+The [September 15 investigation](2026-09-15-task-agnostic-proposer-review.md) and [machine-readable audit](2026-09-15-proposer-review-audit.json) record the evidence.
+The implementation plan is [Task-agnostic proposer improvements](../plans/2026-09-15-1643-fix-task-agnostic-proposer-plan.md).
+
+The subsequent run, `experiment_oolong_pairs_dsv4f_20260914_111506`, completed three rounds with zero promotions.
+Five of six S2 submissions failed template formatting, and both round-1 responses repeated two competing S3 edits.
+Its admitted S2 intervention checked coverage while the cited failure concerned semantic labels; another contender proposed recovery that the trace had already performed.
+Reconstructed prompts were approximately 158–174k characters, with roughly 35k of legacy answer dumps per round alongside newer diagnostics.
+These observations identify proposal construction and reasoning problems; they do not establish the effect of the remedies.
+
+1. **Let the host encode instruction templates.** The proposer writes literal text, and the materializer encodes it once under an explicit versioned contract. Current surfaces are displayed in the same representation, with a distinct marker for the live tool slot. Formatting preflight remains, while saved harnesses retain their existing representation and hashes. The model still needs valid response JSON; this change removes the additional template-escaping layer.
+
+2. **Compare the edit with the observed execution.** Refine the existing explanation fields to name the unresolved operation and the action or value the edit changes there. Ask whether perfect compliance with the edit could still produce the demonstrated failure for the same reason. Preserve uncertainty about labels and parsing, and distinguish a recovered intermediate error from an unresolved failure. These are proposal reasoning requirements, not a claim that deterministic checks can prove semantic relevance.
+
+3. **Choose interventions before writing replacements.** Within the existing proposer call, select one evidence-supported mechanism per surface, then generate matching replacements. Validate that declared selection and give collision repair the conflicting contenders and occupied surfaces explicitly. Repair chooses or withdraws contenders while retaining valid siblings; it does not combine unrelated ideas to evade the one-edit-per-surface rule.
+
+4. **Derive procedures from the task's information needs.** Replace the detailed OOLONG record-ID recipe in the generic proposer with questions about information that must survive intermediate steps and conditions the final computation must enforce. Counts, dates, identity, ordering, provenance, units, and asymmetric roles are broadly useful considerations. For example, a set cannot preserve the multiplicity needed by an “exactly one” predicate. Keep authoritative environment and surface contracts, including the OOLONG Pairs answer format.
+
+5. **Provide fewer complete evidence examples.** Retain a compact pattern inventory, then expand a few distinct mechanisms under one budget for rendered evidence. Prefer complete relevant code and a supported successful or recovered contrast; omit an oversized operation explicitly instead of cutting through it. Replace repeated raw answers with trusted diagnostics and bounded examples, retain bounded original evidence for unknown formats, and count serialization overhead in the budget. Full current surfaces and existing history remain available and separately accounted.
+
+### Interpretation and future measurements
+
+This iteration targets usable, distinct, causally relevant proposals across tasks.
+It preserves held-in-only proposal evidence, aggregate-only held-out history, potentially-promising annotations, combined held-out validation, the existing promotion and cost gates, and `v=1`.
+It adds no separate selection call, model judge, validation arm, or unbounded repair loop.
+Held-out traces discussed in the investigation remain audit evidence and must not be forwarded as instance-specific live proposal context.
+
+The implementation uses `literal-text/v1` and `proposal-selection/v1`, with proposal
+prompt/validator and evidence selector `3.0.0`. Diagnostic history stays `1.0.0`;
+stored harness v2 and proposal v1 envelopes remain unchanged. Live contract
+changes refuse unfinished replay before another model call. Use a new experiment
+directory for a later live evaluation.
+
+Offline reconstruction used the three saved held-in mining rounds and the same
+aggregate history from `experiment_oolong_pairs_dsv4f_20260914_111506`. The reader
+verified trace hashes; the watched mining bundles, manifests, records, instances
+and harness files retained their hashes. No model calls were made.
+
+| Round | Previous system prompt | Revised system prompt | Evidence characters | Expanded pattern indices |
+|---|---:|---:|---:|---|
+| 1 | 157,881 | 50,376 | 31,336 | 0, 3 |
+| 2 | 169,363 | 55,964 | 31,000 | 0 |
+| 3 | 173,945 | 56,964 | 30,227 | 0, 1 |
+
+Counts include serialized text; the system-prompt totals include complete surfaces
+and history. Repair adds its own user-message overhead, recorded per attempt in
+the proposal audit. The 32,000-character cap applies only to evidence. Each saved
+round retained its full inventory; one or two patterns fit with complete operations
+and a passing contrast. This verifies size reduction, not better model reasoning.
+
+Regression checks cover literal braces/f-strings, marker collision and no-op
+round trips, stored candidate loading, selection matching, duplicate keys,
+collision repair with retained siblings, zero-call replay, rendered budget
+boundaries, alternate representatives, intact operations/questions, relevant
+contrasts, and held-out payload exclusion. Known-zero failed runs retain their
+bounded verifier error detail and explicit failure cause instead of losing that
+information when a zero score is available. The existing generic history checks for potentially promising directions remain
+in place.
+A later live evaluation should measure usable proposals per call, formatting and collision rejection rates, relevance to the cited unresolved operation, and exact and secondary validation outcomes.
+More promotions or longer runs remain hypotheses until measured; cross-run comparisons and `v=1` alone do not establish causality.
+The separate suggestions for a new history-revision requirement and executable-example probes are deferred.
+The paper draft is unchanged.
+
+### September 15 implementation and verification
+
+Implementation commit: `ee0b4999` (`fix/task-agnostic-proposer`), based on main
+`df2580f3`. The paper and experiment configuration were not edited.
+
+- The final focused proposer/evidence/initial-harness checks passed: **206 tests**.
+  The repaired end-to-end experiment and smoke checks passed: **33 tests**.
+- The full suite finished with **2,363 passed, 7 skipped, 21 deselected and 11
+  failures**. One failure was a stale prompt-format assertion, subsequently
+  updated and retested. Rechecking all failures left **10 failures and 1 pass**.
+  All ten remaining failures reproduced on an isolated `df2580f3` checkout:
+  one async test lacking its pytest plugin in this environment, five existing
+  config/split expectation mismatches, and four missing smoke-artifact fixtures.
+- Changed-file Ruff, formatting and configured pre-commit hooks passed. The
+  type hook is advisory (`--exit-zero`). Repository-wide lint/hooks still fail
+  on existing example names and historical generated experiment modules;
+  incidental hook rewrites outside this change were restored.
+- The code-review and simplification checks ran sequentially in the main agent,
+  as required by this repository's AGENTS.md. No independent reviewer or
+  cross-model corroboration is claimed. Review found and corrected the
+  known-zero/error-detail loss described above; no actionable findings remain.
+
+These checks verify construction, accounting and replay behavior. They do not
+measure whether the new prompts yield more useful edits or promotions.
