@@ -59,7 +59,7 @@ tau_improvement = 0.0
 # price); at 1.25 it is x7.3 ($507). A candidate that costs 25% more than
 # its incumbent is already a hard sell as an improvement, so the ceiling
 # buys almost nothing above 1.25 and costs orders of magnitude.
-cost_band = [0.0, 1.25]
+cost_band = [0.0, 3]
 # sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
 
 [caps]
