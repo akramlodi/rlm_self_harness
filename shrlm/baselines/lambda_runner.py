@@ -11,7 +11,7 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +25,13 @@ from rlm.core.types import (
 )
 from rlm.utils.exceptions import BudgetExceededError, TimeoutExceededError
 from shrlm.baselines.lambda_rlm import (
+    PAPER_RECONSTRUCTION_VERSION,
     LambdaBaselineConfig,
     lambda_input,
     lambda_method_envelope,
     write_lambda_method_json,
 )
+from shrlm.baselines.paper_lambda_rlm import ClassificationRejectedError, PaperLambdaRLM
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
 from shrlm.optimization.costs import (
     OUTCOME_COMPLETED,
@@ -325,6 +327,56 @@ def lambda_resource_verdict(
     )
 
 
+def lambda_format_completion(
+    config: LambdaRoundConfig,
+    prompt: str,
+    error: ClassificationRejectedError,
+    elapsed_seconds: float,
+    guard: LambdaClientGuard,
+    method: PaperLambdaRLM,
+) -> RLMChatCompletion:
+    """Preserve an exhausted classifier repair as an auditable failed run."""
+    execution = method.last_pairwise_trace
+    usage_summary = guard.usage_summary
+    assert usage_summary is not None
+    return RLMChatCompletion(
+        root_model=str(config.backend_kwargs.get("model_name", "unknown")),
+        prompt=prompt,
+        response="",
+        usage_summary=usage_summary,
+        execution_time=elapsed_seconds,
+        metadata={
+            "pairwise_failure": {
+                "reconstruction_version": PAPER_RECONSTRUCTION_VERSION,
+                "execution": None if execution is None else asdict(execution),
+                "failed_batch": error.audit_dict(),
+            }
+        },
+        error=f"{type(error).__name__}: {error}",
+    )
+
+
+def lambda_format_verdict(
+    verifier: Verifier,
+    instance: dict[str, Any],
+    error: ClassificationRejectedError,
+) -> Verdict:
+    """Use the environment verifier to build the schema-correct format verdict."""
+    base = verifier(instance, "")
+    if base.cause is not VerifierCause.WRONG_FORMAT:
+        raise RuntimeError(
+            "the verifier did not classify an empty response as wrong_format after "
+            "an exhausted OOLONG-Pairs classification repair"
+        )
+    return Verdict(
+        passed=False,
+        cause=VerifierCause.WRONG_FORMAT,
+        gold=base.gold,
+        produced=base.produced,
+        detail=f"{base.detail}; {type(error).__name__}: {error}",
+    )
+
+
 def run_lambda_round(
     config: LambdaRoundConfig,
     *,
@@ -365,6 +417,7 @@ def run_lambda_round(
         model_input = lambda_input(instance)
         run_started = time.perf_counter()
         guard: LambdaClientGuard | None = None
+        method: PaperLambdaRLM | None = None
         usage_lower_bound = False
         try:
             with guarded_lambda_client(config.max_budget) as guard:
@@ -386,18 +439,30 @@ def run_lambda_round(
                 resource_error = guard.budget_error
             elif isinstance(caught, BudgetExceededError | TimeoutExceededError):
                 resource_error = caught
-            if resource_error is None:
+            if resource_error is not None:
+                completion = lambda_resource_completion(
+                    config,
+                    model_input.prompt,
+                    resource_error,
+                    time.perf_counter() - run_started,
+                    guard,
+                )
+                verdict = lambda_resource_verdict(completion, resource_error)
+                usage_lower_bound = True
+            elif isinstance(caught, ClassificationRejectedError):
+                assert guard is not None
+                assert method is not None
+                completion = lambda_format_completion(
+                    config,
+                    model_input.prompt,
+                    caught,
+                    time.perf_counter() - run_started,
+                    guard,
+                    method,
+                )
+                verdict = lambda_format_verdict(config.verifier, instance, caught)
+            else:
                 raise
-
-            completion = lambda_resource_completion(
-                config,
-                model_input.prompt,
-                resource_error,
-                time.perf_counter() - run_started,
-                guard,
-            )
-            verdict = lambda_resource_verdict(completion, resource_error)
-            usage_lower_bound = True
         entries.append(
             persist_run(
                 path,
