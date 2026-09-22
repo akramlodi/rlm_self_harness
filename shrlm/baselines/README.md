@@ -57,17 +57,6 @@ uv run python examples/lambda_rlm_oolong_pairs_long_smoke.py --live \
 `--conditions` also accepts comma-separated matched selections such as
 `h0_star,lambda_rlm`; `--context-length` accepts `short` or `long`.
 
-To screen all three fixed baselines on matched GraphWalks and RULER instances:
-
-```bash
-uv run python examples/baseline_environment_screen.py --live \
-    --out-dir ./baseline_environment_screen_qwen
-```
-
-The default screen uses four GraphWalks and six RULER instances at `$0.10`
-per run: 30 total runs and `$3.00` in configured caps. Run the command once
-without `--live` for a no-spend preflight.
-
 ## SH-RLM
 
 SH-RLM is the system under test, not a baseline. Its final harness is produced
