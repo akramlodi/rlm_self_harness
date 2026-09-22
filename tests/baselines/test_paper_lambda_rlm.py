@@ -17,6 +17,7 @@ from shrlm.baselines.paper_lambda_rlm import (
     LABEL_TO_CODE,
     PAIRWISE_AUDIT_FORMAT,
     PAPER_RECONSTRUCTION_VERSION,
+    ClassificationRejectedError,
     PaperLambdaRLM,
     aggregate_predictions,
     build_classification_batches,
@@ -394,10 +395,34 @@ class TestPairwiseCompletionEndToEnd:
         client = BrokenLM()
         monkeypatch.setattr(upstream_lambda, "get_client", lambda *a, **k: client)
 
-        with pytest.raises(ValueError, match="batch 0 still rejected after 2 attempts"):
+        with pytest.raises(
+            ClassificationRejectedError, match="batch 0 still rejected after 2 attempts"
+        ) as rejected:
             method.completion(build_prompt(entries, TASK_TEXTS[1]))
         # Every attempt was spent -- not one call, not unbounded retrying.
         assert client.call_count == 2
+        assert rejected.value.audit_dict() == {
+            "batch_index": 0,
+            "attempts": [
+                {
+                    "attempt": 1,
+                    "response": "not a valid classification line",
+                    "rejection": (
+                        "malformed OOLONG classification line: 'not a valid classification line'"
+                    ),
+                },
+                {
+                    "attempt": 2,
+                    "response": "not a valid classification line",
+                    "rejection": (
+                        "malformed OOLONG classification line: 'not a valid classification line'"
+                    ),
+                },
+            ],
+            "final_rejection": (
+                "malformed OOLONG classification line: 'not a valid classification line'"
+            ),
+        }
 
     def test_transient_batch_rejection_is_retried_and_recovers(
         self, monkeypatch: pytest.MonkeyPatch
@@ -418,9 +443,11 @@ class TestPairwiseCompletionEndToEnd:
             def __init__(self, **kwargs):
                 super().__init__(**kwargs)
                 self.call_count = 0
+                self.prompts_seen: list[str] = []
 
             async def acompletion(self, prompt: str) -> str:
                 self.call_count += 1
+                self.prompts_seen.append(prompt)
                 if self.call_count == 1:
                     return "not a valid classification line"
                 item_lines = [line for line in prompt.splitlines() if re.match(r"^\d+\t", line)]
@@ -444,6 +471,7 @@ class TestPairwiseCompletionEndToEnd:
 
         assert completion.response == "(1, 2)"
         assert client.call_count == 2
+        assert "malformed OOLONG classification line" in client.prompts_seen[1]
         assert completion.metadata is not None
         attempts = completion.metadata["pairwise_audit"]["batches"][0]["attempts"]
         assert attempts[0]["rejection"] == (

@@ -16,7 +16,12 @@ from shrlm.baselines.lambda_runner import (
     run_lambda_round,
     validate_lambda_round,
 )
-from shrlm.environments.oolong_pairs import TASK_TEXTS, OolongEntry, build_prompt
+from shrlm.environments.oolong_pairs import (
+    TASK_TEXTS,
+    OolongEntry,
+    OolongPairsVerifier,
+    build_prompt,
+)
 from shrlm.optimization.bundle import round_dir
 from shrlm.optimization.driver import RoundPersistenceError, load_manifest
 from shrlm.optimization.taxonomy import VerifierCause
@@ -185,6 +190,54 @@ def test_persists_pairwise_batch_audit_in_trace(
             "predictions": {"0": "numeric value"},
         }
     ]
+
+
+def test_persists_exhausted_pairwise_format_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompt = build_prompt(
+        [
+            OolongEntry(
+                user_id=7,
+                date=date(2023, 2, 2),
+                instance="Which country contains Paris ?",
+                label=None,
+            )
+        ],
+        TASK_TEXTS[16],
+    )
+    config = make_config(
+        tmp_path,
+        verifier=OolongPairsVerifier(),
+        instances=[
+            {
+                "id": "oolong-format-failure",
+                "prompt": prompt,
+                "question": TASK_TEXTS[16],
+                "task_id": 16,
+                "gold_pairs": [],
+            }
+        ],
+    )
+    factory = ClientFactory(["0\tCountry"] * 3, cost_per_call=0.001)
+    monkeypatch.setattr(upstream_lambda, "get_client", factory)
+
+    entry = run_lambda_round(config)[0]
+    trace = json.loads((round_dir(tmp_path, 1) / entry["trace_path"]).read_text())
+
+    assert entry["passed"] is False
+    assert entry["cause"] == VerifierCause.WRONG_FORMAT.value
+    assert entry["cost"] == pytest.approx(0.003)
+    assert entry["usage_lower_bound"] is False
+    assert trace["error"].startswith("ClassificationRejectedError:")
+    failure = trace["metadata"]["pairwise_failure"]
+    assert failure["execution"]["task_id"] == 16
+    assert failure["failed_batch"]["batch_index"] == 0
+    assert len(failure["failed_batch"]["attempts"]) == 3
+    assert failure["failed_batch"]["final_rejection"] == (
+        "malformed OOLONG classification line: '0\\tCountry'"
+    )
 
 
 def test_validates_credentials_before_a_pending_paid_run(

@@ -31,6 +31,43 @@ record labels, label counts, and bounded call totals under
 - Local evaluation adapter: `shrlm/baselines/lambda_rlm.py`
 - License and provenance: `third_party/lambda-RLM/`
 
+For a small matched live comparison against the author-style H₀* RLM harness
+on four byte-identical long OOLONG-Pairs instances:
+
+```bash
+uv run python examples/lambda_rlm_oolong_pairs_long_smoke.py --live --compare-h0-star \
+    --n 4 --task-ids 1,6,11,16 --out-dir ./lambda_vs_h0_star_long_smoke
+```
+
+With the shipped `$0.50` per-run cap, the configured ceiling is `$4.00`. The
+command persists each method separately and writes the paired aggregate to
+`comparison.json`. Add `--compare-b1` to include the sparse H₀ starting
+harness too; four instances across all three conditions carry `$6.00` in
+configured per-run caps.
+
+Before a long H₀* run, isolate its execution on one short OOLONG-Pairs
+instance:
+
+```bash
+uv run python examples/lambda_rlm_oolong_pairs_long_smoke.py --live \
+    --conditions h0_star --context-length short --n 1 --task-ids 1 \
+    --out-dir ./h0_star_oolong_short_sanity
+```
+
+`--conditions` also accepts comma-separated matched selections such as
+`h0_star,lambda_rlm`; `--context-length` accepts `short` or `long`.
+
+To screen all three fixed baselines on matched GraphWalks and RULER instances:
+
+```bash
+uv run python examples/baseline_environment_screen.py --live \
+    --out-dir ./baseline_environment_screen_qwen
+```
+
+The default screen uses four GraphWalks and six RULER instances at `$0.10`
+per run: 30 total runs and `$3.00` in configured caps. Run the command once
+without `--live` for a no-spend preflight.
+
 ## SH-RLM
 
 SH-RLM is the system under test, not a baseline. Its final harness is produced
