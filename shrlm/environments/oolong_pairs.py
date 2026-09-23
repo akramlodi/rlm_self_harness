@@ -63,10 +63,11 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from shrlm.environments.diagnostics import SET_QUALITY
 from shrlm.experiment.config import OolongPairsConfig
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import Verdict
+from shrlm.optimization.types import QualityMeasurement, Verdict
 
 DATASET_REPO = "oolongbench/oolong-synth"
 OOLONG_SUBSET = "trec_coarse"
@@ -1105,6 +1106,7 @@ class OolongPairsVerifier:
         """Verifier facts surfaced into MiningConfig by the experiment driver."""
         return {
             "environment": "oolong_pairs",
+            "primary_quality": SET_QUALITY.to_dict(),
             "pass_f1_threshold": self.PASS_F1_THRESHOLD,
             "extraction_rule": self.EXTRACTION_RULE,
             "gold_ordering": self.GOLD_ORDERING,
@@ -1130,6 +1132,7 @@ class OolongPairsVerifier:
         missing = gold_set - pred_set
         extra = pred_set - gold_set
         metrics = score(sorted(pred_set), sorted(gold_set))
+        quality = QualityMeasurement(SET_QUALITY.identifier, round(metrics["f1"], 3))
         detail = (
             f"precision={metrics['precision']:.3f} recall={metrics['recall']:.3f} "
             f"f1={metrics['f1']:.3f} missing={len(missing)} extra={len(extra)}"
@@ -1137,7 +1140,12 @@ class OolongPairsVerifier:
 
         if not missing and not extra:
             return Verdict(
-                passed=True, cause=None, gold=gold, produced=produced_pairs, detail=detail
+                passed=True,
+                cause=None,
+                gold=gold,
+                produced=produced_pairs,
+                detail=detail,
+                quality=quality,
             )
 
         if not pred_set:
@@ -1148,4 +1156,11 @@ class OolongPairsVerifier:
             cause = VerifierCause.INCOMPLETE
         else:
             cause = VerifierCause.SPURIOUS
-        return Verdict(passed=False, cause=cause, gold=gold, produced=produced_pairs, detail=detail)
+        return Verdict(
+            passed=False,
+            cause=cause,
+            gold=gold,
+            produced=produced_pairs,
+            detail=detail,
+            quality=quality,
+        )

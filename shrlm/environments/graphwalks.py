@@ -26,8 +26,9 @@ import random
 import re
 from typing import Any
 
+from shrlm.environments.diagnostics import SET_QUALITY
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import CallNode, NodeKind, Verdict
+from shrlm.optimization.types import CallNode, NodeKind, QualityMeasurement, Verdict
 
 DATASET_REPO = "openai/graphwalks"
 DATASET_FILE = "graphwalks_128k_and_shorter.parquet"
@@ -368,6 +369,7 @@ class GraphWalksVerifier:
         """Verifier facts surfaced into MiningConfig by the experiment driver."""
         return {
             "environment": "graphwalks",
+            "primary_quality": SET_QUALITY.to_dict(),
             "pass_f1_threshold": self.PASS_F1_THRESHOLD,
             "extraction_rule": self.EXTRACTION_RULE,
             "gold_ordering": self.GOLD_ORDERING,
@@ -392,6 +394,7 @@ class GraphWalksVerifier:
         missing = gold_set - pred_set
         extra = pred_set - gold_set
         metrics = score(sorted(pred_set), sorted(gold_set))
+        quality = QualityMeasurement(SET_QUALITY.identifier, round(metrics["f1"], 3))
         detail = (
             f"precision={metrics['precision']:.3f} recall={metrics['recall']:.3f} "
             f"f1={metrics['f1']:.3f} missing={len(missing)} extra={len(extra)}"
@@ -399,7 +402,12 @@ class GraphWalksVerifier:
 
         if not missing and not extra:
             return Verdict(
-                passed=True, cause=None, gold=gold, produced=produced_nodes, detail=detail
+                passed=True,
+                cause=None,
+                gold=gold,
+                produced=produced_nodes,
+                detail=detail,
+                quality=quality,
             )
 
         if not pred_set:
@@ -410,7 +418,14 @@ class GraphWalksVerifier:
             cause = VerifierCause.INCOMPLETE
         else:
             cause = VerifierCause.SPURIOUS
-        return Verdict(passed=False, cause=cause, gold=gold, produced=produced_nodes, detail=detail)
+        return Verdict(
+            passed=False,
+            cause=cause,
+            gold=gold,
+            produced=produced_nodes,
+            detail=detail,
+            quality=quality,
+        )
 
 
 # =============================================================================

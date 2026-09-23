@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shrlm.harness_identity import harness_hash
+from shrlm.optimization.behavior import BEHAVIOR_SCHEMA, summarize_behavior
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
 from shrlm.optimization.candidates import (
     DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
@@ -58,7 +59,7 @@ from shrlm.optimization.subject_worker import (
     evaluate_subjects_in_processes,
 )
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import Verifier
+from shrlm.optimization.types import QualityDefinition, Verifier
 from shrlm.rlm_harness import Harness
 from shrlm.runner import run_metrics
 
@@ -78,7 +79,7 @@ EVAL_ROUND_INDEX = 0
 
 SUMMARY_FILENAME = "summary.json"
 VALIDATION_PROTOCOL = "heldout-batch/v1"
-SUMMARY_FORMAT = "shrlm-validation-summary/v2"
+SUMMARY_FORMAT = "shrlm-validation-summary/v3"
 
 # The promotion ledger (U5): one JSONL record per candidate (and per merged
 # harness) under the round directory, plus the round's decision summary.
@@ -275,11 +276,13 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
     runs, _verdicts, envelope, entries = load_round(split_path, EVAL_ROUND_INDEX)
     total_sub_calls = 0
     total_skill_loads = 0
+    observed_runs = []
     for entry, (_instance, completion) in zip(entries, runs, strict=True):
         terminated = entry.get("cause") in (
             VerifierCause.RESOURCE_TERMINATED.value,
             VerifierCause.RUNTIME_ERROR.value,
         )
+        observed_runs.append((completion, terminated))
         if completion.metadata is None and terminated:
             continue  # terminated before any trajectory existed: no sub-call evidence
         metrics = run_metrics(completion)
@@ -291,6 +294,7 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
     total_cost = float(sum(entry["cost"] for entry in entries if entry.get("cost") is not None))
     return {
         "harness_hash": str(envelope["hash"]),
+        "behavior": summarize_behavior(observed_runs),
         # The accounting rules these figures were produced under, read from the
         # lines themselves rather than assumed to be this build's. A split
         # aggregated after the correction but whose runs predate it must say so,
@@ -322,7 +326,11 @@ def load_summary(subject_path: Path | str) -> dict[str, Any]:
     """Read one subject's persisted ``summary.json`` back, checking its format."""
     path = Path(subject_path) / SUMMARY_FILENAME
     payload = json.loads(path.read_text())
-    if payload.get("format") not in (SUMMARY_FORMAT, "shrlm-validation-summary/v1"):
+    if payload.get("format") not in (
+        SUMMARY_FORMAT,
+        "shrlm-validation-summary/v2",
+        "shrlm-validation-summary/v1",
+    ):
         raise ValueError(f"{path} is not a {SUMMARY_FORMAT} summary")
     return payload
 
@@ -452,6 +460,7 @@ def evaluate_subject(
     summary = {
         "format": SUMMARY_FORMAT,
         "validation_protocol": VALIDATION_PROTOCOL,
+        "behavior_contract": BEHAVIOR_SCHEMA,
         # Which cost-accounting rules produced every figure below -- taken from
         # the runs, never assumed to be this build's. Stamping the current
         # version unconditionally would let a legacy round re-aggregated after
@@ -498,6 +507,8 @@ def evaluation_contract(config: EvaluationConfig) -> dict[str, Any]:
     """Behavior-changing evaluation inputs, excluding operational concurrency."""
     config_method = getattr(config.verifier, "config", None)
     verifier_config = dict(config_method()) if callable(config_method) else {}
+    if "primary_quality" in verifier_config:
+        QualityDefinition.from_dict(verifier_config["primary_quality"])
     return {
         "validation_protocol": VALIDATION_PROTOCOL,
         "verifier_config": verifier_config,
@@ -905,6 +916,7 @@ def validate_round(
     *,
     loader_timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
     preflight_profile: str | None = None,
+    prior_evaluations: list[dict[str, Any]] | None = None,
 ) -> ValidationRound:
     """Load and freeze a disjoint proposal batch, evaluate it, then persist one verdict.
 
@@ -955,6 +967,28 @@ def validate_round(
         if candidate.candidate_id in (BASELINE_ID, MERGED_SUBJECT_ID):
             raise ValueError(f"candidate id {candidate.candidate_id!r} is reserved")
     plan = plan_batch(incumbent, loaded)
+    admitted_inputs = [
+        {"id": c.candidate_id, "surface": c.surface, "hash": c.harness_hash} for c in loaded
+    ]
+    batch_hash = plan.harness_hash
+    duplicate = next(
+        (
+            record
+            for record in (prior_evaluations or [])
+            if batch_hash is not None
+            and record["incumbent_hash"] == harness_hash(incumbent)
+            and record["harness_hash"] == batch_hash
+        ),
+        None,
+    )
+    if duplicate:
+        reason = f"not evaluated: identical rejected evaluated harness under this incumbent; prior round {duplicate['round']} subject {duplicate['subject_id']}; shared batch outcome, no individual score"
+        rejections.extend(
+            CandidateRejection(c.candidate_id, "duplicate_evaluation", reason, str(c.path))
+            for c in loaded
+        )
+        loaded = []
+        plan = plan_batch(incumbent, [])
     decisions = [decide_subject({}, rejection, pconfig) for rejection in rejections]
     evaluation = None
     constituents = loaded if plan.kind == PLAN_MERGE else []
@@ -967,11 +1001,10 @@ def validate_round(
                 **evaluation_contract(config),
                 **profile_fields,
                 "incumbent_hash": harness_hash(incumbent),
-                "batch_hash": plan.harness_hash,
-                "constituents": [
-                    {"id": c.candidate_id, "surface": c.surface, "hash": c.harness_hash}
-                    for c in loaded
-                ],
+                "batch_hash": batch_hash,
+                "constituents": admitted_inputs,
+                "prior_evaluations": prior_evaluations or [],
+                "duplicate_evaluation": duplicate,
                 "rejections": [r.to_dict() for r in rejections],
                 "promotion": {
                     "tau_regression": pconfig.tau_regression,

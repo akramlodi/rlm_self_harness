@@ -45,7 +45,8 @@ from shrlm.rlm_harness import SURFACES
 # mapping changes. Bundles carrying different versions are not comparable, so
 # the frequency-before-vs-after analysis excludes bundles written under any
 # other version (``pattern_frequency_diff.bundle_completeness``).
-TAXONOMY_VERSION = "3.2.0"
+TAXONOMY_VERSION = "3.3.0"
+CAPABILITY_VERSION = "surface-capabilities/v1"
 
 
 class EditableSurface(str, Enum):
@@ -91,9 +92,8 @@ class SurfaceReach(str, Enum):
     """
     Whether an edit to a surface reaches child RLMs or only the root.
 
-    An attribution that blames a child's own behavior on a root-only surface
-    proposes an edit that cannot fix the failure, so the attributor is shown
-    this annotation alongside each surface.
+    The attributor sees this broad hook-scope annotation alongside capabilities.
+    S6's inherited max_depth is a field-level exception to root-only enforcement.
     """
 
     ROOT_ONLY = "root_only"
@@ -105,8 +105,9 @@ class SurfaceReach(str, Enum):
 #   RLM is constructed with ``custom_system_prompt=self.system_prompt``
 #   (``rlm/core/rlm.py``, child spawn in ``_handle_subcall``), so prompt edits
 #   reach every level of the tree.
-# - The S6/S7/S9 seams are applied at the root only; children do not receive
-#   them (docs/residual-review-findings/feature-editable_surfaces.md, C7).
+# - S6 local enforcement and S7/S9 hooks are applied at the root only
+#   (docs/residual-review-findings/feature-editable_surfaces.md, C7). S6 max_depth
+#   is separately inherited through child RLM construction.
 # - S8 is child-reachable through its second builder: ``sub_repl_helpers``
 #   becomes ``custom_sub_tools``, which the child spawn propagates as the
 #   child's own ``custom_tools``.
@@ -126,6 +127,21 @@ SURFACE_REACH: dict[EditableSurface, SurfaceReach] = {
     EditableSurface.REPL_HELPERS: SurfaceReach.CHILD_REACHABLE,
     EditableSurface.ANSWER_MIDDLEWARE: SurfaceReach.ROOT_ONLY,
     EditableSurface.SKILLS: SurfaceReach.CHILD_REACHABLE,
+}
+
+# Runtime facts shared by attribution and proposal. Callable signatures remain
+# owned by the harness; these descriptions do not add runtime behavior.
+SURFACE_CAPABILITIES: dict[EditableSurface, str] = {
+    EditableSurface.REPL_CONTRACT: "Factual environment/API contract in the shared root/child prompt; put algorithmic strategy elsewhere.",
+    EditableSurface.DECOMPOSITION_INSTRUCTION: "Decomposition guidance in the shared root/child prompt; scope it to the current subtask.",
+    EditableSurface.EXECUTION_INSTRUCTION: "Parsing, combining, and task-condition execution guidance in the shared root/child prompt; scope it to the current subtask.",
+    EditableSurface.VERIFICATION_INSTRUCTION: "Pre-submission checks in the shared root/child prompt; no independent semantic oracle.",
+    EditableSurface.RECOVERY_INSTRUCTION: "Model actions after a visible failure in the shared root/child prompt; cannot extend a terminated run or create host retries.",
+    EditableSurface.RUNTIME_POLICY: "Root local policy: enabled gates enforcement; retry_on_syntax_error and max_retries retry the same prompt after syntax errors, not timeouts; max_batch_width and max_prompt_chars refuse work, not split it; validate_sub_output marks rejected return text, without recovery. max_depth is inherited by children (exception to root_only enforcement).",
+    EditableSurface.METADATA: "Root execution-output formatter receives bounded stdout and redacted variable types/lengths; no hidden values or child metadata changes.",
+    EditableSurface.REPL_HELPERS: "Helpers in configured root/child namespaces execute only when called; names/docstrings support discovery. Identify the caller and deterministic input/output contract. The skill loader is scaffold owned by S10.",
+    EditableSurface.ANSWER_MIDDLEWARE: "Root answer hook sees answer text and redacted inventory. accept(text) may return transformed text; redirect(nudge) requests another root turn. No hidden semantic facts.",
+    EditableSurface.SKILLS: "Shared root/child index advertises conditional procedures by `name` and `description`; `body` affects behavior only when loaded or forwarded; neither description nor body may restate per-turn execution or decomposition guidance.",
 }
 
 
@@ -442,21 +458,25 @@ MECHANISM_SURFACES: dict[AgentMechanism, tuple[EditableSurface, ...]] = {
         EditableSurface.EXECUTION_INSTRUCTION,
         EditableSurface.REPL_CONTRACT,
         EditableSurface.SKILLS,
+        EditableSurface.RECOVERY_INSTRUCTION,
     ),
     AgentMechanism.UNPARSED_CHILD_OUTPUT: (
         EditableSurface.METADATA,
         EditableSurface.EXECUTION_INSTRUCTION,
         EditableSurface.RECOVERY_INSTRUCTION,
+        EditableSurface.REPL_HELPERS,
     ),
     AgentMechanism.REPL_EXECUTION_FAULT: (
         EditableSurface.REPL_HELPERS,
         EditableSurface.SKILLS,
         EditableSurface.EXECUTION_INSTRUCTION,
         EditableSurface.REPL_CONTRACT,
+        EditableSurface.RECOVERY_INSTRUCTION,
     ),
     AgentMechanism.LOSSY_AGGREGATION: (
         EditableSurface.EXECUTION_INSTRUCTION,
         EditableSurface.VERIFICATION_INSTRUCTION,
+        EditableSurface.REPL_HELPERS,
     ),
     AgentMechanism.UNCONSULTED_PROCEDURE: (
         EditableSurface.SKILLS,
@@ -465,6 +485,26 @@ MECHANISM_SURFACES: dict[AgentMechanism, tuple[EditableSurface, ...]] = {
     ),
     AgentMechanism.OTHER: tuple(EditableSurface),
 }
+
+
+SUPPORTED_ROUTES = {
+    AgentMechanism.LOSSY_AGGREGATION: EditableSurface.REPL_HELPERS,
+    AgentMechanism.UNPARSED_CHILD_OUTPUT: EditableSurface.REPL_HELPERS,
+    AgentMechanism.ITERATION_BUDGET_EXHAUSTION: EditableSurface.RECOVERY_INSTRUCTION,
+    AgentMechanism.REPL_EXECUTION_FAULT: EditableSurface.RECOVERY_INSTRUCTION,
+}
+
+
+def eligible_surfaces(
+    mechanism: AgentMechanism, support: dict[str, list[str]] | None = None
+) -> tuple[EditableSurface, ...]:
+    """New routes require operation refs from this round's admitted evidence."""
+    conditional = SUPPORTED_ROUTES.get(mechanism)
+    return tuple(
+        surface
+        for surface in MECHANISM_SURFACES.get(mechanism, ())
+        if surface != conditional or (support or {}).get(surface.value)
+    )
 
 
 CAUSAL_STATUS_DOCS: dict[CausalStatus, str] = {
@@ -518,15 +558,13 @@ def render_surface_block() -> str:
     """
     Render the ten editable surfaces with their reach annotations.
 
-    Reach matters to attribution: a mechanism describing a child's own behavior
-    must not be pinned on a root-only surface, whose edits children never see.
+    Capability descriptions name field-level exceptions to the broad reach label.
     """
     lines = ["editable_surfaces (each mechanism implicates one primary surface):"]
     for surface in EditableSurface:
-        declared = SURFACES[surface.value]
         lines.append(
             f"  - {surface.value} {SURFACE_NAME[surface]}"
-            f" [{SURFACE_REACH[surface].value}]: {declared.governs}"
+            f" [{SURFACE_REACH[surface].value}]: {SURFACE_CAPABILITIES[surface]}"
         )
     return "\n".join(lines)
 

@@ -124,6 +124,7 @@ def edit_item(pattern_index: int, edit: dict[str, Any], **overrides: Any) -> dic
         "edit": edit,
         "predicted_effect": "the root double-checks before answering",
         "regression_risks": ["one extra turn per run"],
+        "revision": None,
     }
     if pattern_index == 3:
         item["surface"] = "S9"
@@ -159,12 +160,13 @@ def canned_batch(*items: dict[str, Any]) -> str:
     ]
     return json.dumps(
         {
-            "format": "proposal-selection/v1",
+            "format": "proposal-selection/v2",
             "selections": [
                 {
                     "pattern_index": item["pattern_index"],
                     "surface": item["surface"],
                     "reason": "The cited operation lacks this check.",
+                    "evidence_refs": [],
                 }
                 for item in candidates
             ],
@@ -178,6 +180,34 @@ def test_extract_proposal_response_fenced_and_unfenced():
     expected = json.loads(response)
     assert extract_proposal_response("```json\n" + response + "\n```") == expected
     assert extract_proposal_response("answer: " + response + " done") == expected
+
+
+def test_supported_route_requires_own_admitted_operation_references():
+    from shrlm.optimization.proposal import validate_batch_members
+
+    pattern = {
+        **make_pattern("lossy_aggregation"),
+        "route_support": {"S8": ["own"]},
+        "admitted_refs": ["own"],
+    }
+    item = edit_item(0, REPL_HELPER_ITEM["edit"], surface="S8")
+    selection = {
+        "pattern_index": 0,
+        "surface": "S8",
+        "reason": "Call safe_index at the shown merge, taking sequence and index and returning one value.",
+        "evidence_refs": ["own"],
+    }
+    accepted, rejected = validate_batch_members([item], [pattern], H0, [], None, [], [selection])
+    assert len(accepted) == 1 and not rejected
+    for refs in ([], ["foreign"], ["own", "foreign"]):
+        accepted, rejected = validate_batch_members(
+            [item], [pattern], H0, [], None, [], [{**selection, "evidence_refs": refs}]
+        )
+        assert not accepted and rejected
+    accepted, rejected = validate_batch_members(
+        [item], [{**pattern, "route_support": {}}], H0, [], None, [], [selection]
+    )
+    assert not accepted and "not eligible" in rejected[0]["reason"]
 
 
 @pytest.mark.parametrize(
@@ -1501,9 +1531,9 @@ def test_history_reports_one_shared_verdict_for_bundled_edits():
         },
     ]
     history = _render_history_block([(records, {"promoted": False})])
-    assert history.count("rejected") == 1
+    assert history.split("\n", 1)[1].count("rejected") == 1
     assert "S2, S3" in history
-    assert "bundled" not in history
+    assert "bundled" not in history.split("\n", 1)[1]
 
 
 # ---------------------------------------------------------------------------

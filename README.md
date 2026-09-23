@@ -182,10 +182,18 @@ Each proposal compares actual execution with the unresolved operation and explai
 why the change addresses its cause. Task-derived reasoning asks which information
 must survive and which conditions the final computation must enforce.
 The host encodes literal instruction text once; models no longer escape template braces.
-A shared 32,000-character evidence budget keeps a compact pattern inventory and
-expands a few complete operations, including relevant contrasts when available.
+A shared capability description explains what each surface can observe, when it
+runs, and what it can change. New S8 parsing/aggregation and S5 recovery routes
+require admitted operations from held-in traces. A 32,000-character evidence
+budget allocates complete core examples across distinct mechanisms before adding
+context or contrasts; attribution also preserves complete code and coordinates.
 Rejected candidates with comparable recorded quality gains remain visible as
-potentially promising in history, using F1 for pairs/GraphWalks and score for OOLONG.
+potentially promising in a separately bounded 12,000-character history. Verifiers
+declare their primary quality metric, direction, precision and terminal values;
+missing or incomparable measurements remain unassessed. History separates claims,
+observed retry/redirect/skill-load events, and measured batch outcomes. Revisited
+interventions require a prior reference and revision explanation. Identical
+rejected evaluated harnesses under the same incumbent are refused before paid calls.
 Exact outcomes and regressions remain visible, and `v=1` provides no causal guarantee.
 Validation still uses one baseline and one combined candidate on held-out data.
 See the [proposal contract](shrlm/docs/harness-proposal-interface.md),

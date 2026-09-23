@@ -74,6 +74,7 @@ from shrlm.harness_identity import (
     hash_of_serialization,
     serialize_harness,
 )
+from shrlm.optimization.behavior import BEHAVIOR_SCHEMA
 from shrlm.optimization.candidates import (
     BEHAVIOR_FIELDS,
     CANDIDATE_MODULE_PREAMBLE,
@@ -92,6 +93,13 @@ from shrlm.optimization.driver import (
     MANIFEST_FILE,
     canonical_manifest_entries,
 )
+from shrlm.optimization.history import (
+    HISTORY_BUDGET_CHARS,
+    HISTORY_SCHEMA,
+    prior_attempts,
+    revision_violation,
+    surface_fingerprint,
+)
 from shrlm.optimization.skill_edit import (
     SKILLS_EDIT_FORMAT,
     SkillEditRejection,
@@ -99,9 +107,10 @@ from shrlm.optimization.skill_edit import (
     _validate_skill_edit,
 )
 from shrlm.optimization.taxonomy import (
+    CAPABILITY_VERSION,
     MECHANISM_SURFACE,
-    MECHANISM_SURFACES,
     AgentMechanism,
+    eligible_surfaces,
     render_surface_block,
 )
 from shrlm.rlm_harness import (
@@ -121,7 +130,7 @@ from shrlm.runner import declared_metadata_bound
 
 PROPOSAL_FORMAT = "shrlm-proposal/v1"
 TEXT_CONTRACT = "literal-text/v1"
-RESPONSE_FORMAT_VERSION = "proposal-selection/v1"
+RESPONSE_FORMAT_VERSION = "proposal-selection/v2"
 # ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
 # declaration site) and re-exported here for the proposal writer.
 PROPOSAL_FILENAME = "proposal.json"
@@ -143,7 +152,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "3.0.0"
+PROMPT_VERSION = "4.0.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -159,7 +168,7 @@ PROMPT_VERSION = "3.0.0"
 # materialization returns an empty result instead of raising. The 2026-09-10
 # OOLONG-Pairs run lost rounds 4-6 to a proposer that re-emitted the incumbent's
 # own S9 three rounds in a row; under 1.4.0 that was counted, never re-asked.
-VALIDATOR_VERSION = "3.0.0"
+VALIDATOR_VERSION = "4.0.0"
 
 DEFAULT_K = 4
 # Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
@@ -306,6 +315,8 @@ class CandidateSpec:
     observed_failure: str = ""
     behavioral_change: str = ""
     text_contract: str = ""
+    revision: dict[str, Any] | None = None
+    revision_unchanged: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -331,6 +342,7 @@ class MaterializationFailureRecord:
     surface: str
     reason: str
     predicted_effect: str = ""
+    behavior: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -338,6 +350,7 @@ class MaterializationFailureRecord:
             "surface": self.surface,
             "reason": self.reason,
             "predicted_effect": self.predicted_effect,
+            "behavior": self.behavior,
         }
 
 
@@ -441,7 +454,7 @@ def _pattern_surfaces(pattern: dict[str, Any]) -> list[str]:
     mechanism = _pattern_mechanism(pattern)
     if mechanism is None:
         return []
-    return [surface.value for surface in MECHANISM_SURFACES.get(mechanism, ())]
+    return [surface.value for surface in eligible_surfaces(mechanism, pattern.get("route_support"))]
 
 
 def _addressable_patterns(patterns: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
@@ -569,7 +582,7 @@ HISTORY_NOT_MATERIALIZED = "not_materialized"
 HISTORY_NO_RECORDS = "no per-edit record persisted"
 
 
-def _render_history_block(
+def render_history_rounds(
     prior_history: Sequence[tuple[list[dict[str, Any]], dict[str, Any]]],
 ) -> str:
     """One entry per completed prior round (R5), every attempted edit with its
@@ -590,10 +603,16 @@ def _render_history_block(
             f"Round {label}: promoted={decision.get('promoted')} "
             f"promoted_harness_hash={decision.get('promoted_harness_hash')}"
         )
-        if decision.get("baseline_diagnostics"):
-            lines.append(
-                "  baseline: " + json.dumps(decision["baseline_diagnostics"], sort_keys=True)
-            )
+        baseline = decision.get("baseline_diagnostics") or next(
+            (
+                record.get("diagnostic_progress", {}).get("baseline")
+                for record in records
+                if record.get("diagnostic_progress", {}).get("baseline")
+            ),
+            None,
+        )
+        if baseline:
+            lines.append("  baseline: " + json.dumps(baseline, sort_keys=True))
         if decision.get("proposal_attempts"):
             lines.append(
                 "  local proposal checks/repair: " + json.dumps(decision["proposal_attempts"])
@@ -606,12 +625,6 @@ def _render_history_block(
                 continue
             subject = record.get("subject_id")
             upstream = record.get("upstream")
-            if upstream:
-                lines.append(
-                    f"  - {subject}: rejected at loader gate {upstream.get('gate')}: "
-                    f"{upstream.get('reason')}"
-                )
-                continue
             constituent_ids = (record.get("merge") or {}).get("constituent_ids") or []
             if constituent_ids:
                 surfaces = [
@@ -619,6 +632,8 @@ def _render_history_block(
                 ]
                 subject = f"{subject} (combined edits: {', '.join(str(s) for s in surfaces)})"
             outcome = record.get("decision")
+            if upstream:
+                outcome = f"rejected at loader gate {upstream.get('gate')}: {upstream.get('reason')} (not evaluated)"
             effect = record.get("predicted_effect")
             reasons = "; ".join(record.get("reasons") or [])
             line = f"  - {subject}: {outcome}"
@@ -627,6 +642,10 @@ def _render_history_block(
             if reasons:
                 line += f" ({reasons})"
             lines.append(line)
+            if record.get("surface"):
+                lines.append(
+                    f"    surface={record['surface']} mechanism={record.get('mechanism', 'unknown')}"
+                )
             if not constituent_ids:
                 lines.append(
                     "    behavior: "
@@ -640,18 +659,56 @@ def _render_history_block(
             if record.get("diagnostic_progress"):
                 lines.append(
                     "    diagnostic progress: "
-                    + json.dumps(record["diagnostic_progress"], sort_keys=True)
+                    + json.dumps(
+                        {
+                            key: value
+                            for key, value in record["diagnostic_progress"].items()
+                            if key not in {"baseline", "candidate"}
+                        },
+                        sort_keys=True,
+                    )
                 )
-            if record.get("diagnostics"):
-                lines.append(
-                    "    measured batch: " + json.dumps(record["diagnostics"], sort_keys=True)
-                )
+            diagnostics = record.get("diagnostics") or record.get("diagnostic_progress", {}).get(
+                "candidate"
+            )
+            if diagnostics:
+                lines.append("    measured batch: " + json.dumps(diagnostics, sort_keys=True))
+            lines.append(
+                "    activation (event, not proof of effectiveness): "
+                + json.dumps(record.get("activation", {"status": "not_assessed"}), sort_keys=True)
+            )
+            for field_name in (
+                "incumbent_hash",
+                "effective_edit_fingerprint",
+                "revision",
+                "revision_unchanged",
+            ):
+                if record.get(field_name) is not None:
+                    lines.append(
+                        f"    {field_name}: " + json.dumps(record[field_name], sort_keys=True)
+                    )
             for member in records:
                 if member.get("subject_id") in constituent_ids:
                     lines.append(
                         f"    member {member.get('surface')}: "
                         + str(member.get("predicted_effect", "predicted effect unavailable"))
                         + " (shares the combined verdict; no individual score)"
+                    )
+                    lines.append(
+                        "      identity/revision: "
+                        + json.dumps(
+                            {
+                                key: member.get(key)
+                                for key in (
+                                    "subject_id",
+                                    "mechanism",
+                                    "effective_edit_fingerprint",
+                                    "revision",
+                                    "revision_unchanged",
+                                )
+                            },
+                            sort_keys=True,
+                        )
                     )
                     lines.append(
                         "      behavior: "
@@ -662,7 +719,69 @@ def _render_history_block(
                             }
                         )
                     )
+                    lines.append(
+                        "      activation: "
+                        + json.dumps(
+                            member.get("activation", {"status": "not_assessed"}), sort_keys=True
+                        )
+                    )
     return "\n".join(lines)
+
+
+def _render_history_block(
+    prior_history: Sequence[tuple[list[dict[str, Any]], dict[str, Any]]],
+    patterns: Sequence[dict[str, Any]] = (),
+) -> str:
+    """Whole round entries under a separate cap; archive/index remain complete."""
+    from collections import Counter
+
+    if not prior_history:
+        return render_history_rounds(prior_history)
+    mechanisms = {pattern.get("signature", {}).get("agent_mechanism") for pattern in patterns}
+    ranked = sorted(
+        enumerate(prior_history),
+        key=lambda pair: (
+            not any(record.get("mechanism") in mechanisms for record in pair[1][0]),
+            not any(
+                record.get("diagnostic_progress", {}).get("status") == "potentially_promising"
+                for record in pair[1][0]
+            ),
+            -pair[0],
+        ),
+    )
+    selected: dict[int, str] = {}
+    total = sum(len(records) for records, _ in prior_history)
+    statuses = dict(
+        Counter(
+            str(record.get("decision", "unknown"))
+            for records, _ in prior_history
+            for record in records
+        )
+    )
+
+    def rendered() -> str:
+        omitted = total - sum(len(prior_history[index][0]) for index in selected)
+        header = json.dumps(
+            {
+                "history_schema": HISTORY_SCHEMA,
+                "rounds_total": len(prior_history),
+                "attempts_total": total,
+                "status_totals": statuses,
+                "rounds_omitted": len(prior_history) - len(selected),
+                "attempts_omitted": omitted,
+                "omission_reason": "rendered budget; full archive and reference index retained",
+            },
+            sort_keys=True,
+        )
+        return header + "\n" + "\n\n".join(selected[index] for index in sorted(selected))
+
+    for index, (records, decision) in ranked:
+        selected[index] = render_history_rounds(
+            [(records, {**decision, "round": decision.get("round", index)})]
+        )
+        if len(rendered()) > HISTORY_BUDGET_CHARS:
+            del selected[index]
+    return rendered()
 
 
 PROPOSER_INTRO = """\
@@ -845,7 +964,7 @@ with similar skills in the index and never loaded correctly.
 """
 
 RESPONSE_FORMAT = """\
-Respond with one fenced JSON object using format proposal-selection/v1. Write
+Respond with one fenced JSON object using format proposal-selection/v2. Write
 selections first: choose at most %(k)s interventions, one per surface and pattern,
 ranked by evidence for the unresolved operation. Then write exactly one matching
 candidate per selection. No extra model call is needed. To withdraw all, return
@@ -853,11 +972,12 @@ empty selections and candidates lists. Example shape:
 
 ```json
 {
-  "format": "proposal-selection/v1",
-  "selections": [{"pattern_index": 0, "surface": "S3", "reason": "<evidence supporting this intervention over contenders>"}],
+  "format": "proposal-selection/v2",
+  "selections": [{"pattern_index": 0, "surface": "S3", "reason": "<capability, unresolved operation and intended caller/recovery point>", "evidence_refs": []}],
   "candidates": [{
     "pattern_index": 0,
     "surface": "S3",
+    "revision": null,
     "incumbent_behavior": "<what the relevant execution actually did; distinguish instructions from execution>",
     "observed_failure": "<unresolved operation and verification limits in held-in evidence>",
     "behavioral_change": "<precise changed action and why it addresses the demonstrated cause>",
@@ -868,6 +988,16 @@ empty selections and candidates lists. Example shape:
 }
 ```
 Selection reasons and each explanation field must contain 1-600 characters.
+Each selection's evidence_refs lists at most 12 admitted operation_ref IDs from
+its own pattern. Newly supported S8/S5 routes must cite all route_support refs;
+S8 must specify the deterministic input/output contract and intended caller.
+A visible error followed by recovery is not itself an unresolved defect.
+For a revisited intervention, revision must be {"round": 6, "subject_id": "prior-id",
+"explanation": "<changed operation, current evidence of new applicability, or revised joint hypothesis>"}.
+Use null only for a new intervention. Unchanged members in a changed batch need
+an explicit prior reference and revised joint hypothesis; they have no individual
+performance outcome. Repeating an identical rejected evaluated harness under
+the same incumbent is refused locally before validation.
 """
 
 
@@ -901,6 +1031,10 @@ def render_prompt(
             "eligible_surfaces": _pattern_surfaces(pattern),
             "support": pattern.get("support"),
             "instance_support": pattern.get("instance_support"),
+            "instance_ids": pattern.get("instance_ids", [])
+            if pattern.get("instance_support") is None
+            else [],
+            "actionability": pattern.get("actionability"),
             "below_min_support": pattern.get("below_support_floor"),
             "symptoms": bounded_excerpt(str(pattern.get("shared_symptoms", "")), 300),
         }
@@ -925,8 +1059,14 @@ def render_prompt(
         evidence_text, audit = pack_evidence(inventory, context, k=k)
     except EvidenceBudgetExceeded as exc:
         raise ProposalRejection(str(exc)) from exc
+    history_text = _render_history_block(prior_history, patterns)
     if evidence_audit is not None:
         evidence_audit.update(audit)
+        evidence_audit["history_chars"] = len(history_text)
+    addressable = [
+        (index, {**pattern, "route_support": audit["route_support"].get(str(index), {})})
+        for index, pattern in addressable
+    ]
     sections = [
         PROPOSER_INTRO + render_surface_block(),
         PROPOSER_TASK,
@@ -936,7 +1076,7 @@ def render_prompt(
         CALLABLE_CONTRACT,
         render_current_surfaces(addressable, incumbent_serialization),
         evidence_text,
-        "Prior edit history (every previously attempted candidate with its surface, "
+        "Prior edit history (budgeted prior candidates with their surfaces, "
         "predicted effect, and outcome; do not repeat an approach already rejected "
         "for the same reason). A candidate identical to the current surface is "
         "refused before validation and must not be re-proposed: a not_materialized "
@@ -945,7 +1085,7 @@ def render_prompt(
         "refinement. Keep its rejection reasons and contrary metrics in view; do not replay "
         "the same edit or attribute a combined gain to one member. These descriptive "
         "diagnostics do not change promotion; v=1 is not a reliable causal estimate.\n"
-        + _render_history_block(prior_history),
+        + history_text,
         EDIT_FORMATS
         % {
             "s6_keys": list(S6_KEYS),
@@ -1209,6 +1349,20 @@ def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> Candid
     violation = behavioral_difference_violation(item, required=True)
     if violation:
         raise ProposalRejection(f"pattern_index {index}: {violation}")
+    revision = item.get("revision")
+    if revision is not None and (
+        not isinstance(revision, dict)
+        or set(revision) != {"round", "subject_id", "explanation"}
+        or type(revision["round"]) is not int
+        or revision["round"] < 0
+        or not isinstance(revision["subject_id"], str)
+        or not 1 <= len(revision["subject_id"]) <= 128
+        or not isinstance(revision["explanation"], str)
+        or not 1 <= len(revision["explanation"].strip()) <= 600
+    ):
+        raise ProposalRejection(
+            "revision must be null or a prior round/subject_id and 1-600 character explanation"
+        )
 
     return CandidateSpec(
         pattern_index=index,
@@ -1219,6 +1373,7 @@ def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> Candid
         regression_risks=list(risks),
         **{name: item[name] for name in BEHAVIOR_FIELDS},
         text_contract=TEXT_CONTRACT,
+        revision=revision,
     )
 
 
@@ -1375,6 +1530,25 @@ def _candidate_id(round_index: int, position: int, surface: str) -> str:
     return f"r{round_index:02d}-c{position:02d}-{surface.lower()}"
 
 
+def proposal_history_fields(
+    spec: CandidateSpec,
+    incumbent_serialization: dict[str, Any],
+    serialization: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Preserve known intent on refused attempts without inventing an effective edit."""
+    return {
+        **{name: getattr(spec, name) for name in BEHAVIOR_FIELDS},
+        "mechanism": spec.pattern["signature"]["agent_mechanism"],
+        "incumbent_hash": hash_of_serialization(incumbent_serialization),
+        "revision": spec.revision,
+        **(
+            {"effective_edit_fingerprint": surface_fingerprint(serialization, spec.surface)}
+            if serialization is not None
+            else {}
+        ),
+    }
+
+
 def write_proposal(
     proposals_dir: Path,
     candidate_id: str,
@@ -1407,6 +1581,19 @@ def write_proposal(
         "predicted_effect": spec.predicted_effect,
         **{name: getattr(spec, name) for name in BEHAVIOR_FIELDS if getattr(spec, name)},
         "regression_risks": list(spec.regression_risks),
+        "revision": spec.revision,
+        "revision_unchanged": spec.revision_unchanged,
+        "effective_edit_fingerprint": surface_fingerprint(serialization, spec.surface),
+        "changed_skill": spec.edit.get("name") if spec.surface == "S10" else None,
+        "activation_applicable": spec.surface != "S6"
+        or (
+            bool(serialization["surfaces"]["S6_runtime_policy"].get("retry_on_syntax_error"))
+            and any(
+                incumbent_serialization["surfaces"]["S6_runtime_policy"].get(key)
+                != serialization["surfaces"]["S6_runtime_policy"].get(key)
+                for key in ("enabled", "retry_on_syntax_error", "max_retries")
+            )
+        ),
         "provenance": {
             "model": model_name,
             "prompt_sha256": prompt_sha,
@@ -1611,6 +1798,27 @@ def validate_batch_members(
             reason = selection.get("reason")
             if not isinstance(reason, str) or not reason.strip() or len(reason) > 600:
                 raise ProposalRejection("selection reason must contain 1-600 characters")
+            refs = selection.get("evidence_refs", [])
+            if (
+                not isinstance(refs, list)
+                or len(refs) > 12
+                or not all(isinstance(ref, str) for ref in refs)
+            ):
+                raise ProposalRejection(
+                    "selection evidence_refs must be a list of at most 12 operation refs"
+                )
+            required = (
+                patterns[index].get("route_support", {}).get(surface, [])
+                if index is not None
+                else []
+            )
+            if required and not set(required).issubset(refs):
+                raise ProposalRejection("supported route must cite its admitted evidence_refs")
+            admitted_refs = patterns[index].get("admitted_refs", []) if index is not None else []
+            if refs and not set(refs).issubset(admitted_refs):
+                raise ProposalRejection(
+                    "selection evidence_refs must belong to this pattern's admitted operations"
+                )
             if sum(isinstance(s, dict) and s.get("surface") == surface for s in selections) > 1:
                 raise ProposalRejection(f"surface {surface} was selected more than once")
             if sum(isinstance(s, dict) and s.get("pattern_index") == index for s in selections) > 1:
@@ -1619,6 +1827,10 @@ def validate_batch_members(
                 raise ProposalRejection("candidate must explicitly name its selected surface")
             if item.get("edit") is None:
                 raise ProposalRejection("selection has no matching candidate replacement")
+            if "revision" not in item or "evidence_refs" not in selection:
+                raise ProposalRejection(
+                    "proposal-selection/v2 requires candidate revision and selection evidence_refs"
+                )
             if index is not None and sum(i == index for i, _ in identities) > 1:
                 raise ProposalRejection(f"pattern_index {index} was proposed more than once")
             if surface is not None and sum(s == surface for _, s in identities) > 1:
@@ -1650,6 +1862,18 @@ def validate_batch_members(
                     "predicted_effect": item.get("predicted_effect", "unavailable")
                     if isinstance(item, dict)
                     else "unavailable",
+                    "behavior": {
+                        **{
+                            name: item[name]
+                            for name in BEHAVIOR_FIELDS
+                            if isinstance(item, dict) and isinstance(item.get(name), str)
+                        },
+                        **(
+                            {"mechanism": patterns[index]["signature"]["agent_mechanism"]}
+                            if index is not None and 0 <= index < len(patterns)
+                            else {}
+                        ),
+                    },
                 }
             )
     return slots, failures
@@ -1711,7 +1935,8 @@ def propose_round(
         Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="shrlm-proposal-"))
     )
 
-    patterns = bundle.get("patterns", [])
+    patterns = [dict(pattern) for pattern in bundle.get("patterns", [])]
+    attempt_index = prior_attempts(prior_history)
     incumbent_serialization = serialize_harness(incumbent)
     evidence_audit: dict[str, Any] = {}
     rendered_prompt, addressable = render_prompt(
@@ -1724,6 +1949,9 @@ def propose_round(
         evidence=evidence,
         evidence_audit=evidence_audit,
     )
+    for index, pattern in enumerate(patterns):
+        pattern["route_support"] = evidence_audit.get("route_support", {}).get(str(index), {})
+        pattern["admitted_refs"] = evidence_audit.get("admitted_refs", {}).get(str(index), [])
     system_sha = prompt_sha256(rendered_prompt)
     cfg_sha = config_sha256(config, lm)
     bundle_id = str(bundle.get("bundle_id", ""))
@@ -1744,6 +1972,11 @@ def propose_round(
         "response_format": RESPONSE_FORMAT_VERSION,
         "evidence_selector_version": EVIDENCE_SELECTOR_VERSION,
         "diagnostic_history_version": DIAGNOSTIC_HISTORY_VERSION,
+        "capability_version": CAPABILITY_VERSION,
+        "history_schema": HISTORY_SCHEMA,
+        "history_budget_chars": HISTORY_BUDGET_CHARS,
+        "behavior_contract": BEHAVIOR_SCHEMA,
+        "prior_attempts_sha256": prompt_sha256(canonical_json(attempt_index)),
         "prompt_sha256": system_sha,
         "config_sha256": cfg_sha,
         "base_hash": hash_of_serialization(incumbent_serialization),
@@ -1948,11 +2181,54 @@ def propose_round(
             except MaterializationFailure as exc:
                 new_materialization_failures.append(
                     MaterializationFailureRecord(
-                        spec.pattern_index, spec.surface, exc.reason, spec.predicted_effect
+                        spec.pattern_index,
+                        spec.surface,
+                        exc.reason,
+                        spec.predicted_effect,
+                        proposal_history_fields(spec, incumbent_serialization),
                     )
                 )
                 new_failed_slots[spec.pattern_index] = position
                 continue
+            violation = revision_violation(
+                spec.revision,
+                surface=spec.surface,
+                mechanism=spec.pattern["signature"]["agent_mechanism"],
+                fingerprint=surface_fingerprint(serialization, spec.surface),
+                attempts=attempt_index,
+            )
+            if violation:
+                new_preflight_failures.append(
+                    {
+                        "pattern_index": spec.pattern_index,
+                        "surface": spec.surface,
+                        "position": position,
+                        "gate": "revision",
+                        "reason": violation,
+                        "predicted_effect": spec.predicted_effect,
+                        "behavior": proposal_history_fields(
+                            spec, incumbent_serialization, serialization
+                        ),
+                    }
+                )
+                new_failed_slots[spec.pattern_index] = position
+                continue
+            if spec.revision is not None:
+                predecessor = next(
+                    record
+                    for record in attempt_index
+                    if record["round"] == spec.revision["round"]
+                    and record.get("subject_id") == spec.revision["subject_id"]
+                )
+                previous_fingerprint = predecessor.get("effective_edit_fingerprint")
+                spec = replace(
+                    spec,
+                    revision_unchanged=(
+                        previous_fingerprint == surface_fingerprint(serialization, spec.surface)
+                    )
+                    if previous_fingerprint
+                    else None,
+                )
             path = write_proposal(
                 stage / "proposals",
                 _candidate_id(round_index, position, spec.surface),
@@ -1979,6 +2255,9 @@ def propose_round(
                         "gate": checked.gate,
                         "reason": checked.reason,
                         "predicted_effect": spec.predicted_effect,
+                        "behavior": proposal_history_fields(
+                            spec, incumbent_serialization, serialization
+                        ),
                     }
                 )
                 new_failed_slots[spec.pattern_index] = position

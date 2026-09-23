@@ -30,6 +30,120 @@ from tests.optimization.test_driver import ClientFactory, final, make_round_conf
 from tests.optimization.test_proposal import PATTERN_CODE_S9, PATTERN_TEXT
 
 
+def test_core_packets_precede_optional_context_and_repeat_support():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    inventory = [
+        {
+            "index": i,
+            "signature": {"agent_mechanism": mechanism},
+            "support": 100 if i == 0 else 2,
+            "instance_support": i + 1,
+        }
+        for i, mechanism in enumerate(
+            ["incomplete_coverage", "lossy_aggregation", "repl_execution_fault"]
+        )
+    ]
+    evidence = {
+        "patterns": {
+            i: {
+                "task_question": "derive the result",
+                "trace": {
+                    "snippets": [
+                        {
+                            "node_id": "root",
+                            "iteration_index": 0,
+                            "code_block_index": 0,
+                            "code": f"combine_{i}(inputs)",
+                            "code_complete": True,
+                            "reason": "cited operation",
+                        },
+                        {
+                            "node_id": "root",
+                            "iteration_index": 1,
+                            "code_block_index": 0,
+                            "code": "optional = '" + "x" * 5000 + "'",
+                            "code_complete": True,
+                            "reason": "following consumer context",
+                        },
+                    ]
+                },
+            }
+            for i in range(3)
+        }
+    }
+    rendered, audit = pack_evidence(inventory, evidence, k=3, budget=5000)
+    assert audit["expanded_patterns"] == [2, 1, 0]
+    assert len(rendered) <= 5000
+    section = json.loads(rendered.split("\n", 1)[1])
+    assert len(section["operations"]) == 3
+    assert section["inventory"][1]["eligible_surfaces"] == ["S3", "S4", "S8"]
+    assert audit["route_support"]["1"]["S8"]
+
+
+@pytest.mark.parametrize("mechanism", ["iteration_budget_exhaustion", "repl_execution_fault"])
+def test_recovery_route_requires_admitted_error_and_subsequent_complete_operation(mechanism):
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    inventory = [{"index": 0, "signature": {"agent_mechanism": mechanism}}]
+    snippets = [
+        {
+            "node_id": "r",
+            "iteration_index": 0,
+            "code_block_index": 0,
+            "code": "child_result = child()",
+            "code_complete": True,
+            "reason": "cited operation",
+            "error_observed": True,
+        },
+        {
+            "node_id": "r",
+            "iteration_index": 1,
+            "code_block_index": 0,
+            "code": "consume(child_result)",
+            "code_complete": True,
+            "reason": "following consumer context",
+            "follows_error": True,
+        },
+    ]
+    evidence = {"patterns": {0: {"task_question": "task", "trace": {"snippets": snippets}}}}
+    _, audit = pack_evidence(inventory, evidence, k=1, budget=4000)
+    assert len(audit["route_support"]["0"]["S5"]) == 2
+    # If the required consumer cannot fit, the host cannot admit the route.
+    snippets[1]["code"] = "oversized" * 4000
+    _, audit = pack_evidence(inventory, evidence, k=1, budget=4000)
+    assert "S5" not in audit["route_support"]["0"]
+    snippets.clear()
+    _, audit = pack_evidence(inventory, evidence, k=1, budget=4000)
+    assert "S5" not in audit["route_support"]["0"]
+
+
+def test_heldin_evidence_uses_custom_verifier_definition(tmp_path):
+    from shrlm.optimization.types import QualityDefinition, QualityMeasurement
+
+    definition = QualityDefinition("distance", "v1", "lower")
+    verdict = Verdict(
+        False,
+        VerifierCause.WRONG_VALUE,
+        "",
+        "",
+        quality=QualityMeasurement(definition.identifier, 3.0),
+    )
+    signature = {"agent_mechanism": "lossy_aggregation"}
+    bundle = {
+        "config": {
+            "verifier_config": {"environment": "custom", "primary_quality": definition.to_dict()}
+        },
+        "patterns": [{"signature": signature, "representatives": ["a"]}],
+    }
+    (tmp_path / "records.jsonl").write_text(
+        json.dumps({"instance_id": "a", "signature": signature, "verdict": verdict.to_dict()})
+        + "\n"
+    )
+    evidence = load_proposal_evidence(tmp_path, bundle)
+    assert evidence["patterns"][0]["quality_diagnostics"]["mean"] == 3.0
+
+
 @pytest.mark.parametrize(
     "environment,detail,name",
     [
@@ -78,6 +192,19 @@ def test_explicit_empty_oolong_is_zero_but_unknown_detail_is_not_guessed():
         )
 
 
+@pytest.mark.parametrize("task_set", ["synth", "real"])
+def test_actual_oolong_contracts_produce_structured_quality_and_support_legacy(task_set):
+    from shrlm.environments.oolong import OolongVerifier
+
+    verifier = OolongVerifier(task_set)
+    verdict = verifier({"answer_kind": "numeric", "answer_raw": "4"}, "4")
+    config = verifier.config()
+    assert aggregate_quality_diagnostics([verdict], config)["mean"] == 1.0
+    legacy = {key: value for key, value in config.items() if key != "primary_quality"}
+    assert aggregate_quality_diagnostics([replace(verdict, quality=None)], legacy)["mean"] == 1.0
+    assert aggregate_quality_diagnostics([replace(verdict, quality=None)], config)["mean"] is None
+
+
 def test_progress_obeys_declared_direction_and_requires_matching_definition():
     baseline = {"definition": {"name": "error", "direction": "lower"}, "mean": 0.8}
     candidate = {**baseline, "mean": 0.6}
@@ -87,14 +214,61 @@ def test_progress_obeys_declared_direction_and_requires_matching_definition():
     assert compare_quality_diagnostics(baseline, {**candidate, "definition": {}}) == "not_assessed"
 
 
+def test_verifier_owned_lower_metric_and_unknown_values():
+    from shrlm.optimization.types import QualityDefinition, QualityMeasurement
+
+    definition = QualityDefinition(
+        "distance", "v1", "lower", precision=3, terminal_values={"wrong_format": 100.0}
+    )
+    config = {"environment": "unfamiliar", "primary_quality": definition.to_dict()}
+    measured = Verdict(
+        False,
+        VerifierCause.WRONG_VALUE,
+        "CANARY",
+        "CANARY",
+        quality=QualityMeasurement(definition.identifier, 25.0),
+    )
+    terminal = Verdict(False, VerifierCause.WRONG_FORMAT, "", "")
+    quality = aggregate_quality_diagnostics([measured, terminal], config)
+    assert quality["mean"] == 62.5
+    assert quality["n_known_zero"] == 0
+    assert quality["n_declared_terminal"] == 1
+    unknown = replace(measured, quality=None)
+    assert aggregate_quality_diagnostics([measured, unknown], config)["mean"] is None
+    assert Verdict.from_dict(measured.to_dict()) == measured
+    assert "quality" not in unknown.to_dict()
+    for value in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            QualityMeasurement(definition.identifier, value)
+    with pytest.raises(ValueError, match="definition"):
+        aggregate_quality_diagnostics(
+            [replace(measured, quality=QualityMeasurement("other/v1", 1))], config
+        )
+
+
+@pytest.mark.parametrize(
+    "old_values,new_values,old_mean,new_mean,old_exact,new_exact",
+    [
+        (
+            [0.5, 0.6, 0.7, 0.3, 0.2, 0.8, 0.4, 0.888, 1, 1],
+            [0.8, 0.85, 0.9, 0.7, 0.7, 0.8, 0.911, 0.9, 1, None],
+            0.6388,
+            0.7561,
+            2,
+            1,
+        ),
+        ([1, *([0.577] * 8), 0.578], [*([0.719] * 9), 0.722], 0.6194, 0.7193, 1, 0),
+        ([1, 1, 1, *([0.447] * 6), 0.446], [1, *([0.661] * 8), 0.663], 0.6128, 0.6951, 3, 1),
+    ],
+)
 def test_rejected_history_preserves_partial_gain_and_rejection_without_payloads(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, old_values, new_values, old_mean, new_mean, old_exact, new_exact
 ):
     records = []
     saved_paths = []
     for subject, values in (
-        ("baseline", [0.5, 0.6, 0.7, 0.3, 0.2, 0.8, 0.4, 0.888, 1, 1]),
-        ("merged", [0.8, 0.85, 0.9, 0.7, 0.7, 0.8, 0.911, 0.9, 1, None]),
+        ("baseline", old_values),
+        ("merged", new_values),
     ):
         path, _, _ = mining_fixture(tmp_path / subject / "heldout", monkeypatch, attempts=10)
         entries = [json.loads(line) for line in (path / "runs.jsonl").read_text().splitlines()]
@@ -117,7 +291,11 @@ def test_rejected_history_preserves_partial_gain_and_rejection_without_payloads(
             )
         (path / "runs.jsonl").write_text("\n".join(json.dumps(e) for e in entries))
         contract = {
-            "verifier_config": OolongPairsVerifier().config(),
+            "verifier_config": {
+                key: value
+                for key, value in OolongPairsVerifier().config().items()
+                if key != "primary_quality"
+            },
             "verifier_type": "pairs",
             "repetitions": 10,
             "validation_protocol": "heldout-batch/v1",
@@ -134,11 +312,13 @@ def test_rejected_history_preserves_partial_gain_and_rejection_without_payloads(
     before = [path.read_bytes() for path in saved_paths]
     progress = validation_history_progress(tmp_path, records[1], records[0])
     assert progress["status"] == "potentially_promising"
-    assert progress["baseline"]["quality"]["mean"] == pytest.approx(0.6388)
-    assert progress["candidate"]["quality"]["mean"] == pytest.approx(0.7561)
-    assert progress["baseline"]["exact_passes"] == 2
-    assert progress["candidate"]["exact_passes"] == 1
-    assert progress["candidate"]["pairs"]["counts_denominator"] == 9
+    assert progress["baseline"]["quality"]["mean"] == pytest.approx(old_mean)
+    assert progress["candidate"]["quality"]["mean"] == pytest.approx(new_mean)
+    assert progress["baseline"]["exact_passes"] == old_exact
+    assert progress["candidate"]["exact_passes"] == new_exact
+    assert progress["candidate"]["pairs"]["counts_denominator"] == sum(
+        value is not None for value in new_values
+    )
     assert "CANARY" not in json.dumps(progress) and "held-in" not in json.dumps(progress)
     assert before == [path.read_bytes() for path in saved_paths]
     assert (
@@ -205,7 +385,16 @@ def test_evidence_packing_bounds_rendered_text_and_deduplicates_operations():
     patterns = [
         {
             "index": i,
-            "signature": {"agent_mechanism": f"mechanism-{i}"},
+            "signature": {
+                "agent_mechanism": [
+                    "incomplete_coverage",
+                    "lossy_aggregation",
+                    "repl_execution_fault",
+                    "unparsed_child_output",
+                    "iteration_budget_exhaustion",
+                    "skipped_verification",
+                ][i]
+            },
             "eligible_surfaces": ["S3"],
             "support": 3,
         }
@@ -495,8 +684,7 @@ def test_runtime_error_messages_are_structural_only():
 
 
 def test_task_reasoning_replaces_recipe_on_every_surface(monkeypatch):
-    from shrlm.optimization.proposal import MECHANISM_SURFACES
-    from shrlm.optimization.taxonomy import AgentMechanism, EditableSurface
+    from shrlm.optimization.taxonomy import MECHANISM_SURFACES, AgentMechanism, EditableSurface
 
     monkeypatch.setitem(
         MECHANISM_SURFACES,
@@ -563,7 +751,8 @@ def test_oversized_question_is_omitted_whole_with_inventory_preserved():
         inventory, {"patterns": {9: {"task_question": question}}}, k=4, budget=2000
     )
     section = json.loads(rendered.removeprefix(EVIDENCE_HEADING))
-    assert section["inventory"] == inventory
+    assert section["inventory"][0]["index"] == inventory[0]["index"]
+    assert section["inventory"][0]["eligible_surfaces"] == ["S3", "S4"]
     assert not section["expanded"]
     assert "QUESTION_SENTINEL" not in rendered
     assert "exceeds remaining budget" in audit["omitted_patterns"]["9"]

@@ -162,6 +162,7 @@ from shrlm.optimization.driver import (
     load_manifest,
     mine_round,
 )
+from shrlm.optimization.history import prior_evaluations
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.promotion import DECISION_PROMOTED, PromotionConfig
 from shrlm.optimization.proposal import (
@@ -394,7 +395,9 @@ def load_round_history(
     list and contributes no synthesized records; the round still renders as
     an entry with its outcome.
     """
+    from shrlm.optimization.behavior import activation_for_surface
     from shrlm.optimization.proposal_evidence import (
+        validation_history_behavior,
         validation_history_diagnostics,
         validation_history_progress,
     )
@@ -407,12 +410,31 @@ def load_round_history(
         )
         validation_path = round_dir(round_path / VALIDATION_DIR, round_index)
         if ledger_decision.get("baseline"):
+            decision["incumbent_hash"] = ledger_decision["baseline"].get("harness_hash")
             decision["baseline_diagnostics"] = validation_history_diagnostics(
                 validation_path, ledger_decision["baseline"]
             )
         proposals_dir = round_path / PROPOSALS_DIR
+        behavior_by_subject = {
+            record["subject_id"]: validation_history_behavior(validation_path, record)
+            for record in ledger_records
+            if record.get("links")
+        }
+        owners = {
+            member: record["subject_id"]
+            for record in ledger_records
+            if record.get("links")
+            for member in ((record.get("merge") or {}).get("constituent_ids") or [])
+        }
         for record in ledger_records:
             enriched = {**record, **proposal_behavior(proposals_dir, record.get("subject_id"))}
+            subject_id = record["subject_id"]
+            summary = behavior_by_subject.get(owners.get(subject_id, subject_id))
+            enriched["activation"] = activation_for_surface(
+                enriched.get("surface") if enriched.get("activation_applicable", True) else None,
+                summary,
+                skill_name=enriched.get("changed_skill"),
+            )
             if record.get("links"):
                 enriched["diagnostics"] = validation_history_diagnostics(validation_path, record)
             if record.get("decision") != "bundled":
@@ -424,6 +446,7 @@ def load_round_history(
     for failure in marker.get("materialization_failures", []):
         records.append(
             {
+                **failure.get("behavior", {}),
                 "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
                 "surface": failure["surface"],
                 "decision": HISTORY_NOT_MATERIALIZED,
@@ -434,6 +457,7 @@ def load_round_history(
     for failure in marker.get("preflight_failures", []):
         records.append(
             {
+                **failure.get("behavior", {}),
                 "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
                 "surface": failure["surface"],
                 "decision": "preflight_rejected",
@@ -449,7 +473,7 @@ def load_round_history(
     return records, decision
 
 
-def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, str]:
+def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, Any]:
     """Load proposal rationale additively; old artifacts have no invented explanation."""
     from shrlm.optimization.candidates import BEHAVIOR_FIELDS
 
@@ -462,11 +486,26 @@ def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, str]:
         return {}
     if not isinstance(payload, dict) or payload.get("format") != PROPOSAL_FORMAT:
         return {}
-    return {
+    result = {
         name: payload[name]
         for name in ("predicted_effect", *BEHAVIOR_FIELDS)
         if isinstance(payload.get(name), str) and payload[name].strip()
     }
+    from shrlm.optimization.history import surface_fingerprint
+
+    surface = payload.get("surface")
+    serialization = (payload.get("harness") or {}).get("harness")
+    result.update(
+        incumbent_hash=payload.get("base_harness_hash"),
+        mechanism=(payload.get("target_signature") or {}).get("agent_mechanism"),
+        revision=payload.get("revision"),
+    )
+    if serialization and surface:
+        result["effective_edit_fingerprint"] = surface_fingerprint(serialization, surface)
+    result["activation_applicable"] = payload.get("activation_applicable", surface != "S6")
+    result["changed_skill"] = payload.get("changed_skill")
+    result["revision_unchanged"] = payload.get("revision_unchanged")
+    return result
 
 
 def _load_marker(path: Path, expected_format: str) -> dict[str, Any]:
@@ -1192,6 +1231,7 @@ class _Experiment:
                     proposals_dir,
                     eval_config,
                     self.pconfig,
+                    prior_evaluations=prior_evaluations(self.prior_history),
                     loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
                     preflight_profile=_load_marker(
                         round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT

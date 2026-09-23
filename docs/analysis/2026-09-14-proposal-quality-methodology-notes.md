@@ -6,6 +6,7 @@ type: docs
 
 # Proposal quality changes for a future paper update
 
+
 This note records the motivation and implemented methodological changes following `experiment_oolong_pairs_dsv4f_20260913_132607`.
 The September 14 changes below were implemented and verified with offline tests and read-only replay of saved artifacts. At that note's writing time, no experiment using them had been run; the subsequent experiment is reviewed in the September 15 section at the end.
 The repository's paper is behind the implementation; this note preserves material for a later paper update without editing that draft.
@@ -197,3 +198,48 @@ Implementation commit: `ee0b4999` (`fix/task-agnostic-proposer`), based on main
 
 These checks verify construction, accounting and replay behavior. They do not
 measure whether the new prompts yield more useful edits or promotions.
+
+---
+
+## September 23 capability, evidence, and history changes
+
+This follow-up is **implemented and tested offline; experiment performance is not yet evaluated**. The [capability-aware proposer plan](../plans/2026-09-23-1119-fix-capability-aware-proposer-plan.md) covers the four areas selected after the [September 23 investigation](../../RESEARCH/meta-harness-optimization-2026-09-23/full_report.md). Earlier implementation records above remain historical descriptions of those iterations.
+
+The latest investigation covered five promoted edits, eleven evaluated but unpromoted edits, eleven untested drafts, and 239 failed held-in attempts. S8 was never eligible, S5/S7 never received expanded evidence, and seven evaluated edits targeted unexpanded patterns. By round 8, prior history occupied 47,342 characters. Several S6 rationales described behavior that their runtime fields do not implement.
+
+The implemented changes are:
+
+1. **Describe real surface capabilities.** Share accurate descriptions of inputs, triggers, effects, scope, and limitations between attribution and proposal generation. Distinguish syntax retries from timeout recovery, refusal limits from scheduling, and installed helpers or skills from their actual use.
+2. **Admit supported helpers and recovery instructions.** Add narrow S8 routes for parsing and aggregation, and S5 routes for visible recoverable operations associated with exhaustion or execution faults. Require relevant admitted held-in evidence; preserve existing surface boundaries and one edit per surface.
+3. **Allocate complete evidence across mechanisms.** Reserve space for several core operation packets before optional context and contrasts. Respect distinct-instance support, preserve citation coordinates, and make code omissions explicit in attribution as well as proposal evidence. Keep the current proposer evidence cap.
+4. **Learn from observed behavior and qualified quality signals.** Bound rendered history while retaining the archive. Separate claimed effects, trustworthy activation observations, and measured batch outcomes. Require an explicit revision relationship; duplicate rejection operates on the evaluated harness, so an unchanged member of a changed batch is not assigned an individual failure.
+
+Metric definitions and structured measurements now come from the verifier, including direction, aggregation, precision, and treatment of unscored failures. Generic evidence and history consume this contract; strict legacy interpretation lives with the environments. Tests cover the real `oolong_synth` and `oolong_real` configurations as well as a custom lower-is-better metric with a nonzero terminal penalty. Unsupported or incomparable metrics remain `not_assessed`; missing measurements are not silently assigned zero.
+
+The saved round-6 F1 gain of 0.6194→0.7193 accompanies an exact decline of 1/10→0/10. Round 8's gain of 0.6128→0.6951 accompanies 3/10→1/10 exact. Preserve both as potentially promising batch observations with their costs and failure counts. They do not establish reliable improvement under `v=1`, prove activation, or isolate a constituent edit's contribution.
+
+Activation reporting initially uses existing syntax-retry, answer-redirect, and named skill-load events. Missing telemetry and uninstrumented instruction/helper behavior remain unassessed; absence of a record is not automatically zero. This is a bounded observational extension, not a semantic compliance judge.
+
+The protocol preserves combined held-out-only validation, existing exact/cost gates, `v=1`, and held-in-only task evidence. It adds no paid critic or validation arm. Later reporting should distinguish route availability, evidence shown, candidate admission, activation coverage, and batch outcomes. The paper and experiment configuration remain unchanged.
+
+### Implementation details relevant to future reporting
+
+- Shared surface descriptions identify what each surface can observe and change. Newly eligible S8/S5 choices require admitted operation references; evidence omitted for size cannot authorize an alternate route. The host checks structural support, not the truth of the proposer's causal explanation.
+- Proposer evidence remains capped at 32,000 characters, with at most four expanded patterns. Distinct-instance support and actionability determine ordering, distinct mechanisms receive complete core packets before optional context, and code blocks are included whole or explicitly omitted. The attribution digest applies whole-block selection within its 12,000-character default and prioritizes late failures before filling space with omission coordinates.
+- Rendered history has a separate 12,000-character cap. The full host-side attempt index remains available for revision checks. Local proposal failures retain known rationale without inventing effective content or measurements; repair receives a bounded predecessor description when needed.
+- Duplicate evaluation is checked after loader admission, against the complete effective harness and incumbent. A sibling rejected by the loader cannot hide a duplicate. An unchanged constituent in a changed batch remains eligible with an explicit revised joint hypothesis. No individual causal credit or blame is assigned from a shared batch outcome.
+- Validation summaries persist existing root syntax-retry/answer-redirect observations and named skill loads across canonical call edges. History reads these aggregates without reopening held-out traces. An observed event does not establish that the intended procedure was followed; missing coverage and unsupported surfaces remain unassessed.
+- Live proposal selection is versioned `proposal-selection/v2`; literal-text authoring remains `literal-text/v1`. Validation summaries use v3 and retain v1/v2 readers. Completed artifacts are read without mutation; incompatible unfinished contracts fail before paid work.
+
+### Read-only historical check
+
+Reading all eight rounds of `experiment_oolong_pairs_dsv4f_20260916_131837` preserved round 6's F1 0.6194→0.7193 with exact 1→0 and round 8's F1 0.6128→0.6951 with exact 3→1. Both are qualified positive batch signals, with historical activation unassessed. The resulting history occupied 8,730 characters. SHA-256 checks confirmed all 80 inspected saved artifacts were unchanged. This replay check made no model calls and did not inspect held-out trace bodies.
+
+Review and simplification ran sequentially in the main agent under this repository's AGENTS.md. No independent reviewer or cross-model corroboration is claimed. Review corrected late-operation crowding in the digest and missing predecessor/rationale context in refused-attempt history. Offline checks establish construction, accounting, admission, and replay behavior; promotion rate and general task-performance effects remain unmeasured.
+
+### September 23 verification
+
+- Focused checks passed: 248 proposal/evidence/history/digest tests, 22 batch-validation tests, and 83 evidence/validation tests. These include a wide trace with a late failure, unsupported recovery routes, loader rejection exposing an otherwise hidden duplicate, changed batches reusing a constituent, nested event accounting, custom metric definitions, and legacy metric adapters.
+- The full suite recorded **2,404 passed, 7 skipped, 21 deselected, and 12 failures**. Two stale test expectations for history/revision were corrected; both affected tests subsequently passed. All ten other failures reproduced on an untouched archive of starting commit `f5cf78de`: one missing async-test plugin, five existing configuration/split expectations, and four missing smoke-artifact fixtures.
+- Changed-file Ruff, formatting, and configured pre-commit hooks passed. Repository-wide lint and hooks still flag existing example/training code and historical generated modules. All incidental hook rewrites to unrelated files were restored. The configured type hook is advisory (`--exit-zero`); standalone type checking still reports existing repository errors.
+- No experiment was launched or resumed, and no performance or promotion-rate gain is claimed from these software checks.

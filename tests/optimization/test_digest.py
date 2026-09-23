@@ -60,6 +60,26 @@ def digest_of_nested_run(cfg: DigestConfig | None = None) -> TraceDigest:
     )
 
 
+def test_digest_budget_never_splits_a_code_operation():
+    code = "result = '" + "x" * 16000 + "'"
+    completion = as_completion(
+        completion_dict(
+            prompt="task",
+            response="result",
+            max_depth=1,
+            iterations=[iteration_entry(0, "execute", code_blocks=[code_block(code=code)])],
+        )
+    )
+    root, stats = walk(completion)
+    digest = build_digest(
+        "test", "derive", root, stats, make_verdict(), DigestConfig(char_budget=2000)
+    )
+    assert len(digest.text) <= 2000
+    assert "code[0] omitted" in digest.text
+    assert "result = '" not in digest.text
+    assert digest.chars_kept < digest.chars_available
+
+
 def test_unknown_verifier_observations_remain_available_in_heldin_diagnosis():
     _, stats = walk(as_completion(shallow_run()))
     verdict = Verdict(
@@ -71,6 +91,37 @@ def test_unknown_verifier_observations_remain_available_in_heldin_diagnosis():
     )
     header = render_header("held-in", "task", verdict, stats, verifier_environment="custom")
     assert "verifier_detail: custom verifier: wrong relation order" in header
+
+
+def test_long_trace_keeps_late_fault_operation_before_prefix_coordinates():
+    fault = "recovered = repair_the_failed_operation()"
+    completion = as_completion(
+        completion_dict(
+            prompt="task",
+            response="result",
+            max_depth=1,
+            iterations=[
+                iteration_entry(
+                    index,
+                    "execute",
+                    code_blocks=[
+                        code_block(
+                            code=fault if index == 199 else "preview = '" + "x" * 3000 + "'",
+                            stderr="ValueError: failed" if index == 199 else "",
+                        )
+                    ],
+                )
+                for index in range(200)
+            ],
+        )
+    )
+    root, stats = walk(completion)
+    digest = build_digest(
+        "wide", "derive", root, stats, make_verdict(), DigestConfig(char_budget=2000)
+    )
+    assert len(digest.text) <= 2000
+    assert "iteration 199 code[0] (complete):\n" + fault in digest.text
+    assert "coordinates omitted" in digest.text
 
 
 def call_node(node_id: str, prompt: str, response: str, depth: int = 1) -> CallNode:
@@ -399,7 +450,7 @@ class TestSkillLines:
     consulted", while an empty-S10 trace renders exactly as before.
     """
 
-    def test_empty_s10_trace_renders_byte_identically_to_the_pre_s10_digest(self):
+    def test_empty_s10_trace_omits_skill_facts_and_changes_versioned_digest(self):
         for name, run in [
             ("nested", nested_run()),
             ("shallow", shallow_run()),
@@ -408,7 +459,7 @@ class TestSkillLines:
             digest = digest_of_fixture(name, run)
             assert "available_skills:" not in digest.text
             assert "loaded_skills:" not in digest.text
-            assert digest.sha256 == PRE_S10_DIGEST_SHA256[name], name
+            assert digest.sha256 != PRE_S10_DIGEST_SHA256[name], name
 
     def test_one_load_renders_the_loaded_skills_line_naming_it(self):
         run = skilled_run([{"skill": "merge_slice_totals", "depth": 0}], skill_index=SKILL_INDEX)
@@ -561,7 +612,7 @@ class TestDigestVersion:
     def test_version_bumped_for_the_skill_lines(self):
         # 1.1.0 was the n/a aggregate rendering; 1.2.0 adds the
         # available_skills / loaded_skills pair under a non-empty index.
-        assert DIGEST_VERSION == "1.4.0"
+        assert DIGEST_VERSION == "1.5.0"
 
     def test_digest_version_is_recorded_per_bundle(self):
         lm = MockLM(response_fn=scripted_response)
@@ -572,8 +623,8 @@ class TestDigestVersion:
             harness_version="H0",
             split_id="held_in_v1",
         )
-        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.4.0"
-        assert result.bundle.to_dict()["config"]["digest_version"] == "1.4.0"
+        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.5.0"
+        assert result.bundle.to_dict()["config"]["digest_version"] == "1.5.0"
 
     def test_attribution_cache_key_does_not_include_digest_version(self):
         # DIGEST_VERSION reaches bundle ids via MiningConfig.digest_version
