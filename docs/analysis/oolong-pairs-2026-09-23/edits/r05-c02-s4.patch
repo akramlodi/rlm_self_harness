@@ -1,0 +1,11 @@
+--- round_05_incumbent/S4_verification_instruction
++++ r05-c02-s4/S4_verification_instruction
+@@ -7,6 +7,8 @@
+ 
+ To verify label accuracy, spot-check each child's work: for a random sample of 3-5 questions per child chunk, print the original question text alongside the label the child assigned. Verify that the label matches the category definitions (abbreviation, entity, human being, numeric value, location, description and abstract concept). If any sample is misclassified, re-run that chunk with a corrected prompt that includes the category definitions more explicitly and instructs the child to classify each question carefully.
+ 
++IMPORTANT: If you re-run ANY chunk with a corrected prompt, you MUST re-run ALL other chunks with the same corrected prompt as well. Do not mix old and new classifications from different prompt versions. After re-running all chunks, re-merge and re-verify coverage and accuracy from scratch.
++
+ 5. Only after both coverage and label accuracy are confirmed, proceed to compute the final answer.
+ 
+ This check catches cases where a child returned results keyed by line index instead of user ID, where a user's questions were split across chunks and the merge lost some entries, or where the child systematically misclassified questions.

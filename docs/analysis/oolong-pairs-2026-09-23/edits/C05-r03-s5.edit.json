@@ -1,0 +1,4 @@
+{
+  "kind": "text",
+  "new_text": "When a child RLM sub-call returns an error (timeout, parse failure, or unusable result):\n\n1. Print the error message and the chunk that was sent to the child.\n2. Split that chunk into smaller pieces (e.g., half the original size, or at most 150 lines per piece).\n3. Retry each piece as a separate RLM sub-call.\n4. If a piece still errors, split further and retry again (at most 2 retries per piece).\n5. If all retries fail, print the error and the piece content, then continue with the results you have \u2014 do not let a single failed sub-call block the entire run.\n\nDo not fall back to manual classification or guessing. The goal is to recover gracefully and continue accumulating results."
+}
