@@ -83,6 +83,69 @@ from tests.mock_lm import MockLM
 
 COST_PER_CALL = 0.001
 
+
+def test_behavior_events_distinguish_missing_telemetry_and_root_scope():
+    from shrlm.optimization.behavior import activation_for_surface, summarize_behavior
+    from tests.optimization.fixtures import (
+        as_completion,
+        code_block,
+        completion_dict,
+        iteration_entry,
+    )
+
+    grandchild = completion_dict(prompt="leaf", response="done", max_depth=2, iterations=[])
+    grandchild["trace_metrics"] = {"retries": 99}
+    child_turn = iteration_entry(
+        0,
+        "done",
+        code_blocks=[
+            code_block(
+                "leaf()", rlm_calls=[grandchild], skill_loads=[{"skill": "check", "depth": 1}]
+            )
+        ],
+    )
+    child_turn["trace_metrics"] = {"answer_event": "answer_redirected"}
+    child = completion_dict(
+        prompt="child",
+        response="done",
+        max_depth=2,
+        iterations=[child_turn],
+    )
+    child["trace_metrics"] = {"retries": 2}
+    turn = iteration_entry(
+        0,
+        "run",
+        code_blocks=[
+            code_block("child()", rlm_calls=[child], skill_loads=[{"skill": "check", "depth": 0}])
+        ],
+    )
+    turn["trace_metrics"] = {"answer_event": "answer_redirected"}
+    raw = completion_dict(prompt="task", response="done", max_depth=2, iterations=[turn])
+    raw["metadata"]["run_metadata"]["skill_index"] = [{"name": "check", "description": "check"}]
+    result = summarize_behavior([(as_completion(raw), False)])
+    assert result["syntax_retries"]["count"] == 2
+    assert result["answer_redirects"]["count"] == 1
+    assert result["syntax_retries"]["status"] == "observed"
+    assert result["skill_loads"]["by_skill"]["check"] == 2
+    assert activation_for_surface("S10", result, skill_name="check")["status"] == "observed"
+    assert activation_for_surface("S10", result, skill_name="unknown")["status"] == "not_assessed"
+    assert activation_for_surface("S8", result)["status"] == "not_assessed"
+    unknown = summarize_behavior([(as_completion(raw), True)])
+    assert unknown["syntax_retries"]["status"] == "observed"
+    assert unknown["syntax_retries"]["n_unknown_runs"] == 1
+    empty = summarize_behavior(
+        [
+            (
+                as_completion(
+                    completion_dict(prompt="task", response="done", max_depth=1, iterations=[])
+                ),
+                False,
+            )
+        ]
+    )
+    assert empty["syntax_retries"]["status"] == "not_assessed"
+
+
 # Per-run budget 0.0015: one scripted call per run stays under it, a two-call
 # run crosses it after its second iteration (BudgetExceededError, spent 0.002).
 CAPS = ValidationCaps(

@@ -82,6 +82,108 @@ OFF_VOCABULARY = (
 
 UNGROUNDED = GroundingResult(failing_level=None, grounded=False, verdicts={})
 
+
+def coverage_payload(status="observed_loss"):
+    return {
+        "causal_status": "causal",
+        "agent_mechanism": "incomplete_coverage",
+        "failing_level": "undetermined",
+        "evidence_node_ids": ["r"],
+        "operation_evidence": [
+            {
+                "node_id": "r",
+                "iteration_index": 1,
+                "code_block_index": 0,
+                "observation": "Only pages 0 through 8 were submitted.",
+            }
+        ],
+        "verification_limits": "Page classifications are not independently verified.",
+        "symptom_summary": "The page loop may have skipped input.",
+        "coverage_basis": {
+            "status": status,
+            "input_scope": "Original pages 0 through 9",
+            "loss_observation": "r iteration 1 code[0] processes range(9), omitting page 9."
+            if status == "observed_loss"
+            else "",
+            "counterevidence": "No subsequent processing of page 9 is visible."
+            if status == "observed_loss"
+            else "All ten original pages were reported processed.",
+        },
+    }
+
+
+def coverage_run():
+    return walk(
+        as_completion(
+            completion_dict(
+                prompt="Process pages",
+                response="wrong",
+                max_depth=1,
+                iterations=[
+                    iteration_entry(
+                        index=1,
+                        response="",
+                        code_blocks=[
+                            code_block(
+                                code="pages = list(range(10))\nfor i in range(9):\n    process(pages[i])"
+                            )
+                        ],
+                    )
+                ],
+            )
+        )
+    )
+
+
+@pytest.mark.parametrize("status", ["not_established", "contradicted"])
+def test_unestablished_coverage_is_normalized_without_reask(status):
+    root, stats = coverage_run()
+    payload = coverage_payload(status)
+    lm = MockLM(responses=[json.dumps(payload)])
+    result = LLMAttributor(lm).attribute(
+        build_digest("pages", "Process all pages", root, stats, make_verdict()),
+        root,
+        make_verdict(),
+        UNGROUNDED,
+    )
+    assert result.signature.agent_mechanism.value == "other"
+    assert result.signature.causal_status.value == "unattributed"
+    assert result.detail.coverage_basis == payload["coverage_basis"]
+    assert "incomplete_coverage" in result.detail.agent_mechanism_detail
+    assert len(result.attempts) == 1
+
+
+def test_observed_coverage_loss_keeps_witness_and_signature():
+    root, _ = coverage_run()
+    causal, mechanism, _, detail = LLMAttributor(MockLM()).validate(
+        coverage_payload(), root, UNGROUNDED
+    )
+    assert (causal.value, mechanism.value) == ("causal", "incomplete_coverage")
+    assert detail.to_dict()["coverage_basis"]["loss_observation"]
+
+
+@pytest.mark.parametrize(
+    "bad", ["missing", "empty_witness", "unresolved", "root_only", "oversized", "contradictory"]
+)
+def test_live_coverage_requires_bounded_basis_and_operation_witness(bad):
+    root, _ = coverage_run()
+    payload = coverage_payload()
+    if bad == "missing":
+        del payload["coverage_basis"]
+    elif bad == "empty_witness":
+        payload["coverage_basis"]["loss_observation"] = ""
+    elif bad == "unresolved":
+        payload["operation_evidence"][0]["iteration_index"] = 99
+    elif bad == "root_only":
+        payload["operation_evidence"] = [{"node_id": "r", "observation": "Wrong answer"}]
+    elif bad == "oversized":
+        payload["coverage_basis"]["input_scope"] = "x" * 501
+    else:
+        payload["coverage_basis"]["status"] = "contradicted"
+    with pytest.raises(AttributionRejection):
+        LLMAttributor(MockLM()).validate(payload, root, UNGROUNDED)
+
+
 # A grounded result as a sub-verifier produces it: the level is a checkable
 # fact derived from a child verdict, so the attributor is never asked for it.
 GROUNDED = GroundingResult(

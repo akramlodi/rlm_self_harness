@@ -34,7 +34,7 @@ from shrlm.optimization.walker import iter_skill_loads
 # the trace's run-start record names a skill index (a loader was installed,
 # i.e. S10 was non-empty). A trace without one -- every pre-S10 trace, and
 # every trace under an empty S10 -- renders byte-identically to 1.1.0.
-DIGEST_VERSION = "1.4.0"
+DIGEST_VERSION = "1.6.0"
 
 DEFAULT_CHAR_BUDGET = 12000
 DEFAULT_FOCUS_K = 4
@@ -42,13 +42,6 @@ DEFAULT_FOCUS_K = 4
 # Above this many sub-calls the per-call table is replaced by a per-depth
 # aggregate, so a wide decomposition cannot crowd out the focused excerpts.
 DEFAULT_CHILD_TABLE_THRESHOLD = 40
-
-# Fractions of the budget. The header is exempt: it is small, bounded, and
-# carries the verifier outcome the rest of the digest is evidence for. The
-# sub-call table is exempt too -- it is bounded by construction at
-# child_table_threshold rows of two PREVIEW_CHARS previews each.
-ROOT_SKELETON_SHARE = 0.50
-EXCERPT_SHARE = 0.50
 
 PREVIEW_CHARS = 200
 QUESTION_CHARS = 600
@@ -196,42 +189,6 @@ def render_header(
     return "\n".join(lines)
 
 
-def render_root_skeleton(root: CallNode, budget: int) -> tuple[str, int]:
-    """
-    Render what the root actually did, turn by turn.
-
-    The code is carried close to verbatim because in this paradigm the code
-    *is* the decomposition: it is the artifact that determines which sub-calls
-    were made over which slices. stderr is never truncated -- tracebacks are
-    short and are the highest-signal content in the trace.
-    """
-    if not root.iterations:
-        return "## Root iterations\n(none)", 0
-
-    per_iteration = max(budget // max(len(root.iterations), 1), 200)
-    available = 0
-    lines = ["## Root iterations"]
-
-    for iteration in root.iterations:
-        lines.append(f"### iteration {iteration.index}")
-        if iteration.terminated_by_fallback:
-            lines.append("(no code executed; answer synthesized by the fallback)")
-        for block_index, block in enumerate(iteration.code_blocks):
-            available += len(block.code) + len(block.stdout) + len(block.stderr)
-            lines.append(f"code[{block_index}]:")
-            lines.append(head_tail(block.code, per_iteration // 2))
-            if block.stdout:
-                lines.append(f"stdout[{block_index}]:")
-                lines.append(head_tail(block.stdout, per_iteration // 2))
-            if block.stderr:
-                lines.append(f"stderr[{block_index}]:")
-                lines.append(block.stderr)
-        if iteration.final_answer is not None:
-            lines.append(f"final_answer_set: {head_tail(iteration.final_answer, ANSWER_CHARS)}")
-
-    return "\n".join(lines), available
-
-
 def render_child_table(root: CallNode, cfg: DigestConfig) -> tuple[str, int, bool]:
     """One row per sub-call, or a per-depth aggregate when there are too many.
 
@@ -317,27 +274,6 @@ def select_focus_nodes(root: CallNode, focus_k: int) -> list[CallNode]:
     return selected
 
 
-def render_excerpts(root: CallNode, cfg: DigestConfig, budget: int) -> tuple[str, int]:
-    nodes = select_focus_nodes(root, cfg.focus_k)
-    if not nodes:
-        return "## Focused sub-call excerpts\n(none)", 0
-
-    per_node = max(budget // len(nodes), 200)
-    available = sum(node.prompt_chars + node.response_chars for node in nodes)
-
-    lines = ["## Focused sub-call excerpts"]
-    for node in nodes:
-        verdict = "n/a" if node.sub_verdict is None else str(node.sub_verdict)
-        lines.append(
-            f"### {node.node_id} (depth {node.depth}, {node.kind.value}, sub_verdict={verdict})"
-        )
-        lines.append("prompt:")
-        lines.append(head_tail(flatten_prompt(node.prompt), per_node // 2))
-        lines.append("response:")
-        lines.append(head_tail(node.response, per_node // 2))
-    return "\n".join(lines), available
-
-
 def build_digest(
     instance_id: str,
     question: str,
@@ -367,20 +303,141 @@ def build_digest(
         skill_lines=render_skill_lines(root.skill_index, list(iter_skill_loads(root))),
         verifier_environment=verifier_environment,
     )
-    skeleton, skeleton_available = render_root_skeleton(
-        root, int(cfg.char_budget * ROOT_SKELETON_SHARE)
+    if cfg.char_budget < 128:
+        raise ValueError("digest char_budget must be at least 128")
+    nodes = list(iter_nodes(root))
+    focus = select_focus_nodes(root, cfg.focus_k)
+    focus_ids = {node.node_id for node in focus}
+    blocks = [
+        (node, iteration, index, block)
+        for node in nodes
+        for iteration in node.iterations
+        for index, block in enumerate(iteration.code_blocks)
+    ]
+    chars_available = sum(
+        len(b.code) + len(b.stdout) + len(b.stderr) for _, _, _, b in blocks
+    ) + sum(n.prompt_chars + n.response_chars for n in nodes[1:])
+    chars_kept = 0
+    # Admit complete operations by structural priority before filling spare
+    # space with omission coordinates. A wide prefix must not evict a late fault.
+    skeleton: dict[int, str] = {}
+    fallback_lines = [
+        f"{node.node_id} iteration {iteration.index}: no code executed; answer synthesized by the fallback"
+        for node in nodes
+        for iteration in node.iterations
+        if iteration.terminated_by_fallback
+    ]
+    sections = [
+        header,
+        "",
+        "## Sub-calls\n(table omitted: budget)",
+        "## Focused sub-call excerpts\n(none)",
+    ]
+
+    def render_operations() -> None:
+        missing = len(blocks) - len(skeleton)
+        rows = [skeleton[position] for position in sorted(skeleton)]
+        if missing:
+            rows.append(f"[{missing} additional operation coordinates omitted: budget]")
+        sections[1] = "## Root iterations / operation skeleton\n" + (
+            "\n".join([*rows, *fallback_lines]) or "(none)"
+        )
+
+    def size() -> int:
+        return len("\n\n".join(sections))
+
+    render_operations()
+    if size() > cfg.char_budget:
+        # Extremely small budgets still identify the omission explicitly.
+        fallback_lines = []
+        render_operations()
+        reserve = size() - len(header)
+        if reserve + 40 > cfg.char_budget:
+            sections[2:] = ["", ""]
+            reserve = size() - len(header)
+        available = max(0, cfg.char_budget - reserve - 40)
+        sections[0] = header[:available] + "\n...[header chars omitted]..."
+
+    ranked = sorted(
+        enumerate(blocks),
+        key=lambda pair: (
+            not (pair[1][3].stderr or any(c.node_id in focus_ids for c in pair[1][3].calls)),
+            pair[1][0].node_id != root.node_id,
+            -pair[1][1].index,
+            pair[0],
+        ),
     )
-    table, table_available, aggregated = render_child_table(root, cfg)
-    excerpts, _excerpt_available = render_excerpts(root, cfg, int(cfg.char_budget * EXCERPT_SHARE))
+    payload_kept: dict[str, int] = {}
+    for position, (node, iteration, index, block) in ranked:
+        skeleton[position] = (
+            f"{node.node_id} iteration {iteration.index} code[{index}] (complete):\n{block.code}"
+        )
+        observed = {}
+        for stream, value in (("stdout", block.stdout), ("stderr", block.stderr)):
+            if not value:
+                continue
+            label = f"{node.node_id} iteration {iteration.index} {stream}[{index}]:\n"
+            limit = max(0, 500 - len(label))
+            excerpt = value
+            kept = len(value)
+            if len(value) > limit:
+                marker = "\n...[output truncated]...\n"
+                kept = max(0, limit - len(marker))
+                head = kept * 2 // 3
+                excerpt = value[:head] + marker + (value[-(kept - head) :] if kept > head else "")
+            skeleton[position] += "\n" + label + excerpt
+            observed[label] = kept
+        render_operations()
+        if size() <= cfg.char_budget:
+            chars_kept += len(block.code)
+            payload_kept.update(observed)
+        else:
+            del skeleton[position]
+            render_operations()
+    for position, (node, iteration, index, block) in enumerate(blocks):
+        if position in skeleton:
+            continue
+        skeleton[position] = (
+            f"{node.node_id} iteration {iteration.index} code[{index}] omitted ({len(block.code)} chars)"
+        )
+        render_operations()
+        if size() > cfg.char_budget:
+            del skeleton[position]
+            render_operations()
 
-    text = "\n\n".join([header, skeleton, table, excerpts])
+    # Payloads are bounded separately and never count marker/header bytes as
+    # surviving trace content. Each source is counted at most once.
+    payloads = [
+        (f"{node.node_id} {label}", value)
+        for node in focus
+        for label, value in (("prompt", flatten_prompt(node.prompt)), ("response", node.response))
+    ]
+    excerpt_lines = []
+    for offset, (label, value) in enumerate(payloads):
+        remaining = cfg.char_budget - size()
+        allowance = max(0, remaining // max(1, len(payloads) - offset) - len(label) - 50)
+        if allowance <= 0:
+            continue
+        excerpt = head_tail(value, allowance)
+        excerpt_lines.append(f"{label}:\n{excerpt}")
+        sections[3] = "## Focused sub-call excerpts\n" + "\n".join(excerpt_lines)
+        payload_kept[label] = min(len(value), allowance)
 
-    # Coverage is measured over the trace material the digest draws on -- root
-    # code and output, plus sub-call prompts and responses -- not over the
-    # header, which is a summary rather than an excerpt. Excerpted nodes also
-    # appear in the table, so their budget is counted once.
-    chars_available = skeleton_available + table_available
-    chars_kept = min(len(text), chars_available) if chars_available else 0
+    table, _, aggregated = render_child_table(root, cfg)
+    if size() - len(sections[2]) + len(table) <= cfg.char_budget:
+        sections[2] = table
+        if not aggregated:
+            for node in nodes[1:]:
+                for label, length in (
+                    ("prompt", node.prompt_chars),
+                    ("response", node.response_chars),
+                ):
+                    key = f"{node.node_id} {label}"
+                    payload_kept[key] = max(payload_kept.get(key, 0), min(length, PREVIEW_CHARS))
+    else:
+        aggregated = bool(nodes[1:])
+    text = "\n\n".join(sections)
+    chars_kept += sum(payload_kept.values())
 
     return TraceDigest(
         text=text,

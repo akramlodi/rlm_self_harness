@@ -65,6 +65,35 @@ def failing_run() -> tuple[dict[str, Any], Any]:
     return instance, as_completion(shallow_run())
 
 
+def test_unestablished_coverage_survives_mining_and_persistence_as_unattributed(tmp_path):
+    from shrlm.harness_identity import serialize_harness
+    from shrlm.optimization.proposal import render_prompt
+    from shrlm.optimization.proposal_evidence import load_proposal_evidence
+    from shrlm.rlm_harness import H0
+    from tests.optimization.test_attribution import coverage_payload
+
+    payload = coverage_payload("not_established")
+    payload["operation_evidence"] = []
+    lm = MockLM(responses=[json.dumps(payload)])
+    miner = WeaknessMiner(verifier=CountingVerifier(), attributor=LLMAttributor(lm))
+    result = miner.mine([failing_run()], round_index=1, harness_version="H0", split_id="held_in")
+    record = result.records[0].to_dict()
+    assert record["detail"]["coverage_basis"] == payload["coverage_basis"]
+    assert record["signature"]["agent_mechanism"] == "other"
+    assert record["signature"]["causal_status"] == "unattributed"
+    assert not record["attribution_failed"]
+    bundle = result.bundle.to_dict()
+    assert bundle["patterns"][0]["signature"] == record["signature"]
+    (tmp_path / "records.jsonl").write_text(json.dumps(record) + "\n")
+    evidence = load_proposal_evidence(tmp_path, bundle)
+    assert evidence["patterns"][0]["coverage_basis"] == payload["coverage_basis"]
+    prompt, addressable = render_prompt(
+        bundle["patterns"], serialize_harness(H0), [], [], 4, evidence=evidence
+    )
+    assert not addressable
+    assert "unattributed: no eligible intervention" in prompt
+
+
 class TestBackwardCompatibility:
     def test_mine_without_verdicts_consults_the_verifier(self):
         verifier = CountingVerifier()

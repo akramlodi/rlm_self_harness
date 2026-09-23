@@ -339,27 +339,32 @@ LOADERS: dict[str, LoaderFn] = {
 
 
 def attribution(mechanism: str) -> str:
-    """A canned attributor response (ungrounded variant: failing_level required)."""
-    return (
-        "```json\n"
-        + json.dumps(
-            {
-                "causal_status": "causal",
-                "agent_mechanism": mechanism,
-                "failing_level": "root",
-                "evidence_node_ids": ["r"],
-                "symptom_summary": "the model answered without verifying",
-                "operation_evidence": [
-                    {"node_id": "r", "observation": "The root submitted the produced answer."}
-                ],
-                "verification_limits": "Intermediate results were not semantically verified.",
-            }
-        )
-        + "\n```"
-    )
+    """A canned live response for orchestration tests, not a semantic judge."""
+    payload: dict[str, Any] = {
+        "causal_status": "causal",
+        "agent_mechanism": mechanism,
+        "failing_level": "root",
+        "evidence_node_ids": ["r"],
+        "symptom_summary": "the model answered without verifying",
+        "operation_evidence": [
+            {"node_id": "r", "observation": "The root submitted the produced answer."}
+        ],
+        "verification_limits": "Intermediate results were not semantically verified.",
+    }
+    if mechanism == "incomplete_coverage":
+        payload["operation_evidence"][0].update(iteration_index=1, code_block_index=0)
+        payload["coverage_basis"] = {
+            "status": "observed_loss",
+            "input_scope": "The original context supplied to the scripted root run.",
+            "loss_observation": "r iteration 1 code[0] only assigns the answer; none of the original context is processed.",
+            "counterevidence": "No later input processing occurs in this one-operation fixture.",
+        }
+    return "```json\n" + json.dumps(payload) + "\n```"
 
 
-def proposer_batch(*edits: tuple[int, str], surfaces: tuple[str, ...] = ("S4",)) -> str:
+def proposer_batch(
+    *edits: tuple[int, str], surfaces: tuple[str, ...] = ("S4",), revision: bool = False
+) -> str:
     """A canned proposer response: one full-replacement text edit per pattern."""
     items = [
         {
@@ -371,6 +376,13 @@ def proposer_batch(*edits: tuple[int, str], surfaces: tuple[str, ...] = ("S4",))
             "observed_failure": "Does not cross-check the computed result.",
             "behavioral_change": "Recompute the result before submitting.",
             "regression_risks": ["one extra turn per run"],
+            "revision": {
+                "round": 1,
+                "subject_id": "r01-c01-s4",
+                "explanation": "Recompute with an independent method at the unresolved comparison operation.",
+            }
+            if revision
+            else None,
         }
         for index, new_text in edits
     ]
@@ -380,22 +392,23 @@ def proposer_batch(*edits: tuple[int, str], surfaces: tuple[str, ...] = ("S4",))
 def selected_batch(items: list[dict]) -> str:
     return json.dumps(
         {
-            "format": "proposal-selection/v1",
+            "format": "proposal-selection/v2",
             "selections": [
                 {
                     "pattern_index": item["pattern_index"],
                     "surface": item["surface"],
                     "reason": "The cited operation lacks this check.",
+                    "evidence_refs": [],
                 }
                 for item in items
             ],
-            "candidates": items,
+            "candidates": [{"revision": None, **item} for item in items],
         }
     )
 
 
 TEXT_ROUND_1 = "Verify every claim against the stored evidence before answering. [r1]"
-TEXT_ROUND_2 = "Verify every claim against the stored evidence before answering. [r2]"
+TEXT_ROUND_2 = "Recompute the result with an independent method before submitting. [r2]"
 MERGE_TEXT = "Cover every input chunk and verify before answering. [merge]"
 
 # Script arithmetic at the template's scale (n_in=2, n_ho=2, m=1, v=1):
@@ -472,7 +485,7 @@ class TestFullExperiment:
         proposer = MockLM(
             responses=[
                 proposer_batch((0, TEXT_ROUND_1)),
-                proposer_batch((0, TEXT_ROUND_2)),
+                proposer_batch((0, TEXT_ROUND_2), revision=True),
             ]
         )
         return run(config, out, attributor, proposer), factory
@@ -575,7 +588,7 @@ class TestPatience:
         proposer = MockLM(
             responses=[
                 proposer_batch((0, TEXT_ROUND_1)),
-                proposer_batch((0, TEXT_ROUND_2)),
+                proposer_batch((0, TEXT_ROUND_2), revision=True),
             ]
         )
         result = run(config, out, attributor, proposer)
@@ -1402,7 +1415,10 @@ def complete_two_promoted_rounds(config, out: Path, monkeypatch) -> Any:
     )
     attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
     proposer = MockLM(
-        responses=[proposer_batch((0, TEXT_ROUND_1)), proposer_batch((0, TEXT_ROUND_2))]
+        responses=[
+            proposer_batch((0, TEXT_ROUND_1)),
+            proposer_batch((0, TEXT_ROUND_2), revision=True),
+        ]
     )
     return run(config, out, attributor, proposer)
 
@@ -1688,7 +1704,10 @@ class TestCrossRoundHistory:
         )
         attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
         proposer = MockLM(
-            responses=[proposer_batch((0, TEXT_ROUND_1)), proposer_batch((0, TEXT_ROUND_2))]
+            responses=[
+                proposer_batch((0, TEXT_ROUND_1)),
+                proposer_batch((0, TEXT_ROUND_2), revision=True),
+            ]
         )
         result = run(config, out, attributor, proposer)
 
@@ -1817,6 +1836,12 @@ class TestRoundHistoryLoader:
             "surface": "S6",
             "reason": "declared surface S6 but the materialized harness changes no surface",
             "predicted_effect": "fewer wasted iterations",
+            "behavior": {
+                "mechanism": "iteration_budget_exhaustion",
+                "behavioral_change": "Retry the same prompt after a syntax error.",
+                "incumbent_hash": "saved-incumbent",
+                "revision": None,
+            },
         }
         self.write_round(
             round_path,
@@ -1851,6 +1876,9 @@ class TestRoundHistoryLoader:
         assert refused["surface"] == "S6"
         assert refused["reasons"] == [failure["reason"]]
         assert refused["predicted_effect"] == "fewer wasted iterations"
+        assert refused["mechanism"] == "iteration_budget_exhaustion"
+        assert refused["behavioral_change"] == failure["behavior"]["behavioral_change"]
+        assert "effective_edit_fingerprint" not in refused
 
 
 # ---------------------------------------------------------------------------
@@ -2180,7 +2208,7 @@ class TestPostRoundAnalysisOnResume:
 
         patch_runner(monkeypatch, MINING_FAIL_V2 + SUBJECT_FAIL + SUBJECT_PASS)
         resumed_attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
-        resumed_proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_2))])
+        resumed_proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_2), revision=True)])
         result = run(config, out, resumed_attributor, resumed_proposer)
 
         assert [outcome.promoted for outcome in result.rounds] == [True, True]

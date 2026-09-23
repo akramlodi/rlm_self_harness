@@ -27,8 +27,9 @@ S8 entry) that returns a body on demand. `SURFACE_REACH`
 ([taxonomy.py:118](optimization/taxonomy.py#L118)) annotates each surface as root-only or
 child-reachable: S1–S5 travel with the system prompt, which child RLMs inherit, S8 propagates
 via `sub_repl_helpers`, and S10 is child-reachable on both legs (the index travels with the
-prompt and the loader is installed in the child REPL too), while the S6/S7/S9 seams apply at
-the root only (residual finding C7).
+prompt and the loader is installed in the child REPL too). S6 local policy
+enforcement and S7/S9 hooks apply at the root; S6's `max_depth` is inherited
+through child RLM construction despite that broad reach label.
 The evaluator, external tools, and the three §3.1 invariants are off-limits.
 
 ## Why the package is laid out this way
@@ -57,7 +58,8 @@ could fix it, [:339](optimization/taxonomy.py#L339); every one of the ten surfac
 S10 through `unconsulted_procedure`, defined against the digest's `available_skills` /
 `loaded_skills` lines and claimed only when neither the S6 budget-exhaustion nor the S3
 depth-degradation mechanism independently explains the terminal failure), `SURFACE_REACH`, and
-`CAUSAL_WEIGHT`. `TAXONOMY_VERSION` is `3.0.0` since S10 was declared (2.0.0 before); it stamps
+`CAUSAL_WEIGHT`. `TAXONOMY_VERSION` is `3.3.0`; shared capability descriptions and
+evidence-supported S8/S5 alternatives supplement the primary-surface table. It stamps
 every bundle, and the mechanism-frequency diff refuses to compare bundles written under a
 different version unless explicitly told to.
 

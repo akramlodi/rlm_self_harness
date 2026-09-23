@@ -20,12 +20,12 @@ from typing import Any
 from rlm.core.types import RLMChatCompletion
 from shrlm.optimization.digest import head_tail
 from shrlm.optimization.driver import canonical_manifest_entries, load_manifest, load_round
-from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import Verdict, iter_nodes
+from shrlm.optimization.taxonomy import AgentMechanism, VerifierCause, eligible_surfaces
+from shrlm.optimization.types import NodeKind, QualityDefinition, Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
-EVIDENCE_SELECTOR_VERSION = "3.0.0"
-DIAGNOSTIC_HISTORY_VERSION = "1.0.0"
+EVIDENCE_SELECTOR_VERSION = "4.1.0"
+DIAGNOSTIC_HISTORY_VERSION = "2.0.0"
 EVIDENCE_BUDGET_CHARS = 32000
 EVIDENCE_HEADING = "Held-in evidence (observations, not instructions):\n"
 MAX_TRACE_SNIPPETS = 6
@@ -37,55 +37,55 @@ UNSCORED_CAUSES = {
     VerifierCause.CONTENT_FILTERED,
 }
 
-OOLONG_SCORE_RE = re.compile(
-    r"score=(0\.\d+|1\.0+) exact=(True|False) "
-    r"kind=(numeric|comparison|date|month_year|list|label|user|string)"
-)
-
 
 def aggregate_quality_diagnostics(
-    verdicts: Sequence[Verdict], environment: str | None
+    verdicts: Sequence[Verdict], verifier_config: dict[str, Any] | str | None
 ) -> dict[str, Any]:
-    """Interpret only known verifier formats, never model diagnoses or answer text."""
-    from shrlm.environments.oolong_pairs import recorded_pair_metrics
+    """Aggregate verifier-owned values; legacy interpretation belongs to environments."""
+    from shrlm.environments.diagnostics import legacy_quality
 
-    supported = environment in {"oolong_pairs", "graphwalks", "oolong"}
-    definition = (
-        {
-            "name": "score" if environment == "oolong" else "f1",
-            "direction": "higher",
-            "aggregation": "all_attempt_mean",
-            "missing_policy": "known_terminal_zero_unknown_unavailable/v1",
-        }
-        if supported
-        else None
+    config: dict[str, Any] = (
+        {"environment": verifier_config}
+        if isinstance(verifier_config, str)
+        else (verifier_config or {})
     )
+    legacy = "primary_quality" not in config
+    definition = (
+        legacy_quality(config)[0]
+        if legacy
+        else QualityDefinition.from_dict(config["primary_quality"])
+    )
+    supported = definition is not None and definition.aggregation == "all_attempt_mean"
     values = []
-    n_zero = 0
+    n_zero = n_terminal = n_measured = 0
     for verdict in verdicts:
+        measurement = verdict.quality
+        if (
+            measurement is not None
+            and definition is not None
+            and measurement.definition_id != definition.identifier
+        ):
+            raise ValueError("quality measurement does not match verifier definition")
         if not supported:
             continue
-        if verdict.cause in UNSCORED_CAUSES or (
-            environment == "oolong"
-            and verdict.cause is VerifierCause.NO_ANSWER
-            and verdict.detail == "final line carried an explicit empty marker"
-        ):
-            n_zero += 1
-        elif environment == "oolong":
-            match = OOLONG_SCORE_RE.fullmatch(verdict.detail)
-            if match:
-                values.append(float(match[1]))
-        else:
-            # GraphWalks emits the identical strict set-metric format.
-            metrics = recorded_pair_metrics(verdict)
-            if metrics is not None:
-                values.append(float(metrics["f1"]))
-    unknown = len(verdicts) - len(values) - n_zero
+        assert definition is not None
+        if measurement is None and legacy:
+            measurement = legacy_quality(config, verdict)[1]
+        if measurement is not None:
+            values.append(measurement.value)
+            n_measured += 1
+        elif verdict.cause is not None and verdict.cause.value in definition.terminal_values:
+            value = definition.terminal_values[verdict.cause.value]
+            values.append(value)
+            n_terminal += 1
+            n_zero += value == 0
+    unknown = len(verdicts) - len(values)
     return {
-        "definition": definition,
+        "definition": definition.to_dict() if definition is not None and supported else None,
         "n_attempts": len(verdicts),
-        "n_measured": len(values),
+        "n_measured": n_measured,
         "n_known_zero": n_zero,
+        "n_declared_terminal": n_terminal,
         "n_unknown": unknown,
         "mean": math.fsum(values) / len(verdicts) if verdicts and not unknown else None,
     }
@@ -191,6 +191,8 @@ def trace_excerpt(
                         "code": block.code,
                         "stdout": block.stdout,
                         "stderr": block.stderr,
+                        "error_observed": bool(block.stderr)
+                        or any(child.kind is NodeKind.ERRORED for child in block.calls),
                     }
                 )
         by_node[node.node_id] = blocks
@@ -199,7 +201,7 @@ def trace_excerpt(
 
     def add(snippet: dict[str, Any], reason: str) -> None:
         key = (snippet["node_id"], snippet.get("iteration_index"), snippet.get("code_block_index"))
-        if key not in selected and len(selected) < MAX_TRACE_SNIPPETS:
+        if key not in selected or reason == "cited operation":
             selected[key] = {**snippet, "reason": reason}
 
     cited = list(dict.fromkeys(evidence_node_ids))
@@ -223,7 +225,31 @@ def trace_excerpt(
             add(matching[0], "cited operation")
             position = by_node[node_id].index(matching[0])
             for following in by_node[node_id][position + 1 : position + 3]:
-                add(following, "following operation; recovery not established by proximity")
+                add(
+                    {**following, "follows_error": matching[0]["error_observed"]},
+                    "following operation; recovery not established by proximity",
+                )
+            # Resolve the nearest prior child producer for a cited consumer.
+            producer_positions = [
+                pos
+                for child, (parent, pos) in callers.items()
+                if parent == node_id and pos <= position
+            ]
+            if producer_positions:
+                producer = max(producer_positions)
+                add(by_node[node_id][producer], "linked child producer")
+                for child, (parent, pos) in callers.items():
+                    if parent == node_id and pos == producer:
+                        node = nodes[child]
+                        add(
+                            {
+                                "node_id": child,
+                                "prompt": str(node.prompt),
+                                "response": node.response,
+                                "error_observed": node.kind is NodeKind.ERRORED,
+                            },
+                            "linked child prompt/return",
+                        )
         else:
             unresolved = True
     for node_id in cited:
@@ -234,10 +260,21 @@ def trace_excerpt(
             parent_id, position = callers[node_id]
             window = [b for b in by_node[parent_id][position:] if b["code"].strip()][:3]
             for offset, block in enumerate(window):
-                add(block, "cited call's caller" if offset == 0 else "following consumer context")
+                add(
+                    {
+                        **block,
+                        "follows_error": offset > 0 and nodes[node_id].kind is NodeKind.ERRORED,
+                    },
+                    "cited call's caller" if offset == 0 else "following consumer context",
+                )
             node = nodes[node_id]
             add(
-                {"node_id": node_id, "prompt": str(node.prompt), "response": node.response},
+                {
+                    "node_id": node_id,
+                    "prompt": str(node.prompt),
+                    "response": node.response,
+                    "error_observed": node.kind is NodeKind.ERRORED,
+                },
                 "cited child prompt/return",
             )
     selection = "cited operations and caller context"
@@ -258,7 +295,13 @@ def trace_excerpt(
         )
     if unresolved:
         selection += "; unresolved citations"
-    snippets = list(selected.values())
+    ordered = sorted(
+        selected.values(),
+        key=lambda op: (
+            op.get("reason", "").startswith("following") and not op.get("follows_error"),
+        ),
+    )
+    snippets = ordered[:MAX_TRACE_SNIPPETS]
     for snippet in snippets:
         # Preserve whole code. Only payloads are excerpted; final packing counts
         # the serialized size of every field and can omit an oversized operation.
@@ -271,6 +314,10 @@ def trace_excerpt(
         "observation": "partial observed behavior; labels and causal effectiveness are not verified",
         "selection": selection,
         "snippets": snippets,
+        "omitted_operations": [
+            {key: op.get(key) for key in ("node_id", "iteration_index", "code_block_index")}
+            for op in ordered[MAX_TRACE_SNIPPETS:]
+        ],
         "observed_child_calls": len(root.children),
     }
 
@@ -317,6 +364,26 @@ def context_operations(context: dict[str, Any]) -> frozenset[str]:
     )
 
 
+def operation_support(mechanism: str, operations: dict[str, Any]) -> dict[str, list[str]]:
+    """Structural opportunity only; semantic relevance remains a model judgment."""
+    complete = {ref: op for ref, op in operations.items() if op.get("code_complete")}
+    cited = [ref for ref, op in complete.items() if op.get("reason") == "cited operation"]
+    children = [ref for ref, op in operations.items() if "response" in op]
+    if mechanism == AgentMechanism.LOSSY_AGGREGATION and cited:
+        return {"S8": cited}
+    if mechanism == AgentMechanism.UNPARSED_CHILD_OUTPUT and cited and children:
+        return {"S8": [*cited, *children]}
+    if mechanism in {
+        AgentMechanism.ITERATION_BUDGET_EXHAUSTION,
+        AgentMechanism.REPL_EXECUTION_FAULT,
+    }:
+        errors = [ref for ref, op in operations.items() if op.get("error_observed")]
+        recovery = [ref for ref, op in complete.items() if op.get("follows_error")]
+        if errors and recovery:
+            return {"S5": list(dict.fromkeys([*errors, *recovery]))}
+    return {}
+
+
 def pack_evidence(
     inventory: list[dict[str, Any]],
     evidence: dict[str, Any],
@@ -326,7 +393,7 @@ def pack_evidence(
 ) -> tuple[str, dict[str, Any]]:
     """Pack whole examples deterministically, measuring actual rendered characters."""
     section: dict[str, Any] = {
-        "inventory": inventory,
+        "inventory": copy.deepcopy(inventory),
         "expanded": {},
         "operations": {},
         "passing": [],
@@ -340,6 +407,21 @@ def pack_evidence(
     }
 
     def render(value: dict[str, Any]) -> str:
+        for row in value["inventory"]:
+            context = value["expanded"].get(str(row["index"]), {})
+            refs = context.get("trace", {}).get("snippets", [])
+            operations = {r["operation_ref"]: value["operations"][r["operation_ref"]] for r in refs}
+            mechanism = row["signature"]["agent_mechanism"]
+            support = operation_support(mechanism, operations)
+            row["eligible_surfaces"] = [
+                s.value
+                for s in eligible_surfaces(
+                    AgentMechanism(mechanism),
+                    support,
+                    causal_status=row["signature"].get("causal_status"),
+                )
+            ]
+            row["route_support"] = support
         return EVIDENCE_HEADING + json.dumps(value, sort_keys=True)
 
     if len(render(section)) > budget:
@@ -352,17 +434,45 @@ def pack_evidence(
             )
         ]
 
+    def core_snippets(context: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            op
+            for op in context.get("trace", {}).get("snippets", [])
+            if op.get("node_id")
+            and (
+                op.get("code")
+                and op.get("code_complete") is not False
+                or op.get("prompt")
+                and (op.get("response") or op.get("error_observed"))
+            )
+            and (not op.get("reason", "").startswith("following") or op.get("follows_error"))
+        ]
+
     def grounded(row: dict[str, Any]) -> bool:
-        return any(c.get("trace", {}).get("snippets") for c in options(row["index"]))
+        return any(core_snippets(context) for context in options(row["index"]))
 
     ranked = sorted(
-        inventory, key=lambda row: (not grounded(row), -int(row.get("support") or 0), row["index"])
+        inventory,
+        key=lambda row: (
+            -int(row.get("instance_support") or len(row.get("instance_ids") or [])),
+            -float(row.get("actionability") or 0),
+            not grounded(row),
+            row["index"],
+        ),
     )
-    first, repeats, seen = [], [], set()
+    groups: dict[str, list[dict[str, Any]]] = {}
     for row in ranked:
-        mechanism = row["signature"].get("agent_mechanism")
-        (repeats if mechanism in seen else first).append(row)
-        seen.add(mechanism)
+        reason = None
+        if row["signature"].get("causal_status") == "unattributed":
+            reason = "unattributed: no eligible intervention"
+        elif row.get("actionability") is not None and row["actionability"] <= 0:
+            reason = "explicitly non-actionable"
+        elif not grounded(row):
+            reason = "no resolvable operation or child-call observation"
+        if reason:
+            section["omitted"][str(row["index"])] = reason
+        else:
+            groups.setdefault(row["signature"]["agent_mechanism"], []).append(row)
 
     def with_context(
         value: dict[str, Any], context: dict[str, Any], identity: str
@@ -386,35 +496,85 @@ def pack_evidence(
             trace["snippets"] = refs
         return context
 
-    expanded_indices = []
-    for row in first + repeats:
-        if len(expanded_indices) >= min(k, 4):
-            break
-        index = row["index"]
-        section["omitted"][str(index)] = "complete evidence exceeds remaining budget"
-        for context in options(index):
-            trial = copy.deepcopy(section)
-            trial["expanded"][str(index)] = with_context(trial, context, f"pattern-{index}")
-            del trial["omitted"][str(index)]
-            if len(render(trial)) > budget:
+    expanded_indices: list[int] = []
+    admitted: dict[int, dict[str, Any]] = {}
+    representative_sizes: dict[str, int] = {}
+    limit = min(k, 4)
+
+    def admit(rows: list[dict[str, Any]]) -> None:
+        nonlocal section
+        # Compare complete packets across signatures, measuring their actual
+        # incremental serialized size after operation deduplication.
+        best = None
+        current_size = len(render(section))
+        for priority, row in enumerate(rows):
+            index = row["index"]
+            if index in admitted:
                 continue
-            # Reserve the first useful contrast alongside its failure, before
-            # filling remaining space with more mechanisms.
-            if not trial["passing"]:
-                names = context_operations(context)
-                for passing in evidence.get("passing", []):
-                    if not names.intersection(context_operations(passing)):
-                        continue
-                    contrasted = copy.deepcopy(trial)
-                    contrasted["passing"].append(with_context(contrasted, passing, "passing"))
-                    contrasted["contrast_status"] = (
-                        "passing held-in run shares operation names; equivalence and intermediate correctness are unverified"
-                    )
-                    if len(render(contrasted)) <= budget:
-                        trial = contrasted
-                        break
+            for context in options(index):
+                core = copy.deepcopy(context)
+                trace = core.get("trace", {})
+                trace["snippets"] = core_snippets(context)
+                if not trace["snippets"]:
+                    continue
+                trial = copy.deepcopy(section)
+                trial["expanded"][str(index)] = with_context(trial, core, f"pattern-{index}")
+                del trial["omitted"][str(index)]
+                size = len(render(trial))
+                key = (size - current_size, priority, str(context.get("run_id", "")))
+                if best is None or key < best[0]:
+                    best = (key, index, context, trial)
+        if best is not None:
+            (delta, _, _), index, context, trial = best
+            if current_size + delta <= budget:
+                section = trial
+                expanded_indices.append(index)
+                admitted[index] = context
+                representative_sizes[str(index)] = delta
+                return
+        for row in rows:
+            if row["index"] not in admitted:
+                section["omitted"][str(row["index"])] = (
+                    "complete core packet exceeds remaining budget"
+                )
+
+    for rows in groups.values():
+        if len(expanded_indices) >= limit:
+            break
+        admit(rows)
+    eligible_indices = {row["index"] for rows in groups.values() for row in rows}
+    for row in ranked:
+        if len(expanded_indices) >= limit:
+            break
+        if row["index"] in eligible_indices and row["index"] not in admitted:
+            admit([row])
+
+    core_count = len(section["operations"])
+    for index, context in admitted.items():
+        for op in context.get("trace", {}).get("snippets", []):
+            trial = copy.deepcopy(section)
+            extra = with_context(
+                trial,
+                {"trace": {"snippets": [op]}, "run_id": context.get("run_id", f"pattern-{index}")},
+                f"pattern-{index}",
+            )
+            refs = trial["expanded"][str(index)].get("trace", {}).get("snippets", [])
+            for ref in extra["trace"]["snippets"]:
+                if ref not in refs:
+                    refs.append(ref)
+            if len(render(trial)) <= budget:
+                section = trial
+    names = frozenset(name for context in admitted.values() for name in context_operations(context))
+    for passing in evidence.get("passing", []):
+        if not names.intersection(context_operations(passing)):
+            continue
+        trial = copy.deepcopy(section)
+        trial["passing"].append(with_context(trial, passing, "passing"))
+        trial["contrast_status"] = (
+            "passing held-in run shares operation names; equivalence and intermediate correctness are unverified"
+        )
+        if len(render(trial)) <= budget:
             section = trial
-            expanded_indices.append(index)
             break
     rendered = render(section)
     return rendered, {
@@ -422,8 +582,23 @@ def pack_evidence(
         "evidence_budget_chars": budget,
         "evidence_chars": len(rendered),
         "expanded_patterns": expanded_indices,
+        "distinct_actionable_mechanisms": len(groups),
+        "representative_incremental_chars": representative_sizes,
         "omitted_patterns": section["omitted"],
         "operation_count": len(section["operations"]),
+        "core_operation_count": core_count,
+        "optional_operation_count": len(section["operations"]) - core_count,
+        "expanded_mechanisms": [
+            inventory_row["signature"]["agent_mechanism"]
+            for index in expanded_indices
+            for inventory_row in inventory
+            if inventory_row["index"] == index
+        ],
+        "route_support": {str(row["index"]): row["route_support"] for row in section["inventory"]},
+        "admitted_refs": {
+            index: [ref["operation_ref"] for ref in context.get("trace", {}).get("snippets", [])]
+            for index, context in section["expanded"].items()
+        },
     }
 
 
@@ -452,7 +627,8 @@ def load_proposal_evidence(
         runs, verdicts, _, entries = read_persisted_round(mining_round_path)
     contexts = {}
     alternatives = {}
-    environment = (bundle.get("config", {}).get("verifier_config") or {}).get("environment")
+    verifier_config = bundle.get("config", {}).get("verifier_config") or {}
+    environment = verifier_config.get("environment")
     is_pairs = environment == "oolong_pairs"
     for index, pattern in enumerate(bundle.get("patterns", [])):
         representative_ids = dict.fromkeys(
@@ -475,7 +651,7 @@ def load_proposal_evidence(
             detail = record.get("detail") or {}
             instance = by_instance.get(str(record["instance_id"]), {})
             verdict = Verdict.from_dict(record["verdict"])
-            context = {
+            context: dict[str, Any] = {
                 "symptom_summary": head_tail(detail.get("symptom_summary", "unavailable"), 2000),
                 "evidence_node_ids": detail.get("evidence_node_ids", []),
                 "operation_evidence": detail.get("operation_evidence", []),
@@ -490,7 +666,14 @@ def load_proposal_evidence(
                 },
                 "verifier_detail": "unparsed: " + bounded_excerpt(verdict.detail, 2000),
             }
-            quality = aggregate_quality_diagnostics([verdict], environment)
+            if (
+                detail.get("coverage_basis") is not None
+                or pattern["signature"].get("agent_mechanism") == "incomplete_coverage"
+            ):
+                context["coverage_basis"] = (
+                    detail.get("coverage_basis") or "coverage basis not assessed"
+                )
+            quality = aggregate_quality_diagnostics([verdict], verifier_config)
             if quality["mean"] is not None:
                 context["quality_diagnostics"] = quality
             if quality["n_measured"]:
@@ -660,7 +843,9 @@ def history_diagnostics_from_data(
     }
     # Environment identity comes from the persisted subject contract, not task data.
     environment = (contract.get("verifier_config") or {}).get("environment")
-    diagnostics["quality"] = aggregate_quality_diagnostics(verdicts, environment)
+    diagnostics["quality"] = aggregate_quality_diagnostics(
+        verdicts, contract.get("verifier_config")
+    )
     if environment in {"oolong_pairs", "graphwalks"}:
         diagnostics["pairs" if environment == "oolong_pairs" else "sets"] = (
             aggregate_pair_diagnostics(verdicts)
@@ -684,6 +869,29 @@ def validation_history_diagnostics(validation_path: Path, record: dict[str, Any]
         if data
         else {"status": "validation diagnostics unavailable"}
     )
+
+
+def validation_history_behavior(
+    validation_path: Path, record: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Read only persisted aggregate telemetry, never held-out trace bodies."""
+    from shrlm.optimization.behavior import BEHAVIOR_SCHEMA
+    from shrlm.optimization.validation import load_summary
+
+    link = (record.get("links") or {}).get("summary")
+    if not link:
+        return None
+    path = (validation_path / link).resolve()
+    if not path.is_relative_to(validation_path.resolve()):
+        raise ValueError("behavior summary link escapes its validation round")
+    if not path.exists():
+        return None
+    summary = load_summary(path.parent)
+    behavior = summary.get("splits", {}).get("heldout", {}).get("behavior")
+    if not behavior or behavior.get("schema") != BEHAVIOR_SCHEMA:
+        return None
+    # Readers export only detector counts through activation_for_surface.
+    return behavior
 
 
 def validation_history_progress(

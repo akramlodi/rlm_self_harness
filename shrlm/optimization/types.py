@@ -7,6 +7,8 @@ paper's trace record r_i = (x_i, tau_i, y_i, z_i); FailurePattern is a cluster
 C_phi together with the evidence the proposer is shown; EvidenceBundle is B_t.
 """
 
+import math
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
@@ -243,6 +245,101 @@ class TreeStats:
         }
 
 
+QUALITY_SCHEMA = "primary-quality/v1"
+
+
+@dataclass(frozen=True)
+class QualityDefinition:
+    """Verifier-owned measurement semantics, without task text or inferred zeros."""
+
+    name: str
+    version: str
+    direction: str
+    aggregation: str = "all_attempt_mean"
+    precision: int = 3
+    terminal_values: dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.name, str)
+            or not isinstance(self.version, str)
+            or not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", self.name)
+            or not re.fullmatch(r"v[0-9]+", self.version)
+        ):
+            raise ValueError("quality definition requires fixed name and version identifiers")
+        if self.direction not in {"higher", "lower"} or not isinstance(self.aggregation, str):
+            raise ValueError("invalid quality direction or aggregation")
+        if type(self.precision) is not int or not 0 <= self.precision <= 15:
+            raise ValueError("invalid quality measurement precision")
+        if not isinstance(self.terminal_values, dict):
+            raise ValueError("quality terminal_values must be a mapping")
+        for cause, value in self.terminal_values.items():
+            VerifierCause(cause)
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError("quality terminal values must be finite numbers")
+
+    @property
+    def identifier(self) -> str:
+        return f"{self.name}/{self.version}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": QUALITY_SCHEMA,
+            "name": self.name,
+            "version": self.version,
+            "direction": self.direction,
+            "aggregation": self.aggregation,
+            "precision": self.precision,
+            "terminal_values": dict(self.terminal_values),
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "QualityDefinition":
+        fields = {
+            "schema",
+            "name",
+            "version",
+            "direction",
+            "aggregation",
+            "precision",
+            "terminal_values",
+        }
+        if (
+            not isinstance(value, dict)
+            or set(value) != fields
+            or value.get("schema") != QUALITY_SCHEMA
+        ):
+            raise ValueError("malformed quality definition schema")
+        return cls(**{key: val for key, val in value.items() if key != "schema"})
+
+
+@dataclass(frozen=True)
+class QualityMeasurement:
+    definition_id: str
+    value: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.definition_id, str) or not re.fullmatch(
+            r"[a-z][a-z0-9_]{0,47}/v[0-9]+", self.definition_id
+        ):
+            raise ValueError("invalid quality measurement definition identifier")
+        if type(self.value) not in (int, float) or not math.isfinite(self.value):
+            raise ValueError("quality measurement must be finite")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"schema": QUALITY_SCHEMA, "definition_id": self.definition_id, "value": self.value}
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "QualityMeasurement":
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema", "definition_id", "value"}
+            or value.get("schema") != QUALITY_SCHEMA
+        ):
+            raise ValueError("malformed quality measurement schema")
+        return cls(value["definition_id"], value["value"])
+
+
 @dataclass
 class Verdict:
     """
@@ -259,8 +356,11 @@ class Verdict:
     gold: str
     produced: str
     detail: str = ""
+    quality: QualityMeasurement | None = None
 
     def __post_init__(self) -> None:
+        if self.quality is not None and not isinstance(self.quality, QualityMeasurement):
+            raise ValueError("verdict quality must be a QualityMeasurement")
         if self.passed and self.cause is not None:
             raise ValueError("A passing verdict must not carry a failure cause")
         if not self.passed and self.cause is None:
@@ -273,6 +373,7 @@ class Verdict:
             "gold": self.gold,
             "produced": self.produced,
             "detail": self.detail,
+            **({"quality": self.quality.to_dict()} if self.quality is not None else {}),
         }
 
     @classmethod
@@ -290,6 +391,7 @@ class Verdict:
             gold=str(data.get("gold", "")),
             produced=str(data.get("produced", "")),
             detail=str(data.get("detail", "")),
+            quality=QualityMeasurement.from_dict(data["quality"]) if "quality" in data else None,
         )
 
 
@@ -380,6 +482,7 @@ class AttributionDetail:
     agent_mechanism_detail: str = ""
     operation_evidence: list[OperationEvidence] = field(default_factory=list)
     verification_limits: str = ""
+    coverage_basis: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -393,6 +496,8 @@ class AttributionDetail:
         if self.operation_evidence or self.verification_limits:
             result["operation_evidence"] = [entry.to_dict() for entry in self.operation_evidence]
             result["verification_limits"] = self.verification_limits
+        if self.coverage_basis is not None:
+            result["coverage_basis"] = dict(self.coverage_basis)
         return result
 
 

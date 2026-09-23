@@ -124,6 +124,7 @@ def edit_item(pattern_index: int, edit: dict[str, Any], **overrides: Any) -> dic
         "edit": edit,
         "predicted_effect": "the root double-checks before answering",
         "regression_risks": ["one extra turn per run"],
+        "revision": None,
     }
     if pattern_index == 3:
         item["surface"] = "S9"
@@ -159,12 +160,13 @@ def canned_batch(*items: dict[str, Any]) -> str:
     ]
     return json.dumps(
         {
-            "format": "proposal-selection/v1",
+            "format": "proposal-selection/v2",
             "selections": [
                 {
                     "pattern_index": item["pattern_index"],
                     "surface": item["surface"],
                     "reason": "The cited operation lacks this check.",
+                    "evidence_refs": [],
                 }
                 for item in candidates
             ],
@@ -178,6 +180,34 @@ def test_extract_proposal_response_fenced_and_unfenced():
     expected = json.loads(response)
     assert extract_proposal_response("```json\n" + response + "\n```") == expected
     assert extract_proposal_response("answer: " + response + " done") == expected
+
+
+def test_supported_route_requires_own_admitted_operation_references():
+    from shrlm.optimization.proposal import validate_batch_members
+
+    pattern = {
+        **make_pattern("lossy_aggregation"),
+        "route_support": {"S8": ["own"]},
+        "admitted_refs": ["own"],
+    }
+    item = edit_item(0, REPL_HELPER_ITEM["edit"], surface="S8")
+    selection = {
+        "pattern_index": 0,
+        "surface": "S8",
+        "reason": "Call safe_index at the shown merge, taking sequence and index and returning one value.",
+        "evidence_refs": ["own"],
+    }
+    accepted, rejected = validate_batch_members([item], [pattern], H0, None, [], [selection])
+    assert len(accepted) == 1 and not rejected
+    for refs in ([], ["foreign"], ["own", "foreign"]):
+        accepted, rejected = validate_batch_members(
+            [item], [pattern], H0, None, [], [{**selection, "evidence_refs": refs}]
+        )
+        assert not accepted and rejected
+    accepted, rejected = validate_batch_members(
+        [item], [{**pattern, "route_support": {}}], H0, None, [], [selection]
+    )
+    assert not accepted and "not eligible" in rejected[0]["reason"]
 
 
 @pytest.mark.parametrize(
@@ -240,7 +270,7 @@ def test_inventory_overflow_rejects_before_model_call(tmp_path):
     assert lm._call_count == 0
 
 
-def test_collision_repair_selects_one_contender_and_retains_sibling(tmp_path):
+def test_collision_retains_first_owner_and_sibling_even_when_repair_collides(tmp_path):
     bundle = {
         **BUNDLE,
         "patterns": [
@@ -253,7 +283,7 @@ def test_collision_repair_selects_one_contender_and_retains_sibling(tmp_path):
     first = {**TEXT_ITEM, "pattern_index": 1, "surface": "S3"}
     second = {**TEXT_ITEM, "pattern_index": 2, "surface": "S3"}
     prompts = []
-    responses = iter([canned_batch(sibling, first, second), canned_batch(first)])
+    responses = iter([canned_batch(sibling, first, second), canned_batch(second)])
 
     def response(prompt):
         prompts.append(prompt)
@@ -263,9 +293,14 @@ def test_collision_repair_selects_one_contender_and_retains_sibling(tmp_path):
         bundle, H0, MockLM(response_fn=response), tmp_path / "proposals", workdir=tmp_path / "work"
     )
     assert [w.surface for w in result.written] == ["S2", "S3"]
+    assert [w.pattern_index for w in result.written] == [0, 1]
     assert len(prompts) == 2
-    assert 'Collision groups: {"S3":[1,2]}' in prompts[1][1]["content"]
-    assert "never resubmit both" in prompts[1][1]["content"]
+    assert 'Occupied surfaces: ["S2","S3"]' in prompts[1][1]["content"]
+    assert 'Eligible unoccupied surfaces: {"2":["S4"]}' in prompts[1][1]["content"]
+    collision = result.attempts[0].admissions[-1]
+    assert collision["status"] == "occupied"
+    assert collision["position"] == 3
+    assert collision["owner"] == {"position": 2, "pattern_index": 1, "surface": "S3"}
     assert result.evidence_audit["evidence_chars"] <= 32000
     assert result.evidence_audit["attempt_prompt_chars"] == [
         sum(len(message["content"]) for message in prompt) for prompt in prompts
@@ -273,7 +308,74 @@ def test_collision_repair_selects_one_contender_and_retains_sibling(tmp_path):
     idle = MockLM(responses=[])
     replay = propose_round(bundle, H0, idle, tmp_path / "proposals", workdir=tmp_path / "work")
     assert replay.evidence_audit == result.evidence_audit
+    assert replay.attempts[0].admissions == result.attempts[0].admissions
     assert idle._call_count == 0
+
+
+@pytest.mark.parametrize("gate", ["spec", "materialization", "revision", "preflight"])
+def test_failed_contender_does_not_reserve_surface(tmp_path, monkeypatch, gate):
+    import shrlm.optimization.proposal as proposer
+    from shrlm.optimization.candidates import CandidateRejection
+
+    patterns = [make_pattern("incomplete_coverage"), make_pattern("incomplete_coverage")]
+    first = edit_item(0, {"kind": "text", "new_text": "First possible change."}, surface="S2")
+    second = edit_item(1, {"kind": "text", "new_text": "Second possible change."}, surface="S2")
+    if gate == "spec":
+        del first["behavioral_change"]
+    elif gate == "materialization":
+        first["edit"]["new_text"] = H0.decomposition_instruction
+    elif gate == "revision":
+        outcomes = iter(["unjustified repeat", None])
+        monkeypatch.setattr(proposer, "revision_violation", lambda *a, **k: next(outcomes))
+    else:
+        load = proposer.load_candidate
+
+        def checked(path, *args, **kwargs):
+            if "c01" in str(path):
+                return CandidateRejection("r00-c01-s2", "harness_preflight", "invalid fixture")
+            return load(path, *args, **kwargs)
+
+        monkeypatch.setattr(proposer, "load_candidate", checked)
+    result = propose_round(
+        {"patterns": patterns},
+        H0,
+        MockLM(responses=[canned_batch(first, second), canned_batch()]),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+    )
+    assert [w.candidate_id for w in result.written] == ["r00-c02-s2"]
+
+
+def test_same_pattern_owner_is_not_repairable_and_ids_stay_unique(tmp_path):
+    first = edit_item(0, {"kind": "text", "new_text": H0.execution_instruction}, surface="S3")
+    owner = edit_item(
+        0, {"kind": "text", "new_text": "Verify each computed condition."}, surface="S4"
+    )
+    collision = edit_item(
+        1, {"kind": "text", "new_text": "Check a different condition."}, surface="S4"
+    )
+    repaired = edit_item(
+        1,
+        {"kind": "text", "new_text": "Compute conditions explicitly."},
+        surface="S3",
+        behavioral_change="Apply the condition during execution.",
+    )
+    prompts = []
+    responses = iter([canned_batch(first, owner, collision), canned_batch(repaired)])
+
+    def response(prompt):
+        prompts.append(prompt)
+        return next(responses)
+
+    result = propose_round(
+        {"patterns": [make_pattern("lossy_aggregation"), make_pattern("lossy_aggregation")]},
+        H0,
+        MockLM(response_fn=response),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+    )
+    assert [w.candidate_id for w in result.written] == ["r00-c02-s4", "r00-c03-s3"]
+    assert 'Eligible unoccupied surfaces: {"1":["S3"]}' in prompts[1][1]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +675,7 @@ def test_render_prompt_passing_and_history_blocks():
     assert "cost too high" in rendered
 
 
-def test_render_prompt_truncates_huge_verifier_evidence_but_never_the_pattern():
+def test_render_prompt_omits_ungrounded_evidence_but_never_the_pattern():
     """Verifier evidence quotes unbounded model output; the PROMPT bounds it
     at render time (the $5 proof's ungoverned char cap depends on it) while
     the pattern dict -- what a persisted bundle holds -- keeps the full text."""
@@ -586,10 +688,37 @@ def test_render_prompt_truncates_huge_verifier_evidence_but_never_the_pattern():
     rendered, addressable = render_prompt([pattern], serialize_harness(H0), (), (), k=4)
     assert [index for index, _ in addressable] == [0]
     assert huge not in rendered
-    assert "[truncated" in rendered
+    assert "no resolvable operation" in rendered
     assert "x" * 2001 not in rendered
     # Persisted evidence stays complete: only the prompt string was bounded.
     assert huge in pattern["verifier_evidence"][0]
+
+
+def test_unattributed_inventory_cannot_authorize_an_initial_or_repaired_edit(tmp_path):
+    from shrlm.optimization.proposal_evidence import EVIDENCE_HEADING
+
+    unattributed = copy.deepcopy(PATTERN_TEXT)
+    unattributed["signature"]["causal_status"] = "unattributed"
+    unattributed["actionability"] = 0.8
+    patterns = [PATTERN_TEXT, unattributed]
+    bundle = {**BUNDLE, "patterns": patterns}
+    prompt, addressable = render_prompt(patterns, serialize_harness(H0), [], [], 4)
+    section = json.JSONDecoder().raw_decode(prompt.split(EVIDENCE_HEADING)[1])[0]
+    assert [index for index, _ in addressable] == [0]
+    assert len(section["inventory"]) == 2
+    assert section["inventory"][1]["eligible_surfaces"] == []
+    with pytest.raises(ProposalRejection, match="not eligible|no editable surface"):
+        validate_candidate_spec({**TEXT_ITEM, "pattern_index": 1}, patterns)
+
+    # An attributable no-op leaves one repair slot; an unattributed sibling
+    # cannot become an owner or be smuggled into that repair.
+    noop = edit_item(0, {"kind": "text", "new_text": H0.verification_instruction}, surface="S4")
+    unsupported = {**TEXT_ITEM, "pattern_index": 1}
+    lm = MockLM(responses=[canned_batch(noop, unsupported), canned_batch(unsupported)])
+    result = propose_round(bundle, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    assert not result.written
+    assert len(result.attempts) == 2
+    assert "no editable surface" in result.attempts[0].violation
 
 
 # ---------------------------------------------------------------------------
@@ -1398,8 +1527,8 @@ def test_render_prompt_names_the_verifier_contract_when_the_bundle_carries_it():
     assert "not recorded for this bundle" in absent
 
 
-def test_render_prompt_bounds_each_evidence_entry_separately():
-    """A huge gold list in one entry must not hide another entry's produced string."""
+def test_render_prompt_keeps_legacy_answer_dumps_inventory_only():
+    """Answer differences without operations do not spend expansion slots."""
     pattern = copy.deepcopy(PATTERN_TEXT)
     huge = "x" * 50_000
     pattern["verifier_evidence"] = [
@@ -1407,15 +1536,15 @@ def test_render_prompt_bounds_each_evidence_entry_separately():
         "b: produced '[2c7f9ccb5a]', expected '[2c7f9ccb5a]'",
     ]
     rendered, _ = render_prompt([pattern], serialize_harness(H0), (), (), k=4)
-    assert "a: produced '[1f0e3dad99]'" in rendered
-    assert "b: produced '[2c7f9ccb5a]'" in rendered
+    assert "a: produced '[1f0e3dad99]'" not in rendered
+    assert "b: produced '[2c7f9ccb5a]'" not in rendered
     assert huge not in rendered
 
 
-def test_duplicate_surfaces_reask_before_materialization(tmp_path):
+def test_duplicate_surface_owner_survives_withdrawal(tmp_path):
     bundle = {"bundle_id": "same-surface", "patterns": [PATTERN_TEXT, PATTERN_TEXT]}
     duplicate = {**TEXT_ITEM, "pattern_index": 1}
-    lm = MockLM(responses=[canned_batch(TEXT_ITEM, duplicate), canned_batch(TEXT_ITEM)])
+    lm = MockLM(responses=[canned_batch(TEXT_ITEM, duplicate), canned_batch()])
     result = propose_round(bundle, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
     assert len(result.attempts) == 2
     assert "surface S4" in result.attempts[0].violation
@@ -1501,9 +1630,9 @@ def test_history_reports_one_shared_verdict_for_bundled_edits():
         },
     ]
     history = _render_history_block([(records, {"promoted": False})])
-    assert history.count("rejected") == 1
+    assert history.split("\n", 1)[1].count("rejected") == 1
     assert "S2, S3" in history
-    assert "bundled" not in history
+    assert "bundled" not in history.split("\n", 1)[1]
 
 
 # ---------------------------------------------------------------------------

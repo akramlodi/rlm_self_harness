@@ -13,6 +13,22 @@ Versioning: the `format` tag is the version. The loader rejects anything but
 `shrlm-proposal/v1`; a future v2 will be additive. Unknown extra top-level
 fields are tolerated and ignored, so you may carry your own bookkeeping.
 
+The live proposer response uses **`proposal-selection/v2`**. Each selection names
+its pattern, surface, reason, and `evidence_refs` (at most 12 admitted operation
+IDs from that pattern). Newly supported S8/S5 routes require all listed support
+references; omitted evidence cannot support a route. Each candidate supplies
+`revision: null` for a new intervention, or `{round, subject_id, explanation}`
+for a revisit. The explanation identifies the changed operation, new applicability,
+or revised joint hypothesis. The host records effective surface fingerprints and
+whether referenced content is unchanged. The stored proposal envelope remains v1,
+and literal instruction encoding remains `literal-text/v1`.
+
+After loader admission and batch composition, validation refuses an identical
+previously rejected evaluated harness under the same incumbent. The guard compares
+whole evaluated subjects: an unchanged constituent may join a different batch with
+an explicit revision relationship. Local refusals retain artifacts and carry no
+individual performance score.
+
 ## Directory layout
 
 One candidate = one directory = one `proposal.json`:
@@ -208,9 +224,9 @@ different declared id is preserved in the rejection reason.
 
 ## Proposal context and local repair
 
-The live response uses `proposal-selection/v1`, separate from the saved
+The live response uses `proposal-selection/v2`, separate from the saved
 `shrlm-proposal/v1` envelope. It contains `format`, an ordered `selections` list
-of `{pattern_index, surface, reason}`, and a `candidates` list with exactly one
+of `{pattern_index, surface, reason, evidence_refs}`, and a `candidates` list with exactly one
 matching replacement per selection. Select the best-supported intervention per
 surface first, then write its replacement. Both lists must have at most `k`
 entries; each pattern and surface may appear once. Reasons contain 1–600
@@ -250,7 +266,8 @@ skill-body contracts are unchanged.
 S9 takes `(answer, repl_inventory)` and returns `AnswerDecision.accept(answer)`
 or `AnswerDecision.redirect(nudge)`. There is no `reject` method. Inventory values
 are redacted `(type_name, length)` tuples, not variable contents.
-Lossy aggregation routes primarily to S3, with S4 as its alternate; S9 is ineligible.
+Lossy aggregation routes primarily to S3, with S4 as an alternate and S8 when
+admitted complete operations support a deterministic helper; S9 is ineligible.
 For semantic errors diagnosed as `other`, the prompt also prefers S3/S4. S9 remains
 appropriate for answer-visible defects under other eligible mechanisms.
 
@@ -289,7 +306,9 @@ the repair response. Only final survivors are published for combined validation.
 Scratch files live under `work/attempt_NN/`; the proposal contract pins prompt,
 validator, evidence-selector/history-renderer versions, response format, text
 contract and slot marker, profile, incumbent and caps. Prompt, validator, and
-evidence-selector versions are `3.0.0`; diagnostic history remains `1.0.0`. Cache keys include the actual repair
+evidence-selector versions are `4.0.0`; diagnostic history is `2.0.0`. Capability
+and history contracts, the history budget, behavior schema, and the full
+prior-attempt index are also sealed. Cache keys include the actual repair
 request and retained hashes. Before publishing final candidates,
 `work/proposal_result.json` freezes survivors and their complete attempt outcomes;
 an interrupted publication replays this checkpoint without re-running gates.

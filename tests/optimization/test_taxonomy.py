@@ -33,6 +33,37 @@ from shrlm.optimization.taxonomy import (
 from shrlm.optimization.types import FailureSignature
 from shrlm.rlm_harness import SKILL_LOADER_NAME, SURFACES
 
+
+def test_new_routes_require_admitted_operation_support():
+    from shrlm.optimization.taxonomy import eligible_surfaces
+
+    for mechanism, added in [
+        (AgentMechanism.LOSSY_AGGREGATION, EditableSurface.REPL_HELPERS),
+        (AgentMechanism.UNPARSED_CHILD_OUTPUT, EditableSurface.REPL_HELPERS),
+        (AgentMechanism.ITERATION_BUDGET_EXHAUSTION, EditableSurface.RECOVERY_INSTRUCTION),
+        (AgentMechanism.REPL_EXECUTION_FAULT, EditableSurface.RECOVERY_INSTRUCTION),
+    ]:
+        assert added not in eligible_surfaces(mechanism)
+        assert added in eligible_surfaces(mechanism, {added.value: ["operation-1"]})
+        assert added not in eligible_surfaces(mechanism, {added.value: []})
+
+
+def test_capabilities_explain_triggers_and_limits():
+    rendered = render_surface_block()
+    for fact in (
+        "same prompt",
+        "refuse",
+        "max_depth",
+        "redacted",
+        "only when called",
+        "transformed",
+        "loaded or forwarded",
+        "terminated",
+        "semantic oracle",
+    ):
+        assert fact in rendered
+
+
 # Mechanisms whose documented meaning is a child's own behavior rather than the
 # root's: INSUFFICIENT_RECURSION ("a sub-call received a piece ... and answered
 # it directly") and DEPTH_DEGRADATION (excess recursion happens inside the
@@ -147,7 +178,7 @@ class TestCoverageInvariants:
         # reach entry), so bundles written under 2.0.0 are not comparable.
         # 3.1.0: MECHANISM_SURFACES widened each mechanism to a set of eligible
         # surfaces (primary unchanged) and made OTHER addressable.
-        assert TAXONOMY_VERSION == "3.2.0"
+        assert TAXONOMY_VERSION == "3.3.0"
 
 
 class TestSkillsSurface:
