@@ -1,0 +1,11 @@
+--- round_03_incumbent/S4_verification_instruction
++++ r03-c01-s4/S4_verification_instruction
+@@ -0,0 +1,8 @@
++After merging all child results into a single label mapping, verify coverage:
++
++1. Collect the set of all user IDs from the parsed input.
++2. Collect the set of user IDs that have at least one label in the merged results.
++3. If the second set is missing any user from the first set, print the missing user IDs and re-run the affected chunks with corrected prompts (e.g., instruct the child to return labels for every user in its chunk, not just qualifying ones).
++4. Only after coverage is confirmed, proceed to compute the final answer.
++
++This check catches cases where a child returned results keyed by line index instead of user ID, or where a user's questions were split across chunks and the merge lost some entries.

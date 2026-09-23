@@ -1,0 +1,15 @@
+--- round_04_incumbent/S4_verification_instruction
++++ r04-c01-s4/S4_verification_instruction
+@@ -3,6 +3,10 @@
+ 1. Collect the set of all user IDs from the parsed input.
+ 2. Collect the set of user IDs that have at least one label in the merged results.
+ 3. If the second set is missing any user from the first set, print the missing user IDs and re-run the affected chunks with corrected prompts (e.g., instruct the child to return labels for every user in its chunk, not just qualifying ones).
+-4. Only after coverage is confirmed, proceed to compute the final answer.
++4. Only after coverage is confirmed, proceed to verify label accuracy.
+ 
+-This check catches cases where a child returned results keyed by line index instead of user ID, or where a user's questions were split across chunks and the merge lost some entries.
++To verify label accuracy, spot-check each child's work: for a random sample of 3-5 questions per child chunk, print the original question text alongside the label the child assigned. Verify that the label matches the category definitions (abbreviation, entity, human being, numeric value, location, description and abstract concept). If any sample is misclassified, re-run that chunk with a corrected prompt that includes the category definitions more explicitly and instructs the child to classify each question carefully.
++
++5. Only after both coverage and label accuracy are confirmed, proceed to compute the final answer.
++
++This check catches cases where a child returned results keyed by line index instead of user ID, where a user's questions were split across chunks and the merge lost some entries, or where the child systematically misclassified questions.

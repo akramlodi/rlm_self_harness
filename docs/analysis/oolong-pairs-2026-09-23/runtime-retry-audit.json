@@ -1,0 +1,162 @@
+[
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t04-w9-4b606ec336583f63__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 66
+  },
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t05-w9-d9e6416608792607__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 94
+  },
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t07-w9-641d642c851ba65c__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 119
+  },
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t09-w10-90d877bb39360949__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 275
+  },
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t09-w9-beda4bdee9aa62da__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 307
+  },
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t10-w9-2827bc624a60c091__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 359
+  },
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t14-w10-49e6327eae36e930__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 413
+  },
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t16-w10-7e9b4280e233f0a0__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 252
+  },
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t17-w10-74f51cb44a6e57c1__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 529
+  },
+  {
+    "round": 6,
+    "subject": "r06-c01-s6",
+    "run_id": "oolong-t19-w9-8be02d3ba58700a4__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 415
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t04-w9-4b606ec336583f63__a01",
+    "retries": 0,
+    "syntax_error_calls": 6,
+    "metric_objects_in_trace_not_unique_calls": 428
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t05-w9-d9e6416608792607__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 181
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t07-w9-641d642c851ba65c__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 238
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t09-w10-90d877bb39360949__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 105
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t09-w9-beda4bdee9aa62da__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 165
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t10-w9-2827bc624a60c091__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 445
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t14-w10-49e6327eae36e930__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 780
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t16-w10-7e9b4280e233f0a0__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 171
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t17-w10-74f51cb44a6e57c1__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 381
+  },
+  {
+    "round": 8,
+    "subject": "merged",
+    "run_id": "oolong-t19-w9-8be02d3ba58700a4__a01",
+    "retries": 0,
+    "syntax_error_calls": 0,
+    "metric_objects_in_trace_not_unique_calls": 478
+  }
+]

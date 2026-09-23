@@ -1,0 +1,15 @@
+--- round_04_incumbent/S2_decomposition_instruction
++++ r04-c02-s2/S2_decomposition_instruction
+@@ -29,7 +29,11 @@
+     "Classify EVERY line below into exactly one of " + json.dumps(labels)
+     + ". Do it line by line in your REPL, keep a running count per label, "
+     + "and finish by setting answer['content'] to a JSON object mapping each "
+-    + "label to its count (integers, no other keys).\n\n" + "\n".join(chunk)
++    + "label to its count (integers, no other keys).\n\n"
++    + "IMPORTANT: You must classify EVERY line in your chunk. Do not skip any line. "
++    + "If a line's user ID appears in multiple chunks, still classify it. "
++    + "Return a complete mapping for ALL users in your chunk.\n\n"
++    + "\n".join(chunk)
+     for chunk in chunks
+ ]
+ results = rlm_query_batched(prompts)
