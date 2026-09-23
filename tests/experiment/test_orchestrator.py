@@ -339,24 +339,27 @@ LOADERS: dict[str, LoaderFn] = {
 
 
 def attribution(mechanism: str) -> str:
-    """A canned attributor response (ungrounded variant: failing_level required)."""
-    return (
-        "```json\n"
-        + json.dumps(
-            {
-                "causal_status": "causal",
-                "agent_mechanism": mechanism,
-                "failing_level": "root",
-                "evidence_node_ids": ["r"],
-                "symptom_summary": "the model answered without verifying",
-                "operation_evidence": [
-                    {"node_id": "r", "observation": "The root submitted the produced answer."}
-                ],
-                "verification_limits": "Intermediate results were not semantically verified.",
-            }
-        )
-        + "\n```"
-    )
+    """A canned live response for orchestration tests, not a semantic judge."""
+    payload: dict[str, Any] = {
+        "causal_status": "causal",
+        "agent_mechanism": mechanism,
+        "failing_level": "root",
+        "evidence_node_ids": ["r"],
+        "symptom_summary": "the model answered without verifying",
+        "operation_evidence": [
+            {"node_id": "r", "observation": "The root submitted the produced answer."}
+        ],
+        "verification_limits": "Intermediate results were not semantically verified.",
+    }
+    if mechanism == "incomplete_coverage":
+        payload["operation_evidence"][0].update(iteration_index=1, code_block_index=0)
+        payload["coverage_basis"] = {
+            "status": "observed_loss",
+            "input_scope": "The original context supplied to the scripted root run.",
+            "loss_observation": "r iteration 1 code[0] only assigns the answer; none of the original context is processed.",
+            "counterevidence": "No later input processing occurs in this one-operation fixture.",
+        }
+    return "```json\n" + json.dumps(payload) + "\n```"
 
 
 def proposer_batch(

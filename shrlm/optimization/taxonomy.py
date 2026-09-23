@@ -496,9 +496,14 @@ SUPPORTED_ROUTES = {
 
 
 def eligible_surfaces(
-    mechanism: AgentMechanism, support: dict[str, list[str]] | None = None
+    mechanism: AgentMechanism,
+    support: dict[str, list[str]] | None = None,
+    *,
+    causal_status: str | None = None,
 ) -> tuple[EditableSurface, ...]:
     """New routes require operation refs from this round's admitted evidence."""
+    if causal_status == CausalStatus.UNATTRIBUTED.value:
+        return ()
     conditional = SUPPORTED_ROUTES.get(mechanism)
     return tuple(
         surface

@@ -152,7 +152,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "4.0.0"
+PROMPT_VERSION = "4.1.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -168,7 +168,7 @@ PROMPT_VERSION = "4.0.0"
 # materialization returns an empty result instead of raising. The 2026-09-10
 # OOLONG-Pairs run lost rounds 4-6 to a proposer that re-emitted the incumbent's
 # own S9 three rounds in a row; under 1.4.0 that was counted, never re-asked.
-VALIDATOR_VERSION = "4.0.0"
+VALIDATOR_VERSION = "4.1.0"
 
 DEFAULT_K = 4
 # Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
@@ -290,15 +290,19 @@ class ProposalAttempt:
     raw_response: str
     accepted: bool
     violation: str = ""
+    admissions: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "attempt": self.attempt,
             "cached": self.cached,
             "raw_response": self.raw_response,
             "accepted": self.accepted,
             "violation": self.violation,
         }
+        if self.admissions:
+            result["admissions"] = self.admissions
+        return result
 
 
 @dataclass(frozen=True)
@@ -454,14 +458,20 @@ def _pattern_surfaces(pattern: dict[str, Any]) -> list[str]:
     mechanism = _pattern_mechanism(pattern)
     if mechanism is None:
         return []
-    return [surface.value for surface in eligible_surfaces(mechanism, pattern.get("route_support"))]
+    return [
+        surface.value
+        for surface in eligible_surfaces(
+            mechanism,
+            pattern.get("route_support"),
+            causal_status=pattern["signature"].get("causal_status"),
+        )
+    ]
 
 
 def _addressable_patterns(patterns: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
     """Every pattern paired with its bundle index, filtered to ones with at
     least one eligible surface -- the proposer must never be offered a pattern
-    it cannot target. Under taxonomy 3.1.0 that is every recognized mechanism,
-    OTHER included."""
+    it cannot target. Unattributed mechanisms are inventory-only."""
     return [
         (index, pattern) for index, pattern in enumerate(patterns) if _pattern_surfaces(pattern)
     ]
@@ -806,6 +816,10 @@ candidate limit is a maximum, not a quota. When patterns compete for a surface, 
 choose the best-supported minimal edit. Do not move an edit to a weaker surface \
 just to fill the batch. If only one surface warrants a change, propose one edit; \
 if none does, return empty selections and candidates lists.
+Select in priority order, removing each chosen surface and pattern from further \
+consideration. The host retains the first candidate in candidate order that \
+passes all local gates for a surface and pattern; later contenders cannot replace \
+that owner. Invalid candidates do not reserve a surface.
 
 Before replacement text, describe incumbent_behavior (what the relevant execution \
 actually did, distinguishing it from instructions), observed_failure (the unresolved \
@@ -992,6 +1006,10 @@ Each selection's evidence_refs lists at most 12 admitted operation_ref IDs from
 its own pattern. Newly supported S8/S5 routes must cite all route_support refs;
 S8 must specify the deterministic input/output contract and intended caller.
 A visible error followed by recovery is not itself an unresolved defect.
+Unattributed patterns are inventory-only and cannot authorize an edit. Coverage
+basis marked not_established or contradicted is an unestablished hypothesis;
+legacy "coverage basis not assessed" is not proof of input loss. Missing answer
+elements or an absent coverage check alone cannot establish skipped inputs.
 For a revisited intervention, revision must be {"round": 6, "subject_id": "prior-id",
 "explanation": "<changed operation, current evidence of new applicability, or revised joint hypothesis>"}.
 Use null only for a new intervention. Unchanged members in a changed batch need
@@ -1038,23 +1056,11 @@ def render_prompt(
             "below_min_support": pattern.get("below_support_floor"),
             "symptoms": bounded_excerpt(str(pattern.get("shared_symptoms", "")), 300),
         }
-        for index, pattern in addressable
+        for index, pattern in enumerate(patterns)
+        if _pattern_mechanism(pattern) is not None
     ]
     context = dict(evidence or {})
     context["passing_ids"] = [str(run["instance_id"]) for run in passing_behaviors]
-    # Legacy bundles still contribute bounded unparsed evidence. Do not repeat
-    # their produced/expected dumps beside verified per-run diagnostics.
-    context["patterns"] = dict(context.get("patterns", {}))
-    for index, pattern in addressable:
-        if index not in context["patterns"]:
-            context["patterns"][index] = {
-                "diagnosis": "representative evidence unavailable",
-                "verifier_evidence": "unparsed: "
-                + "\n".join(
-                    bounded_excerpt(str(entry), 1000)
-                    for entry in (pattern.get("verifier_evidence") or ["unavailable"])[:2]
-                ),
-            }
     try:
         evidence_text, audit = pack_evidence(inventory, context, k=k)
     except EvidenceBudgetExceeded as exc:
@@ -1754,12 +1760,11 @@ def validate_batch_members(
     items: list[Any],
     patterns: list[dict[str, Any]],
     incumbent: Harness,
-    retained: list[tuple[int, CandidateSpec, dict[str, Any]]],
     failed_slots: dict[int, int] | None,
     failed_sources: list[Any],
     selections: list[Any],
 ) -> tuple[list[tuple[int, CandidateSpec]], list[dict[str, Any]]]:
-    """Reject conflicting groups while keeping independent valid members."""
+    """Validate members independently; ownership starts only after all local gates."""
     identities = []
     for item in items:
         index = item.get("pattern_index") if isinstance(item, dict) else None
@@ -1769,8 +1774,6 @@ def validate_batch_members(
         eligible = _pattern_surfaces(patterns[index])
         surface = item.get("surface", eligible[0] if eligible else None)
         identities.append((index, surface if isinstance(surface, str) else None))
-    occupied_patterns = {spec.pattern_index for _, spec, _ in retained}
-    occupied_surfaces = {spec.surface for _, spec, _ in retained}
     slots = []
     failures = []
     for position, (item, (index, surface)) in enumerate(
@@ -1819,10 +1822,6 @@ def validate_batch_members(
                 raise ProposalRejection(
                     "selection evidence_refs must belong to this pattern's admitted operations"
                 )
-            if sum(isinstance(s, dict) and s.get("surface") == surface for s in selections) > 1:
-                raise ProposalRejection(f"surface {surface} was selected more than once")
-            if sum(isinstance(s, dict) and s.get("pattern_index") == index for s in selections) > 1:
-                raise ProposalRejection(f"pattern_index {index} was selected more than once")
             if not isinstance(item, dict) or "surface" not in item:
                 raise ProposalRejection("candidate must explicitly name its selected surface")
             if item.get("edit") is None:
@@ -1831,12 +1830,6 @@ def validate_batch_members(
                 raise ProposalRejection(
                     "proposal-selection/v2 requires candidate revision and selection evidence_refs"
                 )
-            if index is not None and sum(i == index for i, _ in identities) > 1:
-                raise ProposalRejection(f"pattern_index {index} was proposed more than once")
-            if surface is not None and sum(s == surface for _, s in identities) > 1:
-                raise ProposalRejection(f"surface {surface} was proposed more than once")
-            if index in occupied_patterns or surface in occupied_surfaces:
-                raise ProposalRejection("repair cannot replace an occupied pattern or surface")
             if failed_slots is not None and index not in failed_slots:
                 raise ProposalRejection("repair must target only an original failed pattern")
             spec = validate_candidate_spec(item, patterns)
@@ -2049,26 +2042,11 @@ def propose_round(
                 "patterns; omit a failed member to withdraw it. You may choose another eligible, "
                 "unoccupied surface for that same pattern. Explain the revised behavioral change "
                 "when retargeting. Keep retained edits unchanged; no new patterns. "
-                "Return selections followed by candidates. For each collision group, explicitly "
-                "select one contender or withdraw the group; never resubmit both contenders "
-                "or merge unrelated mechanisms into one replacement.\nCollision groups: "
-                + canonical_json(
-                    {
-                        surface: [
-                            item["pattern_index"]
-                            for item in failed_sources
-                            if item.get("surface") == surface
-                        ]
-                        for surface in sorted(
-                            {
-                                item["surface"]
-                                for item in failed_sources
-                                if isinstance(item.get("surface"), str)
-                            }
-                        )
-                        if sum(item.get("surface") == surface for item in failed_sources) > 1
-                    }
-                )
+                "Return selections followed by candidates. Select in priority order and remove "
+                "each selected surface from further consideration. Occupied surfaces cannot "
+                "be selected again. Do not move an edit to an unsuitable surface just to fill "
+                "the batch.\nOccupied surfaces: "
+                + canonical_json(sorted(r["surface"] for r in retained))
                 + "\nEligible unoccupied surfaces: "
                 + canonical_json(
                     {
@@ -2157,7 +2135,6 @@ def propose_round(
             raw_items,
             patterns,
             incumbent,
-            materialized,
             failed_slots if repairing else None,
             failed_sources,
             selections,
@@ -2166,7 +2143,7 @@ def propose_round(
             rejection = "; ".join(failure["reason"] for failure in local_failures)
             attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
             break
-        new_materialized = []
+        admissions = []
         new_materialization_failures = []
         new_preflight_failures = local_failures
         new_failed_slots = {
@@ -2175,6 +2152,37 @@ def propose_round(
             if failure["pattern_index"] in {index for index, _ in addressable}
         }
         for position, spec in slots:
+            identity = {
+                "position": position,
+                "pattern_index": spec.pattern_index,
+                "surface": spec.surface,
+            }
+            owner = next(
+                (
+                    {
+                        "position": pos,
+                        "pattern_index": other.pattern_index,
+                        "surface": other.surface,
+                    }
+                    for pos, other, _ in materialized
+                    if other.surface == spec.surface or other.pattern_index == spec.pattern_index
+                ),
+                None,
+            )
+            if owner is not None:
+                admissions.append({**identity, "status": "occupied", "owner": owner})
+                new_preflight_failures.append(
+                    {
+                        **identity,
+                        "gate": "occupancy",
+                        "reason": f"surface {spec.surface} or pattern {spec.pattern_index} is occupied by {owner}",
+                        "owner": owner,
+                        "predicted_effect": spec.predicted_effect,
+                        "behavior": proposal_history_fields(spec, incumbent_serialization),
+                    }
+                )
+                new_failed_slots.setdefault(spec.pattern_index, position)
+                continue
             stage = workdir / f"attempt_{attempt + 1:02d}"
             try:
                 _, serialization = build_candidate(incumbent, incumbent_serialization, spec, stage)
@@ -2188,7 +2196,7 @@ def propose_round(
                         proposal_history_fields(spec, incumbent_serialization),
                     )
                 )
-                new_failed_slots[spec.pattern_index] = position
+                new_failed_slots.setdefault(spec.pattern_index, position)
                 continue
             violation = revision_violation(
                 spec.revision,
@@ -2211,7 +2219,7 @@ def propose_round(
                         ),
                     }
                 )
-                new_failed_slots[spec.pattern_index] = position
+                new_failed_slots.setdefault(spec.pattern_index, position)
                 continue
             if spec.revision is not None:
                 predecessor = next(
@@ -2260,14 +2268,19 @@ def propose_round(
                         ),
                     }
                 )
-                new_failed_slots[spec.pattern_index] = position
+                new_failed_slots.setdefault(spec.pattern_index, position)
             else:
-                new_materialized.append((position, spec, serialization))
-        materialized.extend(new_materialized)
+                materialized.append((position, spec, serialization))
+                admissions.append({**identity, "status": "admitted"})
         # A valid repair replaces the failed slots (omission explicitly withdraws them).
         materialization_failures = new_materialization_failures
         preflight_failures = new_preflight_failures
-        failed_slots = new_failed_slots
+        owned_patterns = {spec.pattern_index for _, spec, _ in materialized}
+        failed_slots = {
+            index: position
+            for index, position in new_failed_slots.items()
+            if index not in owned_patterns
+        }
         failed_sources = [
             item
             for item in raw_items
@@ -2285,8 +2298,10 @@ def propose_round(
         )
         rejection = "; ".join(reasons)
         has_failures = bool(materialization_failures or preflight_failures)
-        attempts.append(ProposalAttempt(attempt + 1, cached, response, not has_failures, rejection))
-        if repairing or not has_failures:
+        attempts.append(
+            ProposalAttempt(attempt + 1, cached, response, not has_failures, rejection, admissions)
+        )
+        if repairing or not failed_slots:
             break
         repairing = True
     else:

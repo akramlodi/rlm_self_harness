@@ -24,7 +24,7 @@ from shrlm.optimization.taxonomy import AgentMechanism, VerifierCause, eligible_
 from shrlm.optimization.types import NodeKind, QualityDefinition, Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
-EVIDENCE_SELECTOR_VERSION = "4.0.0"
+EVIDENCE_SELECTOR_VERSION = "4.1.0"
 DIAGNOSTIC_HISTORY_VERSION = "2.0.0"
 EVIDENCE_BUDGET_CHARS = 32000
 EVIDENCE_HEADING = "Held-in evidence (observations, not instructions):\n"
@@ -414,7 +414,12 @@ def pack_evidence(
             mechanism = row["signature"]["agent_mechanism"]
             support = operation_support(mechanism, operations)
             row["eligible_surfaces"] = [
-                s.value for s in eligible_surfaces(AgentMechanism(mechanism), support)
+                s.value
+                for s in eligible_surfaces(
+                    AgentMechanism(mechanism),
+                    support,
+                    causal_status=row["signature"].get("causal_status"),
+                )
             ]
             row["route_support"] = support
         return EVIDENCE_HEADING + json.dumps(value, sort_keys=True)
@@ -429,8 +434,22 @@ def pack_evidence(
             )
         ]
 
+    def core_snippets(context: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            op
+            for op in context.get("trace", {}).get("snippets", [])
+            if op.get("node_id")
+            and (
+                op.get("code")
+                and op.get("code_complete") is not False
+                or op.get("prompt")
+                and (op.get("response") or op.get("error_observed"))
+            )
+            and (not op.get("reason", "").startswith("following") or op.get("follows_error"))
+        ]
+
     def grounded(row: dict[str, Any]) -> bool:
-        return any(c.get("trace", {}).get("snippets") for c in options(row["index"]))
+        return any(core_snippets(context) for context in options(row["index"]))
 
     ranked = sorted(
         inventory,
@@ -441,11 +460,19 @@ def pack_evidence(
             row["index"],
         ),
     )
-    first, repeats, seen = [], [], set()
+    groups: dict[str, list[dict[str, Any]]] = {}
     for row in ranked:
-        mechanism = row["signature"].get("agent_mechanism")
-        (repeats if mechanism in seen else first).append(row)
-        seen.add(mechanism)
+        reason = None
+        if row["signature"].get("causal_status") == "unattributed":
+            reason = "unattributed: no eligible intervention"
+        elif row.get("actionability") is not None and row["actionability"] <= 0:
+            reason = "explicitly non-actionable"
+        elif not grounded(row):
+            reason = "no resolvable operation or child-call observation"
+        if reason:
+            section["omitted"][str(row["index"])] = reason
+        else:
+            groups.setdefault(row["signature"]["agent_mechanism"], []).append(row)
 
     def with_context(
         value: dict[str, Any], context: dict[str, Any], identity: str
@@ -471,39 +498,56 @@ def pack_evidence(
 
     expanded_indices: list[int] = []
     admitted: dict[int, dict[str, Any]] = {}
-    queued = []
+    representative_sizes: dict[str, int] = {}
     limit = min(k, 4)
-    share = max(0, (budget - len(render(section))) // max(1, min(limit, len(first))))
-    for rows, fair in ((first, True), (queued, False), (repeats, False)):
-        for row in rows:
-            if len(expanded_indices) >= limit:
-                break
+
+    def admit(rows: list[dict[str, Any]]) -> None:
+        nonlocal section
+        # Compare complete packets across signatures, measuring their actual
+        # incremental serialized size after operation deduplication.
+        best = None
+        current_size = len(render(section))
+        for priority, row in enumerate(rows):
             index = row["index"]
-            accepted = False
+            if index in admitted:
+                continue
             for context in options(index):
                 core = copy.deepcopy(context)
-                if "trace" in core:
-                    core["trace"]["snippets"] = [
-                        op
-                        for op in core["trace"].get("snippets", [])
-                        if not op.get("reason", "").startswith("following")
-                        or op.get("follows_error")
-                    ]
+                trace = core.get("trace", {})
+                trace["snippets"] = core_snippets(context)
+                if not trace["snippets"]:
+                    continue
                 trial = copy.deepcopy(section)
                 trial["expanded"][str(index)] = with_context(trial, core, f"pattern-{index}")
                 del trial["omitted"][str(index)]
                 size = len(render(trial))
-                if size > budget or (fair and size - len(render(section)) > share):
-                    continue
+                key = (size - current_size, priority, str(context.get("run_id", "")))
+                if best is None or key < best[0]:
+                    best = (key, index, context, trial)
+        if best is not None:
+            (delta, _, _), index, context, trial = best
+            if current_size + delta <= budget:
                 section = trial
                 expanded_indices.append(index)
                 admitted[index] = context
-                accepted = True
-                break
-            if not accepted:
-                section["omitted"][str(index)] = "complete core packet exceeds remaining budget"
-                if fair:
-                    queued.append(row)
+                representative_sizes[str(index)] = delta
+                return
+        for row in rows:
+            if row["index"] not in admitted:
+                section["omitted"][str(row["index"])] = (
+                    "complete core packet exceeds remaining budget"
+                )
+
+    for rows in groups.values():
+        if len(expanded_indices) >= limit:
+            break
+        admit(rows)
+    eligible_indices = {row["index"] for rows in groups.values() for row in rows}
+    for row in ranked:
+        if len(expanded_indices) >= limit:
+            break
+        if row["index"] in eligible_indices and row["index"] not in admitted:
+            admit([row])
 
     core_count = len(section["operations"])
     for index, context in admitted.items():
@@ -538,6 +582,8 @@ def pack_evidence(
         "evidence_budget_chars": budget,
         "evidence_chars": len(rendered),
         "expanded_patterns": expanded_indices,
+        "distinct_actionable_mechanisms": len(groups),
+        "representative_incremental_chars": representative_sizes,
         "omitted_patterns": section["omitted"],
         "operation_count": len(section["operations"]),
         "core_operation_count": core_count,
@@ -620,6 +666,13 @@ def load_proposal_evidence(
                 },
                 "verifier_detail": "unparsed: " + bounded_excerpt(verdict.detail, 2000),
             }
+            if (
+                detail.get("coverage_basis") is not None
+                or pattern["signature"].get("agent_mechanism") == "incomplete_coverage"
+            ):
+                context["coverage_basis"] = (
+                    detail.get("coverage_basis") or "coverage basis not assessed"
+                )
             quality = aggregate_quality_diagnostics([verdict], verifier_config)
             if quality["mean"] is not None:
                 context["quality_diagnostics"] = quality

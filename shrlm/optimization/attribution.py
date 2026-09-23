@@ -41,13 +41,13 @@ from shrlm.optimization.types import (
     iter_nodes,
 )
 
-PROMPT_VERSION = "1.3.0"
+PROMPT_VERSION = "1.4.0"
 
 # Version of the validation logic in this module (validate, parse_enum,
 # extract_json_block). The validator's rejection text seeds re-asks, so a
 # change to it changes what later attempts are asked -- folding this into
 # config_sha256 keeps a validator change from replaying stale cached responses.
-VALIDATOR_VERSION = "1.1.0"
+VALIDATOR_VERSION = "1.2.0"
 
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_TRANSPORT_RETRIES = 3
@@ -127,6 +127,20 @@ Use other for a semantic mechanism outside the vocabulary. If the relevant \
 operation is not visible, state the limitation and use correlated or unattributed \
 rather than asserting a causal mechanism. Evidence citations resolve locations; \
 they do not independently prove causality.
+
+For incomplete_coverage, also supply coverage_basis with exactly four fields:
+status (observed_loss, not_established, or contradicted), input_scope,
+loss_observation, and counterevidence. Each explanatory string is at most 500
+characters. Identify the original input universe; coverage of an already filtered
+subset does not establish original-input coverage. observed_loss needs a concrete
+missing input unit/range or a shortfall against the SAME input scope, citing the
+operation_evidence locations. Missing answer elements and an absent coverage
+check are not loss observations. Describe visible completed processing or recovery
+in counterevidence, or say that none is visible. For not_established or contradicted,
+leave loss_observation empty and explain the uncertainty/counterevidence. These
+honest assessments are accepted as unestablished hypotheses, without a re-ask.
+Complete input coverage does not establish correct classifications or predicates.
+Omit coverage_basis for other mechanisms.
 
 {taxonomy}
 {failing_level}
@@ -513,6 +527,37 @@ class LLMAttributor:
         agent_mechanism = parse_enum(
             payload.get("agent_mechanism"), AgentMechanism, "agent_mechanism"
         )
+        coverage_basis = None
+        if agent_mechanism is AgentMechanism.INCOMPLETE_COVERAGE:
+            basis = payload.get("coverage_basis")
+            if not isinstance(basis, dict) or set(basis) != {
+                "status",
+                "input_scope",
+                "loss_observation",
+                "counterevidence",
+            }:
+                raise AttributionRejection("incomplete_coverage requires a complete coverage_basis")
+            if basis["status"] not in ("observed_loss", "not_established", "contradicted"):
+                raise AttributionRejection("coverage_basis status is not recognized")
+            for key in ("input_scope", "loss_observation", "counterevidence"):
+                if not isinstance(basis[key], str) or len(basis[key]) > 500:
+                    raise AttributionRejection(
+                        f"coverage_basis {key} must be a string of at most 500 characters"
+                    )
+            if not basis["input_scope"].strip() or not basis["counterevidence"].strip():
+                raise AttributionRejection(
+                    "coverage_basis requires input_scope and counterevidence"
+                )
+            if bool(basis["loss_observation"].strip()) != (basis["status"] == "observed_loss"):
+                raise AttributionRejection(
+                    "coverage_basis requires a loss observation only for observed_loss"
+                )
+            coverage_basis = dict(basis)
+            if basis["status"] != "observed_loss":
+                causal_status = CausalStatus.UNATTRIBUTED
+                agent_mechanism = AgentMechanism.OTHER
+        elif payload.get("coverage_basis") is not None:
+            raise AttributionRejection("coverage_basis is only valid for incomplete_coverage")
 
         failing_level = None
         if not grounding.grounded:
@@ -593,7 +638,33 @@ class LLMAttributor:
             agent_mechanism_detail=str(payload.get("agent_mechanism_detail", "")),
             operation_evidence=checked_operations,
             verification_limits=limits,
+            coverage_basis=coverage_basis,
         )
+        if coverage_basis is not None:
+            if coverage_basis["status"] == "observed_loss":
+                if not any(
+                    entry.iteration_index is not None or entry.node_id != root.node_id
+                    for entry in checked_operations
+                ):
+                    raise AttributionRejection(
+                        "observed_loss requires a resolvable operation or child-call citation"
+                    )
+            else:
+                detail.agent_mechanism_detail = (
+                    "Unestablished incomplete_coverage hypothesis: "
+                    + detail.symptom_summary
+                    + (
+                        "; " + detail.agent_mechanism_detail
+                        if detail.agent_mechanism_detail
+                        else ""
+                    )
+                )
+                detail.causal_status_detail = (
+                    "Input loss "
+                    + coverage_basis["status"]
+                    + ": "
+                    + coverage_basis["counterevidence"]
+                )
         return causal_status, agent_mechanism, failing_level, detail
 
     def attribute(

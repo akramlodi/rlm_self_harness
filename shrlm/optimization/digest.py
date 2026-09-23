@@ -34,7 +34,7 @@ from shrlm.optimization.walker import iter_skill_loads
 # the trace's run-start record names a skill index (a loader was installed,
 # i.e. S10 was non-empty). A trace without one -- every pre-S10 trace, and
 # every trace under an empty S10 -- renders byte-identically to 1.1.0.
-DIGEST_VERSION = "1.5.0"
+DIGEST_VERSION = "1.6.0"
 
 DEFAULT_CHAR_BUDGET = 12000
 DEFAULT_FOCUS_K = 4
@@ -367,13 +367,30 @@ def build_digest(
             pair[0],
         ),
     )
+    payload_kept: dict[str, int] = {}
     for position, (node, iteration, index, block) in ranked:
         skeleton[position] = (
             f"{node.node_id} iteration {iteration.index} code[{index}] (complete):\n{block.code}"
         )
+        observed = {}
+        for stream, value in (("stdout", block.stdout), ("stderr", block.stderr)):
+            if not value:
+                continue
+            label = f"{node.node_id} iteration {iteration.index} {stream}[{index}]:\n"
+            limit = max(0, 500 - len(label))
+            excerpt = value
+            kept = len(value)
+            if len(value) > limit:
+                marker = "\n...[output truncated]...\n"
+                kept = max(0, limit - len(marker))
+                head = kept * 2 // 3
+                excerpt = value[:head] + marker + (value[-(kept - head) :] if kept > head else "")
+            skeleton[position] += "\n" + label + excerpt
+            observed[label] = kept
         render_operations()
         if size() <= cfg.char_budget:
             chars_kept += len(block.code)
+            payload_kept.update(observed)
         else:
             del skeleton[position]
             render_operations()
@@ -391,18 +408,11 @@ def build_digest(
     # Payloads are bounded separately and never count marker/header bytes as
     # surviving trace content. Each source is counted at most once.
     payloads = [
-        (f"{node.node_id} iteration {iteration.index} {label}[{index}]", value)
-        for node, iteration, index, block in blocks
-        for label, value in (("stderr", block.stderr), ("stdout", block.stdout))
-        if value
-    ]
-    payloads += [
         (f"{node.node_id} {label}", value)
         for node in focus
         for label, value in (("prompt", flatten_prompt(node.prompt)), ("response", node.response))
     ]
     excerpt_lines = []
-    payload_kept: dict[str, int] = {}
     for offset, (label, value) in enumerate(payloads):
         remaining = cfg.char_budget - size()
         allowance = max(0, remaining // max(1, len(payloads) - offset) - len(label) - 50)

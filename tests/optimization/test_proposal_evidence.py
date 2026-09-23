@@ -437,6 +437,106 @@ def test_oversized_operation_uses_alternative_without_cutting_code():
     assert audit["expanded_patterns"] == [0]
 
 
+def test_compact_representative_crosses_signatures_before_repeating_mechanism():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    inventory = [
+        {
+            "index": i,
+            "signature": {"agent_mechanism": mechanism},
+            "instance_support": support,
+        }
+        for i, (mechanism, support) in enumerate(
+            [
+                ("incomplete_coverage", 10),
+                ("incomplete_coverage", 9),
+                ("lossy_aggregation", 8),
+            ]
+        )
+    ]
+    contexts = {
+        i: {
+            "run_id": f"run-{i}",
+            "task_question": "Apply the predicate to all documents.",
+            "trace": {"snippets": [{"node_id": "r", "code": "#" * size}]},
+        }
+        for i, size in enumerate([15000, 4000, 15000])
+    }
+    text, audit = pack_evidence(inventory, {"patterns": contexts}, k=4, budget=23000)
+    assert audit["expanded_patterns"] == [1, 2]
+    assert audit["expanded_mechanisms"] == ["incomplete_coverage", "lossy_aggregation"]
+    assert audit["distinct_actionable_mechanisms"] == 2
+    packet = json.loads(text.split("\n", 1)[1])
+    assert packet["expanded"]["1"]["run_id"] == "run-1"
+    assert len(packet["inventory"]) == 3
+    assert len(text) <= 23000
+    assert pack_evidence(inventory, {"patterns": contexts}, k=4, budget=23000) == (text, audit)
+
+
+def test_only_actionable_grounded_patterns_spend_expansion_slots():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    inventory = [
+        {
+            "index": i,
+            "signature": {"agent_mechanism": "other", "causal_status": status},
+            "actionability": actionability,
+            "instance_support": 10 - i,
+        }
+        for i, (status, actionability) in enumerate(
+            [
+                ("unattributed", 0.5),
+                ("contributing", 0),
+                ("contributing", None),
+                ("contributing", 0.5),
+            ]
+        )
+    ]
+    context = {
+        "run_id": "grounded",
+        "trace": {"snippets": [{"node_id": "r", "code": "merge(values)"}]},
+    }
+    text, audit = pack_evidence(inventory, {"patterns": {0: context, 1: context, 2: context}}, k=4)
+    assert audit["expanded_patterns"] == [2]
+    packet = json.loads(text.split("\n", 1)[1])
+    assert packet["inventory"][0]["eligible_surfaces"] == []
+    assert "unattributed" in audit["omitted_patterns"]["0"]
+    assert "non-actionable" in audit["omitted_patterns"]["1"]
+    assert "operation" in audit["omitted_patterns"]["3"]
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        {"node_id": "r", "code": "partial", "code_complete": False},
+        {"node_id": "r", "code": "combine(values)", "reason": "following consumer context"},
+        {"node_id": "r", "observation": "no code or child return"},
+    ],
+)
+def test_no_expansion_for_uncited_or_incomplete_core(snippet):
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    _, audit = pack_evidence(
+        [{"index": 0, "signature": {"agent_mechanism": "other"}}],
+        {"patterns": {0: {"trace": {"snippets": [snippet]}}}},
+        k=4,
+    )
+    assert audit["expanded_patterns"] == []
+    assert "no resolvable operation" in audit["omitted_patterns"]["0"]
+
+
+def test_legacy_coverage_basis_stays_unassessed_without_rewriting_records(tmp_path, monkeypatch):
+    path, bundle, records = mining_fixture(tmp_path, monkeypatch, attempts=1)
+    bundle["patterns"][0]["signature"]["agent_mechanism"] = "incomplete_coverage"
+    records[0]["signature"] = bundle["patterns"][0]["signature"]
+    (path / "bundle.json").write_text(json.dumps(bundle))
+    (path / "records.jsonl").write_text(json.dumps(records[0]))
+    original = (path / "records.jsonl").read_bytes()
+    context = load_proposal_evidence(path, bundle)["patterns"][0]
+    assert context["coverage_basis"] == "coverage basis not assessed"
+    assert (path / "records.jsonl").read_bytes() == original
+
+
 def test_explicit_operation_wins_and_unresolvable_citation_is_labelled():
     excerpt = trace_excerpt(
         coverage_trace(),
@@ -592,7 +692,8 @@ def test_evidence_joins_exact_attempt_and_does_not_rewrite_artifacts(tmp_path, m
         verifier_config=OolongPairsVerifier().config(),
         evidence=evidence,
     )
-    assert context["symptom_summary"] in prompt and "ACTUAL PREDICATE" in prompt
+    assert "no resolvable operation" in prompt
+    assert "ACTUAL PREDICATE" not in prompt
     assert "original row ordinal" not in prompt
     assert "unparsed:" not in prompt
     assert evidence["passing"] == []
@@ -748,7 +849,17 @@ def test_oversized_question_is_omitted_whole_with_inventory_preserved():
     inventory = [{"index": 9, "signature": {"agent_mechanism": "lossy_aggregation"}}]
     question = "QUESTION_SENTINEL" * 1000
     rendered, audit = pack_evidence(
-        inventory, {"patterns": {9: {"task_question": question}}}, k=4, budget=2000
+        inventory,
+        {
+            "patterns": {
+                9: {
+                    "task_question": question,
+                    "trace": {"snippets": [{"node_id": "r", "code": "combine(values)"}]},
+                }
+            }
+        },
+        k=4,
+        budget=2000,
     )
     section = json.loads(rendered.removeprefix(EVIDENCE_HEADING))
     assert section["inventory"][0]["index"] == inventory[0]["index"]

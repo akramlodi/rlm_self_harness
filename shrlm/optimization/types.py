@@ -482,6 +482,7 @@ class AttributionDetail:
     agent_mechanism_detail: str = ""
     operation_evidence: list[OperationEvidence] = field(default_factory=list)
     verification_limits: str = ""
+    coverage_basis: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -495,6 +496,8 @@ class AttributionDetail:
         if self.operation_evidence or self.verification_limits:
             result["operation_evidence"] = [entry.to_dict() for entry in self.operation_evidence]
             result["verification_limits"] = self.verification_limits
+        if self.coverage_basis is not None:
+            result["coverage_basis"] = dict(self.coverage_basis)
         return result
 
 

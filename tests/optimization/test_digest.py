@@ -608,11 +608,81 @@ class _FailingVerifier:
         return Verdict(passed=False, cause=VerifierCause.WRONG_VALUE, gold="42", produced=produced)
 
 
+def test_selected_code_keeps_its_observed_counts_before_more_code():
+    run = completion_dict(
+        prompt="Process pages",
+        response="wrong",
+        max_depth=1,
+        iterations=[
+            iteration_entry(
+                index=i,
+                response="",
+                code_blocks=[
+                    code_block(
+                        code=(
+                            "rows = parse(context)\nprint('retained:', len(rows))\n"
+                            if i == 9
+                            else "#" * 600
+                        ),
+                        stdout="retained: 188\n" if i == 9 else "",
+                    )
+                ],
+            )
+            for i in range(10)
+        ],
+    )
+    root, stats = walk(as_completion(run))
+    digest = build_digest(
+        "counts",
+        "Check every input document",
+        root,
+        stats,
+        make_verdict(),
+        DigestConfig(char_budget=2800),
+    )
+    assert "print('retained:', len(rows))" in digest.text
+    assert "retained: 188" in digest.text
+    assert digest.text.count("retained: 188") == 1
+    assert len(digest.text) <= 2800
+    assert 0 <= digest.coverage <= 1
+
+
+def test_code_packet_caps_each_output_stream_and_counts_source_once():
+    run = completion_dict(
+        prompt="Inspect documents",
+        response="wrong",
+        max_depth=1,
+        iterations=[
+            iteration_entry(
+                index=1,
+                response="",
+                code_blocks=[
+                    code_block(
+                        code="check_documents()",
+                        stdout="START" + "x" * 3000 + "END",
+                        stderr="ERROR" + "y" * 3000 + "END",
+                    )
+                ],
+            )
+        ],
+    )
+    root, stats = walk(as_completion(run))
+    digest = build_digest("docs", "Check documents", root, stats, make_verdict())
+    stdout = digest.text.split("r iteration 1 stdout[0]:\n")[1].split("\nr iteration 1 stderr")[0]
+    stderr = digest.text.split("r iteration 1 stderr[0]:\n")[1].split("\n\n##")[0]
+    assert len("r iteration 1 stdout[0]:\n" + stdout) <= 500
+    assert len("r iteration 1 stderr[0]:\n" + stderr) <= 500
+    assert stdout.startswith("START") and stdout.endswith("END")
+    assert stderr.startswith("ERROR") and stderr.endswith("END")
+    assert digest.text.count("[output truncated]") == 2
+    source_chars = len(stdout) + len(stderr) - 2 * len("\n...[output truncated]...\n")
+    assert digest.chars_kept == len("check_documents()") + source_chars
+
+
 class TestDigestVersion:
-    def test_version_bumped_for_the_skill_lines(self):
-        # 1.1.0 was the n/a aggregate rendering; 1.2.0 adds the
-        # available_skills / loaded_skills pair under a non-empty index.
-        assert DIGEST_VERSION == "1.5.0"
+    def test_version_bumped_for_paired_execution_outputs(self):
+        # 1.6.0 pairs each selected code block with its observed outputs.
+        assert DIGEST_VERSION == "1.6.0"
 
     def test_digest_version_is_recorded_per_bundle(self):
         lm = MockLM(response_fn=scripted_response)
@@ -623,8 +693,8 @@ class TestDigestVersion:
             harness_version="H0",
             split_id="held_in_v1",
         )
-        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.5.0"
-        assert result.bundle.to_dict()["config"]["digest_version"] == "1.5.0"
+        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.6.0"
+        assert result.bundle.to_dict()["config"]["digest_version"] == "1.6.0"
 
     def test_attribution_cache_key_does_not_include_digest_version(self):
         # DIGEST_VERSION reaches bundle ids via MiningConfig.digest_version
