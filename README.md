@@ -224,6 +224,14 @@ snapshot): `python -m shrlm.experiment.surface_activity <out_dir>`,
 the `plot_*` counterparts. The cost/time report is
 `python -m shrlm.experiment.report <out_dir> --profile <profile> --config <toml>`.
 
+Surface activity credits each bundled edit when its linked combined candidate
+is promoted, so batch promotions appear on all affected surfaces. Incumbent
+quality uses the current round's score of the retained harness: the candidate
+score on promotion, otherwise the fresh baseline score. Unscored comparisons
+stay blank; earlier scores are never carried forward. The cost report labels
+optimization runs and selects their projection basis using `[loop].environment`
+from the supplied config; evaluation results keep their recorded environments.
+
 One caveat for any tool that resolves the config from an out-dir: the default TOML is
 `configs/experiment.toml`, and a config that no longer hashes to the identity recorded in
 `<out_dir>/config.json` resolves to "unknown" (deliberately — no numbers are invented

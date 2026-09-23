@@ -55,9 +55,9 @@ persisted rounds -- no timestamps -- so a resumed invocation that executes
 nothing rewrites identical bytes, while a resumed invocation that completes
 skipped runs grows it.
 
-Single-threaded, main thread only: the SIGALRM hard-deadline backstop in
-``shrlm.optimization.costs`` binds only there, and this module never spawns
-threads around run execution.
+Conditions and test sets run sequentially. ``run_workers`` fans out harness
+attempts through the existing governed child-process runner, preserving per-run
+deadlines and parent-owned manifests. The default remains one worker.
 """
 
 import hashlib
@@ -152,6 +152,7 @@ CONDITION_B1 = "b1"
 CONDITION_H0_STAR = "h0_star"
 CONDITION_SH_RLM = "sh_rlm"
 CONDITION_LAMBDA_RLM = "lambda_rlm"
+CONDITION_INITIAL = "initial"
 
 
 class EvaluationPersistenceError(ExperimentError):
@@ -175,6 +176,7 @@ class EvaluationSetRequest:
     attempts: int
     breaker: CandidateSpendBreaker
     caps: ValidationCaps
+    run_workers: int = 1
 
 
 class EvaluationMethod(Protocol):
@@ -244,6 +246,7 @@ class HarnessEvaluationMethod:
             verifier=request.verifier,
             out_dir=request.out_dir,
             attempts=request.attempts,
+            run_workers=request.run_workers,
             **kwargs,
             **self.limits_for(request.condition_id, request.caps),
         )
@@ -426,6 +429,9 @@ CONDITIONS: dict[str, ConditionSource] = {
     CONDITION_H0_STAR: RegistryHarnessSource("H0*"),
     CONDITION_LAMBDA_RLM: LambdaMethodSource(),
     CONDITION_SH_RLM: FrozenHarnessSource(f"{FROZEN_DIR}/{FROZEN_HARNESS_FILENAME}"),
+    # Compare against the exact starting harness, including its runtime policy,
+    # rather than today's registry or a different reference harness.
+    CONDITION_INITIAL: FrozenHarnessSource("opt/round_01/mining/round_01/harness.json"),
 }
 
 DEFAULT_CONDITIONS: tuple[str, ...] = (
@@ -486,7 +492,7 @@ class TestSet:
         return split_file_name(self.environment, self.length, ROLE_TEST)
 
 
-def test_sets(splits_dir: Path) -> list[TestSet]:
+def test_sets(splits_dir: Path, *, set_ids: Sequence[str] | None = None) -> list[TestSet]:
     """Every test split the persisted manifest records, longest length first.
 
     Derived from the manifest rather than from the config's split plan: only
@@ -520,6 +526,14 @@ def test_sets(splits_dir: Path) -> list[TestSet]:
         raise EvaluationPersistenceError(
             f"{manifest_path} records no {ROLE_TEST} split; there is nothing to evaluate"
         )
+    if set_ids is not None:
+        available = {test_set.set_id for test_set in sets}
+        if not set_ids or len(set_ids) != len(set(set_ids)):
+            raise ValueError("test set selection must be nonempty and contain no duplicates")
+        unknown = set(set_ids) - available
+        if unknown:
+            raise ValueError(f"unknown test sets {sorted(unknown)}; available: {sorted(available)}")
+        sets = [test_set for test_set in sets if test_set.set_id in set_ids]
     return sets
 
 
@@ -607,6 +621,8 @@ class _Evaluation:
     out_dir: Path
     verifiers: dict[str, Verifier]
     loaders: dict[str, LoaderFn] | None
+    test_set_ids: Sequence[str] | None
+    run_workers: int
     caps: ValidationCaps = field(init=False)
     usage_path: Path = field(init=False)
 
@@ -617,7 +633,7 @@ class _Evaluation:
     def run(self) -> EvaluationResult:
         check_identity(self.config, self.out_dir)
         splits_dir = materialize_splits(self.config, self.out_dir, loaders=self.loaders)
-        sets = test_sets(splits_dir)
+        sets = test_sets(splits_dir, set_ids=self.test_set_ids)
         eval_dir = self.out_dir / EVAL_DIR
 
         evaluations: list[ConditionEvaluation] = []
@@ -695,6 +711,7 @@ class _Evaluation:
             attempts=self.config.operational.eval_repetitions,
             breaker=breaker,
             caps=self.caps,
+            run_workers=self.run_workers,
         )
         with StageMeter(
             stage=STAGE_EVAL,
@@ -757,6 +774,8 @@ def run_evaluation(
     *,
     verifiers: dict[str, Verifier] | None = None,
     loaders: dict[str, LoaderFn] | None = None,
+    test_set_ids: Sequence[str] | None = None,
+    run_workers: int = 1,
 ) -> EvaluationResult:
     """Evaluate fixed inference-method conditions on frozen test splits (R8).
 
@@ -780,6 +799,10 @@ def run_evaluation(
         verifiers: Per-environment verifiers; defaults to ``DEFAULT_VERIFIERS``.
         loaders: Optional environment-loader overrides for ``materialize_splits``
             (tests inject offline loaders here).
+        test_set_ids: Optional subset of frozen test sets, e.g. ``oolong_pairs_long``.
+        run_workers: Concurrent harness attempts (default 1), independent of
+            repetition count and config identity. Conditions run sequentially,
+            so this is the total run concurrency. λ-RLM requires one worker.
 
     Returns:
         The ``EvaluationResult`` with each condition's aggregates and the
@@ -794,12 +817,19 @@ def run_evaluation(
             experiment-owned caps, an environment has no verifier, or a
             persisted round does not hold the frozen split's exact bytes.
     """
+    if isinstance(run_workers, bool) or not isinstance(run_workers, int) or run_workers < 1:
+        raise ValueError("run_workers must be a positive integer")
+    resolved = resolve_conditions(conditions)
+    if run_workers > 1 and any(isinstance(source, LambdaMethodSource) for _, source in resolved):
+        raise ValueError("lambda_rlm evaluation requires run_workers=1")
     evaluation = _Evaluation(
         config=config,
-        conditions=resolve_conditions(conditions),
+        conditions=resolved,
         out_dir=Path(out_dir),
         verifiers=dict(verifiers) if verifiers is not None else dict(DEFAULT_VERIFIERS),
         loaders=loaders,
+        test_set_ids=test_set_ids,
+        run_workers=run_workers,
     )
     return evaluation.run()
 
@@ -808,6 +838,7 @@ __all__ = [
     "CONDITIONS",
     "CONDITION_B1",
     "CONDITION_H0_STAR",
+    "CONDITION_INITIAL",
     "CONDITION_LAMBDA_RLM",
     "CONDITION_SH_RLM",
     "DEFAULT_CONDITIONS",

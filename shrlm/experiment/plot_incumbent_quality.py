@@ -1,7 +1,7 @@
 """Static figure for Graph 2: incumbent quality over time.
 
 Reads ``incumbent_quality.csv`` (``incumbent_quality.py``'s per-round table)
-out of an analysis snapshot and renders a step-function figure into that
+out of an analysis snapshot and renders per-round measurements into that
 snapshot's ``plots/`` directory: held-in and held-out pass rate as two series,
 a marker at every round the incumbent actually changed, and a tick below the
 axis at every round carrying a structural-rejection annotation -- keyed to a
@@ -128,14 +128,16 @@ def _plot_series(
     label: str,
     partial: set[int],
 ) -> None:
-    """One split's step line, with confirmed-complete rounds filled and the rest hollow.
+    """One split's measurements, with complete rounds filled and the rest hollow.
 
     The line is drawn over every round -- dropping the partial ones would
     silently redraw the history -- and only the point marker distinguishes
     them, so the reader sees the series as it is and can see which points are
     provisional.
     """
-    ax.step(rounds, values, where="post", color=color, linewidth=2, zorder=3, label=label)
+    if all(math.isnan(value) for value in values):
+        return
+    ax.plot(rounds, values, color=color, linewidth=2, zorder=3, label=label)
     complete = [(r, v) for r, v in zip(rounds, values, strict=True) if r not in partial]
     if complete:
         ax.scatter(

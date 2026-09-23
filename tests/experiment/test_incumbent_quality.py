@@ -31,6 +31,7 @@ from shrlm.experiment.analysis_io import PROVENANCE_FILENAME, Snapshot, allocate
 from shrlm.experiment.incumbent_quality import (
     INCUMBENT_QUALITY_CANDIDATES_FILENAME,
     all_candidate_quality_over_rounds,
+    incumbent_quality_over_rounds,
     run_incumbent_quality,
     write_incumbent_quality,
 )
@@ -322,6 +323,7 @@ def test_batch_quality_has_no_heldin_score_and_skips_constituents(experiment):
 
     constituent = ledger_record("a", decision="bundled", surface="S2")
     constituent["rule"] = None
+    constituent["batch_subject_id"] = "merged"
     constituent["merge"] = {"role": "constituent", "constituent_ids": ["a", "b"]}
     merged = ledger_record("merged", decision=DECISION_PROMOTED)
     merged["rule"].pop("heldin")
@@ -336,4 +338,52 @@ def test_batch_quality_has_no_heldin_score_and_skips_constituents(experiment):
     activity, _ = surface_activity_over_rounds(experiment)
     row = next(row for row in activity if row.round_index == 0 and row.surface == "S2")
     assert row.bundled_count == 1
-    assert row.promoted_count == 0
+    assert row.promoted_count == 1
+
+
+def test_nonpromoting_rounds_use_fresh_baseline_scores(experiment: Path) -> None:
+    for round_index, baseline, candidate, decision in [
+        (1, 1, 4, DECISION_PROMOTED),
+        (2, 2, 1, DECISION_REJECTED),
+        (3, 3, 0, DECISION_REJECTED),
+        (4, 0, 0, DECISION_REJECTED),
+    ]:
+        record = ledger_record(f"r{round_index}-s2", decision=decision, surface="S2")
+        record["rule"] = {
+            "heldout": {
+                "baseline_pass_count": baseline,
+                "candidate_pass_count": candidate,
+                "n_runs": 10,
+            }
+        }
+        write_round(experiment, round_index, [record])
+
+    rows = incumbent_quality_over_rounds(experiment)
+    assert [row.heldout_pass_rate for row in rows] == [0.4, 0.2, 0.3, 0.0]
+    assert [row.incumbent_changed for row in rows] == [True, False, False, False]
+    assert all(row.heldin_pass_rate is None and row.annotation is None for row in rows)
+
+
+def test_unscored_round_does_not_reuse_an_earlier_measurement(experiment: Path) -> None:
+    write_round(experiment, 1, [ledger_record("a", decision=DECISION_PROMOTED, surface="S2")])
+    unscored = ledger_record("b", surface="S3")
+    unscored.update(rule=None, reasons=["format preflight failed"])
+    write_round(experiment, 2, [unscored])
+    write_round(experiment, 3, [ledger_record("c", surface="S4")])
+
+    rows = incumbent_quality_over_rounds(experiment)
+    assert rows[0].heldout_pass_rate == 0.5
+    assert rows[1].heldin_pass_rate is None and rows[1].heldout_pass_rate is None
+    assert rows[1].annotation == "b: format preflight failed"
+    assert rows[2].heldout_pass_rate == 0.25
+
+
+def test_rejected_batch_constituents_are_not_structural_rejections(experiment: Path) -> None:
+    constituent = ledger_record("a", decision="bundled", surface="S2")
+    constituent.update(rule=None, batch_subject_id="merged")
+    merged = ledger_record("merged", decision=DECISION_REJECTED)
+    write_round(experiment, 1, [constituent, merged])
+
+    (row,) = incumbent_quality_over_rounds(experiment)
+    assert row.heldout_pass_rate == 0.25
+    assert row.annotation is None
