@@ -7,13 +7,16 @@ monkeypatched to read small synthetic fixture files shaped like the real
 """
 
 import json
+import re
 from pathlib import Path
+from random import Random
 
 import pytest
 
 import shrlm.environments.obliq_bench_math as obliq_bench_math
 from shrlm.environments.obliq_bench_math import (
     ObliqBenchMathVerifier,
+    build_method_query,
     build_prompt,
     extract_ranked_ids,
     load_obliq_bench_math,
@@ -112,6 +115,14 @@ class TestBuildPrompt:
         assert prompt.index("BENCHMARK RETRIEVAL TASK:") < prompt.index("QUERY TEXT")
         assert prompt.index("QUERY TEXT") < prompt.index("[doc_a]")
         assert prompt.rindex("FINAL OUTPUT REMINDER:") > prompt.index("[doc_b]")
+
+    def test_method_query_carries_retrieval_and_output_contract(self):
+        query = build_method_query("SOURCE PROBLEM")
+        assert query.startswith("QUESTION-ANSWERING TASK:")
+        assert "closed-corpus retrieval question" in query
+        assert "only exact bracketed IDs" in query
+        assert 'RANKED: ["id_a", "id_b"]' in query
+        assert query.endswith("SOURCE PROBLEM")
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +270,8 @@ class TestLoadObliqBenchMath:
         assert len(instances) == 1
         instance = instances[0]
         assert instance["id"] == "q1"
+        assert instance["source_query"] == "query one text"
+        assert "RANKED:" in instance["question"]
         assert instance["gold_relevant_ids"] == ["doc_a", "doc_b"]
         assert instance["excluded_ids"] == ["doc_c"]
         assert instance["pool_size"] == 5  # 6 corpus docs minus the excluded one
@@ -307,3 +320,15 @@ class TestLoadObliqBenchMath:
         first = load_obliq_bench_math(query_ids=["q1"], candidate_pool_size=3, seed=3)
         second = load_obliq_bench_math(query_ids=["q1"], candidate_pool_size=3, seed=3)
         assert first[0]["prompt"] == second[0]["prompt"]
+
+    def test_candidate_pool_stabilizes_gold_ids_before_seeded_shuffle(self, monkeypatch, tmp_path):
+        stub_download(monkeypatch, tmp_path)
+        instance = load_obliq_bench_math(query_ids=["q1"], candidate_pool_size=3, seed=3)[0]
+
+        rng = Random("3:q1")
+        negatives = rng.sample(["doc_d", "doc_e", "doc_f"], 1)
+        expected_ids = ["doc_a", "doc_b", *negatives]
+        rng.shuffle(expected_ids)
+
+        actual_ids = re.findall(r"^\[([^]]+)]$", instance["prompt"], re.MULTILINE)
+        assert actual_ids == expected_ids

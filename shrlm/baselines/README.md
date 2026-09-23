@@ -86,7 +86,44 @@ uv run python examples/obliq_bench_math_smoke.py --live --n 1 \
     --candidate-pool-size 200 --out-dir ./obliq_math_pool_smoke
 ```
 
-`--harness` accepts `H0`, `H0*`, or `H0*R` (a locally-authored, non-reference
+Run the pinned generic λ-RLM combinator pipeline against the same environment
+and verifier with:
+
+```bash
+uv run python examples/obliq_bench_math_smoke.py --live \
+    --method lambda_rlm --query-ids q01522 --candidate-pool-size 200 \
+    --config configs/experiment.toml --max-budget 0.10 --max-timeout 900 \
+    --out-dir ./experiment_obliq_math_lambda_sanity
+```
+
+OBLIQ has no OOLONG task id, so this condition uses the pinned upstream
+SPLIT→MAP→REDUCE runtime, not the OOLONG-specific Algorithm 5 reconstruction.
+Its method-facing question explicitly identifies the QA task and carries the
+closed-corpus ID-ranking contract; output is scored by the same
+`ObliqBenchMathVerifier`.
+
+Run a matched comparison by loading one instance set once and executing each
+selected method against it:
+
+```bash
+uv run python examples/obliq_bench_math_smoke.py --live \
+    --methods 'H0,H0*,lambda_rlm' \
+    --query-ids q00201,q00076,q00096,q00408,q02550,q00355,q00999,q00211,q00239,q00077 \
+    --candidate-pool-size 200 \
+    --config configs/experiment_obliq_bench_math_DeepSeekV4Flash.toml \
+    --max-budget 0.10 --max-timeout 900 \
+    --out-dir ./experiment_obliq_math_azure_matched_10_v1
+```
+
+The ten fixed queries above span gold-set sizes 1, 2, 3, 4, 5, 6, 7, 8, 13,
+and 37. Each method writes to its own subdirectory, while `comparison.json`
+records paired per-instance NDCG, outcome, cost, runtime, and aggregate metrics.
+Add `H0*R` to `--methods` only when explicitly testing recursion policy; it is
+a local diagnostic variant rather than a peer reference baseline.
+
+`--method` accepts one of `H0`, `H0*`, `H0*R`, or `lambda_rlm`; `--methods`
+accepts a comma-separated matched selection. The older `--harness`
+alias continues to accept `H0`, `H0*`, or `H0*R` (a locally-authored, non-reference
 variant that makes `rlm_query` legible -- not one of this repo's documented
 baselines, so it is opt-in, not the default). `--query-ids` selects specific
 queries (comma-separated) instead of a seeded `--n`-sized sample. Backend and
