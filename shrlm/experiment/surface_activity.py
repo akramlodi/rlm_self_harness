@@ -68,15 +68,12 @@ plan persisted state can know, and the one a partial round's counts come from).
 configuration cannot be resolved, so a round nobody can measure is never
 plotted as one that failed.
 
-A ``promoted_count`` row counts a decision of ``promoted`` -- the single
-winner's own record, or the merged harness's own re-evaluation record (which
-carries no single surface, so it never contributes here) -- *and* a decision
-of ``accepted`` whose ``merge.role`` is ``constituent``: a surface that won
-its own slot and was folded into a promoted merge, even though its own
-record's ``decision`` field never flips to ``promoted`` (only the merged
-subject's does). Without that second condition, every merge would show
-``cumulative_surfaces_promoted`` undercounting the surfaces the incumbent
-actually gained that round.
+``promoted_count`` credits each bundled edit when its ``batch_subject_id``
+names a promoted batch that lists the edit in ``merge.constituent_ids``.
+Bundling alone is not promotion. The merged subject keeps its separate row;
+only constituent surfaces enter the heatmap and distinct-surface counts.
+Legacy ``accepted`` merge constituents and individually ``promoted`` edits
+retain their existing credit.
 """
 
 import argparse
@@ -115,7 +112,7 @@ from shrlm.optimization.promotion import (
     DECISION_PROMOTED,
     SURFACE_HARNESS_FIELDS,
 )
-from shrlm.optimization.validation import ROLE_CONSTITUENT
+from shrlm.optimization.validation import ROLE_CONSTITUENT, ROLE_MERGED
 
 # Every declared surface in the codebase's canonical order
 # (shrlm.optimization.promotion), so the output grid always has a row per
@@ -300,6 +297,13 @@ def surface_activity_over_rounds(
         total_by_round[round_index] = len(records)
         unattributed_by_round[round_index] = 0
         round_record = discovered[round_index]
+        promoted_batch_members = {
+            (record["subject_id"], candidate_id)
+            for record in records
+            if record["decision"] == DECISION_PROMOTED
+            and (record.get("merge") or {}).get("role") == ROLE_MERGED
+            for candidate_id in ((record.get("merge") or {}).get("constituent_ids") or [])
+        }
         for record in records:
             attribution = resolve_surface(record, round_record)
             if attribution.category is None or attribution.category not in ROW_CATEGORIES:
@@ -319,7 +323,10 @@ def surface_activity_over_rounds(
             entry["attempted_count"] += 1
             if record["decision"] == DECISION_BUNDLED:
                 entry["bundled_count"] += 1
-            if _is_promoted(record):
+            if _is_promoted(record) or (
+                record["decision"] == DECISION_BUNDLED
+                and (record.get("batch_subject_id"), record["subject_id"]) in promoted_batch_members
+            ):
                 entry["promoted_count"] += 1
 
     rows: list[SurfaceActivityRow] = []

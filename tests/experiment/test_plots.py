@@ -14,6 +14,7 @@ against a hand-copied header that has quietly gone stale.
 """
 
 import csv
+import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -99,8 +100,8 @@ def _activity_row(
 def _quality_row(
     round_index: int,
     *,
-    heldin: float = 0.5,
-    heldout: float = 0.4,
+    heldin: float | None = 0.5,
+    heldout: float | None = 0.4,
     changed: bool = False,
     annotation: str = "",
     round_complete: str = "true",
@@ -168,6 +169,27 @@ def _quality_snapshot(
 
 def _figure_text(fig) -> str:
     return "\n".join(text.get_text() for text in fig.texts)
+
+
+def test_quality_plot_uses_measurements_and_leaves_unscored_rounds_blank(tmp_path: Path) -> None:
+    snapshot = _quality_snapshot(
+        tmp_path / "experiment",
+        [
+            _quality_row(1, heldin=None, heldout=0.4, changed=True),
+            _quality_row(2, heldin=None, heldout=None),
+            _quality_row(3, heldin=None, heldout=0.3),
+        ],
+    )
+    fig = plot_iq.build_figure(snapshot)
+    try:
+        (line,) = fig.axes[0].lines
+        assert line.get_label() == "held-out pass rate"
+        assert line.get_drawstyle() == "default"
+        values = line.get_ydata()
+        assert values[0] == 0.4 and math.isnan(values[1]) and values[2] == 0.3
+        assert fig.axes[0].get_legend_handles_labels()[1] == ["held-out pass rate"]
+    finally:
+        plot_iq.plt.close(fig)
 
 
 def _artifact_bytes(snapshot_dir: Path) -> dict[str, bytes]:

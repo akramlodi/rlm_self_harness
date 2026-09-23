@@ -230,14 +230,6 @@ SPLIT_LENGTH = "short"
 ROLE_HELD_IN = "held_in"
 ROLE_HELD_OUT = "held_out"
 
-# The default source environment. The loop itself reads
-# ``resolve_env_binding(config).name`` (``config.loop.environment``); this
-# constant is the fallback the report/analysis pipeline
-# (``shrlm.experiment.report``) uses to locate the optimization split bucket,
-# and it stays "graphwalks" -- the shipped default and the environment those
-# analyses were written for.
-SPLIT_ENVIRONMENT = "graphwalks"
-
 # OOLONG-real generalization check (non-gated): its split role and metering
 # stage. Written under ``opt/round_NN/real_check/`` and, for the final
 # incumbent, ``real_check/final/``.

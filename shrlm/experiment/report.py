@@ -86,7 +86,6 @@ from shrlm.experiment.analysis_io import ANALYSIS_DIR
 from shrlm.experiment.config import CONFIG_PATH, ExperimentConfig, load_config
 from shrlm.experiment.evaluation import EVAL_DIR, EVAL_SUMMARY_FILENAME, STAGE_EVAL
 from shrlm.experiment.orchestrator import (
-    SPLIT_ENVIRONMENT,
     SPLIT_LENGTH,
     STAGE_ATTRIBUTION,
     STAGE_MINING,
@@ -324,19 +323,26 @@ class _BucketAccumulator:
         self.sources[source] += n_runs
 
 
-def run_buckets(out_dir: Path) -> list[RunBucket]:
+def run_buckets(out_dir: Path, *, config: ExperimentConfig) -> list[RunBucket]:
     """Measured per-(environment, length) run aggregates, the extrapolation basis.
 
-    Optimization manifests land in the ``(SPLIT_ENVIRONMENT, SPLIT_LENGTH)``
-    bucket -- the orchestrator mines and validates that split and no other --
+    Optimization manifests land in the ``(config.loop.environment, SPLIT_LENGTH)``
+    bucket -- the orchestrator mines and validates that configured split --
     and evaluation aggregates land in the bucket their ``eval_summary.json``
     entry names.
     """
-    return _run_buckets(_stage_manifest_entries(out_dir), read_eval_summary(out_dir))
+    return _run_buckets(
+        _stage_manifest_entries(out_dir),
+        read_eval_summary(out_dir),
+        optimization_environment=config.loop.environment,
+    )
 
 
 def _run_buckets(
-    manifests: Sequence[tuple[str, list[dict[str, Any]]]], summary: dict[str, Any] | None
+    manifests: Sequence[tuple[str, list[dict[str, Any]]]],
+    summary: dict[str, Any] | None,
+    *,
+    optimization_environment: str,
 ) -> list[RunBucket]:
     """``run_buckets`` over inputs the caller already read (see ``build_report``)."""
     accumulators: dict[tuple[str, str], _BucketAccumulator] = {}
@@ -347,7 +353,7 @@ def _run_buckets(
     for _stage, entries in manifests:
         if not entries:
             continue
-        accumulator(SPLIT_ENVIRONMENT, SPLIT_LENGTH).add(
+        accumulator(optimization_environment, SPLIT_LENGTH).add(
             SOURCE_OPTIMIZATION, len(entries), aggregate_manifest_usage(entries)
         )
 
@@ -526,14 +532,14 @@ class RunCounts:
 def eval_test_sizes(config: ExperimentConfig) -> dict[str, int]:
     """Test-role instance count at each length, summed across every environment.
 
-    The experiment evaluates every configured environment -- source
-    GraphWalks and target OOLONG-Pairs -- so the eval run count is not the
-    source split's ``test_short``/``test_long`` alone; it is each
-    environment's ``test`` role from ``splits.split_plan``, summed per
-    length.
+    Read the active split plan: some environments have only a short test set,
+    and generalization-check splits have no test role at all.
     """
     plan = split_plan(config)
-    return {length: sum(roles[length]["test"] for roles in plan.values()) for length in LENGTHS}
+    return {
+        length: sum(roles.get(length, {}).get("test", 0) for roles in plan.values())
+        for length in LENGTHS
+    }
 
 
 def run_counts(config: ExperimentConfig) -> RunCounts:
@@ -765,6 +771,8 @@ def collect_warnings(
     point: Projection,
     optimization_basis: RunBucket,
     summary: dict[str, Any] | None,
+    *,
+    optimization_environment: str,
 ) -> list[str]:
     """Every caveat the extrapolation inputs carry, named rather than hidden.
 
@@ -793,11 +801,11 @@ def collect_warnings(
                 "wide uncertainty"
             )
     if (optimization_basis.environment, optimization_basis.length) != (
-        SPLIT_ENVIRONMENT,
+        optimization_environment,
         SPLIT_LENGTH,
     ):
         warnings.append(
-            f"no measured {SPLIT_ENVIRONMENT}/{SPLIT_LENGTH} optimization runs: the "
+            f"no measured {optimization_environment}/{SPLIT_LENGTH} optimization runs: the "
             f"optimization leg falls back to the pooled {SHORT} basis "
             f"({optimization_basis.environment})"
         )
@@ -848,7 +856,7 @@ def build_report(
     manifests = _stage_manifest_entries(out)
     summary = read_eval_summary(out)
     stages = _stage_measurements(out, manifests, summary)
-    buckets = _run_buckets(manifests, summary)
+    buckets = _run_buckets(manifests, summary, optimization_environment=config.loop.environment)
     if not buckets:
         raise ReportInputError(
             f"{out} records no runs; a cost report extrapolates from measured per-run "
@@ -866,7 +874,7 @@ def build_report(
         (
             bucket
             for bucket in buckets
-            if (bucket.environment, bucket.length) == (SPLIT_ENVIRONMENT, SPLIT_LENGTH)
+            if (bucket.environment, bucket.length) == (config.loop.environment, SPLIT_LENGTH)
         ),
         short_basis,
     )
@@ -900,7 +908,14 @@ def build_report(
         pessimistic=pessimistic,
         scenarios=scenarios,
         recommendation=recommend(scenarios, gates, accept_quantization=accept_quantization),
-        warnings=collect_warnings(buckets, counts, point, optimization_basis, summary),
+        warnings=collect_warnings(
+            buckets,
+            counts,
+            point,
+            optimization_basis,
+            summary,
+            optimization_environment=config.loop.environment,
+        ),
         disk=disk_footprint(out, sum(bucket.n_runs for bucket in buckets), counts.total_runs),
     )
 
