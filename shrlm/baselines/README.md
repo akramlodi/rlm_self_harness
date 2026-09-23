@@ -57,6 +57,42 @@ uv run python examples/lambda_rlm_oolong_pairs_long_smoke.py --live \
 `--conditions` also accepts comma-separated matched selections such as
 `h0_star,lambda_rlm`; `--context-length` accepts `short` or `long`.
 
+## OBLIQ-Bench Math
+
+Not a baseline method -- a dataset. OBLIQ-Bench's `math` subset
+(https://huggingface.co/datasets/dianetc/OBLIQ-Bench, "Analogue Queries")
+tests long-context ranking: each query is a math competition problem, and the
+gold set is every other corpus problem whose solution shares the same latent
+proof technique, scored NDCG@10.
+
+- Environment (loader, prompt builder, `ObliqBenchMathVerifier`):
+  `shrlm/environments/obliq_bench_math.py`
+- Requires the `obliq_bench` extra (`uv pip install -e ".[obliq_bench]"`).
+
+This is not wired into the self-harness optimization loop; run a baseline
+harness (default `H0*`, the RLM authors' own unmodified prompt -- see "H₀\*"
+above) against a small live sample directly:
+
+```bash
+uv run python examples/obliq_bench_math_smoke.py --live --n 3 \
+    --out-dir ./obliq_math_smoke
+```
+
+Each instance's prompt carries the full ~277k-token math corpus by default.
+Sanity-check the wiring on a cheap subsampled pool first:
+
+```bash
+uv run python examples/obliq_bench_math_smoke.py --live --n 1 \
+    --candidate-pool-size 200 --out-dir ./obliq_math_pool_smoke
+```
+
+`--harness` accepts `H0`, `H0*`, or `H0*R` (a locally-authored, non-reference
+variant that makes `rlm_query` legible -- not one of this repo's documented
+baselines, so it is opt-in, not the default). `--query-ids` selects specific
+queries (comma-separated) instead of a seeded `--n`-sized sample. Backend and
+pricing come from `configs/experiment_obliq_bench_math_DeepSeekV4Flash.toml`
+(DeepSeek-V4-Flash via Azure Foundry) unless `--config` points elsewhere.
+
 ## SH-RLM
 
 SH-RLM is the system under test, not a baseline. Its final harness is produced
