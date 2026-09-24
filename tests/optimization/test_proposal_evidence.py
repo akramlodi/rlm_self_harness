@@ -868,3 +868,104 @@ def test_oversized_question_is_omitted_whole_with_inventory_preserved():
     assert not section["expanded"]
     assert "QUESTION_SENTINEL" not in rendered
     assert "exceeds remaining budget" in audit["omitted_patterns"]["9"]
+
+
+def consumer_chain_trace(stderr=""):
+    children = [
+        completion_dict(
+            prompt=f"Classify segment {i}",
+            response=json.dumps({str(j): [1, 2] for j in range(26)}),
+            iterations=[],
+            max_depth=2,
+        )
+        for i in range(5)
+    ]
+    blocks = [
+        code_block(code="replies = rlm_query_batched(parts)", rlm_calls=children, stderr=stderr),
+        code_block(code="print(replies[:1])", stdout="PREVIEW"),
+        code_block(code="print(len(replies))", stdout="5"),
+        code_block(code="merged = merge(replies)", stdout="merge complete"),
+        code_block(code="filtered = apply_predicate(merged)"),
+        code_block(code="print(len(filtered))", stdout="remaining: 26"),
+    ]
+    return as_completion(
+        completion_dict(
+            prompt="Combine segments",
+            response="wrong",
+            max_depth=2,
+            iterations=[
+                iteration_entry(i, "", code_blocks=[block]) for i, block in enumerate(blocks)
+            ],
+        )
+    )
+
+
+def test_computational_consumers_survive_previews_and_sibling_returns():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    trace = trace_excerpt(
+        consumer_chain_trace(), [], [{"node_id": "r", "iteration_index": 0, "code_block_index": 0}]
+    )
+    codes = [op.get("code", "") for op in trace["snippets"]]
+    assert "merged = merge(replies)" in codes
+    assert "filtered = apply_predicate(merged)" in codes
+    assert "print(len(filtered))" in codes
+    assert len(codes) <= 6
+    assert "PREVIEW" not in json.dumps(trace)
+    child = next(op for op in trace["snippets"] if "response" in op)
+    assert child["response_structure"]["item_count"] == 26
+    contexts = {
+        0: {"trace": trace},
+        1: {
+            "trace": {
+                "snippets": [
+                    {
+                        "node_id": "r",
+                        "code": "check(result)",
+                        "code_complete": True,
+                        "reason": "cited operation",
+                    }
+                ]
+            }
+        },
+    }
+    _, audit = pack_evidence(
+        [
+            {"index": i, "signature": {"agent_mechanism": m}}
+            for i, m in enumerate(["lossy_aggregation", "skipped_verification"])
+        ],
+        {"patterns": contexts},
+        k=2,
+        budget=6500,
+    )
+    assert set(audit["expanded_patterns"]) == {0, 1}
+
+
+def test_retry_notices_alone_do_not_authorize_recovery_route():
+    from shrlm.optimization.proposal_evidence import operation_support
+
+    notice = "Transient API error (RateLimitError); retrying (1/6)...\n"
+    for suffix, expected in (("", False), ("ValueError: terminal", True)):
+        trace = trace_excerpt(
+            consumer_chain_trace(notice * 10 + suffix),
+            [],
+            [{"node_id": "r", "iteration_index": 0, "code_block_index": 0}],
+        )
+        assert trace["snippets"][0]["error_observed"] is expected
+        support = operation_support(
+            "repl_execution_fault", {str(i): op for i, op in enumerate(trace["snippets"])}
+        )
+        assert ("S5" in support) is expected
+        assert trace["retry_notices"][0]["count"] == 10
+
+
+def test_required_sibling_comparison_is_not_partially_admitted():
+    trace = trace_excerpt(consumer_chain_trace(), [f"r/i0/b0/c{i}" for i in range(5)])
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    _, audit = pack_evidence(
+        [{"index": 0, "signature": {"agent_mechanism": "lossy_aggregation"}}],
+        {"patterns": {0: {"trace": trace}}},
+        k=1,
+    )
+    assert not audit["expanded_patterns"]
