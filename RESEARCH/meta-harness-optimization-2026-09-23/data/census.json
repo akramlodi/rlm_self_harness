@@ -1,0 +1,760 @@
+{
+  "repository_head": "f5cf78deae9057770a69e2946808c6ad823adaee",
+  "experiment": "experiment_oolong_pairs_dsv4f_20260916_131837",
+  "rounds": [
+    {
+      "round": 1,
+      "failed_runs": 28,
+      "pattern_count": 10,
+      "expanded_pattern_indices": [
+        0
+      ],
+      "expanded_mechanisms": [
+        "incomplete_coverage"
+      ],
+      "expanded_pattern_count": 1,
+      "system_prompt_chars": 45584,
+      "evidence_chars": 26544,
+      "history_chars": 60,
+      "operation_count": 12,
+      "candidates_without_expanded_evidence": [
+        "r01-c02-s9"
+      ]
+    },
+    {
+      "round": 2,
+      "failed_runs": 31,
+      "pattern_count": 10,
+      "expanded_pattern_indices": [
+        1
+      ],
+      "expanded_mechanisms": [
+        "incomplete_coverage"
+      ],
+      "expanded_pattern_count": 1,
+      "system_prompt_chars": 53960,
+      "evidence_chars": 28433,
+      "history_chars": 6547,
+      "operation_count": 12,
+      "candidates_without_expanded_evidence": [
+        "r02-c01-s2",
+        "r02-c03-s3"
+      ]
+    },
+    {
+      "round": 3,
+      "failed_runs": 30,
+      "pattern_count": 10,
+      "expanded_pattern_indices": [
+        0,
+        8,
+        9
+      ],
+      "expanded_mechanisms": [
+        "incomplete_coverage",
+        "iteration_budget_exhaustion",
+        "iteration_budget_exhaustion"
+      ],
+      "expanded_pattern_count": 3,
+      "system_prompt_chars": 65728,
+      "evidence_chars": 28119,
+      "history_chars": 16154,
+      "operation_count": 8,
+      "candidates_without_expanded_evidence": []
+    },
+    {
+      "round": 4,
+      "failed_runs": 32,
+      "pattern_count": 12,
+      "expanded_pattern_indices": [
+        0
+      ],
+      "expanded_mechanisms": [
+        "incomplete_coverage"
+      ],
+      "expanded_pattern_count": 1,
+      "system_prompt_chars": 67656,
+      "evidence_chars": 26945,
+      "history_chars": 21298,
+      "operation_count": 12,
+      "candidates_without_expanded_evidence": [
+        "r04-c02-s2"
+      ]
+    },
+    {
+      "round": 5,
+      "failed_runs": 28,
+      "pattern_count": 11,
+      "expanded_pattern_indices": [
+        0
+      ],
+      "expanded_mechanisms": [
+        "incomplete_coverage"
+      ],
+      "expanded_pattern_count": 1,
+      "system_prompt_chars": 84022,
+      "evidence_chars": 31446,
+      "history_chars": 28454,
+      "operation_count": 12,
+      "candidates_without_expanded_evidence": [
+        "r05-c02-s4"
+      ]
+    },
+    {
+      "round": 6,
+      "failed_runs": 30,
+      "pattern_count": 13,
+      "expanded_pattern_indices": [
+        0
+      ],
+      "expanded_mechanisms": [
+        "iteration_budget_exhaustion"
+      ],
+      "expanded_pattern_count": 1,
+      "system_prompt_chars": 84171,
+      "evidence_chars": 26586,
+      "history_chars": 33735,
+      "operation_count": 9,
+      "candidates_without_expanded_evidence": []
+    },
+    {
+      "round": 7,
+      "failed_runs": 29,
+      "pattern_count": 16,
+      "expanded_pattern_indices": [
+        0,
+        3
+      ],
+      "expanded_mechanisms": [
+        "incomplete_coverage",
+        "iteration_budget_exhaustion"
+      ],
+      "expanded_pattern_count": 2,
+      "system_prompt_chars": 94880,
+      "evidence_chars": 30936,
+      "history_chars": 38842,
+      "operation_count": 7,
+      "candidates_without_expanded_evidence": [
+        "r07-c03-s3"
+      ]
+    },
+    {
+      "round": 8,
+      "failed_runs": 31,
+      "pattern_count": 13,
+      "expanded_pattern_indices": [
+        0,
+        1
+      ],
+      "expanded_mechanisms": [
+        "incomplete_coverage",
+        "iteration_budget_exhaustion"
+      ],
+      "expanded_pattern_count": 2,
+      "system_prompt_chars": 100283,
+      "evidence_chars": 28130,
+      "history_chars": 47342,
+      "operation_count": 7,
+      "candidates_without_expanded_evidence": [
+        "r08-c03-s3"
+      ]
+    }
+  ],
+  "surfaces": {
+    "S1": {
+      "eligible_rounds": [
+        3,
+        5,
+        6,
+        7,
+        8
+      ],
+      "expanded_rounds": [
+        3,
+        6,
+        7,
+        8
+      ],
+      "materialized": [],
+      "promoted": [],
+      "unmaterialized_drafts": [
+        "C11"
+      ]
+    },
+    "S2": {
+      "eligible_rounds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "expanded_rounds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        7,
+        8
+      ],
+      "materialized": [
+        "r02-c01-s2",
+        "r04-c02-s2",
+        "r05-c01-s2"
+      ],
+      "promoted": [
+        "r04-c02-s2",
+        "r05-c01-s2"
+      ],
+      "unmaterialized_drafts": [
+        "C2",
+        "C4",
+        "C10"
+      ]
+    },
+    "S3": {
+      "eligible_rounds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "expanded_rounds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "materialized": [
+        "r02-c03-s3",
+        "r07-c03-s3",
+        "r08-c03-s3"
+      ],
+      "promoted": [],
+      "unmaterialized_drafts": []
+    },
+    "S4": {
+      "eligible_rounds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "expanded_rounds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        7,
+        8
+      ],
+      "materialized": [
+        "r01-c01-s4",
+        "r02-c02-s4",
+        "r03-c01-s4",
+        "r04-c01-s4",
+        "r05-c02-s4",
+        "r07-c01-s4",
+        "r08-c02-s4"
+      ],
+      "promoted": [
+        "r03-c01-s4",
+        "r04-c01-s4",
+        "r05-c02-s4"
+      ],
+      "unmaterialized_drafts": [
+        "C3"
+      ]
+    },
+    "S5": {
+      "eligible_rounds": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "expanded_rounds": [],
+      "materialized": [],
+      "promoted": [],
+      "unmaterialized_drafts": [
+        "C5"
+      ]
+    },
+    "S6": {
+      "eligible_rounds": [
+        3,
+        5,
+        6,
+        7,
+        8
+      ],
+      "expanded_rounds": [
+        3,
+        6,
+        7,
+        8
+      ],
+      "materialized": [
+        "r06-c01-s6",
+        "r08-c01-s6"
+      ],
+      "promoted": [],
+      "unmaterialized_drafts": [
+        "C9"
+      ]
+    },
+    "S7": {
+      "eligible_rounds": [
+        5,
+        7,
+        8
+      ],
+      "expanded_rounds": [],
+      "materialized": [],
+      "promoted": [],
+      "unmaterialized_drafts": []
+    },
+    "S8": {
+      "eligible_rounds": [],
+      "expanded_rounds": [],
+      "materialized": [],
+      "promoted": [],
+      "unmaterialized_drafts": []
+    },
+    "S9": {
+      "eligible_rounds": [
+        1,
+        2,
+        7
+      ],
+      "expanded_rounds": [],
+      "materialized": [
+        "r01-c02-s9"
+      ],
+      "promoted": [],
+      "unmaterialized_drafts": [
+        "C1",
+        "C8"
+      ]
+    },
+    "S10": {
+      "eligible_rounds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "expanded_rounds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "materialized": [],
+      "promoted": [],
+      "unmaterialized_drafts": [
+        "C6",
+        "C7"
+      ]
+    }
+  },
+  "failed_runs": 239,
+  "mechanisms": {
+    "incomplete_coverage": 169,
+    "misaligned_unit": 26,
+    "premature_termination": 5,
+    "lossy_aggregation": 9,
+    "iteration_budget_exhaustion": 19,
+    "unattributed": 6,
+    "unparsed_child_output": 3,
+    "whole_input_subcall_collapse": 1,
+    "swallowed_subcall_error": 1
+  },
+  "causal_statuses": {
+    "causal": 233,
+    "absent": 6
+  },
+  "grounded_records": 0,
+  "candidates": [
+    {
+      "round": 1,
+      "id": "r01-c01-s4",
+      "surface": "S4",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_01/proposals/r01-c01-s4/proposal.json",
+      "pattern_index": 0,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "child",
+        "verifier_cause": "incomplete"
+      },
+      "expanded_evidence": true,
+      "incumbent_behavior": "S4 is empty string; the root receives no verification instruction. In the failing run, the root parsed 188 records, split into 4 chunks, classified via child calls, merged into all_user_labels (56 users), then immediately computed pairs without checking coverage. 3 users' questions were never classified because the child returned results keyed by user ID but some users appeared in multiple chunks and the merge overwrote rather than accumulated labels for those users.",
+      "observed_failure": "Root never verified that every user from the 188 parsed records was represented in all_user_labels before computing pairs. 3 users missing from label set, excluded from target_users, causing 84 missing pairs. Verification limits: no coverage check existed.",
+      "behavioral_change": "Add a verification step: after merging child results, assert that the number of distinct users with labels equals the number of distinct users in the parsed data. If mismatch, print the missing user IDs and re-run the affected chunks with corrected prompts. This directly prevents proceeding with incomplete coverage."
+    },
+    {
+      "round": 1,
+      "id": "r01-c02-s9",
+      "surface": "S9",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_01/proposals/r01-c02-s9/proposal.json",
+      "pattern_index": 6,
+      "signature": {
+        "agent_mechanism": "premature_termination",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "wrong_format"
+      },
+      "expanded_evidence": false,
+      "incumbent_behavior": "S9 is the identity accept function: it accepts every detected answer unchanged. In the failing runs, the root produced an answer that didn't match the accepted formats (no bracketed pair list on the last line), causing wrong_format verifier outcome.",
+      "observed_failure": "Root submitted answer without a bracketed pair list on the last produced line. Verifier rejected as wrong_format. The answer likely had the pairs but not in the expected format (e.g., missing parentheses, wrong separator, or trailing text).",
+      "behavioral_change": "Add format normalization in S9: if the answer contains pairs in a recognizable format (e.g., comma-separated integers, or space-separated), convert to the canonical (a, b) newline-separated format. If the answer is empty or clearly not a pair list, accept as-is (including the empty marker). This fixes format mismatches without rejecting valid content."
+    },
+    {
+      "round": 2,
+      "id": "r02-c01-s2",
+      "surface": "S2",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_02/proposals/r02-c01-s2/proposal.json",
+      "pattern_index": 0,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "child",
+        "verifier_cause": "incomplete"
+      },
+      "expanded_evidence": false,
+      "incumbent_behavior": "The root split 188 questions into 4 chunks, sent each to rlm_query_batched for classification into 6 categories, extracted entity_human_users lists, merged into a set of 26 users, then generated pairs. It never verified that all 56 users in the data were represented in the merged set. The S2 instruction provides a pattern for label statistics but does not include a coverage verification step.",
+      "observed_failure": "Root never verified that every user from the 188 parsed records was represented in the merged user set before computing pairs. 28 users were never fully evaluated for entity/human status; only 26 users were included, missing 57 gold pairs. Verification limits: no coverage check existed in the decomposition plan.",
+      "behavioral_change": "Add a coverage verification step to the S2 decomposition instruction: after merging child results, assert that the number of distinct users with labels equals the number of distinct users in the parsed data. If mismatch, print missing user IDs and re-run affected chunks with corrected prompts. This directly prevents proceeding with incomplete coverage."
+    },
+    {
+      "round": 2,
+      "id": "r02-c02-s4",
+      "surface": "S4",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_02/proposals/r02-c02-s4/proposal.json",
+      "pattern_index": 1,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "incomplete"
+      },
+      "expanded_evidence": true,
+      "incumbent_behavior": "S4 is empty string; the root receives no verification instruction. In the failing runs, the root performed many sub-calls (66 median) and iterations (16 median) but still had incomplete coverage. The root did not verify that all input items were represented in the merged results before proceeding.",
+      "observed_failure": "Root never verified coverage after merging child results. Despite many sub-calls, some users were missed. Verification limits: no coverage check existed in the verification instruction.",
+      "behavioral_change": "Add a verification instruction: after merging child results, verify that every input item is represented. If mismatch, print missing IDs and re-run affected chunks. This directly prevents proceeding with incomplete coverage."
+    },
+    {
+      "round": 2,
+      "id": "r02-c03-s3",
+      "surface": "S3",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_02/proposals/r02-c03-s3/proposal.json",
+      "pattern_index": 5,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "wrong_format"
+      },
+      "expanded_evidence": false,
+      "incumbent_behavior": "S3 is empty string; the root receives no execution instruction. In the failing run (pattern 5), the root produced an answer without a bracketed pair list on the last produced line, causing wrong_format verifier outcome. The root likely printed pairs in a non-canonical format or had trailing text after the pair list.",
+      "observed_failure": "Root submitted answer without a bracketed pair list on the last produced line. Verifier rejected as wrong_format. The answer likely had the pairs but not in the expected format (e.g., missing parentheses, wrong separator, or trailing text). 2/2 runs affected, 1/2 used iteration fallback.",
+      "behavioral_change": "Add an execution instruction guiding the root to output the final answer in the canonical format: one pair per line as (user_id_1, user_id_2), with no extra text after the pair list. This directly addresses the format failure at the point of output generation."
+    },
+    {
+      "round": 3,
+      "id": "r03-c01-s4",
+      "surface": "S4",
+      "promoted": true,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_03/proposals/r03-c01-s4/proposal.json",
+      "pattern_index": 0,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "incomplete"
+      },
+      "expanded_evidence": true,
+      "incumbent_behavior": "S4 is empty string; the root receives no verification instruction. In the failing run (oolong-t02-w10-8531d00f4e16fe6b__a02), the root parsed 188 records, split into 4 chunks, classified via child calls, merged into all_user_labels, then immediately computed pairs without checking coverage. User 99522 was present in the parsed data but its questions were never classified as entity/human being, so it was omitted from the pair set.",
+      "observed_failure": "Root never verified that every user from the 188 parsed records was represented in the merged label set before computing pairs. User 99522 was missing from entity_human_users, causing 9 missing pairs (F1=0.889). Verification limits: no coverage check existed in the verification instruction.",
+      "behavioral_change": "Add a verification instruction: after merging child results, verify that the set of users with labels covers every user in the parsed input. If mismatch, print missing user IDs and re-run affected chunks with corrected prompts. This directly prevents proceeding with incomplete coverage."
+    },
+    {
+      "round": 4,
+      "id": "r04-c01-s4",
+      "surface": "S4",
+      "promoted": true,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_04/proposals/r04-c01-s4/proposal.json",
+      "pattern_index": 0,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "spurious"
+      },
+      "expanded_evidence": true,
+      "incumbent_behavior": "The root verified that every user ID from the original data appears in the merged results (set coverage check), but never verified that the label lists per user are correct. The held-in trace shows the root ran a coverage check (operation 6b38cb8d8e6bb442) that confirmed all 58 user IDs were present, then immediately filtered to qualifying users and generated pairs. The label lists contained many misclassifications \u2014 questions that were actually 'numeric value' or 'location' were labeled 'human being' or 'description and abstract concept'.",
+      "observed_failure": "Root never verified label accuracy after coverage check. Despite full user-ID coverage, 56 extra pairs were generated because 12 users were incorrectly classified as having 'human being' or 'description and abstract concept' labels when they did not. Verification limits: only ID coverage was checked, not label correctness.",
+      "behavioral_change": "Add a second verification step to S4: after confirming user-ID coverage, spot-check a sample of each child's classifications by printing a few original question texts alongside their assigned labels and verifying they match the category definitions. If mismatches are found, re-run the affected chunks with corrected prompts. This catches systematic mislabeling before proceeding to pair generation, without requiring exhaustive per-question verification."
+    },
+    {
+      "round": 4,
+      "id": "r04-c02-s2",
+      "surface": "S2",
+      "promoted": true,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_04/proposals/r04-c02-s2/proposal.json",
+      "pattern_index": 1,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "child",
+        "verifier_cause": "incomplete"
+      },
+      "expanded_evidence": false,
+      "incumbent_behavior": "The root split 188 questions into 4 chunks and sent each to rlm_query_batched with a prompt instructing the child to classify each question and return a JSON mapping user IDs to label lists. The held-in trace shows the child returned results keyed by user ID, but some users' questions were split across chunks and the merge lost some entries (e.g., user 99522's questions were never classified as entity/human being in the passing run). The S2 instruction provides a pattern for label statistics but does not explicitly instruct the child to return a complete mapping for ALL users in its chunk.",
+      "observed_failure": "Child sub-calls returned incomplete results \u2014 some users' questions were not classified at all, or were classified but the results were lost during merge. The root never detected this because it only checked user-ID coverage after merge, not per-chunk completeness. Verification limits: no instruction to children to return complete per-user mappings for all users in their chunk.",
+      "behavioral_change": "Add explicit guidance to the S2 decomposition instruction: instruct the child to return a complete mapping for ALL users in its chunk, not just those it classified. The child should iterate over every question line in its chunk and assign a label to each, ensuring no user is skipped. This directly addresses the incomplete coverage mechanism at the point where the child's behavior is specified."
+    },
+    {
+      "round": 5,
+      "id": "r05-c01-s2",
+      "surface": "S2",
+      "promoted": true,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_05/proposals/r05-c01-s2/proposal.json",
+      "pattern_index": 0,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "child",
+        "verifier_cause": "incomplete"
+      },
+      "expanded_evidence": true,
+      "incumbent_behavior": "The root split 188 data lines into 4 chunks and dispatched each to an rlm_child with a prompt instructing classification. The S2 instruction provides a pattern for label statistics but does not explicitly instruct children to return a complete mapping for ALL users in their chunk, nor does it warn that children may skip lines or return results keyed by line index instead of user ID.",
+      "observed_failure": "Children returned results keyed by user ID but some users' questions were split across chunks and the merge lost entries. When the root detected misclassifications in chunk 0 and re-ran it with improved instructions, it did not re-run chunks 1-3, leaving 22 missing pairs (recall 0.913). Verification limits: no instruction to children to return complete per-user mappings for all users in their chunk.",
+      "behavioral_change": "Add explicit guidance to the S2 decomposition instruction: instruct children to return a complete mapping for ALL users in their chunk, not just those they classified. The child should iterate over every question line in its chunk and assign a label to each, ensuring no user is skipped. Also add a warning that children may return results keyed by line index instead of user ID, and the root should verify the key format before merging."
+    },
+    {
+      "round": 5,
+      "id": "r05-c02-s4",
+      "surface": "S4",
+      "promoted": true,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_05/proposals/r05-c02-s4/proposal.json",
+      "pattern_index": 1,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "incomplete"
+      },
+      "expanded_evidence": false,
+      "incumbent_behavior": "The root ran 4 child chunks, detected misclassifications in chunk 0, re-ran only chunk 0 with improved instructions, merged the fixed chunk 0 data with the original chunks 1-3 data, then manually patched two specific users. It never re-ran chunks 1-3 despite having improved the classification prompt.",
+      "observed_failure": "After fixing chunk 0's prompt, the root did not re-run chunks 1-3 with the same improved prompt. Chunks 1-3 retained original potentially erroneous classifications from iteration 3. This caused 22 missing pairs (recall 0.913) because users in un-re-run chunks were incorrectly excluded from the qualified set.",
+      "behavioral_change": "Add to S4: after re-running any chunk with a corrected prompt, systematically re-run ALL other chunks with the same corrected prompt before merging. This ensures consistent labeling across the entire dataset and prevents partial fixes from leaving other chunks with outdated classifications."
+    },
+    {
+      "round": 6,
+      "id": "r06-c01-s6",
+      "surface": "S6",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_06/proposals/r06-c01-s6/proposal.json",
+      "pattern_index": 0,
+      "signature": {
+        "agent_mechanism": "iteration_budget_exhaustion",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "resource_terminated"
+      },
+      "expanded_evidence": true,
+      "incumbent_behavior": "S6 is disabled (enabled: false). The root launched 4 rlm_query_batched sub-calls; all 4 timed out (56.4s/36.7s, 54.2s/36.7s, 44.0s/36.7s, 48.1s/36.7s). The root then retried the same 4 sub-calls identically, and all 4 timed out again. No retry strategy existed to split oversized chunks or reduce per-child work.",
+      "observed_failure": "Root exhausted global 3600s timeout after iteration 16 while retrying batched sub-calls that all timed out. Each child chunk was too large for the child's 36.7s limit. The root had no mechanism to detect that the chunk size was causing timeouts and split chunks into smaller pieces. Verification limits: no retry strategy existed.",
+      "behavioral_change": "Enable S6 with max_retries=2 and retry_on_syntax_error=true. This allows the root to retry failed sub-calls up to 2 times. The root's existing recovery behavior (retrying the same chunk) will still occur, but the key change is that the root will now have the opportunity to split oversized chunks on retry rather than retrying the same failing chunk. The retry count limits wasted iterations while still allowing recovery."
+    },
+    {
+      "round": 7,
+      "id": "r07-c01-s4",
+      "surface": "S4",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_07/proposals/r07-c01-s4/proposal.json",
+      "pattern_index": 0,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "child",
+        "verifier_cause": "spurious"
+      },
+      "expanded_evidence": true,
+      "incumbent_behavior": "S4 verification instruction checks user-ID coverage after merging (set of users with labels vs set of users in parsed input). The root in pattern 0 verified total label count matched total question count (188 labels for 188 questions) and per-user label counts matched per-user question counts, but this did not detect that a user with multiple questions in a chunk had only one label retained because the child returned per-user aggregates instead of per-question labels.",
+      "observed_failure": "Root never verified that each individual question received a label. Users with multiple questions in a chunk had their labels overwritten during merge because the child returned per-user aggregates (one label per user) instead of per-question labels. The coverage check only confirmed total counts matched, not that each question was individually labeled. Verification limits: no per-question coverage check existed.",
+      "behavioral_change": "Extend the S4 coverage verification: after merging child results, verify that the number of labels per user equals the number of questions that user has in the original data. If any user has fewer labels than questions, print the user ID and the count mismatch, then re-run the affected chunks with a corrected prompt instructing the child to return one label per question (not one label per user). This directly catches the overwrite mechanism before proceeding to pair generation."
+    },
+    {
+      "round": 7,
+      "id": "r07-c03-s3",
+      "surface": "S3",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_07/proposals/r07-c03-s3/proposal.json",
+      "pattern_index": 5,
+      "signature": {
+        "agent_mechanism": "lossy_aggregation",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "mixed_set_error"
+      },
+      "expanded_evidence": false,
+      "incumbent_behavior": "S3 is empty string; the root receives no execution instruction. In pattern 5, the root created 6 prompts from chunks of questions and called rlm_query_batched(prompts). The prompts grouped questions by chunk index, not by user ID. The child returned per-user aggregates (one label per user) instead of per-question labels. The root aggregated labels per user, and users with multiple questions in a chunk had their labels overwritten, producing 10 spurious pairs.",
+      "observed_failure": "Root instructed children to return per-user label mappings, but users with multiple questions in a chunk had their labels overwritten because the child returned one label per user instead of one label per question. The root never instructed children to return per-question labels. Verification limits: no execution instruction existed to guide the child's output format.",
+      "behavioral_change": "Add an execution instruction to S3 guiding the root to instruct children to return per-question labels (one label per question) rather than per-user aggregates. The child should return a list of {question_index, label} pairs or a list of labels in the same order as the questions in the chunk. This ensures that users with multiple questions retain all their labels after merge, preventing the overwrite mechanism that caused spurious pairs."
+    },
+    {
+      "round": 8,
+      "id": "r08-c01-s6",
+      "surface": "S6",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_08/proposals/r08-c01-s6/proposal.json",
+      "pattern_index": 1,
+      "signature": {
+        "agent_mechanism": "iteration_budget_exhaustion",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "resource_terminated"
+      },
+      "expanded_evidence": true,
+      "incumbent_behavior": "S6 is disabled (enabled: false). The root launched 4 rlm_query_batched sub-calls with ~47 questions each; all 4 timed out (~50s vs 36.7s child limit). The root retried the same 4 chunks identically, and all timed out again. No retry limit or chunk-splitting guidance existed.",
+      "observed_failure": "Root exhausted 3600s global timeout after iteration 27 while retrying oversized chunks that all timed out. Each child had ~47 classification questions exceeding the child's time budget. The root had no mechanism to limit retries or detect that chunk size was causing timeouts. Verification limits: no retry strategy existed.",
+      "behavioral_change": "Enable S6 with max_retries=2 and retry_on_syntax_error=true. This limits retries to 2 attempts per sub-call, preventing infinite retry loops that exhaust the global timeout. The root's existing recovery behavior (retrying the same chunk) will still occur, but the retry count limits wasted iterations. The root will still need to split chunks on retry (guided by S2), but the retry limit prevents the worst-case scenario of retrying the same failing chunk indefinitely."
+    },
+    {
+      "round": 8,
+      "id": "r08-c02-s4",
+      "surface": "S4",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_08/proposals/r08-c02-s4/proposal.json",
+      "pattern_index": 0,
+      "signature": {
+        "agent_mechanism": "incomplete_coverage",
+        "causal_status": "causal",
+        "failing_level": "child",
+        "verifier_cause": "incomplete"
+      },
+      "expanded_evidence": true,
+      "incumbent_behavior": "S4 verification instruction checks user-ID coverage after merging (set of users with labels vs set of users in parsed records). In the failing run, the root parsed lines[2:190] from context (skipping header), then verified coverage against the 188 parsed records. The check confirmed 'All users: 58, Covered: 58, Missing: 0' but this only covered the parsed records, not the original input which had 189 lines.",
+      "observed_failure": "Root skipped the header line when parsing context (lines[2:190] instead of lines[2:]). The header line contained a user ID that appeared nowhere else, causing 22 missing pairs (recall 0.913). The coverage check only verified against parsed records, not the original input. Verification limits: no instruction to verify coverage against the original input line count.",
+      "behavioral_change": "Extend the S4 coverage verification: after merging child results, verify that the number of parsed records matches the total number of data-bearing lines in the original input (not just the parsed subset). If the parsed count is less than the total input lines, print the discrepancy and re-parse the original input to find the missing lines. This directly catches the case where the root skipped a header line or other non-data lines that contained actual data."
+    },
+    {
+      "round": 8,
+      "id": "r08-c03-s3",
+      "surface": "S3",
+      "promoted": false,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_08/proposals/r08-c03-s3/proposal.json",
+      "pattern_index": 11,
+      "signature": {
+        "agent_mechanism": "lossy_aggregation",
+        "causal_status": "causal",
+        "failing_level": "root",
+        "verifier_cause": "wrong_format"
+      },
+      "expanded_evidence": false,
+      "incumbent_behavior": "S3 is empty string; the root receives no execution instruction. In pattern 11 (wrong_format, 2 iterations), the root likely never parsed the data properly and submitted an answer in the wrong format. The verifier rejected as wrong_format with no bracketed answer list on the last produced line.",
+      "observed_failure": "Root submitted answer without a bracketed pair list on the last produced line. Verifier rejected as wrong_format. The root completed in only 2 iterations, suggesting it never properly parsed the data or generated pairs. Verification limits: no execution instruction existed to guide output format.",
+      "behavioral_change": "Add an execution instruction guiding the root to output the final answer in the canonical format: one pair per line as (user_id_1, user_id_2), with no extra text after the pair list. This directly addresses the format failure at the point of output generation. The instruction is minimal and does not change any other behavior."
+    }
+  ],
+  "source_provenance": [
+    {
+      "path": "shrlm/optimization/proposal.py",
+      "current_sha256": "a27fb94d83d5ff1dc72a54b08d588df9a738ec6db73f2a5760e3507c6eae8ab7",
+      "frozen_sha256": "a27fb94d83d5ff1dc72a54b08d588df9a738ec6db73f2a5760e3507c6eae8ab7",
+      "matches_frozen": true
+    },
+    {
+      "path": "shrlm/optimization/proposal_evidence.py",
+      "current_sha256": "256721112612fd65e7777cacc293d58d98f15588bc32d839a0fcc376eb68ec7b",
+      "frozen_sha256": "256721112612fd65e7777cacc293d58d98f15588bc32d839a0fcc376eb68ec7b",
+      "matches_frozen": true
+    },
+    {
+      "path": "shrlm/optimization/attribution.py",
+      "current_sha256": "c034a684dd1ac913cc98c3d90e443b015785c3569714ba304fe31ceed3630bbf",
+      "frozen_sha256": "c034a684dd1ac913cc98c3d90e443b015785c3569714ba304fe31ceed3630bbf",
+      "matches_frozen": true
+    },
+    {
+      "path": "shrlm/optimization/clustering.py",
+      "current_sha256": "92b026bd15e937defa015695a6862b81faeb521802e694c2dccc2c21d71c16bf",
+      "frozen_sha256": "92b026bd15e937defa015695a6862b81faeb521802e694c2dccc2c21d71c16bf",
+      "matches_frozen": true
+    },
+    {
+      "path": "shrlm/optimization/taxonomy.py",
+      "current_sha256": "4ec8d73241f8bff402475caac7af11771ea37c28644474ed696a60c3a93826b5",
+      "frozen_sha256": "4ec8d73241f8bff402475caac7af11771ea37c28644474ed696a60c3a93826b5",
+      "matches_frozen": true
+    },
+    {
+      "path": "shrlm/optimization/digest.py",
+      "current_sha256": "463b6b288a31b122502064aded68d47ac5e2bb97bc428345152bb01ef648e4cf",
+      "frozen_sha256": "463b6b288a31b122502064aded68d47ac5e2bb97bc428345152bb01ef648e4cf",
+      "matches_frozen": true
+    },
+    {
+      "path": "shrlm/rlm_harness.py",
+      "current_sha256": "0d06ac960c89aa3a6aa54cf747c560985aeb9cb476bf03b647813fb040393a62",
+      "frozen_sha256": "0d06ac960c89aa3a6aa54cf747c560985aeb9cb476bf03b647813fb040393a62",
+      "matches_frozen": true
+    },
+    {
+      "path": "shrlm/runner.py",
+      "current_sha256": "3473329193441ce9cfbdfc5ff0afdaecd1746081cc2d180b6690a606aea83ad4",
+      "frozen_sha256": "3473329193441ce9cfbdfc5ff0afdaecd1746081cc2d180b6690a606aea83ad4",
+      "matches_frozen": true
+    },
+    {
+      "path": "rlm/core/rlm.py",
+      "current_sha256": "e0149e8f53ba37b39ad33503cf7136295b9ff93764c4c8db15b75c9e7830bcbd",
+      "frozen_sha256": "e0149e8f53ba37b39ad33503cf7136295b9ff93764c4c8db15b75c9e7830bcbd",
+      "matches_frozen": true
+    },
+    {
+      "path": "rlm/environments/local_repl.py",
+      "current_sha256": "26eeff244ed42f9fc236961e19d316e429bae64500d9964630d65f18be9edebf",
+      "frozen_sha256": "26eeff244ed42f9fc236961e19d316e429bae64500d9964630d65f18be9edebf",
+      "matches_frozen": true
+    }
+  ],
+  "notes": [
+    "Eligible/expanded surface counts use the inspected taxonomy, verified against the frozen source.",
+    "A candidate without expanded evidence can still see the compact inventory; it does not necessarily have no evidence.",
+    "Repeated attempts are not distinct tasks. Counts describe this experiment, not all domains."
+  ]
+}
