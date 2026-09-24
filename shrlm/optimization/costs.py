@@ -97,6 +97,7 @@ from shrlm.optimization.candidates import (
 )
 from shrlm.optimization.driver import (
     RoundConfig,
+    RoundObservationPersistenceError,
     append_child_run,
     load_manifest,
     persist_interrupted_run,
@@ -837,6 +838,8 @@ def _reap_run(
         )
     else:
         result = read_run_result(live["path"])
+        if (result or {}).get("error_kind") == "observation_persistence":
+            raise RoundObservationPersistenceError(str(result["error"]))
         detail = (result or {}).get("error") or (
             f"run worker exited {live['process'].returncode} without a usable trace"
         )

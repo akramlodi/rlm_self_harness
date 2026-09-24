@@ -54,6 +54,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from rlm.core.llm_observation import ObservationPersistenceError
 from rlm.utils.exceptions import HardDeadlineSignal
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.candidates import assemble_harness
@@ -272,7 +273,13 @@ def run_run_worker(request_path: str | Path) -> dict[str, Any]:
         try:
             harnessed = build_round_rlm(config)
             # No verifier: the parent verifies (KTD5).
-            outcome = execute_run(harnessed, instance, model_name=model_name)
+            outcome = execute_run(
+                harnessed,
+                instance,
+                model_name=model_name,
+                trace_path=Path(request["trace_path"]),
+                observation_owner={"attempt": request["attempt"]},
+            )
         finally:
             _disarm_deadline()
 
@@ -296,6 +303,8 @@ def run_run_worker(request_path: str | Path) -> dict[str, Any]:
             "error": f"{type(error).__name__}: {error}",
             "traceback": traceback.format_exc(),
         }
+        if isinstance(error, ObservationPersistenceError):
+            result["error_kind"] = "observation_persistence"
     finally:
         if factory is not None:
             calls = getattr(factory, "total_calls", None)
