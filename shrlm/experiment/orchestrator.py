@@ -429,6 +429,8 @@ def load_round_history(
         for record in ledger_records:
             enriched = {**record, **proposal_behavior(proposals_dir, record.get("subject_id"))}
             subject_id = record["subject_id"]
+            if subject_id in owners:
+                enriched["batch_subject_id"] = owners[subject_id]
             summary = behavior_by_subject.get(owners.get(subject_id, subject_id))
             enriched["activation"] = activation_for_surface(
                 enriched.get("surface") if enriched.get("activation_applicable", True) else None,
@@ -461,6 +463,7 @@ def load_round_history(
                 "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
                 "surface": failure["surface"],
                 "decision": "preflight_rejected",
+                **({"owner": failure["owner"]} if failure.get("owner") else {}),
                 "predicted_effect": failure.get("predicted_effect", ""),
                 "reasons": [f"{failure['gate']}: {failure['reason']}"],
             }

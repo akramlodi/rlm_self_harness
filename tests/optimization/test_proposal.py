@@ -1631,8 +1631,9 @@ def test_history_reports_one_shared_verdict_for_bundled_edits():
     ]
     history = _render_history_block([(records, {"promoted": False})])
     assert history.split("\n", 1)[1].count("rejected") == 1
-    assert "S2, S3" in history
-    assert "bundled" not in history.split("\n", 1)[1]
+    rows = json.loads(history.split("\n", 1)[1])["attempts"]
+    assert [r["surface"] for r in rows if r["decision"] == "bundled"] == ["S2", "S3"]
+    assert all("measured" not in r for r in rows if r["decision"] == "bundled")
 
 
 # ---------------------------------------------------------------------------
@@ -1654,7 +1655,7 @@ def test_history_renders_not_materialized_records_with_effect_and_reason():
         }
     ]
     history = _render_history_block([(records, {"round": 4, "promoted": False})])
-    assert "Round 4:" in history
+    assert '"round": 4' in history
     [line] = [line for line in history.splitlines() if "pattern 0 on S9" in line]
     assert "not_materialized" in line
     assert "redirect on an incomplete pair set" in line
@@ -1670,7 +1671,7 @@ def test_history_labels_rounds_by_position_when_the_decision_has_no_round():
             ([], {"round": 7, "promoted": True, "promoted_harness_hash": "abc"}),
         ]
     )
-    assert "Round 0:" in history and "Round 7:" in history
+    assert '"round": 0' in history and '"round": 7' in history
 
 
 def test_history_renders_predicted_effect_on_ledger_records_and_tolerates_absence():
@@ -1688,15 +1689,15 @@ def test_history_renders_predicted_effect_on_ledger_records_and_tolerates_absenc
     ]
     history = _render_history_block([(records, {"round": 1, "promoted": False})])
     assert "the root verifies before answering" in history
-    assert "baseline: rejected" in history
+    assert '"subject_id": "baseline"' in history and '"decision": "rejected"' in history
 
 
 def test_history_renders_a_round_without_records_as_no_record_persisted():
     from shrlm.optimization.proposal import _render_history_block
 
     history = _render_history_block([([], {"round": 2, "promoted": False})])
-    assert "Round 2:" in history
-    assert "no per-edit record persisted" in history
+    assert '"round": 2' in history
+    assert '"attempts": []' in history
 
 
 def test_render_prompt_history_preamble_names_the_no_op_refusal():

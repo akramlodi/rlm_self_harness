@@ -96,6 +96,7 @@ from shrlm.optimization.driver import (
 from shrlm.optimization.history import (
     HISTORY_BUDGET_CHARS,
     HISTORY_SCHEMA,
+    compact_history,
     prior_attempts,
     revision_violation,
     surface_fingerprint,
@@ -589,209 +590,19 @@ The host handles template encoding; write Python/JSON examples with literal brac
 # (its edit reproduced the incumbent). Synthesized by the orchestrator from the
 # proposals marker; never written to a validation ledger.
 HISTORY_NOT_MATERIALIZED = "not_materialized"
-HISTORY_NO_RECORDS = "no per-edit record persisted"
-
-
-def render_history_rounds(
-    prior_history: Sequence[tuple[list[dict[str, Any]], dict[str, Any]]],
-) -> str:
-    """One entry per completed prior round (R5), every attempted edit with its
-    outcome, predicted effect, and reasons (R6).
-
-    A round is labeled by its decision's ``round`` when the orchestrator
-    supplied one (the ``round.json`` payload), else by list position, which
-    keeps legacy callers that pass a bare promotion decision readable. A round
-    without records -- a proposer that offered nothing, or a marker written
-    before failure records were persisted -- says so rather than vanishing.
-    """
-    if not prior_history:
-        return "No prior rounds exist yet; this is the first proposal round."
-    lines: list[str] = []
-    for position, (records, decision) in enumerate(prior_history):
-        label = decision.get("round", position)
-        lines.append(
-            f"Round {label}: promoted={decision.get('promoted')} "
-            f"promoted_harness_hash={decision.get('promoted_harness_hash')}"
-        )
-        baseline = decision.get("baseline_diagnostics") or next(
-            (
-                record.get("diagnostic_progress", {}).get("baseline")
-                for record in records
-                if record.get("diagnostic_progress", {}).get("baseline")
-            ),
-            None,
-        )
-        if baseline:
-            lines.append("  baseline: " + json.dumps(baseline, sort_keys=True))
-        if decision.get("proposal_attempts"):
-            lines.append(
-                "  local proposal checks/repair: " + json.dumps(decision["proposal_attempts"])
-            )
-        if not records:
-            lines.append(f"  - {HISTORY_NO_RECORDS}")
-            continue
-        for record in records:
-            if record.get("decision") == "bundled":
-                continue
-            subject = record.get("subject_id")
-            upstream = record.get("upstream")
-            constituent_ids = (record.get("merge") or {}).get("constituent_ids") or []
-            if constituent_ids:
-                surfaces = [
-                    r.get("surface") for r in records if r.get("subject_id") in constituent_ids
-                ]
-                subject = f"{subject} (combined edits: {', '.join(str(s) for s in surfaces)})"
-            outcome = record.get("decision")
-            if upstream:
-                outcome = f"rejected at loader gate {upstream.get('gate')}: {upstream.get('reason')} (not evaluated)"
-            effect = record.get("predicted_effect")
-            reasons = "; ".join(record.get("reasons") or [])
-            line = f"  - {subject}: {outcome}"
-            if effect:
-                line += f' -- predicted "{effect}"'
-            if reasons:
-                line += f" ({reasons})"
-            lines.append(line)
-            if record.get("surface"):
-                lines.append(
-                    f"    surface={record['surface']} mechanism={record.get('mechanism', 'unknown')}"
-                )
-            if not constituent_ids:
-                lines.append(
-                    "    behavior: "
-                    + json.dumps(
-                        {
-                            name: record.get(name, "unavailable (legacy proposal)")
-                            for name in BEHAVIOR_FIELDS
-                        }
-                    )
-                )
-            if record.get("diagnostic_progress"):
-                lines.append(
-                    "    diagnostic progress: "
-                    + json.dumps(
-                        {
-                            key: value
-                            for key, value in record["diagnostic_progress"].items()
-                            if key not in {"baseline", "candidate"}
-                        },
-                        sort_keys=True,
-                    )
-                )
-            diagnostics = record.get("diagnostics") or record.get("diagnostic_progress", {}).get(
-                "candidate"
-            )
-            if diagnostics:
-                lines.append("    measured batch: " + json.dumps(diagnostics, sort_keys=True))
-            lines.append(
-                "    activation (event, not proof of effectiveness): "
-                + json.dumps(record.get("activation", {"status": "not_assessed"}), sort_keys=True)
-            )
-            for field_name in (
-                "incumbent_hash",
-                "effective_edit_fingerprint",
-                "revision",
-                "revision_unchanged",
-            ):
-                if record.get(field_name) is not None:
-                    lines.append(
-                        f"    {field_name}: " + json.dumps(record[field_name], sort_keys=True)
-                    )
-            for member in records:
-                if member.get("subject_id") in constituent_ids:
-                    lines.append(
-                        f"    member {member.get('surface')}: "
-                        + str(member.get("predicted_effect", "predicted effect unavailable"))
-                        + " (shares the combined verdict; no individual score)"
-                    )
-                    lines.append(
-                        "      identity/revision: "
-                        + json.dumps(
-                            {
-                                key: member.get(key)
-                                for key in (
-                                    "subject_id",
-                                    "mechanism",
-                                    "effective_edit_fingerprint",
-                                    "revision",
-                                    "revision_unchanged",
-                                )
-                            },
-                            sort_keys=True,
-                        )
-                    )
-                    lines.append(
-                        "      behavior: "
-                        + json.dumps(
-                            {
-                                name: member.get(name, "unavailable (legacy proposal)")
-                                for name in BEHAVIOR_FIELDS
-                            }
-                        )
-                    )
-                    lines.append(
-                        "      activation: "
-                        + json.dumps(
-                            member.get("activation", {"status": "not_assessed"}), sort_keys=True
-                        )
-                    )
-    return "\n".join(lines)
 
 
 def _render_history_block(
     prior_history: Sequence[tuple[list[dict[str, Any]], dict[str, Any]]],
     patterns: Sequence[dict[str, Any]] = (),
 ) -> str:
-    """Whole round entries under a separate cap; archive/index remain complete."""
-    from collections import Counter
-
+    """Compact recent facts before optional verbose context; archive stays complete."""
     if not prior_history:
-        return render_history_rounds(prior_history)
-    mechanisms = {pattern.get("signature", {}).get("agent_mechanism") for pattern in patterns}
-    ranked = sorted(
-        enumerate(prior_history),
-        key=lambda pair: (
-            not any(record.get("mechanism") in mechanisms for record in pair[1][0]),
-            not any(
-                record.get("diagnostic_progress", {}).get("status") == "potentially_promising"
-                for record in pair[1][0]
-            ),
-            -pair[0],
-        ),
+        return "No prior rounds exist yet; this is the first proposal round."
+    rendered, _ = compact_history(
+        prior_history, mechanisms={p.get("signature", {}).get("agent_mechanism") for p in patterns}
     )
-    selected: dict[int, str] = {}
-    total = sum(len(records) for records, _ in prior_history)
-    statuses = dict(
-        Counter(
-            str(record.get("decision", "unknown"))
-            for records, _ in prior_history
-            for record in records
-        )
-    )
-
-    def rendered() -> str:
-        omitted = total - sum(len(prior_history[index][0]) for index in selected)
-        header = json.dumps(
-            {
-                "history_schema": HISTORY_SCHEMA,
-                "rounds_total": len(prior_history),
-                "attempts_total": total,
-                "status_totals": statuses,
-                "rounds_omitted": len(prior_history) - len(selected),
-                "attempts_omitted": omitted,
-                "omission_reason": "rendered budget; full archive and reference index retained",
-            },
-            sort_keys=True,
-        )
-        return header + "\n" + "\n\n".join(selected[index] for index in sorted(selected))
-
-    for index, (records, decision) in ranked:
-        selected[index] = render_history_rounds(
-            [(records, {**decision, "round": decision.get("round", index)})]
-        )
-        if len(rendered()) > HISTORY_BUDGET_CHARS:
-            del selected[index]
-    return rendered()
+    return rendered
 
 
 PROPOSER_INTRO = """\

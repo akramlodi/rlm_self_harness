@@ -73,3 +73,58 @@ def test_revision_requires_resolvable_predecessor_even_when_not_rendered():
     assert "resolve" in revision_violation(
         {"round": 7, "subject_id": "missing", "explanation": "changed"}, **kwargs
     )
+
+
+def test_recent_rounds_and_incumbent_promotion_survive_verbose_old_history():
+    history = []
+    for index in range(1, 7):
+        record = {
+            "subject_id": f"edit-{index}",
+            "surface": "S4",
+            "mechanism": "skipped_verification",
+            "decision": "promoted" if index == 2 else "rejected",
+            "links": {"summary": "saved"},
+            "behavioral_change": "detail " * 6000,
+            "diagnostics": {"exact_passes": index, "quality": {"mean": index / 10}},
+            "diagnostic_progress": {
+                "status": "potentially_promising" if index == 1 else "not_assessed"
+            },
+        }
+        history.append(
+            (
+                [record],
+                {
+                    "round": index,
+                    "promoted": index == 2,
+                    "promoted_harness_hash": "current" if index == 2 else None,
+                },
+            )
+        )
+    rendered = _render_history_block(history)
+    assert len(rendered) <= HISTORY_BUDGET_CHARS
+    for index in (1, 2, 4, 5, 6):
+        assert f"edit-{index}" in rendered
+
+
+def test_evaluated_predecessor_beats_refused_rewrite_but_exact_match_wins():
+    from shrlm.optimization.history import select_predecessor
+
+    measured = {
+        "round": 3,
+        "subject_id": "kept",
+        "surface": "S4",
+        "mechanism": "skipped_verification",
+        "decision": "bundled",
+        "effective_edit_fingerprint": "kept-hash",
+    }
+    refused = {
+        **measured,
+        "subject_id": "rewrite",
+        "decision": "preflight_rejected",
+        "effective_edit_fingerprint": "other-hash",
+    }
+    kwargs = dict(surface="S4", mechanism="skipped_verification", attempts=[measured, refused])
+    assert select_predecessor(**kwargs) == measured
+    assert "subject kept" in revision_violation(None, fingerprint="new", **kwargs)
+    assert select_predecessor(**kwargs, fingerprint="other-hash") == refused
+    assert "subject rewrite" in revision_violation(None, fingerprint="other-hash", **kwargs)
