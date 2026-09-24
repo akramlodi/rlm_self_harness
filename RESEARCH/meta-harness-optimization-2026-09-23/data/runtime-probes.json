@@ -1,0 +1,52 @@
+[
+  {
+    "input": "Error: Child RLM timeout exceeded",
+    "call_count": 1,
+    "retries": 0,
+    "prompts": [
+      "unchanged synthetic prompt"
+    ]
+  },
+  {
+    "input": "Error: SyntaxError: invalid syntax",
+    "call_count": 3,
+    "retries": 2,
+    "prompts": [
+      "unchanged synthetic prompt",
+      "unchanged synthetic prompt",
+      "unchanged synthetic prompt"
+    ]
+  },
+  {
+    "probe": "width cap refuses; does not schedule chunks",
+    "result": [
+      "SUBCALL_REFUSED: batch width 3 exceeds max_batch_width 2",
+      "SUBCALL_REFUSED: batch width 3 exceeds max_batch_width 2",
+      "SUBCALL_REFUSED: batch width 3 exceeds max_batch_width 2"
+    ]
+  },
+  {
+    "probe": "disabled syntax retry",
+    "retry_budget": 0
+  },
+  {
+    "probe": "saved S9 normalization is a redirect",
+    "accepted": false,
+    "nudge": "(1, 3)",
+    "answer": null
+  },
+  {
+    "probe": "saved S10 draft passes isolated record validation",
+    "draft": "C6",
+    "name": "batch_rlm_calls",
+    "valid_record": true,
+    "performance_tested": false
+  },
+  {
+    "probe": "saved S10 draft passes isolated record validation",
+    "draft": "C7",
+    "name": "recover_rlm_error",
+    "valid_record": true,
+    "performance_tested": false
+  }
+]

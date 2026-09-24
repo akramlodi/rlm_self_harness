@@ -2,7 +2,7 @@
 
 Experiment: `experiment_oolong_pairs_dsv4f_20260916_131837`  
 Report date: September 23, 2026  
-Scope: all eight completed optimization rounds, all materialized proposals, and all distinct submitted edits that never reached validation. The long-context comparison is still running and is reported separately.
+Scope: all eight completed optimization rounds, all materialized proposals, and all distinct submitted edits that never reached validation. The long-context comparison was stopped at the user’s request after three edited attempts and is reported separately.
 
 Navigation: [validation results](#round-by-round-validation) · [promoted changes](#the-promoted-edits-in-plain-language) · [unpromoted changes](#what-was-tried-but-not-promoted) · [exact promoted edits](#appendix-a-promoted-edits) · [exact tested unpromoted edits](#appendix-b-tested-unpromoted-edits) · [exact untested drafts](#appendix-c-unmaterialized-drafts).
 
@@ -138,11 +138,11 @@ Some of these interventions may be worth reconsidering, particularly task-derive
 
 The final frozen harness was evaluated afresh as the baseline in rounds 6, 7, and 8. Its exact score varied **1/10, 1/10, 3/10**, and its all-attempt F1 varied **0.6194, 0.6355, 0.6128**. This variation, despite the fixed model configuration and unchanged harness, is a practical reason not to treat one extra exact pass on ten tasks as established generalization. Repeated use of the held-out set for selection also makes the independent final test important.
 
-## Long-context comparison: separate and unfinished
+## Long-context comparison: separate and stopped
 
 At the user's requested stop, the original harness had completed **48 attempts across 16 long-context tasks**, with three attempts per task: **0 exact passes, 45 resource/time terminations, three incorrect scored answers**, and at least **$30.0970** recorded cost. Mean recorded F1 was **0.0058** when failed runs counted as zero. Three additional in-flight baseline attempts were manually canceled and excluded from the matched comparison; their unrecorded spend is not zero.
 
-The edited harness launched on those same 16 tasks with three workers and the same model, snapshot, limits, and three attempts per task. It is bounded to 48 attempts. **This report makes no final long-context improvement claim while that comparison is incomplete.** Its current matched results and provenance are available in the [paired evaluation report](../../../experiment_oolong_pairs_dsv4f_20260916_131837/eval/paired_20260923T140326Z/comparison.md) and [launch/output guide](../../../experiment_oolong_pairs_dsv4f_20260916_131837/eval/paired_20260923T140326Z/README.md). These test results are not used here to create new harness edits.
+The edited harness launched on those same 16 tasks with three workers and the same model, snapshot, limits, and three attempts per task. It was bounded to 48 attempts, but the user stopped it on September 23 at 15:28 UTC (10:28 a.m. Chicago), after **three completed edited attempts on one task**: two resource/time terminations and one malformed answer. The matching baseline attempts were all resource/time terminations. Both harnesses therefore have **0/3 exact passes and mean F1 0.0000** on the completed matched attempts. The edited condition recorded at least **$1.6737**, excluding unrecorded spend from three canceled in-flight attempts. All workers, the supervisor, and monitoring have stopped; completed artifacts are preserved. **This report makes no general long-context improvement claim from this one-task comparison.** Its current matched results and provenance are available in the [paired evaluation report](../../../experiment_oolong_pairs_dsv4f_20260916_131837/eval/paired_20260923T140326Z/comparison.md) and [launch/output guide](../../../experiment_oolong_pairs_dsv4f_20260916_131837/eval/paired_20260923T140326Z/README.md). These test results are not used here to create new harness edits.
 
 ## Artifact coverage and reproduction
 
