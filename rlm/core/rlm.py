@@ -274,6 +274,7 @@ class RLM:
         self.observation_rlm_id: str | None = None
         self.observation_parent_call_id: str | None = None
         self.observation_turn_call_id: str | None = None
+        self.observation_iteration = 0
         self.verbose = VerbosePrinter(enabled=verbose)
 
         # Event callbacks for live tree display
@@ -473,6 +474,7 @@ class RLM:
         self.running_observation_recorder = ACTIVE_RECORDER.get() or self.observation_recorder
         self.observation_rlm_id = uuid4().hex
         self.observation_turn_call_id = None
+        self.observation_iteration = 0
         try:
             return self.completion_impl(prompt, root_prompt)
         finally:
@@ -968,13 +970,14 @@ class RLM:
         and code execution + tool execution.
         """
         iter_start = time.perf_counter()
+        self.observation_iteration += 1
         with observe_call(
             "root_turn" if self.depth == 0 else "child_turn",
             (self.backend_kwargs or {}).get("model_name"),
             recorder=self.running_observation_recorder,
             rlm_id=self.observation_rlm_id,
             depth=self.depth,
-            iteration=self.logger.iteration_count + 1 if self.logger else None,
+            iteration=self.observation_iteration,
             parent_call_id=self.observation_parent_call_id,
         ) as observed:
             response = lm_handler.completion(prompt)

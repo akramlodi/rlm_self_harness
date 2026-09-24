@@ -763,6 +763,7 @@ class LLMAttributor:
                         ),
                     ]
                 raise
+            assert response is not None
             if not cached:
                 self.cache.put(key, response, observations=observed.responses if observed else None)
             refs = observation_refs(observed)

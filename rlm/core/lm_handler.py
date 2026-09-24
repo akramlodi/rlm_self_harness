@@ -111,7 +111,8 @@ class LMRequestHandler(StreamRequestHandler):
 
         sem = asyncio.Semaphore(handler.batch_max_concurrent)
 
-        observations = [None] * len(request.prompts)
+        assert request.prompts is not None
+        observations: list[list[dict] | None] = [None] * len(request.prompts)
 
         async def run_one(index: int, prompt: str):
             observed = None

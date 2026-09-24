@@ -64,7 +64,7 @@ from string import Formatter
 from typing import Any
 
 from rlm.clients.base_lm import BaseLM
-from rlm.core.llm_observation import ObservationPersistenceError, observation_refs, observe_call
+from rlm.core.llm_observation import ObservationPersistenceError, observation_refs
 from rlm.environments.base_env import RESERVED_TOOL_NAMES
 from rlm.utils.exceptions import TokenLimitExceededError
 from shrlm.harness_identity import (
@@ -1923,10 +1923,9 @@ def propose_round(
         )
         observed = None
         try:
-            with observe_call(
+            with recorder.call(
                 "proposal_repair" if attempt else "proposal",
                 lm.model_name,
-                recorder=recorder,
                 attempt=attempt + 1,
             ) as observed:
                 budget_failure = cache.get(key + ":budget_exhausted")

@@ -46,15 +46,15 @@ def test_started_call_is_durable_without_finished_marker(tmp_path):
 
 
 def test_driver_preserves_response_before_execution_failure(tmp_path, monkeypatch):
-    from rlm.core.rlm import RLM
     from shrlm.optimization.driver import build_round_rlm, execute_run
+    from shrlm.runner import RLM
     from tests.clients.test_openai_transport import good_response, make_client
     from tests.optimization.test_driver import make_round_config
 
     response = good_response()
     response.choices[0].message.reasoning_content = "saved before failed execution"
     client = make_client(response)
-    monkeypatch.setattr("rlm.core.rlm.get_client", lambda *args: client)
+    monkeypatch.setitem(RLM.__init__.__globals__, "get_client", lambda *args: client)
     original = RLM._completion_turn
 
     def fail_after_response(self, *args, **kwargs):
@@ -67,6 +67,8 @@ def test_driver_preserves_response_before_execution_failure(tmp_path, monkeypatc
     outcome = execute_run(
         harnessed, {"id": "test", "prompt": "task"}, model_name="model", trace_path=trace
     )
+    assert outcome.completion.execution_failure is not None
+    assert outcome.completion.llm_observations is not None
     assert outcome.completion.execution_failure.cause == "runtime_error"
     verify_observations(outcome.completion.to_dict(), trace.parent)
     assert len([r for r in outcome.completion.llm_observations if r.get("attempt_id")]) == 1
@@ -75,11 +77,12 @@ def test_driver_preserves_response_before_execution_failure(tmp_path, monkeypatc
 def test_driver_write_failure_is_not_a_task_failure_or_paid_retry(tmp_path, monkeypatch):
     import shrlm.optimization.driver as driver
     from rlm.core.llm_observation import ObservationRecorder
+    from shrlm.runner import RLM
     from tests.clients.test_openai_transport import good_response, make_client
     from tests.optimization.test_driver import make_round_config
 
     client = make_client(good_response())
-    monkeypatch.setattr("rlm.core.rlm.get_client", lambda *args: client)
+    monkeypatch.setitem(RLM.__init__.__globals__, "get_client", lambda *args: client)
 
     def fail_response(record):
         if record["event"] == "response":
@@ -95,6 +98,7 @@ def test_driver_write_failure_is_not_a_task_failure_or_paid_retry(tmp_path, monk
             harnessed, {"prompt": "task"}, model_name="model", trace_path=tmp_path / "trace.json"
         )
     assert client.client.chat.completions.create.call_count == 1
+    assert harnessed.rlm.last_completion_usage is not None
     assert harnessed.rlm.last_completion_usage.total_calls == 1
 
 
@@ -117,9 +121,40 @@ with recorder.call("root_turn") as call:
     result = subprocess.run([sys.executable, "-c", script, str(trace)], check=False)
     assert result.returncode == 7
     references = discover_observations(trace)
+    assert references is not None
     records = [read_observation(ref, trace.parent) for ref in references]
     assert {r["event"] for r in records} == {"started", "response"}
     assert (
         next(r for r in records if r["event"] == "response")["reasoning"]["reasoning"]
         == "committed"
     )
+
+
+def test_worker_persistence_error_wins_over_simultaneous_timeout(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from shrlm.optimization.costs import CandidateSpendBreaker, _reap_run
+    from shrlm.optimization.driver import RoundObservationPersistenceError, run_id_for
+    from tests.optimization.test_costs import CAPS, make_config
+
+    config = make_config(tmp_path)
+    live = {
+        "instance": config.instances[0],
+        "path": tmp_path / "worker",
+        "attempt": 1,
+        "process": SimpleNamespace(returncode=1),
+    }
+    monkeypatch.setattr(
+        "shrlm.optimization.costs.read_run_result",
+        lambda path: {"error_kind": "observation_persistence", "error": "disk full"},
+    )
+    with pytest.raises(RoundObservationPersistenceError, match="disk full"):
+        _reap_run(
+            tmp_path,
+            run_id_for(str(config.instances[0]["id"]), 1),
+            live,
+            config,
+            timed_out=True,
+            breaker=CandidateSpendBreaker(CAPS),
+        )
+    assert not list(tmp_path.rglob("runs.jsonl"))

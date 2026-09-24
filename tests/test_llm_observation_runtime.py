@@ -62,11 +62,15 @@ def test_root_and_plain_child_keep_reasoning_out_of_prompt_history():
     client.client.chat.completions.create.side_effect = [response, child]
     recorder = ObservationRecorder()
     logger = RLMLogger()
-    with patch("rlm.core.rlm.get_client", return_value=client), observation_session(recorder):
+    with (
+        patch.dict(RLM.__init__.__globals__, get_client=lambda *args: client),
+        observation_session(recorder),
+    ):
         rlm = RLM(logger=logger, max_iterations=1)
         result = rlm.completion("task")
     assert result.response == "ok"
     trajectory = result.metadata
+    assert trajectory is not None
     assert (
         received(trajectory["iterations"][0]["llm_observations"])[0]["reasoning"]["reasoning"]
         == "ROOT_REASONING_SENTINEL"
@@ -95,6 +99,7 @@ def test_direct_socket_call_and_logger_reuse_are_isolated():
     for recorder in (first, second):
         with LMHandler(client, observation_recorder=recorder) as handler:
             response = send_lm_request(handler.address, LMRequest(prompt="task"))
+        assert response.chat_completion is not None
         assert (
             received(response.chat_completion.llm_observations)[0]["availability"] == "not_returned"
         )
@@ -124,7 +129,7 @@ def test_recursive_child_and_depth_fallback_are_recorded():
         client = make_client()
         client.client.chat.completions.create.side_effect = [root, child]
         recorder = ObservationRecorder()
-        with patch("rlm.core.rlm.get_client", return_value=client):
+        with patch.dict(RLM.__init__.__globals__, get_client=lambda *args, client=client: client):
             rlm = RLM(
                 logger=RLMLogger(),
                 max_iterations=1,
@@ -133,6 +138,7 @@ def test_recursive_child_and_depth_fallback_are_recorded():
             )
             result = rlm.completion("task")
         assert result.response == "child answer"
+        assert result.metadata is not None
         records = received(result.metadata["llm_observations"])
         assert [r["purpose"] for r in records] == ["root_turn", purpose]
         assert records[1]["parent_call_id"] == records[0]["call_id"]

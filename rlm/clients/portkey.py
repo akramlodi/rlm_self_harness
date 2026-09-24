@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any
+from typing import Any, cast
 
 from portkey_ai import AsyncPortkey, Portkey
 from portkey_ai.api_resources.types.chat_complete_type import ChatCompletions
@@ -52,7 +52,7 @@ class PortkeyClient(BaseLM):
             response,
             provider=type(self).__name__,
             model=model,
-            account_usage=lambda: self._track_cost(response, model),
+            account_usage=lambda: self._track_cost(cast(ChatCompletions, response), model),
         )
         self._track_cost(response, model)
         return response.choices[0].message.content
@@ -74,7 +74,7 @@ class PortkeyClient(BaseLM):
             response,
             provider=type(self).__name__,
             model=model,
-            account_usage=lambda: self._track_cost(response, model),
+            account_usage=lambda: self._track_cost(cast(ChatCompletions, response), model),
         )
         self._track_cost(response, model)
         return response.choices[0].message.content

@@ -47,6 +47,7 @@ def test_attribution_repair_and_cache_replay_keep_reasoning_out_of_prompts(tmp_p
             result = attributor.attribute(digest, root, verdict, UNGROUNDED)
         assert [a.accepted for a in result.attempts] == [False, True]
         for index, attempt in enumerate(result.attempts):
+            assert attempt.llm_observations is not None
             responses = [
                 read_observation(r, artifact.parent)
                 for r in attempt.llm_observations
@@ -91,6 +92,7 @@ def test_proposal_repair_replay_is_self_contained_and_checks_integrity(tmp_path)
             evidence=evidence,
         )
         for index, attempt in enumerate(result.attempts):
+            assert attempt.llm_observations is not None
             responses = [
                 read_observation(r, work) for r in attempt.llm_observations if r.get("attempt_id")
             ]
@@ -101,6 +103,7 @@ def test_proposal_repair_replay_is_self_contained_and_checks_integrity(tmp_path)
         "PROPOSAL_PRIVATE" not in str(c.kwargs)
         for c in client.client.chat.completions.create.call_args_list
     )
+    assert result.attempts[0].llm_observations is not None
     ref = next(r for r in result.attempts[0].llm_observations if r.get("attempt_id"))
     (work / ref["path"]).unlink()
     with pytest.raises(ObservationPersistenceError):
@@ -148,6 +151,7 @@ def test_budget_exhaustion_response_is_cached_without_another_call(tmp_path):
                 evidence=synthetic_evidence(BUNDLE["patterns"]),
             )
         attempt = caught.value.attempts[-1]
+        assert attempt.llm_observations is not None
         assert (work / "proposal_failure.json").exists()
         response = next(
             read_observation(r, work) for r in attempt.llm_observations if r.get("attempt_id")

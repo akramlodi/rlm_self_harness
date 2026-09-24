@@ -2336,6 +2336,9 @@ class _FakeCompletion:
         self.response = response
         self.usage_summary = _FakeUsageSummary()
 
+    def to_dict(self) -> dict[str, Any]:
+        return {"response": self.response}
+
 
 class _FakeOutcome:
     def __init__(self, completion: _FakeCompletion, verdict: Any) -> None:
@@ -2345,7 +2348,13 @@ class _FakeOutcome:
 
 
 def _fake_real_execute_run(
-    harnessed: Any, instance: dict[str, Any], *, model_name: str, verifier: Any = None
+    harnessed: Any,
+    instance: dict[str, Any],
+    *,
+    model_name: str,
+    verifier: Any = None,
+    trace_path: Path | None = None,
+    observation_owner: dict[str, Any] | None = None,
 ) -> _FakeOutcome:
     response = "FINAL: 2"  # matches the fake loader's answer_raw "[2]"
     completion = _FakeCompletion(response)
