@@ -1,0 +1,1847 @@
+{
+  "schema": "meta-harness-review/v1",
+  "created_at": "2026-09-24T13:50:49.341886+00:00",
+  "experiment": "experiment_oolong_pairs_dsv4f_20260923_163355",
+  "head_sha": "99812551d52a7b64d45cfffadcc5f78bb6fe9f55",
+  "status": "stopped_by_user",
+  "stop": {
+    "stopped_at": "2026-09-24T13:41:04.132584+00:00",
+    "reason": "User requested experiment termination and task-agnostic meta-harness review.",
+    "processes": {
+      "13029": {
+        "ppid": 1,
+        "pgid": 13029,
+        "command": "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/bin/python /Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260923_163355/.launch/supervise.py"
+      },
+      "13034": {
+        "ppid": 13029,
+        "pgid": 13034,
+        "command": "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/bin/python -u /Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260923_163355/.launch/source/examples/run_experiment.py --config /Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260923_163355/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml --out-dir /Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260923_163355"
+      },
+      "13035": {
+        "ppid": 13029,
+        "pgid": 13029,
+        "command": "/usr/bin/caffeinate -i -w 13034"
+      },
+      "13044": {
+        "ppid": 13034,
+        "pgid": 13034,
+        "command": "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(9)"
+      },
+      "43938": {
+        "ppid": 13034,
+        "pgid": 13034,
+        "command": "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/bin/python -m shrlm.optimization.run_worker /Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260923_163355/opt/round_06/mining/round_06/run_workers/oolong-t13-w9-81ca14885b886d46__a01/request.json"
+      },
+      "44228": {
+        "ppid": 13034,
+        "pgid": 13034,
+        "command": "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/bin/python -m shrlm.optimization.run_worker /Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260923_163355/opt/round_06/mining/round_06/run_workers/oolong-t02-w10-8531d00f4e16fe6b__a01/request.json"
+      },
+      "44468": {
+        "ppid": 13034,
+        "pgid": 13034,
+        "command": "/Users/williamstanford/RESEARCH/rlm_self_harness/.venv/bin/python -m shrlm.optimization.run_worker /Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260923_163355/opt/round_06/mining/round_06/run_workers/oolong-t10-w10-27a4b36613829c4b__a01/request.json"
+      }
+    },
+    "signal": "SIGTERM"
+  },
+  "completed_runs": 266,
+  "recorded_total_cost_lower_bound": 24.9670338,
+  "rounds": [
+    {
+      "round": "round_01",
+      "completed": true,
+      "promoted": false,
+      "proposals": [
+        {
+          "behavioral_change": "Add execution instruction to normalize each pair: sort tuple so lower ID is first, then deduplicate via set. This directly enforces the required ordering and uniqueness before answer submission.",
+          "candidate_id": "r01-c01-s3",
+          "incumbent_behavior": "Root merges sub-call results into pairs by iterating the pair list as returned, without sorting each pair or removing self-pairs. The merge code at operation c968b2bb9c940f49 produces output like (65282, 14630) (lower ID second) and (14630, 14630) (self-pair).",
+          "observed_failure": "Pairs violate lower-ID-first ordering and uniqueness constraints: self-pair (14630, 14630) present, many pairs have lower ID second. Verification limits: no check before submission.",
+          "revision": null,
+          "revision_unchanged": null,
+          "surface": "S3",
+          "target_signature": {
+            "agent_mechanism": "lossy_aggregation",
+            "causal_status": "causal",
+            "failing_level": "root",
+            "verifier_cause": "mixed_set_error"
+          }
+        },
+        {
+          "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with partial data.",
+          "candidate_id": "r01-c02-s4",
+          "incumbent_behavior": "Root detects missing indices after parse failure but does not verify that all questions are classified before computing user counts and generating pairs. The verification step is absent.",
+          "observed_failure": "28 questions lost to parse error; root prints missing indices but proceeds. Undercounts cause 2 spurious pairs. Verification limits: no check on coverage completeness before pair generation.",
+          "revision": null,
+          "revision_unchanged": null,
+          "surface": "S4",
+          "target_signature": {
+            "agent_mechanism": "incomplete_coverage",
+            "causal_status": "causal",
+            "failing_level": "root",
+            "verifier_cause": "spurious"
+          }
+        }
+      ],
+      "proposal_attempts": [
+        {
+          "accepted": false,
+          "admissions": [
+            {
+              "pattern_index": 0,
+              "position": 1,
+              "status": "admitted",
+              "surface": "S3"
+            },
+            {
+              "owner": {
+                "pattern_index": 0,
+                "position": 1,
+                "surface": "S3"
+              },
+              "pattern_index": 2,
+              "position": 2,
+              "status": "occupied",
+              "surface": "S3"
+            }
+          ],
+          "attempt": 1,
+          "violation": "pattern 2 S3 occupancy: surface S3 or pattern 2 is occupied by {'position': 1, 'pattern_index': 0, 'surface': 'S3'}"
+        },
+        {
+          "accepted": false,
+          "admissions": [
+            {
+              "pattern_index": 2,
+              "position": 2,
+              "status": "admitted",
+              "surface": "S4"
+            }
+          ],
+          "attempt": 2,
+          "violation": "pattern 0 S3 proposal: repair must target only an original failed pattern"
+        }
+      ],
+      "local_failures": [
+        {
+          "behavior": {
+            "behavioral_change": "Add execution instruction to normalize each pair as (min(a,b), max(a,b)) and deduplicate via set before formatting the answer. This directly enforces the two violated constraints at the point where pairs are constructed.",
+            "incumbent_behavior": "Root constructs pairs from user lists without normalizing order or deduplicating. The output includes (14630, 14630) (self-pair) and pairs like (65282, 14630) where the lower ID appears second.",
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Pairs violate 'lower ID first' and 'no duplicate pairs' constraints. Verification limits: no check before submission."
+          },
+          "gate": "proposal",
+          "pattern_index": 0,
+          "position": 1,
+          "predicted_effect": "Root will normalize and deduplicate pairs before submission, eliminating self-pairs and reversed-order pairs. The retry-on-parse-failure guidance recovers lost labels from pattern 2 as well, addressing both failure modes with one edit.",
+          "reason": "repair must target only an original failed pattern",
+          "surface": "S3"
+        }
+      ],
+      "evidence_audit": {
+        "admitted_refs": {
+          "0": [
+            "c968b2bb9c940f49",
+            "94b19a094ac7579a",
+            "30f21d94a00a7bcb",
+            "a847c3fe08948888"
+          ],
+          "2": [
+            "010461b37dd9cde8",
+            "df1b4ae5c60e1d8f",
+            "49012594b4ec9961",
+            "00196cb712f5c1fb",
+            "8d411a6477cb4587",
+            "31b012c07f6b56de"
+          ]
+        },
+        "attempt_prompt_chars": [
+          51316,
+          54259
+        ],
+        "core_operation_count": 9,
+        "distinct_actionable_mechanisms": 2,
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 29846,
+        "evidence_selector_version": "4.1.0",
+        "expanded_mechanisms": [
+          "lossy_aggregation",
+          "incomplete_coverage"
+        ],
+        "expanded_patterns": [
+          0,
+          2
+        ],
+        "history_chars": 60,
+        "omitted_patterns": {
+          "1": "complete core packet exceeds remaining budget",
+          "10": "unattributed: no eligible intervention",
+          "3": "complete core packet exceeds remaining budget",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "complete core packet exceeds remaining budget",
+          "6": "complete core packet exceeds remaining budget",
+          "7": "complete core packet exceeds remaining budget",
+          "8": "unattributed: no eligible intervention",
+          "9": "unattributed: no eligible intervention"
+        },
+        "operation_count": 10,
+        "optional_operation_count": 1,
+        "representative_incremental_chars": {
+          "0": 7261,
+          "2": 15407
+        },
+        "route_support": {
+          "0": {
+            "S8": [
+              "c968b2bb9c940f49"
+            ]
+          },
+          "1": {},
+          "10": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        },
+        "system_prompt_chars": 51288
+      },
+      "matched_validation": {
+        "baseline": {
+          "exact_passes": 3,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": 0.6063,
+            "n_attempts": 10,
+            "n_declared_terminal": 0,
+            "n_known_zero": 0,
+            "n_measured": 10,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0.8452981700000002
+        },
+        "merged": {
+          "exact_passes": 2,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": 0.7975,
+            "n_attempts": 10,
+            "n_declared_terminal": 1,
+            "n_known_zero": 1,
+            "n_measured": 9,
+            "n_unknown": 0
+          },
+          "recorded_cost": 1.0977412500000001
+        },
+        "n_attempts": 10
+      },
+      "attribution_count": 29,
+      "attribution_attempt_count": 51,
+      "attribution_mechanisms": {
+        "incomplete_coverage": 11,
+        "lossy_aggregation": 11,
+        "missing": 5,
+        "other": 2
+      },
+      "attribution_refusals": {
+        "incomplete_coverage requires a complete coverage_basis": 24,
+        "coverage_basis loss_observation must be a string of at most 500 characters": 2,
+        "verification_limits must be a string of at most 500 characters": 1
+      },
+      "prompt_sha256": "b7c2c7f3d4cde51e7207039ba5b0b318279552c5e6057af5a3f20ede33c58f63",
+      "reconstructed_prompt_matches": true
+    },
+    {
+      "round": "round_02",
+      "completed": true,
+      "promoted": false,
+      "proposals": [
+        {
+          "behavioral_change": "Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violations.",
+          "candidate_id": "r02-c02-s3",
+          "incumbent_behavior": "S3 execution instruction is empty. Root in pattern 1 calls rlm_query_batched(prompts) and prints 'Got {len(results)} results' and first 200 chars of each result, but never shows any merge or combine logic that assembles sub-call results into the final answer.",
+          "observed_failure": "Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.",
+          "revision": {
+            "explanation": "Previous S3 edit was preflight-rejected because it targeted pattern 0 (lossy_aggregation) but the proposal attempted to also address pattern 2 (incomplete_coverage) in the same edit, violating the single-pattern rule. This revision targets only pattern 1 (lossy_aggregation) with a focused merge instruction, without adding coverage verification. The merge guidance is the same mechanism but scoped to the correct pattern.",
+            "round": 1,
+            "subject_id": "r01-c01-s3"
+          },
+          "revision_unchanged": false,
+          "surface": "S3",
+          "target_signature": {
+            "agent_mechanism": "lossy_aggregation",
+            "causal_status": "causal",
+            "failing_level": "root",
+            "verifier_cause": "mixed_set_error"
+          }
+        }
+      ],
+      "proposal_attempts": [
+        {
+          "accepted": false,
+          "admissions": null,
+          "attempt": 1,
+          "violation": "pattern 0 S2 proposal: selection evidence_refs must belong to this pattern's admitted operations; pattern 1 S3 revision: revisited intervention requires revision referencing round 1 subject pattern 0 on S3 and a changed operation or joint hypothesis; predecessor: {\"surface\": \"S3\", \"mechanism\": \"lossy_aggregation\", \"behavioral_change\": \"Add execution instruction to normalize each pair as (min(a,b), max(a,b)) and deduplicate via set before formatting the answer. This directly enforces the two violated constraints at the point where pairs are constructed.\", \"observed_failure\": \"Pairs violate 'lower ID first' and 'no duplicate pairs' constraints. Verification limits: no check before submission.\", \"decision\": \"preflight_rejected\"}"
+        },
+        {
+          "accepted": false,
+          "admissions": [
+            {
+              "pattern_index": 1,
+              "position": 2,
+              "status": "admitted",
+              "surface": "S3"
+            }
+          ],
+          "attempt": 2,
+          "violation": "pattern 0 S10 proposal: selection evidence_refs must belong to this pattern's admitted operations"
+        }
+      ],
+      "local_failures": [
+        {
+          "behavior": {
+            "behavioral_change": "Add a skill that instructs root to verify that each expected label category appears at least once in the classification output, and to retry with a different prompt or sub-call strategy if a label is missing. This directly addresses the demonstrated failure where missing labels went undetected.",
+            "incumbent_behavior": "Root classified all 188 questions via a single llm_query call, parsed the JSON output, and used the labels to compute user categories. The classification output contained zero 'human being' labels. Root accepted this without verifying label coverage or retrying, then concluded no valid pairs existed.",
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "Root never verified that the classification output contained all expected label categories. The 'human being' label was absent from all 188 classifications, causing root to conclude no valid pairs existed. Verification limits: no coverage check on label categories before pair generation."
+          },
+          "gate": "proposal",
+          "pattern_index": 0,
+          "position": 1,
+          "predicted_effect": "Root will verify that all expected label categories appear in the classification output before proceeding to pair generation. If 'human being' or any other label is missing, root will retry classification with adjusted prompts rather than accepting incomplete data.",
+          "reason": "selection evidence_refs must belong to this pattern's admitted operations",
+          "surface": "S10"
+        }
+      ],
+      "evidence_audit": {
+        "admitted_refs": {
+          "1": [
+            "2f52e3362f6bc323",
+            "1798b3a6aa4c29e1",
+            "d30947278db1ffe0",
+            "4644b276b7d5ba92",
+            "7aa66e2b6781f307",
+            "e2ba519a44cb015c"
+          ],
+          "6": [
+            "5c5715b271dd962a",
+            "c20526aa9039d7d1",
+            "d8806e169808c1f5"
+          ]
+        },
+        "attempt_prompt_chars": [
+          53269,
+          61330
+        ],
+        "core_operation_count": 9,
+        "distinct_actionable_mechanisms": 2,
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 25227,
+        "evidence_selector_version": "4.1.0",
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation"
+        ],
+        "expanded_patterns": [
+          6,
+          1
+        ],
+        "history_chars": 6632,
+        "omitted_patterns": {
+          "0": "complete core packet exceeds remaining budget",
+          "2": "complete core packet exceeds remaining budget",
+          "3": "complete core packet exceeds remaining budget",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "unattributed: no eligible intervention",
+          "7": "unattributed: no eligible intervention"
+        },
+        "operation_count": 9,
+        "optional_operation_count": 0,
+        "representative_incremental_chars": {
+          "1": 11246,
+          "6": 8994
+        },
+        "route_support": {
+          "0": {},
+          "1": {
+            "S8": [
+              "2f52e3362f6bc323"
+            ]
+          },
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        },
+        "system_prompt_chars": 53241
+      },
+      "matched_validation": {
+        "baseline": {
+          "exact_passes": 3,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": 0.712,
+            "n_attempts": 10,
+            "n_declared_terminal": 1,
+            "n_known_zero": 1,
+            "n_measured": 9,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0.7664446
+        },
+        "merged": {
+          "exact_passes": 0,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": 0.6064,
+            "n_attempts": 10,
+            "n_declared_terminal": 1,
+            "n_known_zero": 1,
+            "n_measured": 9,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0.80794712
+        },
+        "n_attempts": 10
+      },
+      "attribution_count": 28,
+      "attribution_attempt_count": 60,
+      "attribution_mechanisms": {
+        "incomplete_coverage": 16,
+        "lossy_aggregation": 5,
+        "missing": 4,
+        "other": 3
+      },
+      "attribution_refusals": {
+        "incomplete_coverage requires a complete coverage_basis": 34,
+        "coverage_basis loss_observation must be a string of at most 500 characters": 1,
+        "operation_evidence coordinates do not appear in the run": 1
+      },
+      "prompt_sha256": "c3853b796879f2dc7af63fe7a6e550ac2ad4e718f4bb68d2926d4e575e799976",
+      "reconstructed_prompt_matches": true
+    },
+    {
+      "round": "round_03",
+      "completed": true,
+      "promoted": true,
+      "proposals": [
+        {
+          "behavioral_change": "Add a coverage check step to the S2 decomposition instruction: after parsing, compare the number of parsed records against the total line count of the context. If they differ, print the discrepancy and re-parse with a more inclusive pattern before proceeding. This directly addresses the demonstrated cause of incomplete input coverage.",
+          "candidate_id": "r03-c01-s2",
+          "incumbent_behavior": "Root parsed only lines starting with 'Date:' from context, yielding 188 data lines. It did not check whether the total number of parsed lines matched the full input size before proceeding to classification and pair generation.",
+          "observed_failure": "265 missing pairs (recall 0.466) because the root never verified that all input records were captured. The original input likely contained more records that did not start with 'Date:'.",
+          "revision": null,
+          "revision_unchanged": null,
+          "surface": "S2",
+          "target_signature": {
+            "agent_mechanism": "incomplete_coverage",
+            "causal_status": "causal",
+            "failing_level": "root",
+            "verifier_cause": "incomplete"
+          }
+        },
+        {
+          "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with partial data.",
+          "candidate_id": "r03-c02-s4",
+          "incumbent_behavior": "S4 verification instruction was empty. Root attempted to aggregate sub-call results with `for key, label in data:` on a dict, causing ValueError. Root recovered in the next iteration by using .items(), but 40 classifications were lost during the error turn.",
+          "observed_failure": "ValueError prevented classification data from being collected. Root detected 120 missing classifications but proceeded to pair generation without retrying the failed chunk. Verification limits: no coverage check before pair generation.",
+          "revision": null,
+          "revision_unchanged": null,
+          "surface": "S4",
+          "target_signature": {
+            "agent_mechanism": "lossy_aggregation",
+            "causal_status": "causal",
+            "failing_level": "root",
+            "verifier_cause": "incomplete"
+          }
+        }
+      ],
+      "proposal_attempts": [
+        {
+          "accepted": false,
+          "admissions": [
+            {
+              "pattern_index": 0,
+              "position": 1,
+              "status": "admitted",
+              "surface": "S2"
+            }
+          ],
+          "attempt": 1,
+          "violation": "pattern 4 S3 revision: revisited intervention requires revision referencing round 2 subject r02-c02-s3 and a changed operation or joint hypothesis; predecessor: {\"surface\": \"S3\", \"mechanism\": \"lossy_aggregation\", \"behavioral_change\": \"Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio\", \"observed_failure\": \"Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.\", \"decision\": \"rejected\"}"
+        },
+        {
+          "accepted": true,
+          "admissions": [
+            {
+              "pattern_index": 4,
+              "position": 2,
+              "status": "admitted",
+              "surface": "S4"
+            }
+          ],
+          "attempt": 2,
+          "violation": ""
+        }
+      ],
+      "local_failures": [],
+      "evidence_audit": {
+        "admitted_refs": {
+          "0": [
+            "7b7d7968bb4bb1dc",
+            "57d3b2130fb361f3",
+            "9cd38adfd079d098",
+            "55c72d52559895e8",
+            "0f4eee11cbeaf6ab"
+          ],
+          "4": [
+            "6c98211096f41bf5",
+            "225be23943fb363f",
+            "8898419d29d15269",
+            "679258df864dd483",
+            "e915df79a5e3dcf7",
+            "ed53e0865f384be8"
+          ]
+        },
+        "attempt_prompt_chars": [
+          58972,
+          62269
+        ],
+        "core_operation_count": 9,
+        "distinct_actionable_mechanisms": 2,
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 30930,
+        "evidence_selector_version": "4.1.0",
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation"
+        ],
+        "expanded_patterns": [
+          0,
+          4
+        ],
+        "history_chars": 6632,
+        "omitted_patterns": {
+          "1": "complete core packet exceeds remaining budget",
+          "10": "unattributed: no eligible intervention",
+          "2": "complete core packet exceeds remaining budget",
+          "3": "complete core packet exceeds remaining budget",
+          "5": "complete core packet exceeds remaining budget",
+          "6": "complete core packet exceeds remaining budget",
+          "7": "complete core packet exceeds remaining budget",
+          "8": "unattributed: no eligible intervention",
+          "9": "unattributed: no eligible intervention"
+        },
+        "operation_count": 11,
+        "optional_operation_count": 2,
+        "representative_incremental_chars": {
+          "0": 6026,
+          "4": 13857
+        },
+        "route_support": {
+          "0": {},
+          "1": {},
+          "10": {},
+          "2": {},
+          "3": {},
+          "4": {
+            "S8": [
+              "6c98211096f41bf5"
+            ]
+          },
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        },
+        "system_prompt_chars": 58944
+      },
+      "matched_validation": {
+        "baseline": {
+          "exact_passes": 1,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": 0.5256000000000001,
+            "n_attempts": 10,
+            "n_declared_terminal": 2,
+            "n_known_zero": 2,
+            "n_measured": 8,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0.6481484999999999
+        },
+        "merged": {
+          "exact_passes": 3,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": 0.6656,
+            "n_attempts": 10,
+            "n_declared_terminal": 1,
+            "n_known_zero": 1,
+            "n_measured": 9,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0.9025148599999999
+        },
+        "n_attempts": 10
+      },
+      "attribution_count": 32,
+      "attribution_attempt_count": 68,
+      "attribution_mechanisms": {
+        "incomplete_coverage": 13,
+        "lossy_aggregation": 7,
+        "missing": 9,
+        "other": 3
+      },
+      "attribution_refusals": {
+        "operation_evidence coordinates do not appear in the run": 4,
+        "incomplete_coverage requires a complete coverage_basis": 39,
+        "coverage_basis loss_observation must be a string of at most 500 characters": 2
+      },
+      "prompt_sha256": "49793785e4458bb563134e36b80e2b38459c18c1e9c59ebeacb46ba61df47f82",
+      "reconstructed_prompt_matches": true
+    },
+    {
+      "round": "round_04",
+      "completed": true,
+      "promoted": false,
+      "proposals": [],
+      "proposal_attempts": [
+        {
+          "accepted": false,
+          "admissions": null,
+          "attempt": 1,
+          "violation": "pattern 0 S4 proposal: selection evidence_refs must belong to this pattern's admitted operations; pattern 1 S4 proposal: selection has no matching candidate replacement; pattern 2 S3 revision: revisited intervention requires revision referencing round 2 subject r02-c02-s3 and a changed operation or joint hypothesis; predecessor: {\"surface\": \"S3\", \"mechanism\": \"lossy_aggregation\", \"behavioral_change\": \"Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio\", \"observed_failure\": \"Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.\", \"decision\": \"rejected\"}; pattern 4 S3 revision: revisited intervention requires revision referencing round 2 subject r02-c02-s3 and a changed operation or joint hypothesis; predecessor: {\"surface\": \"S3\", \"mechanism\": \"lossy_aggregation\", \"behavioral_change\": \"Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio\", \"observed_failure\": \"Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.\", \"decision\": \"rejected\"}"
+        },
+        {
+          "accepted": false,
+          "admissions": null,
+          "attempt": 2,
+          "violation": "pattern 0 S4 proposal: selection evidence_refs must belong to this pattern's admitted operations; pattern 2 S3 revision: revisited intervention requires revision referencing round 2 subject r02-c02-s3 and a changed operation or joint hypothesis; predecessor: {\"surface\": \"S3\", \"mechanism\": \"lossy_aggregation\", \"behavioral_change\": \"Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio\", \"observed_failure\": \"Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.\", \"decision\": \"rejected\"}; pattern 4 S3 revision: revisited intervention requires revision referencing round 2 subject r02-c02-s3 and a changed operation or joint hypothesis; predecessor: {\"surface\": \"S3\", \"mechanism\": \"lossy_aggregation\", \"behavioral_change\": \"Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio\", \"observed_failure\": \"Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.\", \"decision\": \"rejected\"}"
+        }
+      ],
+      "local_failures": [
+        {
+          "behavior": {
+            "behavioral_change": "Replace S4 with instruction to verify that the set of classified user IDs equals the full input set before generating pairs. If coverage is incomplete, retry the failed chunk(s) rather than proceeding with partial data. This directly addresses the demonstrated cause: root skipped coverage verification.",
+            "incumbent_behavior": "Root merged sub-call results into a dictionary of user counts without verifying that all input users were classified. The merge code at operation 97a4d564a51b6545 printed 'Merged 58 users' but never compared against the full input set. No coverage check was performed before proceeding to pair generation.",
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "Child r/i2/b4/c1 returned classifications for only 10 user IDs out of 50 questions in its prompt. Root proceeded to generate pairs from the incomplete merged set, producing recall 0.822. Verification limits: no coverage check existed."
+          },
+          "gate": "proposal",
+          "pattern_index": 0,
+          "position": 1,
+          "predicted_effect": "Root will compare the set of classified user IDs against the full input set before pair generation. If a child returned incomplete classifications, root will detect the shortfall and retry that chunk, preventing recall loss from undetected missing users. Correctly classified runs with full coverage pass through unchanged.",
+          "reason": "selection evidence_refs must belong to this pattern's admitted operations",
+          "surface": "S4"
+        },
+        {
+          "behavior": {
+            "behavioral_change": "Add execution instruction to normalize each pair as (min(a,b), max(a,b)) and deduplicate via set before formatting the answer. This directly enforces the two violated constraints at the point where pairs are constructed, without changing any other execution behavior.",
+            "effective_edit_fingerprint": "3e093b133f873a147d8a698b61874f5b2c8d554ff9cf48c6a60efd46981566b2",
+            "incumbent_behavior": "S3_execution_instruction is empty string. Root constructed pairs from user lists without normalizing order or deduplicating. Prior round evidence shows output included self-pairs like (14630, 14630) and pairs like (65282, 14630) where lower ID appears second.",
+            "incumbent_hash": "44869d769d1a48e2b4209e6692c1c578b36ddb714ae109a74acb840bc0bd2df3",
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Pairs violated 'lower ID first' and 'no duplicate pairs' constraints. Verification limits: no check before submission. The empty S3 provided no execution guidance for pair construction.",
+            "revision": null
+          },
+          "gate": "revision",
+          "pattern_index": 2,
+          "position": 2,
+          "predicted_effect": "Root will sort each pair to lower-ID-first and remove self-pairs and duplicates before submission, eliminating the ordering and uniqueness violations. Correctly ordered pairs from sub-calls remain unchanged.",
+          "reason": "revisited intervention requires revision referencing round 2 subject r02-c02-s3 and a changed operation or joint hypothesis; predecessor: {\"surface\": \"S3\", \"mechanism\": \"lossy_aggregation\", \"behavioral_change\": \"Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio\", \"observed_failure\": \"Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.\", \"decision\": \"rejected\"}",
+          "surface": "S3"
+        },
+        {
+          "behavior": {
+            "behavioral_change": "Add formatting instruction to S3 specifying the required answer format: a bracketed list of pairs or newline-separated pairs, with the explicit empty marker. This provides the missing format guidance at the execution level.",
+            "effective_edit_fingerprint": "246a6d52e2d065e301db6f52d1cb3c3fdfa09d168512abc1eab5bd7ac65c3eb7",
+            "incumbent_behavior": "S3_execution_instruction is empty string. Root produced final answer without a bracketed list on the last produced line in 2/2 runs with wrong_format cause. The answer format was not explicitly guided.",
+            "incumbent_hash": "44869d769d1a48e2b4209e6692c1c578b36ddb714ae109a74acb840bc0bd2df3",
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Final answer missing bracketed list format. Verifier rejected as wrong_format. No execution guidance for answer formatting existed.",
+            "revision": null
+          },
+          "gate": "revision",
+          "pattern_index": 4,
+          "position": 3,
+          "predicted_effect": "Root will produce correctly formatted answer output matching the verifier's accepted formats. The explicit empty marker prevents wrong_format on empty results. Correctly formatted runs pass through unchanged.",
+          "reason": "revisited intervention requires revision referencing round 2 subject r02-c02-s3 and a changed operation or joint hypothesis; predecessor: {\"surface\": \"S3\", \"mechanism\": \"lossy_aggregation\", \"behavioral_change\": \"Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio\", \"observed_failure\": \"Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.\", \"decision\": \"rejected\"}",
+          "surface": "S3"
+        }
+      ],
+      "evidence_audit": {
+        "admitted_refs": {
+          "1": [
+            "97a4d564a51b6545",
+            "7b96c387c9ff1521",
+            "bad2925d2610437a",
+            "5d4f19c0ccc9ccf3",
+            "1ec636b71f000484",
+            "cd84b890de4ed6f7"
+          ]
+        },
+        "attempt_prompt_chars": [
+          49198,
+          56787
+        ],
+        "core_operation_count": 6,
+        "distinct_actionable_mechanisms": 3,
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 20633,
+        "evidence_selector_version": "4.1.0",
+        "expanded_mechanisms": [
+          "incomplete_coverage"
+        ],
+        "expanded_patterns": [
+          1
+        ],
+        "history_chars": 6647,
+        "omitted_patterns": {
+          "0": "complete core packet exceeds remaining budget",
+          "2": "complete core packet exceeds remaining budget",
+          "3": "complete core packet exceeds remaining budget",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "unattributed: no eligible intervention",
+          "6": "unattributed: no eligible intervention",
+          "7": "complete core packet exceeds remaining budget",
+          "8": "complete core packet exceeds remaining budget"
+        },
+        "operation_count": 6,
+        "optional_operation_count": 0,
+        "representative_incremental_chars": {
+          "1": 15240
+        },
+        "route_support": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {}
+        },
+        "system_prompt_chars": 49170
+      },
+      "matched_validation": {
+        "baseline": {
+          "exact_passes": 0,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": null,
+            "n_attempts": 0,
+            "n_declared_terminal": 0,
+            "n_known_zero": 0,
+            "n_measured": 0,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0
+        },
+        "merged": {
+          "exact_passes": 0,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": null,
+            "n_attempts": 0,
+            "n_declared_terminal": 0,
+            "n_known_zero": 0,
+            "n_measured": 0,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0
+        },
+        "n_attempts": 0
+      },
+      "attribution_count": 31,
+      "attribution_attempt_count": 59,
+      "attribution_mechanisms": {
+        "incomplete_coverage": 14,
+        "lossy_aggregation": 6,
+        "misaligned_unit": 2,
+        "missing": 5,
+        "other": 4
+      },
+      "attribution_refusals": {
+        "incomplete_coverage requires a complete coverage_basis": 28,
+        "coverage_basis counterevidence must be a string of at most 500 characters": 1,
+        "operation_evidence coordinates do not appear in the run": 4
+      },
+      "prompt_sha256": "fc720c67dc5c246846ff752fcb90ca855111b53b7b6c901a84b77f1070dd631a",
+      "reconstructed_prompt_matches": true
+    },
+    {
+      "round": "round_05",
+      "completed": true,
+      "promoted": false,
+      "proposals": [],
+      "proposal_attempts": [
+        {
+          "accepted": false,
+          "admissions": null,
+          "attempt": 1,
+          "violation": "pattern 0 S4 proposal: selection evidence_refs must belong to this pattern's admitted operations; pattern 3 S3 revision: revisited intervention requires revision referencing round 4 subject pattern 4 on S3 and a changed operation or joint hypothesis; predecessor: {\"surface\": \"S3\", \"mechanism\": \"lossy_aggregation\", \"behavioral_change\": \"Add formatting instruction to S3 specifying the required answer format: a bracketed list of pairs or newline-separated pairs, with the explicit empty marker. This provides the missing format guidance at the execution level.\", \"observed_failure\": \"Final answer missing bracketed list format. Verifier rejected as wrong_format. No execution guidance for answer formatting existed.\", \"decision\": \"preflight_rejected\"}"
+        },
+        {
+          "accepted": false,
+          "admissions": null,
+          "attempt": 2,
+          "violation": "pattern 0 S4 proposal: selection evidence_refs must belong to this pattern's admitted operations; pattern 3 S3 revision: revision reference does not resolve to one prior attempt"
+        }
+      ],
+      "local_failures": [
+        {
+          "behavior": {
+            "behavioral_change": "Add verification instruction requiring root to collect the set of user IDs from sub-call outputs, compare it to the full set of user IDs from the original input, and retry any missing user IDs' chunks before proceeding to pair generation. This directly prevents the demonstrated omission.",
+            "incumbent_behavior": "Root issued rlm_query_batched(prompts) delegating classification to children, printed result lengths, and proceeded to pair generation without verifying which user IDs were covered by sub-call outputs.",
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "User 72621's questions were never classified by any sub-call; root never detected this omission. 7 gold pairs missing (f1=0.125). Verification limits: no coverage check against original input's user IDs before pair generation."
+          },
+          "gate": "proposal",
+          "pattern_index": 0,
+          "position": 1,
+          "predicted_effect": "Root will detect when a user ID's questions were not classified by any sub-call, retry the relevant chunk, and only generate pairs after all user IDs are covered. This eliminates the incomplete-coverage failure mode while leaving correct full-coverage runs unaffected.",
+          "reason": "selection evidence_refs must belong to this pattern's admitted operations",
+          "surface": "S4"
+        },
+        {
+          "behavior": {
+            "behavioral_change": "Add execution instruction requiring root to aggregate sub-call results faithfully: collect all user IDs flagged by sub-calls, compute the union, and generate pairs only from that union. If the root re-parses or re-classifies, it must still verify the final answer is a subset of sub-call findings.",
+            "effective_edit_fingerprint": "b687333352cf1a3bf02e394eafa228a0e8ca9a31a3ee055659300ae1500d94d0",
+            "incumbent_behavior": "Root called rlm_query_batched(prompts) then printed results, but later discarded sub-call outputs and manually re-parsed questions with a new llm_query, producing a final answer not derived from sub-call classifications.",
+            "incumbent_hash": "44869d769d1a48e2b4209e6692c1c578b36ddb714ae109a74acb840bc0bd2df3",
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Final answer included pair (16357, 32716) where user 32716 was never identified by any sub-call as having entity/human being. Root's merge step was absent or produced spurious pairs not supported by sub-call evidence. Verification limits: no check that final user set matches union of sub-call findings.",
+            "revision": {
+              "explanation": "Previous S3 edit addressed pair formatting (ordering/dedup). This new edit addresses a different mechanism: lossy_aggregation where root discards sub-call outputs and produces spurious pairs not supported by sub-call evidence. The prior edit's formatting guidance is orthogonal and retained in the new text.",
+              "round": 4,
+              "subject_id": "r01-c01-s3"
+            }
+          },
+          "gate": "revision",
+          "pattern_index": 3,
+          "position": 2,
+          "predicted_effect": "Root will produce pairs only from user IDs that sub-calls actually identified, eliminating spurious pairs like (16357, 32716) where 32716 was never flagged. Correct runs where sub-call aggregation already works are unaffected because the instruction only enforces what they already do.",
+          "reason": "revision reference does not resolve to one prior attempt",
+          "surface": "S3"
+        }
+      ],
+      "evidence_audit": {
+        "admitted_refs": {
+          "2": [
+            "49012594b4ec9961",
+            "00196cb712f5c1fb",
+            "8d411a6477cb4587",
+            "47d32b5eb48eee07",
+            "3ceb9effc85bb71d"
+          ],
+          "3": [
+            "42d2f79202144743",
+            "b65cd234a6a45aed",
+            "7d1ee599e2456996",
+            "9b9efa89e4cf5946",
+            "1dec0cecac515a19",
+            "309291f8ef68905d"
+          ]
+        },
+        "attempt_prompt_chars": [
+          59503,
+          64757
+        ],
+        "core_operation_count": 9,
+        "distinct_actionable_mechanisms": 3,
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 30861,
+        "evidence_selector_version": "4.1.0",
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation"
+        ],
+        "expanded_patterns": [
+          2,
+          3
+        ],
+        "history_chars": 6648,
+        "omitted_patterns": {
+          "0": "complete core packet exceeds remaining budget",
+          "1": "complete core packet exceeds remaining budget",
+          "10": "unattributed: no eligible intervention",
+          "11": "unattributed: no eligible intervention",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "complete core packet exceeds remaining budget",
+          "6": "complete core packet exceeds remaining budget",
+          "7": "complete core packet exceeds remaining budget",
+          "8": "unattributed: no eligible intervention",
+          "9": "unattributed: no eligible intervention"
+        },
+        "operation_count": 11,
+        "optional_operation_count": 2,
+        "representative_incremental_chars": {
+          "2": 9376,
+          "3": 11192
+        },
+        "route_support": {
+          "0": {},
+          "1": {},
+          "10": {},
+          "11": {},
+          "2": {},
+          "3": {
+            "S8": [
+              "42d2f79202144743",
+              "309291f8ef68905d"
+            ]
+          },
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        },
+        "system_prompt_chars": 59475
+      },
+      "matched_validation": {
+        "baseline": {
+          "exact_passes": 0,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": null,
+            "n_attempts": 0,
+            "n_declared_terminal": 0,
+            "n_known_zero": 0,
+            "n_measured": 0,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0
+        },
+        "merged": {
+          "exact_passes": 0,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": null,
+            "n_attempts": 0,
+            "n_declared_terminal": 0,
+            "n_known_zero": 0,
+            "n_measured": 0,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0
+        },
+        "n_attempts": 0
+      },
+      "attribution_count": 31,
+      "attribution_attempt_count": 65,
+      "attribution_mechanisms": {
+        "incomplete_coverage": 11,
+        "lossy_aggregation": 10,
+        "misaligned_unit": 1,
+        "missing": 5,
+        "other": 4
+      },
+      "attribution_refusals": {
+        "operation_evidence observation must contain 1\u2013500 characters": 1,
+        "incomplete_coverage requires a complete coverage_basis": 30,
+        "coverage_basis loss_observation must be a string of at most 500 characters": 1,
+        "operation_evidence coordinates do not appear in the run": 7
+      },
+      "prompt_sha256": "13621eaf17033604c37abf8b5095c3a6be60c7708edf52b34e7ce0a519b5e1e1",
+      "reconstructed_prompt_matches": true
+    },
+    {
+      "round": "round_06",
+      "completed": false,
+      "promoted": null,
+      "proposals": [],
+      "proposal_attempts": [],
+      "local_failures": [],
+      "evidence_audit": {},
+      "matched_validation": {
+        "baseline": {
+          "exact_passes": 0,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": null,
+            "n_attempts": 0,
+            "n_declared_terminal": 0,
+            "n_known_zero": 0,
+            "n_measured": 0,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0
+        },
+        "merged": {
+          "exact_passes": 0,
+          "quality": {
+            "definition": {
+              "aggregation": "all_attempt_mean",
+              "direction": "higher",
+              "name": "f1",
+              "precision": 3,
+              "schema": "primary-quality/v1",
+              "terminal_values": {
+                "content_filtered": 0.0,
+                "resource_terminated": 0.0,
+                "runtime_error": 0.0,
+                "wrong_format": 0.0
+              },
+              "version": "v1"
+            },
+            "mean": null,
+            "n_attempts": 0,
+            "n_declared_terminal": 0,
+            "n_known_zero": 0,
+            "n_measured": 0,
+            "n_unknown": 0
+          },
+          "recorded_cost": 0
+        },
+        "n_attempts": 0
+      },
+      "attribution_count": 0,
+      "attribution_attempt_count": 0,
+      "attribution_mechanisms": {},
+      "attribution_refusals": {}
+    }
+  ],
+  "attribution_refusals": {
+    "incomplete_coverage requires a complete coverage_basis": 155,
+    "coverage_basis loss_observation must be a string of at most 500 characters": 6,
+    "verification_limits must be a string of at most 500 characters": 1,
+    "operation_evidence coordinates do not appear in the run": 16,
+    "coverage_basis counterevidence must be a string of at most 500 characters": 1,
+    "operation_evidence observation must contain 1\u2013500 characters": 1
+  },
+  "proposal_responses": [
+    {
+      "round": 1,
+      "attempt": 1,
+      "selections": [
+        {
+          "pattern_index": 0,
+          "surface": "S3",
+          "reason": "Pattern 0 (lossy_aggregation, mixed_set_error) shows root merging sub-call results into pairs without enforcing lower-ID-first ordering or deduplication. The merge code in operation c968b2bb9c940f49 simply iterates pairs as returned, producing self-pairs and reversed-order pairs. S3 execution instruction is the primary surface to add a post-merge normalization step that sorts each pair and removes duplicates before submission.",
+          "evidence_refs": [
+            "c968b2bb9c940f49",
+            "a847c3fe08948888"
+          ]
+        },
+        {
+          "pattern_index": 2,
+          "surface": "S3",
+          "reason": "Pattern 2 (incomplete_coverage, spurious) shows 28 questions lost to a JSON parse error (single-quoted dict) in chunk 4, causing undercounts that produced spurious pairs. The root detected missing indices but did not retry or recover. S3 execution instruction is the primary surface to add a recovery step: when a chunk fails to parse, retry with a stricter prompt demanding double-quoted JSON before proceeding.",
+          "evidence_refs": [
+            "010461b37dd9cde8",
+            "df1b4ae5c60e1d8f",
+            "00196cb712f5c1fb",
+            "8d411a6477cb4587",
+            "31b012c07f6b56de"
+          ]
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 0,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "Root merges sub-call results into pairs by iterating the pair list as returned, without sorting each pair or removing self-pairs. The merge code at operation c968b2bb9c940f49 produces output like (65282, 14630) (lower ID second) and (14630, 14630) (self-pair).",
+          "observed_failure": "Pairs violate lower-ID-first ordering and uniqueness constraints: self-pair (14630, 14630) present, many pairs have lower ID second. Verification limits: no check before submission.",
+          "behavioral_change": "Add execution instruction to normalize each pair: sort tuple so lower ID is first, then deduplicate via set. This directly enforces the required ordering and uniqueness before answer submission.",
+          "edit": {
+            "kind": "text",
+            "new_text": "After constructing the final list of pairs, normalize each pair so the lower ID appears first: `pair = (min(a,b), max(a,b))`. Then deduplicate by converting to a set (or equivalent). Only then format the answer. This ensures no self-pairs and no reversed-order pairs reach the answer."
+          },
+          "predicted_effect": "Root will sort each pair to lower-ID-first and remove duplicates before submission, eliminating the ordering and self-pair violations observed in pattern 0. Correctly ordered pairs from sub-calls remain unchanged.",
+          "regression_risks": [
+            "No regression: normalization is a pure post-processing step that cannot introduce new pairs or remove valid ones. It only reorders and deduplicates, which is always correct for this task."
+          ]
+        },
+        {
+          "pattern_index": 2,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "Root parses child JSON results with json.loads after stripping markdown fences. When chunk 4 returns single-quoted JSON (Python dict literal), json.loads fails and the root prints the error and continues, losing 28 questions. No retry or recovery is attempted.",
+          "observed_failure": "28 questions (indices 160-187) lost to parse error, causing undercounts that produced 2 spurious pairs. Verification limits: root detected missing indices but did not retry or recover the unparsed chunk.",
+          "behavioral_change": "Add execution instruction to retry a failed chunk with a stricter prompt demanding double-quoted JSON, before proceeding. This recovers the lost labels instead of silently dropping them.",
+          "edit": {
+            "kind": "text",
+            "new_text": "After constructing the final list of pairs, normalize each pair so the lower ID appears first: `pair = (min(a,b), max(a,b))`. Then deduplicate by converting to a set (or equivalent). Only then format the answer. This ensures no self-pairs and no reversed-order pairs reach the answer.\n\nWhen a child's JSON result fails to parse with json.loads, do not skip it. Instead, retry that chunk with a stricter prompt that explicitly demands double-quoted JSON (e.g., 'Return ONLY valid JSON with double quotes, no single quotes'). If the retry also fails, print the raw text and the error, then proceed. Do not silently drop unparsed data."
+          },
+          "predicted_effect": "Root will retry failed chunks with a stricter prompt, recovering lost labels and avoiding undercounts that cause spurious pairs. The retry adds at most one extra sub-call per failed chunk, which is work-neutral for the common case where all chunks parse successfully.",
+          "regression_risks": [
+            "Retry adds one extra sub-call per parse failure, increasing spend slightly for runs with failures. This is acceptable because the alternative (silent data loss) produces incorrect answers.",
+            "The retry prompt must not be so strict that it rejects valid JSON with markdown fences; the existing strip logic handles that before parsing."
+          ]
+        }
+      ]
+    },
+    {
+      "round": 1,
+      "attempt": 2,
+      "selections": [
+        {
+          "pattern_index": 0,
+          "surface": "S3",
+          "reason": "Pattern 0 (lossy_aggregation, mixed_set_error) shows root producing self-pairs and reversed-order pairs because no execution instruction enforces pair normalization or deduplication before submission. S3 is the primary surface for execution guidance on combining results.",
+          "evidence_refs": [
+            "c968b2bb9c940f49",
+            "a847c3fe08948888"
+          ]
+        },
+        {
+          "pattern_index": 2,
+          "surface": "S4",
+          "reason": "Pattern 2 (incomplete_coverage, spurious) shows 28 questions lost to a JSON parse error, causing undercounts that produced spurious pairs. S4 verification can check that all input items are accounted for before proceeding, catching the loss before pair generation.",
+          "evidence_refs": [
+            "010461b37dd9cde8",
+            "df1b4ae5c60e1d8f"
+          ]
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 0,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "Root constructs pairs from user lists without normalizing order or deduplicating. The output includes (14630, 14630) (self-pair) and pairs like (65282, 14630) where the lower ID appears second.",
+          "observed_failure": "Pairs violate 'lower ID first' and 'no duplicate pairs' constraints. Verification limits: no check before submission.",
+          "behavioral_change": "Add execution instruction to normalize each pair as (min(a,b), max(a,b)) and deduplicate via set before formatting the answer. This directly enforces the two violated constraints at the point where pairs are constructed.",
+          "edit": {
+            "kind": "text",
+            "new_text": "After constructing the final list of pairs, normalize each pair so the lower ID appears first: `pair = (min(a,b), max(a,b))`. Then deduplicate by converting to a set (or equivalent). Only then format the answer. This ensures no self-pairs and no reversed-order pairs reach the answer.\n\nWhen a child's JSON result fails to parse with json.loads, do not skip it. Instead, retry that chunk with a stricter prompt that explicitly demands double-quoted JSON (e.g., 'Return ONLY valid JSON with double quotes, no single quotes'). If the retry also fails, print the raw text and the error, then proceed. Do not silently drop unparsed data."
+          },
+          "predicted_effect": "Root will normalize and deduplicate pairs before submission, eliminating self-pairs and reversed-order pairs. The retry-on-parse-failure guidance recovers lost labels from pattern 2 as well, addressing both failure modes with one edit.",
+          "regression_risks": [
+            "Normalization and deduplication are O(n) operations on the pair list and add negligible runtime.",
+            "Retry adds one extra sub-call per parse failure, increasing spend slightly for runs with failures. This is acceptable because the alternative (silent data loss) produces incorrect answers.",
+            "The retry prompt must not be so strict that it rejects valid JSON with markdown fences; the existing strip logic handles that before parsing."
+          ]
+        },
+        {
+          "pattern_index": 2,
+          "surface": "S4",
+          "revision": null,
+          "incumbent_behavior": "Root detects missing indices after parse failure but does not verify that all questions are classified before computing user counts and generating pairs. The verification step is absent.",
+          "observed_failure": "28 questions lost to parse error; root prints missing indices but proceeds. Undercounts cause 2 spurious pairs. Verification limits: no check on coverage completeness before pair generation.",
+          "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with partial data.",
+          "edit": {
+            "kind": "text",
+            "new_text": "Before generating pairs, verify that the number of classified questions equals the total number of input questions. If any questions are missing (e.g., due to a parse failure), retry the failed chunk(s) with a stricter prompt demanding double-quoted JSON. Only proceed to pair generation once all questions are classified."
+          },
+          "predicted_effect": "Root will check coverage completeness before pair generation and retry failed chunks, preventing undercounts that cause spurious pairs. The verification catches the data loss that pattern 2's root detected but ignored.",
+          "regression_risks": [
+            "Verification adds a simple integer comparison, negligible cost.",
+            "Retry adds one extra sub-call per parse failure, acceptable given the alternative of incorrect answers.",
+            "If a chunk genuinely cannot be parsed after retries, the root will loop; the instruction says 'retry' not 'retry indefinitely', so the root should limit retries naturally."
+          ]
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "attempt": 1,
+      "selections": [
+        {
+          "pattern_index": 0,
+          "surface": "S2",
+          "reason": "Pattern 0 (incomplete_coverage, 9 support) shows root never verifies that all questions were classified before computing user categories. The S2 decomposition example for label statistics ends at printing totals, with no step to confirm coverage or retry lost chunks. Adding a coverage check and retry step to the S2 example directly addresses the demonstrated mechanism: the root proceeds with partial data because the decomposition pattern lacks a completeness gate.",
+          "evidence_refs": [
+            "5c5715b271dd962a",
+            "c20526aa9039d7d1",
+            "d8806e169808c1f5"
+          ]
+        },
+        {
+          "pattern_index": 1,
+          "surface": "S3",
+          "reason": "Pattern 1 (lossy_aggregation, 3 support) shows root calls rlm_query_batched but never merges results into the final answer \u2014 pairs are missing and extra. The S3 execution instruction is empty, so no guidance exists for combining sub-call outputs. Adding a merge step that normalizes pairs (lower ID first) and deduplicates addresses the demonstrated ordering/duplication violations and the missing merge logic.",
+          "evidence_refs": [
+            "2f52e3362f6bc323",
+            "1798b3a6aa4c29e1",
+            "4644b276b7d5ba92",
+            "7aa66e2b6781f307",
+            "e2ba519a44cb015c",
+            "d30947278db1ffe0"
+          ]
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 0,
+          "surface": "S2",
+          "revision": null,
+          "incumbent_behavior": "S2 decomposition example for label statistics ends after printing totals, with no step to verify that all input items were classified or to retry lost chunks. The root in pattern 0 classified 188 questions but never checked coverage, then concluded no valid pairs existed because 'human being' was absent from the classification output.",
+          "observed_failure": "Root accepted classification output without verifying all 188 questions were labeled; 'human being' never appeared, causing root to conclude no valid pairs existed. Verification limits: no coverage check before pair generation.",
+          "behavioral_change": "Add a coverage verification step to the S2 example: after merging child counts, compare the total classified count against the input line count. If coverage is incomplete, retry the failed chunk(s) before proceeding. This directly prevents the root from proceeding with partial data.",
+          "edit": {
+            "kind": "text",
+            "new_text": "Choosing the sub-call for each sub-task:\n\n- `llm_query` is a single bare completion with no REPL. Use it only when the\n  sub-answer is a direct read of the text you hand it: extract a field, label\n  ONE item, summarize ONE passage, answer a question a single visible passage\n  settles.\n- `rlm_query` is a child RLM with a REPL. Use it whenever the sub-task must\n  COMPUTE over many items - count, tally frequencies, compare two counts,\n  find the most/least common label, filter-then-count, anything phrased as\n  \"how many\", \"which is more common\", or \"the total number of\". A bare\n  completion asked to count hundreds of items counts in its head and is wrong\n  past a few dozen; a child RLM labels items in a loop and counts in Python.\n- For counting tasks, the chunk you hand a child is sized by what the child can\n  enumerate exactly, not by context capacity: a few hundred lines per child is\n  right, and a child returning a small JSON of counts is the ideal unit. Do not\n  pack a counting chunk to the flat-call capacity ceiling.\n\nPattern for label statistics over a long line-oriented `context`\n(split into chunks, have each child classify every line and return counts,\nmerge in Python):\n\n```repl\nimport json\nlines = [ln for ln in context.split(\"\\n\") if ln.strip()]\nCHUNK = 300\nchunks = [lines[i:i + CHUNK] for i in range(0, len(lines), CHUNK)]\nlabels = [\"positive\", \"negative\"]  # the label set stated in the task\nprompts = [\n    \"Classify EVERY line below into exactly one of \" + json.dumps(labels)\n    + \". Do it line by line in your REPL, keep a running count per label, \"\n    + \"and finish by setting answer['content'] to a JSON object mapping each \"\n    + \"label to its count (integers, no other keys).\\n\\n\" + \"\\n\".join(chunk)\n    for chunk in chunks\n]\nresults = rlm_query_batched(prompts)\ntotals = {label: 0 for label in labels}\nfor raw in results:\n    for label, n in json.loads(raw).items():\n        totals[label] += int(n)\nprint(totals)\n# Verify coverage: total classified items should equal total input lines\nclassified_total = sum(totals.values())\nif classified_total < len(lines):\n    print(f\"Coverage incomplete: {classified_total}/{len(lines)} classified. Retrying...\")\n    # Identify which chunk(s) failed and retry them\n    # (implementation depends on how children report per-item counts)\n```\n\nThen decide the answer from `totals` in Python and print it before setting\n`answer[\"ready\"] = True`. If a child's result does not parse, print it, fix the\nprompt, and re-run that chunk - do not fall back to counting by eye."
+          },
+          "predicted_effect": "Root will verify that the total classified count matches the input line count before proceeding to pair generation. If coverage is incomplete, root will retry the failed chunk(s) rather than continuing with partial data. This prevents the pattern 0 failure where missing labels caused incorrect conclusions.",
+          "regression_risks": [
+            "Adding a coverage check may cause root to retry unnecessarily if the child's count format differs from expected (e.g., per-item JSON instead of aggregate counts). The check is a print-and-retry suggestion, not a hard gate, so root can still proceed if it judges the retry unproductive.",
+            "The coverage check adds a small amount of work (summing totals, comparing to len(lines)), which is negligible relative to the classification cost."
+          ]
+        },
+        {
+          "pattern_index": 1,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "S3 execution instruction is empty. Root in pattern 1 calls rlm_query_batched and prints results but never merges them into the final answer \u2014 the output contains missing and extra pairs, indicating lossy aggregation.",
+          "observed_failure": "Root printed sub-call results but never assembled them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.",
+          "behavioral_change": "Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violations.",
+          "edit": {
+            "kind": "text",
+            "new_text": "When combining results from multiple sub-calls into a final answer:\n\n1. Collect all pairs from each sub-call result into a single list.\n2. Normalize each pair so the lower user ID appears first: (min(a,b), max(a,b)).\n3. Remove duplicate pairs by converting the list to a set, then back to a list.\n4. Format the deduplicated pairs as newline-separated entries, e.g.,\n   (user_id_1, user_id_2)\n5. If no pairs remain after deduplication, set answer content to\n   \"No valid pairs found.\"\n\nDo not submit pairs that violate the lower-ID-first ordering or contain\nself-pairs (a == b). The global order of pairs in the answer does not matter."
+          },
+          "predicted_effect": "Root will normalize and deduplicate pairs before submission, eliminating ordering violations and self-pairs. The merge step ensures all sub-call results are combined into the final answer, preventing the lossy aggregation seen in pattern 1.",
+          "regression_risks": [
+            "The instruction assumes pairs are returned as tuples or similar iterables; if sub-calls return pairs in a different format (e.g., comma-separated strings), the normalization step may fail. The instruction is guidance, not code, so root can adapt.",
+            "Deduplication via set may lose legitimate duplicate pairs if the task requires counting multiplicity \u2014 but the task explicitly forbids duplicate pairs, so this is correct.",
+            "The instruction adds no runtime cost beyond what root already spends on formatting the answer."
+          ]
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "attempt": 2,
+      "selections": [
+        {
+          "pattern_index": 0,
+          "surface": "S10",
+          "reason": "Pattern 0 shows root classified 188 questions via llm_query but the output contained zero 'human being' labels, causing root to conclude no valid pairs existed. The root never verified label coverage or retried. A skill can encode the verification-and-retry procedure without modifying the decomposition example.",
+          "evidence_refs": [
+            "c20526aa9039d7d1",
+            "d8806e169808c1f5",
+            "5c5715b271dd962a"
+          ]
+        },
+        {
+          "pattern_index": 1,
+          "surface": "S3",
+          "reason": "Pattern 1 shows root called rlm_query_batched and printed results but never merged them into the final answer, causing 73 missing and 15 extra pairs. S3 execution instruction is empty; adding merge guidance directly addresses the lossy aggregation at the point where results should be combined.",
+          "evidence_refs": [
+            "2f52e3362f6bc323"
+          ]
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 0,
+          "surface": "S10",
+          "revision": null,
+          "incumbent_behavior": "Root classified all 188 questions via a single llm_query call, parsed the JSON output, and used the labels to compute user categories. The classification output contained zero 'human being' labels. Root accepted this without verifying label coverage or retrying, then concluded no valid pairs existed.",
+          "observed_failure": "Root never verified that the classification output contained all expected label categories. The 'human being' label was absent from all 188 classifications, causing root to conclude no valid pairs existed. Verification limits: no coverage check on label categories before pair generation.",
+          "behavioral_change": "Add a skill that instructs root to verify that each expected label category appears at least once in the classification output, and to retry with a different prompt or sub-call strategy if a label is missing. This directly addresses the demonstrated failure where missing labels went undetected.",
+          "edit": {
+            "kind": "skills",
+            "name": "verify_label_coverage",
+            "description": "After classifying items into categories, verify every expected label appears at least once; retry if missing.",
+            "body": "## Use When\n- You have classified items into a fixed set of labels and need to confirm all labels are present before proceeding.\n- The classification step may have missed a rare or subtle label category.\n\n## Don't Use When\n- Labels are derived from data rather than a fixed set.\n- You are classifying a small number of items where missing labels are obvious.\n\n## Steps\n1. After receiving classification results, collect the set of labels that actually appear in the output.\n2. Compare against the full set of expected labels defined by the task.\n3. If any expected label is missing from the output:\n   - Print which label(s) are missing.\n   - Re-examine a sample of items that might belong to the missing label.\n   - Retry classification with a prompt that explicitly asks about the missing label, or use a different sub-call strategy (e.g., smaller chunks, per-item classification).\n4. Only proceed to downstream computation (e.g., pair generation) after all expected labels are present or you have a documented reason for their absence.\n\n## Pitfalls\n- A missing label may indicate the classification prompt was biased or the items genuinely don't contain that category. Verify by spot-checking items that semantically match the missing label.\n- Do not add the missing label artificially; reclassify with better guidance.\n\n## Verify\n- Print the set of labels found and the set of expected labels. Confirm the missing set is empty before proceeding."
+          },
+          "predicted_effect": "Root will verify that all expected label categories appear in the classification output before proceeding to pair generation. If 'human being' or any other label is missing, root will retry classification with adjusted prompts rather than accepting incomplete data.",
+          "regression_risks": [
+            "The skill adds a verification step that may cause root to retry unnecessarily if a label is genuinely absent from the data. The skill instructs spot-checking before retrying, so root can confirm the label is actually missing from the data.",
+            "The skill body is loaded only when root calls load_skill('verify_label_coverage'), so it adds no cost unless root chooses to use it. The skill description must be retrieval-friendly for root to find it."
+          ]
+        },
+        {
+          "pattern_index": 1,
+          "surface": "S3",
+          "revision": {
+            "round": 1,
+            "subject_id": "r01-c01-s3",
+            "explanation": "Previous S3 edit was preflight-rejected because it targeted pattern 0 (lossy_aggregation) but the proposal attempted to also address pattern 2 (incomplete_coverage) in the same edit, violating the single-pattern rule. This revision targets only pattern 1 (lossy_aggregation) with a focused merge instruction, without adding coverage verification. The merge guidance is the same mechanism but scoped to the correct pattern."
+          },
+          "incumbent_behavior": "S3 execution instruction is empty. Root in pattern 1 calls rlm_query_batched(prompts) and prints 'Got {len(results)} results' and first 200 chars of each result, but never shows any merge or combine logic that assembles sub-call results into the final answer.",
+          "observed_failure": "Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.",
+          "behavioral_change": "Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violations.",
+          "edit": {
+            "kind": "text",
+            "new_text": "When combining results from multiple sub-calls into a final answer:\n\n1. Collect all pairs from each sub-call result into a single list.\n2. Normalize each pair so the lower user ID appears first: (min(a,b), max(a,b)).\n3. Remove duplicate pairs by converting the list to a set, then back to a list.\n4. Format the deduplicated pairs as newline-separated entries, e.g.,\n   (user_id_1, user_id_2)\n5. If no pairs remain after deduplication, set answer content to\n   \"No valid pairs found.\"\n\nDo not submit pairs that violate the lower-ID-first ordering or contain\nself-pairs (a == b). The global order of pairs in the answer does not matter."
+          },
+          "predicted_effect": "Root will normalize and deduplicate pairs before submission, eliminating ordering violations and self-pairs. The merge step ensures all sub-call results are combined into the final answer, preventing the lossy aggregation seen in pattern 1.",
+          "regression_risks": [
+            "The instruction assumes pairs are returned as tuples or similar iterables; if sub-calls return pairs in a different format (e.g., comma-separated strings), the normalization step may fail. The instruction is guidance, not code, so root can adapt.",
+            "Deduplication via set may lose legitimate duplicate pairs if the task requires counting multiplicity \u2014 but the task explicitly forbids duplicate pairs, so this is correct.",
+            "The instruction adds no runtime cost beyond what root already spends on formatting the answer."
+          ]
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "attempt": 1,
+      "selections": [
+        {
+          "pattern_index": 0,
+          "surface": "S2",
+          "reason": "Pattern 0 root parsed only 188 lines starting with 'Date:', missing records that lacked that prefix. The S2 decomposition example shows splitting by line count but does not instruct the root to verify that all input lines were captured. A minimal edit adds a coverage check after parsing to detect and recover lost records.",
+          "evidence_refs": [
+            "7b7d7968bb4bb1dc",
+            "57d3b2130fb361f3",
+            "55c72d52559895e8",
+            "9cd38adfd079d098",
+            "0f4eee11cbeaf6ab"
+          ]
+        },
+        {
+          "pattern_index": 4,
+          "surface": "S3",
+          "reason": "Pattern 4 root iterated over sub-call results with `for key, label in data:` on a dict, causing ValueError. The root recovered by using .items() in the next iteration, but the initial error wasted a turn. A minimal execution instruction can show the correct dict iteration pattern to prevent this class of aggregation error.",
+          "evidence_refs": [
+            "6c98211096f41bf5",
+            "225be23943fb363f",
+            "8898419d29d15269",
+            "679258df864dd483",
+            "e915df79a5e3dcf7",
+            "ed53e0865f384be8"
+          ]
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 0,
+          "surface": "S2",
+          "revision": null,
+          "incumbent_behavior": "Root parsed only lines starting with 'Date:' from context, yielding 188 data lines. It did not check whether the total number of parsed lines matched the full input size before proceeding to classification and pair generation.",
+          "observed_failure": "265 missing pairs (recall 0.466) because the root never verified that all input records were captured. The original input likely contained more records that did not start with 'Date:'.",
+          "behavioral_change": "Add a coverage check step to the S2 decomposition instruction: after parsing, compare the number of parsed records against the total line count of the context. If they differ, print the discrepancy and re-parse with a more inclusive pattern before proceeding. This directly addresses the demonstrated cause of incomplete input coverage.",
+          "edit": {
+            "kind": "text",
+            "new_text": "Choosing the sub-call for each sub-task:\n\n- `llm_query` is a single bare completion with no REPL. Use it only when the\n  sub-answer is a direct read of the text you hand it: extract a field, label\n  ONE item, summarize ONE passage, answer a question a single visible passage\n  settles.\n- `rlm_query` is a child RLM with a REPL. Use it whenever the sub-task must\n  COMPUTE over many items - count, tally frequencies, compare two counts,\n  find the most/least common label, filter-then-count, anything phrased as\n  \"how many\", \"which is more common\", or \"the total number of\". A bare\n  completion asked to count hundreds of items counts in its head and is wrong\n  past a few dozen; a child RLM labels items in a loop and counts in Python.\n- For counting tasks, the chunk you hand a child is sized by what the child can\n  enumerate exactly, not by context capacity: a few hundred lines per child is\n  right, and a child returning a small JSON of counts is the ideal unit. Do not\n  pack a counting chunk to the flat-call capacity ceiling.\n\nPattern for label statistics over a long line-oriented `context`\n(split into chunks, have each child classify every line and return counts,\nmerge in Python):\n\n```repl\nimport json\nlines = [ln for ln in context.split(\"\\n\") if ln.strip()]\n# COVERAGE CHECK: verify all lines were captured\nif len(lines) < len(context.split(\"\\n\")):\n    print(f\"WARNING: parsed {len(lines)} lines from {len(context.split('\\n'))} total lines\")\n    # Re-parse with broader pattern if needed\n    lines = [ln for ln in context.split(\"\\n\") if ln.strip()]\nCHUNK = 300\nchunks = [lines[i:i + CHUNK] for i in range(0, len(lines), CHUNK)]\nlabels = [\"positive\", \"negative\"]  # the label set stated in the task\nprompts = [\n    \"Classify EVERY line below into exactly one of \" + json.dumps(labels)\n    + \". Do it line by line in your REPL, keep a running count per label, \"\n    + \"and finish by setting answer['content'] to a JSON object mapping each \"\n    + \"label to its count (integers, no other keys).\\n\\n\" + \"\\n\".join(chunk)\n    for chunk in chunks\n]\nresults = rlm_query_batched(prompts)\ntotals = {label: 0 for label in labels}\nfor raw in results:\n    for label, n in json.loads(raw).items():\n        totals[label] += int(n)\nprint(totals)\n```\n\nThen decide the answer from `totals` in Python and print it before setting\n`answer[\"ready\"] = True`. If a child's result does not parse, print it, fix the\nprompt, and re-run that chunk - do not fall back to counting by eye."
+          },
+          "predicted_effect": "Root will compare parsed line count against total context lines before proceeding, detecting incomplete coverage early and re-parsing with a more inclusive pattern. This prevents the silent data loss that caused 265 missing pairs in pattern 0.",
+          "regression_risks": [
+            "The coverage check adds a small constant-time comparison that cannot harm correct runs.",
+            "If the context has trailing blank lines, the comparison may trigger a false warning, but the re-parse uses the same inclusive pattern so no data is lost.",
+            "The edit preserves all existing decomposition guidance and the worked example; only the coverage check is added."
+          ]
+        },
+        {
+          "pattern_index": 4,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "S3 execution instruction was empty. Root wrote its own aggregation code that iterated over a dict with `for key, label in data:` instead of `data.items()`, causing a ValueError that prevented any classification data from being collected.",
+          "observed_failure": "ValueError 'too many values to unpack' when iterating over dict entries. Root recovered in the next iteration by using .items(), but the error wasted a turn and caused 40 missing classifications.",
+          "behavioral_change": "Add an execution instruction showing the correct pattern for iterating over dict results from sub-calls: use `.items()` to get key-value pairs. This prevents the unpacking error at the aggregation step.",
+          "edit": {
+            "kind": "text",
+            "new_text": "When aggregating results from sub-calls, each result is typically a JSON object (dict). Iterate over it with `.items()` to get key-value pairs:\n\n```python\nfor key, value in data.items():\n    # process each entry\n```\n\nDo not use `for key, value in data:` on a dict - that iterates over keys only and will raise ValueError. If the result is a list of tuples, iterate directly. Always check the type of the returned data before iterating."
+          },
+          "predicted_effect": "Root will use `.items()` when iterating over dict results from sub-calls, avoiding the unpacking error that caused data loss in pattern 4. The instruction is concise and does not interfere with correct list-of-tuples iteration.",
+          "regression_risks": [
+            "The instruction is guidance only; it does not enforce any behavior. A root that already uses .items() correctly is unaffected.",
+            "The instruction is placed in S3 (execution instruction) which is currently empty, so there is no existing content to conflict with.",
+            "No new code is executed; the instruction is purely textual guidance in the prompt."
+          ]
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "attempt": 2,
+      "selections": [
+        {
+          "pattern_index": 4,
+          "surface": "S4",
+          "reason": "Pattern 4's root failed to aggregate sub-call results due to a dict iteration bug. S3 is occupied by the failed S3 edit. S4 (verification instruction) can catch the resulting coverage gap before pair generation, prompting retry. S8 is a weaker surface for this aggregation bug.",
+          "evidence_refs": [
+            "6c98211096f41bf5",
+            "225be23943fb363f"
+          ]
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 4,
+          "surface": "S4",
+          "revision": null,
+          "incumbent_behavior": "S4 verification instruction was empty. Root attempted to aggregate sub-call results with `for key, label in data:` on a dict, causing ValueError. Root recovered in the next iteration by using .items(), but 40 classifications were lost during the error turn.",
+          "observed_failure": "ValueError prevented classification data from being collected. Root detected 120 missing classifications but proceeded to pair generation without retrying the failed chunk. Verification limits: no coverage check before pair generation.",
+          "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with partial data.",
+          "edit": {
+            "kind": "text",
+            "new_text": "Before generating pairs, verify that the number of classified questions equals the total number of input questions. If they differ, print the count mismatch and retry the failed chunk(s) instead of proceeding with incomplete data. Do not submit pairs when coverage is incomplete."
+          },
+          "predicted_effect": "Root will detect the 40 missing classifications caused by the iteration error and retry the affected chunk, recovering the lost data before pair generation.",
+          "regression_risks": [
+            "A root that already has complete coverage will pass the check trivially and proceed unchanged.",
+            "The check adds one comparison and conditional branch per iteration, negligible cost.",
+            "If a root legitimately cannot classify some questions (e.g., ambiguous input), the instruction may cause unnecessary retries. However, the task requires all questions to be classified, so retrying is correct behavior."
+          ]
+        }
+      ]
+    },
+    {
+      "round": 4,
+      "attempt": 1,
+      "selections": [
+        {
+          "pattern_index": 0,
+          "surface": "S4",
+          "reason": "Pattern 0 (incomplete_coverage, support 8) shows root merged sub-call results without verifying all input users were classified. The child at r/i2/b4/c1 returned only 10 user IDs from a 50-question prompt; root printed 'Merged 58 users' but never compared against the full input set. S4 is the verification surface and the primary surface for this mechanism.",
+          "evidence_refs": [
+            "97a4d564a51b6545",
+            "1ec636b71f000484",
+            "5d4f19c0ccc9ccf3"
+          ]
+        },
+        {
+          "pattern_index": 1,
+          "surface": "S4",
+          "reason": "Pattern 1 (incomplete_coverage, mixed_set_error, support 4) shares the same mechanism as pattern 0. The same S4 edit addresses both: a coverage check before pair generation. No separate edit needed; the S4 edit covers both patterns.",
+          "evidence_refs": []
+        },
+        {
+          "pattern_index": 2,
+          "surface": "S3",
+          "reason": "Pattern 2 (lossy_aggregation, mixed_set_error, support 4) shows root merging sub-call results without normalizing pair order or deduplicating. The held-in evidence from prior round shows self-pairs and reversed-order pairs. S3 is the execution instruction surface and primary for this mechanism.",
+          "evidence_refs": []
+        },
+        {
+          "pattern_index": 4,
+          "surface": "S3",
+          "reason": "Pattern 4 (lossy_aggregation, wrong_format, support 2) shows 'no bracketed answer list on the last produced line' in 2/2 runs. This is an answer formatting defect at the execution level. S3 can add formatting guidance for the final answer output.",
+          "evidence_refs": []
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 0,
+          "surface": "S4",
+          "revision": null,
+          "incumbent_behavior": "Root merged sub-call results into a dictionary of user counts without verifying that all input users were classified. The merge code at operation 97a4d564a51b6545 printed 'Merged 58 users' but never compared against the full input set. No coverage check was performed before proceeding to pair generation.",
+          "observed_failure": "Child r/i2/b4/c1 returned classifications for only 10 user IDs out of 50 questions in its prompt. Root proceeded to generate pairs from the incomplete merged set, producing recall 0.822. Verification limits: no coverage check existed.",
+          "behavioral_change": "Replace S4 with instruction to verify that the set of classified user IDs equals the full input set before generating pairs. If coverage is incomplete, retry the failed chunk(s) rather than proceeding with partial data. This directly addresses the demonstrated cause: root skipped coverage verification.",
+          "edit": {
+            "kind": "text",
+            "new_text": "Before generating pairs, verify that the number of classified user IDs equals the total number of unique user IDs in the original input. If they differ, print the count mismatch and retry the failed chunk(s) instead of proceeding with incomplete data. Do not submit pairs when coverage is incomplete."
+          },
+          "predicted_effect": "Root will compare the set of classified user IDs against the full input set before pair generation. If a child returned incomplete classifications, root will detect the shortfall and retry that chunk, preventing recall loss from undetected missing users. Correctly classified runs with full coverage pass through unchanged.",
+          "regression_risks": [
+            "May add one extra verification step per run, slightly increasing iteration count. The check is O(n) set comparison, negligible cost.",
+            "If a child legitimately returns fewer users than input (e.g., some users have no questions), the check would trigger a false retry. However, the task assigns multiple questions per user, so every user should appear in at least one child's output. No known case where a user has zero questions."
+          ]
+        },
+        {
+          "pattern_index": 2,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "S3_execution_instruction is empty string. Root constructed pairs from user lists without normalizing order or deduplicating. Prior round evidence shows output included self-pairs like (14630, 14630) and pairs like (65282, 14630) where lower ID appears second.",
+          "observed_failure": "Pairs violated 'lower ID first' and 'no duplicate pairs' constraints. Verification limits: no check before submission. The empty S3 provided no execution guidance for pair construction.",
+          "behavioral_change": "Add execution instruction to normalize each pair as (min(a,b), max(a,b)) and deduplicate via set before formatting the answer. This directly enforces the two violated constraints at the point where pairs are constructed, without changing any other execution behavior.",
+          "edit": {
+            "kind": "text",
+            "new_text": "When constructing the final answer pairs, normalize each pair so the lower user ID appears first: use (min(a,b), max(a,b)). Remove any self-pairs (where a == b) and deduplicate identical pairs. Then format each pair as (user_id_1, user_id_2) separated by newlines."
+          },
+          "predicted_effect": "Root will sort each pair to lower-ID-first and remove self-pairs and duplicates before submission, eliminating the ordering and uniqueness violations. Correctly ordered pairs from sub-calls remain unchanged.",
+          "regression_risks": [
+            "Minimal: the normalization is a simple tuple sort and set dedup, O(n log n) at most. Cannot break correct pairs.",
+            "If root already normalizes, this is a no-op. No plausible harm to passing runs."
+          ]
+        },
+        {
+          "pattern_index": 4,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "S3_execution_instruction is empty string. Root produced final answer without a bracketed list on the last produced line in 2/2 runs with wrong_format cause. The answer format was not explicitly guided.",
+          "observed_failure": "Final answer missing bracketed list format. Verifier rejected as wrong_format. No execution guidance for answer formatting existed.",
+          "behavioral_change": "Add formatting instruction to S3 specifying the required answer format: a bracketed list of pairs or newline-separated pairs, with the explicit empty marker. This provides the missing format guidance at the execution level.",
+          "edit": {
+            "kind": "text",
+            "new_text": "When constructing the final answer pairs, normalize each pair so the lower user ID appears first: use (min(a,b), max(a,b)). Remove any self-pairs (where a == b) and deduplicate identical pairs. Then format each pair as (user_id_1, user_id_2) separated by newlines. The final answer must be a bracketed list of integer pairs or newline-separated pairs. If no valid pairs exist, output exactly: No valid pairs found."
+          },
+          "predicted_effect": "Root will produce correctly formatted answer output matching the verifier's accepted formats. The explicit empty marker prevents wrong_format on empty results. Correctly formatted runs pass through unchanged.",
+          "regression_risks": [
+            "Merging with the pattern 2 edit: both target S3. The combined text includes both pair normalization and answer formatting. No conflict.",
+            "If root already formats correctly, this is a no-op. No plausible harm to passing runs."
+          ]
+        }
+      ]
+    },
+    {
+      "round": 4,
+      "attempt": 2,
+      "selections": [
+        {
+          "pattern_index": 0,
+          "surface": "S4",
+          "reason": "Pattern 0 shows root merged sub-call results without verifying all input users were classified. Child r/i2/b4/c1 returned only 10 of 50 user IDs. Root proceeded to generate pairs from incomplete data, causing recall 0.822. S4 is the verification surface and the primary eligible surface for this incomplete_coverage mechanism.",
+          "evidence_refs": [
+            "97a4d564a51b6545",
+            "1ec636b71f000484",
+            "7b96c387c9ff1521"
+          ]
+        },
+        {
+          "pattern_index": 2,
+          "surface": "S3",
+          "reason": "Pattern 2 shows lossy_aggregation where root constructed pairs without normalizing order or deduplicating. Prior round evidence showed self-pairs and reversed-order pairs. S3 is the execution instruction surface, primary for this mechanism. This is a new intervention (not a revision) targeting a different observed_failure than the rejected predecessor.",
+          "evidence_refs": []
+        },
+        {
+          "pattern_index": 4,
+          "surface": "S3",
+          "reason": "Pattern 4 shows wrong_format with no bracketed answer list on the last produced line. S3 execution instruction is empty, providing no format guidance. This is a new intervention targeting a different observed_failure (format defect, not merge logic) than the rejected predecessor.",
+          "evidence_refs": []
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 0,
+          "surface": "S4",
+          "revision": null,
+          "incumbent_behavior": "Root merged sub-call results into a dictionary of user counts without verifying that all input users were classified. The merge code at operation 97a4d564a51b6545 printed 'Merged 58 users' but never compared against the full input set. No coverage check was performed before proceeding to pair generation.",
+          "observed_failure": "Child r/i2/b4/c1 returned classifications for only 10 user IDs out of 50 questions in its prompt. Root proceeded to generate pairs from the incomplete merged set, producing recall 0.822. Verification limits: no coverage check existed.",
+          "behavioral_change": "Replace S4 with instruction to verify that the set of classified user IDs equals the full input set before generating pairs. If coverage is incomplete, retry the failed chunk(s) rather than proceeding with partial data. This directly addresses the demonstrated cause: root skipped coverage verification.",
+          "edit": {
+            "kind": "text",
+            "new_text": "Before generating pairs, verify that the number of classified user IDs equals the total number of unique user IDs in the original input. If they differ, print the count mismatch and retry the failed chunk(s) instead of proceeding with incomplete data. Do not submit pairs when coverage is incomplete."
+          },
+          "predicted_effect": "Root will compare the set of classified user IDs against the full input set before pair generation. If a child returned incomplete classifications, root will detect the shortfall and retry that chunk, preventing recall loss from undetected missing users. Correctly classified runs with full coverage pass through unchanged.",
+          "regression_risks": [
+            "May add one extra verification step per run, slightly increasing iteration count. The check is O(n) set comparison, negligible cost.",
+            "If a child legitimately returns fewer users than input (e.g., some users have no questions), the check would trigger a false retry. However, the task assigns multiple questions per user, so every user should appear in at least one child's output. No known case where a user has zero questions."
+          ]
+        },
+        {
+          "pattern_index": 2,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "S3_execution_instruction is empty string. Root constructed pairs from user lists without normalizing order or deduplicating. Prior round evidence shows output included self-pairs like (14630, 14630) and pairs like (65282, 14630) where lower ID appears second.",
+          "observed_failure": "Pairs violated 'lower ID first' and 'no duplicate pairs' constraints. Verification limits: no check before submission. The empty S3 provided no execution guidance for pair construction.",
+          "behavioral_change": "Add execution instruction to normalize each pair as (min(a,b), max(a,b)) and deduplicate via set before formatting the answer. This directly enforces the two violated constraints at the point where pairs are constructed, without changing any other execution behavior.",
+          "edit": {
+            "kind": "text",
+            "new_text": "When constructing the final answer pairs, normalize each pair so the lower user ID appears first: use (min(a,b), max(a,b)). Remove any self-pairs (where a == b) and deduplicate identical pairs. Then format each pair as (user_id_1, user_id_2) separated by newlines."
+          },
+          "predicted_effect": "Root will sort each pair to lower-ID-first and remove self-pairs and duplicates before submission, eliminating the ordering and uniqueness violations. Correctly ordered pairs from sub-calls remain unchanged.",
+          "regression_risks": [
+            "Minimal: the normalization is a simple tuple sort and set dedup, O(n log n) at most. Cannot break correct pairs.",
+            "If root already normalizes, this is a no-op. No plausible harm to passing runs."
+          ]
+        },
+        {
+          "pattern_index": 4,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "S3_execution_instruction is empty string. Root produced final answer without a bracketed list on the last produced line in 2/2 runs with wrong_format cause. The answer format was not explicitly guided.",
+          "observed_failure": "Final answer missing bracketed list format. Verifier rejected as wrong_format. No execution guidance for answer formatting existed.",
+          "behavioral_change": "Add formatting instruction to S3 specifying the required answer format: a bracketed list of pairs or newline-separated pairs, with the explicit empty marker. This provides the missing format guidance at the execution level.",
+          "edit": {
+            "kind": "text",
+            "new_text": "When constructing the final answer pairs, normalize each pair so the lower user ID appears first: use (min(a,b), max(a,b)). Remove any self-pairs (where a == b) and deduplicate identical pairs. Then format each pair as (user_id_1, user_id_2) separated by newlines. The final answer must be a bracketed list of integer pairs or newline-separated pairs. If no valid pairs exist, output exactly: No valid pairs found."
+          },
+          "predicted_effect": "Root will produce correctly formatted answer output matching the verifier's accepted formats. The explicit empty marker prevents wrong_format on empty results. Correctly formatted runs pass through unchanged.",
+          "regression_risks": [
+            "Merging with the pattern 2 edit: both target S3. The combined text includes both pair normalization and answer formatting. No conflict.",
+            "If root already formats correctly, this is a no-op. No plausible harm to passing runs."
+          ]
+        }
+      ]
+    },
+    {
+      "round": 5,
+      "attempt": 1,
+      "selections": [
+        {
+          "pattern_index": 0,
+          "surface": "S4",
+          "reason": "Pattern 0 (incomplete_coverage, support=5) shows root never verified which user IDs were covered by sub-calls. User 72621's questions were never classified, causing 7 missing pairs. S4 is the verification surface; a coverage check before pair generation directly addresses the demonstrated omission.",
+          "evidence_refs": [
+            "49012594b4ec9961",
+            "00196cb712f5c1fb",
+            "47d32b5eb48eee07",
+            "3ceb9effc85bb71d"
+          ]
+        },
+        {
+          "pattern_index": 3,
+          "surface": "S3",
+          "reason": "Pattern 3 (lossy_aggregation, spurious, support=5) shows root submitted a pair (16357, 32716) where user 32716 was never identified by any sub-call as having entity/human being. The root discarded sub-call results and re-parsed manually. S3 execution instruction can mandate faithful aggregation from sub-call outputs.",
+          "evidence_refs": [
+            "42d2f79202144743",
+            "b65cd234a6a45aed",
+            "7d1ee599e2456996",
+            "9b9efa89e4cf5946",
+            "1dec0cecac515a19",
+            "309291f8ef68905d"
+          ]
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 0,
+          "surface": "S4",
+          "revision": null,
+          "incumbent_behavior": "Root issued rlm_query_batched(prompts) delegating classification to children, printed result lengths, and proceeded to pair generation without verifying which user IDs were covered by sub-call outputs.",
+          "observed_failure": "User 72621's questions were never classified by any sub-call; root never detected this omission. 7 gold pairs missing (f1=0.125). Verification limits: no coverage check against original input's user IDs before pair generation.",
+          "behavioral_change": "Add verification instruction requiring root to collect the set of user IDs from sub-call outputs, compare it to the full set of user IDs from the original input, and retry any missing user IDs' chunks before proceeding to pair generation. This directly prevents the demonstrated omission.",
+          "edit": {
+            "kind": "text",
+            "new_text": "Before generating pairs, verify that the set of user IDs covered by sub-call outputs equals the set of all user IDs in the original input. If any user IDs are missing, print the missing IDs and retry the chunk(s) containing those users' questions instead of proceeding with incomplete data. Do not submit pairs when coverage is incomplete."
+          },
+          "predicted_effect": "Root will detect when a user ID's questions were not classified by any sub-call, retry the relevant chunk, and only generate pairs after all user IDs are covered. This eliminates the incomplete-coverage failure mode while leaving correct full-coverage runs unaffected.",
+          "regression_risks": [
+            "May increase sub-calls on runs where coverage is already complete (no retry triggered), adding a small overhead for the set comparison.",
+            "If a child returns malformed JSON that omits a user ID present in its chunk, the root may retry unnecessarily. The retry is bounded by the chunk count, so cost impact is limited."
+          ]
+        },
+        {
+          "pattern_index": 3,
+          "surface": "S3",
+          "revision": null,
+          "incumbent_behavior": "Root called rlm_query_batched(prompts) then printed results, but later discarded sub-call outputs and manually re-parsed questions with a new llm_query, producing a final answer not derived from sub-call classifications.",
+          "observed_failure": "Final answer included pair (16357, 32716) where user 32716 was never identified by any sub-call as having entity/human being. Root's merge step was absent or produced spurious pairs not supported by sub-call evidence. Verification limits: no check that final user set matches union of sub-call findings.",
+          "behavioral_change": "Add execution instruction requiring root to aggregate sub-call results faithfully: collect all user IDs flagged by sub-calls, compute the union, and generate pairs only from that union. If the root re-parses or re-classifies, it must still verify the final answer is a subset of sub-call findings.",
+          "edit": {
+            "kind": "text",
+            "new_text": "After receiving sub-call results, aggregate them faithfully: collect all user IDs that each sub-call identified as meeting the task criteria, compute the union across all sub-calls, and generate pairs only from that union. If you re-parse or re-classify any data, verify that every user ID in the final answer appears in at least one sub-call's output. Do not include user IDs that no sub-call identified."
+          },
+          "predicted_effect": "Root will produce pairs only from user IDs that sub-calls actually identified, eliminating spurious pairs like (16357, 32716) where 32716 was never flagged. Correct runs where sub-call aggregation already works are unaffected because the instruction only enforces what they already do.",
+          "regression_risks": [
+            "If a sub-call incorrectly omits a qualifying user ID, the root will also omit it. This is a sub-call quality issue, not a regression from the aggregation instruction.",
+            "May increase verification overhead on runs where aggregation is already correct, but the check is a simple set comparison."
+          ]
+        }
+      ]
+    },
+    {
+      "round": 5,
+      "attempt": 2,
+      "selections": [
+        {
+          "pattern_index": 0,
+          "surface": "S4",
+          "reason": "Pattern 0 shows root never verified which user IDs were covered by sub-call outputs before generating pairs. User 72621's questions were never classified, causing 7 missing gold pairs. S4 verification instruction is the primary surface for pre-submission coverage checks.",
+          "evidence_refs": [
+            "49012594b4ec9961",
+            "00196cb712f5c1fb",
+            "47d32b5eb48eee07",
+            "3ceb9effc85bb71d"
+          ]
+        },
+        {
+          "pattern_index": 3,
+          "surface": "S3",
+          "reason": "Pattern 3 shows root discarded sub-call outputs and produced a spurious pair (16357, 32716) where user 32716 was never identified by any sub-call. S3 execution instruction is the primary surface for merge/aggregation guidance.",
+          "evidence_refs": [
+            "42d2f79202144743",
+            "b65cd234a6a45aed",
+            "7d1ee599e2456996",
+            "9b9efa89e4cf5946",
+            "1dec0cecac515a19",
+            "309291f8ef68905d"
+          ]
+        }
+      ],
+      "candidates": [
+        {
+          "pattern_index": 0,
+          "surface": "S4",
+          "revision": null,
+          "incumbent_behavior": "Root issued rlm_query_batched(prompts) delegating classification to children, printed result lengths, and proceeded to pair generation without verifying which user IDs were covered by sub-call outputs.",
+          "observed_failure": "User 72621's questions were never classified by any sub-call; root never detected this omission. 7 gold pairs missing (f1=0.125). Verification limits: no coverage check against original input's user IDs before pair generation.",
+          "behavioral_change": "Add verification instruction requiring root to collect the set of user IDs from sub-call outputs, compare it to the full set of user IDs from the original input, and retry any missing user IDs' chunks before proceeding to pair generation. This directly prevents the demonstrated omission.",
+          "edit": {
+            "kind": "text",
+            "new_text": "Before generating pairs, verify that the set of user IDs covered by sub-call outputs equals the set of all user IDs in the original input. If any user IDs are missing, print the missing IDs and retry the chunk(s) containing those users' questions instead of proceeding with incomplete data. Do not submit pairs when coverage is incomplete."
+          },
+          "predicted_effect": "Root will detect when a user ID's questions were not classified by any sub-call, retry the relevant chunk, and only generate pairs after all user IDs are covered. This eliminates the incomplete-coverage failure mode while leaving correct full-coverage runs unaffected.",
+          "regression_risks": [
+            "May increase sub-calls on runs where coverage is already complete (no retry triggered), adding a small overhead for the set comparison.",
+            "If a child returns malformed JSON that omits a user ID present in its chunk, the root may retry unnecessarily. The retry is bounded by the chunk count, so cost impact is limited."
+          ]
+        },
+        {
+          "pattern_index": 3,
+          "surface": "S3",
+          "revision": {
+            "round": 4,
+            "subject_id": "r01-c01-s3",
+            "explanation": "Previous S3 edit addressed pair formatting (ordering/dedup). This new edit addresses a different mechanism: lossy_aggregation where root discards sub-call outputs and produces spurious pairs not supported by sub-call evidence. The prior edit's formatting guidance is orthogonal and retained in the new text."
+          },
+          "incumbent_behavior": "Root called rlm_query_batched(prompts) then printed results, but later discarded sub-call outputs and manually re-parsed questions with a new llm_query, producing a final answer not derived from sub-call classifications.",
+          "observed_failure": "Final answer included pair (16357, 32716) where user 32716 was never identified by any sub-call as having entity/human being. Root's merge step was absent or produced spurious pairs not supported by sub-call evidence. Verification limits: no check that final user set matches union of sub-call findings.",
+          "behavioral_change": "Add execution instruction requiring root to aggregate sub-call results faithfully: collect all user IDs flagged by sub-calls, compute the union, and generate pairs only from that union. If the root re-parses or re-classifies, it must still verify the final answer is a subset of sub-call findings.",
+          "edit": {
+            "kind": "text",
+            "new_text": "After receiving sub-call results, aggregate them faithfully: collect all user IDs that each sub-call identified as meeting the task criteria, compute the union across all sub-calls, and generate pairs only from that union. If you re-parse or re-classify any data, verify that every user ID in the final answer appears in at least one sub-call's output. Do not include user IDs that no sub-call identified."
+          },
+          "predicted_effect": "Root will produce pairs only from user IDs that sub-calls actually identified, eliminating spurious pairs like (16357, 32716) where 32716 was never flagged. Correct runs where sub-call aggregation already works are unaffected because the instruction only enforces what they already do.",
+          "regression_risks": [
+            "If a sub-call incorrectly omits a qualifying user ID, the root will also omit it. This is a sub-call quality issue, not a regression from the aggregation instruction.",
+            "May increase verification overhead on runs where aggregation is already correct, but the check is a simple set comparison."
+          ]
+        }
+      ]
+    }
+  ],
+  "proposal_objects": 21,
+  "admitted_edits": 5,
+  "attribution_response_attempts": 303,
+  "accepted_diagnoses": 123,
+  "validation": {
+    "paid_model_calls_for_review": 0,
+    "existing_tests": {
+      "passed": 285,
+      "failed": 15,
+      "command": "uv run pytest -q tests/optimization/test_history.py tests/optimization/test_attribution.py tests/optimization/test_proposal_evidence.py tests/optimization/test_digest.py tests/optimization/test_proposal.py"
+    },
+    "test_order_reproduction": "legacy coverage-basis evidence test then proposer default-surface test: 1 passed, 1 failed; default-surface test alone: 1 passed"
+  }
+}
