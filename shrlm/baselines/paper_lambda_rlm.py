@@ -88,6 +88,32 @@ class ClassificationBatchAudit:
     predictions: dict[int, str]
 
 
+class ClassificationRejectedError(ValueError):
+    """A classification batch exhausted its bounded format-repair attempts."""
+
+    def __init__(
+        self,
+        batch_index: int,
+        attempts: Sequence[ClassificationAttemptAudit],
+        rejection: str,
+    ) -> None:
+        self.batch_index = batch_index
+        self.attempts = tuple(attempts)
+        self.rejection = rejection
+        super().__init__(
+            f"OOLONG-Pairs classification batch {batch_index} still rejected after "
+            f"{len(self.attempts)} attempts: {rejection}"
+        )
+
+    def audit_dict(self) -> dict[str, Any]:
+        """Return the failed batch evidence for persistence in a run trace."""
+        return {
+            "batch_index": self.batch_index,
+            "attempts": [asdict(attempt) for attempt in self.attempts],
+            "final_rejection": self.rejection,
+        }
+
+
 def parse_oolong_prompt(prompt: str) -> list[OolongEntry]:
     """Parse every unlabeled record and reject truncated or malformed prompts."""
     header = _HEADER_COUNT_RE.search(prompt)
@@ -406,9 +432,10 @@ class PaperLambdaRLM(upstream_lambda.LambdaRLM):
                             for local, label in local_predictions.items()
                         },
                     )
-                raise ValueError(
-                    f"OOLONG-Pairs classification batch {batch_index} still rejected after "
-                    f"{self.pairwise_max_attempts} attempts: {rejection}"
+                raise ClassificationRejectedError(
+                    batch_index=batch_index,
+                    attempts=attempts,
+                    rejection=rejection,
                 )
 
         return list(
@@ -424,6 +451,7 @@ __all__ = [
     "ClassificationAttemptAudit",
     "ClassificationBatch",
     "ClassificationBatchAudit",
+    "ClassificationRejectedError",
     "PairwiseExecutionTrace",
     "PaperLambdaRLM",
     "aggregate_predictions",

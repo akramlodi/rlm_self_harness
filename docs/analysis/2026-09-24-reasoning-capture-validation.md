@@ -38,3 +38,9 @@ Review receipt: `/tmp/compound-engineering-501/ce-code-review/reasoning-5a5e0597
 For a later authorized fresh experiment, inspect its first completed mining run, first meta attempt, and first validation run. Each should resolve its observation references and distinguish returned reasoning from provider-unavailable data. The configured live provider's returned fields remain unverified. Missing/corrupt references or changed model requests/accounting are regression signals; stop and investigate before resuming the experiment. This check belongs to the agent or maintainer launching that experiment and does not require changing the experiment's scoring rules.
 
 Implementation and documentation are committed locally. Publishing, merging, paid backfill, and launching an experiment remain separate actions. The existing analysis-report edits and `RESEARCH/` working files are excluded.
+
+## PR integration with current main
+
+For the subsequent PR request, `main` at `1fd8b7b0` contained newer Lambda classification-repair failure handling. A dedicated `fix/save-experiment-reasoning` branch integrates that behavior and retains the observation index on failed Lambda traces. An added assertion verifies all three exhausted classification attempts resolve to their own saved observations.
+
+The combined Lambda runner, paper reconstruction, smoke example, evaluation, canonical-manifest, import-order, observation, and runtime-seam suites passed **237 tests, with 3 skips** after integration. All 31 changed Python files passed Ruff lint and formatting checks. The PR preparation preserves the original working tree and excludes its unrelated research files.
