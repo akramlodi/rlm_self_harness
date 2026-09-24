@@ -5,6 +5,7 @@ from portkey_ai import AsyncPortkey, Portkey
 from portkey_ai.api_resources.types.chat_complete_type import ChatCompletions
 
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import capture_response
 from rlm.core.types import ModelUsageSummary, UsageSummary
 
 
@@ -47,6 +48,12 @@ class PortkeyClient(BaseLM):
             model=model,
             messages=messages,
         )
+        capture_response(
+            response,
+            provider=type(self).__name__,
+            model=model,
+            account_usage=lambda: self._track_cost(response, model),
+        )
         self._track_cost(response, model)
         return response.choices[0].message.content
 
@@ -63,6 +70,12 @@ class PortkeyClient(BaseLM):
             raise ValueError("Model name is required for Portkey client.")
 
         response = await self.async_client.chat.completions.create(model=model, messages=messages)
+        capture_response(
+            response,
+            provider=type(self).__name__,
+            model=model,
+            account_usage=lambda: self._track_cost(response, model),
+        )
         self._track_cost(response, model)
         return response.choices[0].message.content
 

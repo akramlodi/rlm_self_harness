@@ -7,6 +7,7 @@ from google import genai
 from google.genai import types
 
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import capture_response
 from rlm.core.types import ModelUsageSummary, UsageSummary
 
 load_dotenv()
@@ -68,6 +69,13 @@ class GeminiClient(BaseLM):
             config=config,
         )
 
+        capture_response(
+            response,
+            provider=type(self).__name__,
+            model=model,
+            account_usage=lambda: self._track_cost(response, model),
+            response_format="gemini",
+        )
         self._track_cost(response, model)
         return response.text
 
@@ -91,6 +99,13 @@ class GeminiClient(BaseLM):
             config=config,
         )
 
+        capture_response(
+            response,
+            provider=type(self).__name__,
+            model=model,
+            account_usage=lambda: self._track_cost(response, model),
+            response_format="gemini",
+        )
         self._track_cost(response, model)
         return response.text
 

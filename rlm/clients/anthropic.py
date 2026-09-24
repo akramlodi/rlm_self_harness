@@ -4,6 +4,7 @@ from typing import Any
 import anthropic
 
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import capture_response
 from rlm.core.types import ModelUsageSummary, UsageSummary
 
 
@@ -43,6 +44,13 @@ class AnthropicClient(BaseLM):
             kwargs["system"] = system
 
         response = self.client.messages.create(**kwargs)
+        capture_response(
+            response,
+            provider=type(self).__name__,
+            model=model,
+            account_usage=lambda: self._track_cost(response, model),
+            response_format="anthropic",
+        )
         self._track_cost(response, model)
         return response.content[0].text
 
@@ -60,6 +68,13 @@ class AnthropicClient(BaseLM):
             kwargs["system"] = system
 
         response = await self.async_client.messages.create(**kwargs)
+        capture_response(
+            response,
+            provider=type(self).__name__,
+            model=model,
+            account_usage=lambda: self._track_cost(response, model),
+            response_format="anthropic",
+        )
         self._track_cost(response, model)
         return response.content[0].text
 
