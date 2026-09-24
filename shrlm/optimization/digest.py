@@ -15,9 +15,13 @@ material survived, because the truncation policy is a hidden hyperparameter of
 every attribution and belongs in the results.
 """
 
+import ast
 import hashlib
+import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import CallNode, NodeKind, TreeStats, Verdict, iter_nodes
@@ -34,7 +38,7 @@ from shrlm.optimization.walker import iter_skill_loads
 # the trace's run-start record names a skill index (a loader was installed,
 # i.e. S10 was non-empty). A trace without one -- every pre-S10 trace, and
 # every trace under an empty S10 -- renders byte-identically to 1.1.0.
-DIGEST_VERSION = "1.6.0"
+DIGEST_VERSION = "1.7.0"
 
 DEFAULT_CHAR_BUDGET = 12000
 DEFAULT_FOCUS_K = 4
@@ -46,6 +50,118 @@ DEFAULT_CHILD_TABLE_THRESHOLD = 40
 PREVIEW_CHARS = 200
 QUESTION_CHARS = 600
 ANSWER_CHARS = 600
+
+RETRY_NOTICE = re.compile(
+    r"(?:Content filter blocked the response|"
+    r"(?:Transient API error|Empty completion content|Deficient completion response) "
+    r"\([^\n]*\)); retrying \(\d+/\d+\)\.\.\."
+)
+
+
+def split_retry_notices(stderr: str) -> tuple[str, int]:
+    """Recognize only complete notice lines emitted by our client; keep other errors."""
+    lines = stderr.splitlines(keepends=True)
+    notices = [line for line in lines if RETRY_NOTICE.fullmatch(line.strip())]
+    return "".join(line for line in lines if not RETRY_NOTICE.fullmatch(line.strip())), len(notices)
+
+
+def payload_structure(value: str) -> dict[str, Any]:
+    """Describe a bounded complete JSON payload, never infer task coverage."""
+    unknown = {"status": "not_assessed"}
+    if len(value) > 100_000:
+        return unknown
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("duplicate keys")
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(value)
+
+    try:
+        parsed = json.loads(value, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    except (ValueError, RecursionError):
+        return unknown
+    if not isinstance(parsed, (dict, list)):
+        return unknown
+    return {
+        "status": "complete_json",
+        "type": "object" if isinstance(parsed, dict) else "array",
+        "item_count": len(parsed),
+        "semantic_coverage": "not_assessed",
+    }
+
+
+def code_names(code: str) -> tuple[set[str], set[str], bool] | None:
+    """Bounded static names and computation flag; no alias or semantic inference."""
+    if len(code) > 100_000:
+        return None
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, RecursionError):
+        return None
+    reads, writes = set(), set()
+    computational = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            (writes if isinstance(node.ctx, ast.Store) else reads).add(node.id)
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
+            computational = True
+        # Method calls can mutate their receiver. This is only a selection hint.
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            computational = True
+            if isinstance(node.func.value, ast.Name):
+                writes.add(node.func.value.id)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id
+            not in {
+                "print",
+                "len",
+                "str",
+                "repr",
+                "type",
+                "list",
+                "dict",
+                "set",
+                "sorted",
+            }
+        ):
+            computational = True
+    return reads, writes, computational
+
+
+def following_operations(codes: Sequence[str], position: int) -> tuple[list[tuple[int, str]], str]:
+    """Select two computational hops and a later observation within this node only."""
+    origin = code_names(codes[position])
+    if origin is None:
+        return [], "unestablished: cited code could not be parsed"
+    names = origin[1]
+    if not names:
+        return [], "unestablished: no named produced value"
+    selected = []
+    scanned = [
+        (i, code_names(codes[i])) for i in range(position + 1, min(len(codes), position + 129))
+    ]
+    for i, flow in scanned:
+        if flow is not None and flow[2] and names.intersection(flow[0] | flow[1]):
+            selected.append(
+                (i, "computational consumer; static name relation, semantics unverified")
+            )
+            names |= flow[1]
+            if len(selected) == 2:
+                break
+    last = selected[-1][0] if selected else position
+    observations = [i for i, flow in scanned if i > last and flow is not None and names & flow[0]]
+    if observations:
+        selected.append((observations[-1], "later related observation; recovery not established"))
+    return (
+        selected,
+        "static name relation only" if selected else "unestablished: no related later operation",
+    )
 
 
 @dataclass(frozen=True)
@@ -236,7 +352,8 @@ def render_child_table(root: CallNode, cfg: DigestConfig) -> tuple[str, int, boo
         response_preview = head_tail(node.response, PREVIEW_CHARS).replace("\n", " ")
         lines.append(
             f"{node.node_id} | {node.depth} | {node.kind.value} | {node.prompt_chars} | "
-            f"{verdict} | {prompt_preview} -> {response_preview}"
+            f"{verdict} | {prompt_preview} -> {response_preview} "
+            f"structure={json.dumps(payload_structure(node.response), sort_keys=True)}"
         )
     return "\n".join(lines), available, False
 
@@ -358,10 +475,42 @@ def build_digest(
         available = max(0, cfg.char_budget - reserve - 40)
         sections[0] = header[:available] + "\n...[header chars omitted]..."
 
+    residuals = {
+        position: split_retry_notices(block.stderr)
+        for position, (_, _, _, block) in enumerate(blocks)
+    }
+    notices = [
+        (f"{node.node_id}/i{iteration.index}/b{index}", residuals[position][1])
+        for position, (node, iteration, index, _) in enumerate(blocks)
+        if residuals[position][1]
+    ]
+    if notices:
+        summary = (
+            "\nClient retry notices (recovery not established): "
+            + json.dumps(notices[:16])
+            + (f"; {len(notices) - 16} further locations" if len(notices) > 16 else "")
+        )
+        if size() + len(summary) <= cfg.char_budget:
+            sections[0] += summary
+    consumers = set()
+    for node in nodes:
+        local = [(i, block) for i, (owner, _, _, block) in enumerate(blocks) if owner is node]
+        codes = [block.code for _, block in local]
+        for position, (global_index, block) in enumerate(local):
+            if block.calls or residuals[global_index][0].strip():
+                chain, _ = following_operations(codes, position)
+                consumers.update(local[index][0] for index, _ in chain)
     ranked = sorted(
         enumerate(blocks),
         key=lambda pair: (
-            not (pair[1][3].stderr or any(c.node_id in focus_ids for c in pair[1][3].calls)),
+            0
+            if residuals[pair[0]][0].strip()
+            or any(c.kind is NodeKind.ERRORED for c in pair[1][3].calls)
+            else 1
+            if pair[0] in consumers
+            else 2
+            if any(c.node_id in focus_ids for c in pair[1][3].calls)
+            else 3,
             pair[1][0].node_id != root.node_id,
             -pair[1][1].index,
             pair[0],
@@ -373,10 +522,13 @@ def build_digest(
             f"{node.node_id} iteration {iteration.index} code[{index}] (complete):\n{block.code}"
         )
         observed = {}
-        for stream, value in (("stdout", block.stdout), ("stderr", block.stderr)):
+        for stream, value in (("stdout", block.stdout), ("stderr", residuals[position][0])):
             if not value:
                 continue
             label = f"{node.node_id} iteration {iteration.index} {stream}[{index}]:\n"
+            structure = payload_structure(value)
+            if structure["status"] != "not_assessed":
+                label += f"structure={json.dumps(structure, sort_keys=True)}\n"
             limit = max(0, 500 - len(label))
             excerpt = value
             kept = len(value)
@@ -415,11 +567,18 @@ def build_digest(
     excerpt_lines = []
     for offset, (label, value) in enumerate(payloads):
         remaining = cfg.char_budget - size()
-        allowance = max(0, remaining // max(1, len(payloads) - offset) - len(label) - 50)
+        structure = (
+            "\nstructure=" + json.dumps(payload_structure(value), sort_keys=True)
+            if label.endswith("response")
+            else ""
+        )
+        allowance = max(
+            0, remaining // max(1, len(payloads) - offset) - len(label) - len(structure) - 50
+        )
         if allowance <= 0:
             continue
         excerpt = head_tail(value, allowance)
-        excerpt_lines.append(f"{label}:\n{excerpt}")
+        excerpt_lines.append(f"{label}:{structure}\n{excerpt}")
         sections[3] = "## Focused sub-call excerpts\n" + "\n".join(excerpt_lines)
         payload_kept[label] = min(len(value), allowance)
 

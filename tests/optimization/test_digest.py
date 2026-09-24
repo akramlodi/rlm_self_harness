@@ -682,7 +682,7 @@ def test_code_packet_caps_each_output_stream_and_counts_source_once():
 class TestDigestVersion:
     def test_version_bumped_for_paired_execution_outputs(self):
         # 1.6.0 pairs each selected code block with its observed outputs.
-        assert DIGEST_VERSION == "1.6.0"
+        assert DIGEST_VERSION == "1.7.0"
 
     def test_digest_version_is_recorded_per_bundle(self):
         lm = MockLM(response_fn=scripted_response)
@@ -693,8 +693,8 @@ class TestDigestVersion:
             harness_version="H0",
             split_id="held_in_v1",
         )
-        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.6.0"
-        assert result.bundle.to_dict()["config"]["digest_version"] == "1.6.0"
+        assert result.bundle.config.digest_version == DIGEST_VERSION == "1.7.0"
+        assert result.bundle.to_dict()["config"]["digest_version"] == "1.7.0"
 
     def test_attribution_cache_key_does_not_include_digest_version(self):
         # DIGEST_VERSION reaches bundle ids via MiningConfig.digest_version
@@ -717,3 +717,42 @@ class TestDigestVersion:
         # And the material really is what the sha is computed over.
         payload = json.dumps(material, sort_keys=True, default=str)
         assert attributor.config_sha256() == hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def test_structural_summary_uses_complete_unambiguous_json_only():
+    from shrlm.optimization.digest import payload_structure
+
+    assert payload_structure(json.dumps({str(i): i for i in range(26)}))["item_count"] == 26
+    assert payload_structure("[1, 2]")["item_count"] == 2
+    for value in ('{"a":1,"a":2}', "[NaN]", '{"partial":', "[1]" * 40000):
+        assert payload_structure(value)["status"] == "not_assessed"
+
+
+def test_retry_chatter_does_not_displace_consumers_in_digest():
+    from tests.optimization.test_proposal_evidence import consumer_chain_trace
+
+    root, stats = walk(
+        consumer_chain_trace("Transient API error (RateLimitError); retrying (1/6)...\n" * 20)
+    )
+    digest = build_digest(
+        "retry", "Combine", root, stats, make_verdict(), DigestConfig(char_budget=2600)
+    )
+    assert "merged = merge(replies)" in digest.text
+    assert "remaining: 26" in digest.text
+    assert "retry notices" in digest.text
+    assert "recovery not established" in digest.text
+    assert len(digest.text) <= 2600
+
+
+def test_static_operation_selection_keeps_uncertainty_and_scan_bound():
+    from shrlm.optimization.digest import following_operations
+
+    selected, status = following_operations(["value = (", "result = merge(value)"], 0)
+    assert selected == [] and "unestablished" in status
+    selected, status = following_operations(["value = source()", "unrelated = source()"], 0)
+    assert selected == [] and "unestablished" in status
+    selected, status = following_operations(
+        ["value = source()", *("unrelated = 1" for _ in range(128)), "result = merge(value)"],
+        0,
+    )
+    assert selected == [] and "unestablished" in status

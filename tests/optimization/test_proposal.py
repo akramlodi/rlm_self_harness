@@ -149,6 +149,41 @@ def skills_item(**fields: Any) -> dict[str, Any]:
 SKILLS_ITEM = skills_item()
 
 
+def synthetic_ref(index):
+    import hashlib
+
+    return hashlib.sha256(json.dumps([f"fixture-{index}", "r", 1, 0, "code"]).encode()).hexdigest()[
+        :16
+    ]
+
+
+def synthetic_evidence(patterns, *, preferred=()):
+    # Provide at most four complete mechanisms, choosing the edit kinds under test.
+    indices = list(
+        dict.fromkeys([i for i in preferred if i < len(patterns)] + list(range(len(patterns))))
+    )[:4]
+    return {
+        "patterns": {
+            i: {
+                "run_id": f"fixture-{i}",
+                "trace": {
+                    "snippets": [
+                        {
+                            "node_id": "r",
+                            "iteration_index": 1,
+                            "code_block_index": 0,
+                            "code": "result = combine(inputs)",
+                            "code_complete": True,
+                            "reason": "cited operation",
+                        }
+                    ]
+                },
+            }
+            for i in indices
+        }
+    }
+
+
 def canned_batch(*items: dict[str, Any]) -> str:
     defaults = {"text": "S4", "policy": "S6", "code": "S7", "repl_helper": "S8", "skills": "S10"}
     candidates = [
@@ -166,7 +201,7 @@ def canned_batch(*items: dict[str, Any]) -> str:
                     "pattern_index": item["pattern_index"],
                     "surface": item["surface"],
                     "reason": "The cited operation lacks this check.",
-                    "evidence_refs": [],
+                    "evidence_refs": [synthetic_ref(item["pattern_index"])],
                 }
                 for item in candidates
             ],
@@ -188,6 +223,8 @@ def test_supported_route_requires_own_admitted_operation_references():
     pattern = {
         **make_pattern("lossy_aggregation"),
         "route_support": {"S8": ["own"]},
+        "selectable": True,
+        "eligible_surfaces": ["S3", "S4", "S8"],
         "admitted_refs": ["own"],
     }
     item = edit_item(0, REPL_HELPER_ITEM["edit"], surface="S8")
@@ -205,9 +242,14 @@ def test_supported_route_requires_own_admitted_operation_references():
         )
         assert not accepted and rejected
     accepted, rejected = validate_batch_members(
-        [item], [{**pattern, "route_support": {}}], H0, None, [], [selection]
+        [item],
+        [{**pattern, "route_support": {}, "eligible_surfaces": ["S3", "S4"]}],
+        H0,
+        None,
+        [],
+        [selection],
     )
-    assert not accepted and "not eligible" in rejected[0]["reason"]
+    assert not accepted and "selectable choices" in rejected[0]["reason"]
 
 
 @pytest.mark.parametrize(
@@ -227,7 +269,14 @@ def test_selection_mismatch_preserves_sibling(tmp_path):
     payload = json.loads(canned_batch(TEXT_ITEM, POLICY_ITEM))
     payload["selections"][1]["surface"] = "S7"
     lm = MockLM(responses=[json.dumps(payload), canned_batch()])
-    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+    )
     assert [w.surface for w in result.written] == ["S4"]
     assert len(result.attempts) == 2
     assert "selection" in result.attempts[0].violation
@@ -243,6 +292,7 @@ def test_duplicate_member_json_key_preserves_sibling(tmp_path):
         MockLM(responses=[response, canned_batch()]),
         tmp_path / "proposals",
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert [w.surface for w in result.written] == ["S4"]
     assert "duplicate JSON" in result.attempts[0].violation
@@ -257,6 +307,7 @@ def test_orphan_selection_cannot_supply_a_replacement(tmp_path):
         MockLM(responses=[json.dumps(payload), canned_batch()]),
         tmp_path / "proposals",
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert [w.surface for w in result.written] == ["S4"]
     assert "no matching candidate" in result.attempts[0].violation
@@ -266,7 +317,15 @@ def test_inventory_overflow_rejects_before_model_call(tmp_path):
     pattern = {**PATTERN_TEXT, "signature": {**PATTERN_TEXT["signature"], "extra": "x" * 40000}}
     lm = MockLM(responses=[])
     with pytest.raises(ProposalRejection, match="inventory exceeds"):
-        propose_round({**BUNDLE, "patterns": [pattern]}, H0, lm, tmp_path / "proposals")
+        propose_round(
+            {**BUNDLE, "patterns": [pattern]},
+            H0,
+            lm,
+            tmp_path / "proposals",
+            evidence=synthetic_evidence(
+                ({**BUNDLE, "patterns": [pattern]}).get("patterns", []), preferred=()
+            ),
+        )
     assert lm._call_count == 0
 
 
@@ -290,13 +349,18 @@ def test_collision_retains_first_owner_and_sibling_even_when_repair_collides(tmp
         return next(responses)
 
     result = propose_round(
-        bundle, H0, MockLM(response_fn=response), tmp_path / "proposals", workdir=tmp_path / "work"
+        bundle,
+        H0,
+        MockLM(response_fn=response),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((bundle).get("patterns", []), preferred=()),
     )
     assert [w.surface for w in result.written] == ["S2", "S3"]
     assert [w.pattern_index for w in result.written] == [0, 1]
     assert len(prompts) == 2
     assert 'Occupied surfaces: ["S2","S3"]' in prompts[1][1]["content"]
-    assert 'Eligible unoccupied surfaces: {"2":["S4"]}' in prompts[1][1]["content"]
+    assert 'Eligible unoccupied surfaces: {"2":["S4","S8"]}' in prompts[1][1]["content"]
     collision = result.attempts[0].admissions[-1]
     assert collision["status"] == "occupied"
     assert collision["position"] == 3
@@ -306,7 +370,14 @@ def test_collision_retains_first_owner_and_sibling_even_when_repair_collides(tmp
         sum(len(message["content"]) for message in prompt) for prompt in prompts
     ]
     idle = MockLM(responses=[])
-    replay = propose_round(bundle, H0, idle, tmp_path / "proposals", workdir=tmp_path / "work")
+    replay = propose_round(
+        bundle,
+        H0,
+        idle,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((bundle).get("patterns", []), preferred=()),
+    )
     assert replay.evidence_audit == result.evidence_audit
     assert replay.attempts[0].admissions == result.attempts[0].admissions
     assert idle._call_count == 0
@@ -342,6 +413,7 @@ def test_failed_contender_does_not_reserve_surface(tmp_path, monkeypatch, gate):
         MockLM(responses=[canned_batch(first, second), canned_batch()]),
         tmp_path / "proposals",
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence(({"patterns": patterns}).get("patterns", []), preferred=()),
     )
     assert [w.candidate_id for w in result.written] == ["r00-c02-s2"]
 
@@ -373,9 +445,15 @@ def test_same_pattern_owner_is_not_repairable_and_ids_stay_unique(tmp_path):
         MockLM(response_fn=response),
         tmp_path / "proposals",
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence(
+            (
+                {"patterns": [make_pattern("lossy_aggregation"), make_pattern("lossy_aggregation")]}
+            ).get("patterns", []),
+            preferred=(),
+        ),
     )
     assert [w.candidate_id for w in result.written] == ["r00-c02-s4", "r00-c03-s3"]
-    assert 'Eligible unoccupied surfaces: {"1":["S3"]}' in prompts[1][1]["content"]
+    assert 'Eligible unoccupied surfaces: {"1":["S3","S8"]}' in prompts[1][1]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +623,7 @@ def test_task_guidance_compares_execution_and_preserves_information(environment)
         [],
         4,
         verifier_config={"environment": environment},
+        evidence=synthetic_evidence([PATTERN_TEXT], preferred=()),
     )
     assert TASK_REASONING_GUIDANCE in prompt
     assert "wrong-but-valid labels" in prompt
@@ -649,14 +728,21 @@ def test_written_proposal_loads_cleanly(item, expected_surface, tmp_path):
 
 def test_render_prompt_includes_surfaces_patterns_and_fallbacks():
     incumbent_serialization = serialize_harness(H0)
-    rendered, addressable = render_prompt(ALL_PATTERNS, incumbent_serialization, (), (), k=4)
+    rendered, addressable = render_prompt(
+        ALL_PATTERNS,
+        incumbent_serialization,
+        (),
+        (),
+        k=4,
+        evidence=synthetic_evidence(ALL_PATTERNS, preferred=()),
+    )
     assert "S1" in rendered and "S9" in rendered and "S10" in rendered  # render_surface_block()
     assert "skipped_verification" in rendered
     assert "no passing runs" in rendered.lower()
     assert "no prior rounds" in rendered.lower()
     # Taxonomy 3.1.0: every recognized mechanism is addressable, OTHER included,
     # and each pattern advertises its eligible surfaces with the primary first.
-    assert [index for index, _ in addressable] == [0, 1, 2, 3, 4, 5, 6]
+    assert [index for index, _ in addressable] == [0, 1, 2, 3]
     assert '"eligible_surfaces": ["S4"' in rendered
 
 
@@ -669,7 +755,14 @@ def test_render_prompt_passing_and_history_blocks():
             {"promoted": False, "promoted_harness_hash": None},
         )
     ]
-    rendered, _ = render_prompt(ALL_PATTERNS, incumbent_serialization, passing, history, k=4)
+    rendered, _ = render_prompt(
+        ALL_PATTERNS,
+        incumbent_serialization,
+        passing,
+        history,
+        k=4,
+        evidence=synthetic_evidence(ALL_PATTERNS, preferred=()),
+    )
     assert "bfs-1" in rendered
     assert "r00-c01-s4" in rendered
     assert "cost too high" in rendered
@@ -685,8 +778,15 @@ def test_render_prompt_omits_ungrounded_evidence_but_never_the_pattern():
     pattern = copy.deepcopy(PATTERN_TEXT)
     pattern["verifier_evidence"] = [f"a: produced {huge}"]
 
-    rendered, addressable = render_prompt([pattern], serialize_harness(H0), (), (), k=4)
-    assert [index for index, _ in addressable] == [0]
+    rendered, addressable = render_prompt(
+        [pattern],
+        serialize_harness(H0),
+        (),
+        (),
+        k=4,
+        evidence={},
+    )
+    assert addressable == []
     assert huge not in rendered
     assert "no resolvable operation" in rendered
     assert "x" * 2001 not in rendered
@@ -702,7 +802,14 @@ def test_unattributed_inventory_cannot_authorize_an_initial_or_repaired_edit(tmp
     unattributed["actionability"] = 0.8
     patterns = [PATTERN_TEXT, unattributed]
     bundle = {**BUNDLE, "patterns": patterns}
-    prompt, addressable = render_prompt(patterns, serialize_harness(H0), [], [], 4)
+    prompt, addressable = render_prompt(
+        patterns,
+        serialize_harness(H0),
+        [],
+        [],
+        4,
+        evidence=synthetic_evidence(patterns, preferred=()),
+    )
     section = json.JSONDecoder().raw_decode(prompt.split(EVIDENCE_HEADING)[1])[0]
     assert [index for index, _ in addressable] == [0]
     assert len(section["inventory"]) == 2
@@ -715,10 +822,17 @@ def test_unattributed_inventory_cannot_authorize_an_initial_or_repaired_edit(tmp
     noop = edit_item(0, {"kind": "text", "new_text": H0.verification_instruction}, surface="S4")
     unsupported = {**TEXT_ITEM, "pattern_index": 1}
     lm = MockLM(responses=[canned_batch(noop, unsupported), canned_batch(unsupported)])
-    result = propose_round(bundle, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    result = propose_round(
+        bundle,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((bundle).get("patterns", []), preferred=()),
+    )
     assert not result.written
     assert len(result.attempts) == 2
-    assert "no editable surface" in result.attempts[0].violation
+    assert "not selectable" in result.attempts[0].violation
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +877,7 @@ def test_load_passing_behaviors_stabilizes_the_proposal_prompt_hash(tmp_path):
             tmp_path / label,
             passing_behaviors=load_passing_behaviors(tmp_path),
             workdir=tmp_path / f"{label}-work",
+            evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
         )
         return result.prompt_sha256
 
@@ -807,11 +922,12 @@ def test_propose_round_writes_every_addressable_kind(tmp_path):
         round_index=0,
         config=ProposerConfig(k=4),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert result.materialization_failures == []
     assert {w.surface for w in result.written} == {"S4", "S6", "S7", "S9"}
     # The S8, S10, and OTHER patterns were addressable and never proposed for.
-    assert result.skipped_patterns == [4, 5, 6]
+    assert result.skipped_patterns == []
 
     loaded, rejections = load_candidates(tmp_path / "proposals", H0)
     assert rejections == [], rejections
@@ -829,6 +945,7 @@ def test_propose_round_reask_loop_records_both_attempts(tmp_path):
         tmp_path / "proposals",
         config=ProposerConfig(max_attempts=3),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert len(result.attempts) == 2
     assert result.attempts[0].accepted is False
@@ -841,11 +958,27 @@ def test_propose_round_cache_replays_with_zero_additional_calls(tmp_path):
     response = canned_batch(TEXT_ITEM)
     lm = MockLM(model_name="mock-proposer", responses=[response])
     cache = ProposalCache()
-    propose_round(BUNDLE, H0, lm, tmp_path / "proposals", cache=cache, workdir=tmp_path / "work")
+    propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        cache=cache,
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+    )
     assert lm._call_count == 1
     # Second round with an empty responses list: a cache miss would raise IndexError.
     lm2 = MockLM(model_name="mock-proposer", responses=[])
-    propose_round(BUNDLE, H0, lm2, tmp_path / "proposals2", cache=cache, workdir=tmp_path / "work2")
+    propose_round(
+        BUNDLE,
+        H0,
+        lm2,
+        tmp_path / "proposals2",
+        cache=cache,
+        workdir=tmp_path / "work2",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+    )
     assert lm2._call_count == 0
 
 
@@ -860,6 +993,7 @@ def test_propose_round_materialization_failure_does_not_drop_the_rest(tmp_path):
         tmp_path / "proposals",
         workdir=tmp_path / "work",
         config=ProposerConfig(max_attempts=1),
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert len(result.written) == 1
     assert result.written[0].surface == "S4"
@@ -883,12 +1017,26 @@ def test_preflight_repairs_only_failed_member_and_replays(tmp_path):
     lm = MockLM(responses=[canned_batch(TEXT_ITEM, broken), canned_batch(CODE_S9_ITEM)])
     cache = ProposalCache()
     kwargs = dict(cache=cache, workdir=tmp_path / "work")
-    result = propose_round(bundle, H0, lm, tmp_path / "proposals", **kwargs)
+    result = propose_round(
+        bundle,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        **kwargs,
+        evidence=synthetic_evidence((bundle).get("patterns", []), preferred=()),
+    )
     assert [w.candidate_id for w in result.written] == ["r00-c01-s4", "r00-c02-s9"]
     assert len(result.attempts) == 2
     assert "bracketed_pair" in result.attempts[0].violation
     assert result.preflight_failures == []
-    replay = propose_round(bundle, H0, lm, tmp_path / "proposals", **kwargs)
+    replay = propose_round(
+        bundle,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        **kwargs,
+        evidence=synthetic_evidence((bundle).get("patterns", []), preferred=()),
+    )
     assert all(a.cached for a in replay.attempts)
 
 
@@ -906,6 +1054,7 @@ def test_propose_round_survivor_keeps_its_batch_position_after_a_failure(tmp_pat
         tmp_path / "proposals",
         workdir=tmp_path / "work",
         config=ProposerConfig(max_attempts=1),
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert [w.candidate_id for w in result.written] == ["r00-c02-s4"]
     assert len(result.materialization_failures) == 1
@@ -927,6 +1076,7 @@ def test_propose_round_reasks_when_the_whole_batch_fails_to_materialize(tmp_path
         tmp_path / "proposals",
         config=ProposerConfig(max_attempts=3),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert len(result.attempts) == 2
     first, second = result.attempts
@@ -957,6 +1107,7 @@ def test_propose_round_exhaustion_on_no_ops_returns_an_empty_result(tmp_path):
         tmp_path / "proposals",
         config=ProposerConfig(max_attempts=2),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert result.written == []
     assert len(result.attempts) == 2
@@ -986,6 +1137,7 @@ def test_propose_round_mixed_malformed_then_no_op_exhaustion_returns_empty(tmp_p
         tmp_path / "proposals",
         config=ProposerConfig(max_attempts=2),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert result.written == []
     assert len(result.materialization_failures) == 1
@@ -1002,6 +1154,7 @@ def test_propose_round_malformed_repair_seals_original_failures(tmp_path):
         tmp_path / "proposals",
         config=ProposerConfig(max_attempts=8),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert result.written == []
     assert len(result.attempts) == 2
@@ -1011,7 +1164,14 @@ def test_propose_round_malformed_repair_seals_original_failures(tmp_path):
 def test_propose_round_empty_bundle_no_crash(tmp_path):
     empty_bundle = {"bundle_id": "empty", "patterns": []}
     lm = MockLM(model_name="mock-proposer", responses=[canned_batch()])
-    result = propose_round(empty_bundle, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    result = propose_round(
+        empty_bundle,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((empty_bundle).get("patterns", []), preferred=()),
+    )
     assert result.written == []
     assert result.skipped_patterns == []
 
@@ -1039,6 +1199,7 @@ def test_propose_round_budget_exhaustion_is_raised_once_without_re_asking(tmp_pa
             tmp_path / "proposals",
             config=ProposerConfig(max_attempts=3, transport_retries=3),
             workdir=tmp_path / "work",
+            evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
         )
     assert lm._call_count == 1
     assert excinfo.value.attempts == []
@@ -1055,6 +1216,7 @@ def test_propose_round_raises_after_exhausting_attempts(tmp_path):
             tmp_path / "proposals",
             config=ProposerConfig(max_attempts=3),
             workdir=tmp_path / "work",
+            evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
         )
 
 
@@ -1307,7 +1469,14 @@ def test_s10_merged_total_length_over_cap_fails_materialization(tmp_path):
 
 
 def test_rendered_prompt_names_s10_and_its_edit_format():
-    rendered, _ = render_prompt(ALL_PATTERNS, serialize_harness(H0), (), (), k=4)
+    rendered, _ = render_prompt(
+        ALL_PATTERNS,
+        serialize_harness(H0),
+        (),
+        (),
+        k=4,
+        evidence=synthetic_evidence(ALL_PATTERNS, preferred=()),
+    )
     assert "S10" in rendered
     assert '"kind": "skills"' in rendered
     assert "ten editable surfaces" in rendered
@@ -1379,6 +1548,7 @@ def test_s10_over_entry_cap_edit_is_reasked_with_coaching(tmp_path):
         tmp_path / "proposals",
         config=ProposerConfig(max_attempts=3),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=(5,)),
     )
     assert result.materialization_failures == []
     assert len(result.written) == 1
@@ -1406,6 +1576,7 @@ def test_s10_over_total_cap_edit_is_reasked(tmp_path):
         tmp_path / "proposals",
         config=ProposerConfig(max_attempts=3),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=(5,)),
     )
     assert result.materialization_failures == []
     assert len(result.written) == 1
@@ -1446,6 +1617,7 @@ def test_s10_removal_of_unknown_name_is_reasked_at_proposal_time(tmp_path):
         tmp_path / "proposals",
         config=ProposerConfig(max_attempts=3),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=(5,)),
     )
     assert result.materialization_failures == []
     assert len(result.written) == 1
@@ -1465,7 +1637,14 @@ def test_s10_removal_frees_cap_budget(tmp_path):
 
 
 def test_s10_removal_form_is_documented_in_the_prompt():
-    rendered, _ = render_prompt(ALL_PATTERNS, serialize_harness(H0), (), (), k=4)
+    rendered, _ = render_prompt(
+        ALL_PATTERNS,
+        serialize_harness(H0),
+        (),
+        (),
+        k=4,
+        evidence=synthetic_evidence(ALL_PATTERNS, preferred=()),
+    )
     assert "remove" in rendered.lower()
 
 
@@ -1488,7 +1667,14 @@ def test_s10_inventory_line_names_all_entries_past_the_truncation_point():
         {"S10_skills": serialization["surfaces"]["S10_skills"]}, indent=2, sort_keys=True
     )
     assert len(value_text) > 4000  # the display value really is truncated
-    rendered, _ = render_prompt(ALL_PATTERNS, serialization, (), (), k=4)
+    rendered, _ = render_prompt(
+        ALL_PATTERNS,
+        serialization,
+        (),
+        (),
+        k=4,
+        evidence=synthetic_evidence(ALL_PATTERNS, preferred=()),
+    )
     assert "S10 inventory:" in rendered
     assert f"3/{SKILL_MAX_ENTRIES} entries" in rendered
     for name in ("alpha_skill", "beta_skill", "gamma_skill"):
@@ -1501,12 +1687,26 @@ def test_skills_pedagogy_only_rendered_when_an_s10_pattern_is_addressable():
     # PATTERN_TEXT (skipped_verification -> S4, S9, S10) and PATTERN_OTHER both
     # list S10 under 3.1.0; only lossy_aggregation's set (S9, S3, S4) does not.
     no_s10 = [make_pattern("lossy_aggregation")]
-    rendered, _ = render_prompt(no_s10, serialize_harness(H0), (), (), k=4)
+    rendered, _ = render_prompt(
+        no_s10,
+        serialize_harness(H0),
+        (),
+        (),
+        k=4,
+        evidence=synthetic_evidence(no_s10, preferred=(5,)),
+    )
     assert "procedural anchor" not in rendered
     assert '"kind": "skills"' in rendered  # the compact format bullet stays
 
     with_s10 = [PATTERN_TEXT, PATTERN_SKILLS]
-    rendered, _ = render_prompt(with_s10, serialize_harness(H0), (), (), k=4)
+    rendered, _ = render_prompt(
+        with_s10,
+        serialize_harness(H0),
+        (),
+        (),
+        k=4,
+        evidence=synthetic_evidence(with_s10, preferred=(5,)),
+    )
     assert rendered.count("procedural anchor") == 1
     assert rendered.count("## Use When") == 1
 
@@ -1519,11 +1719,24 @@ def test_render_prompt_names_the_verifier_contract_when_the_bundle_carries_it():
         "pass_f1_threshold": 1.0,
     }
     rendered, _ = render_prompt(
-        [PATTERN_TEXT], serialize_harness(H0), (), (), k=4, verifier_config=contract
+        [PATTERN_TEXT],
+        serialize_harness(H0),
+        (),
+        (),
+        k=4,
+        verifier_config=contract,
+        evidence=synthetic_evidence([PATTERN_TEXT], preferred=()),
     )
     assert "Verifier contract" in rendered
     assert "extraction_rule=trailing-bracket-list;marker-optional;quotes-stripped" in rendered
-    absent, _ = render_prompt([PATTERN_TEXT], serialize_harness(H0), (), (), k=4)
+    absent, _ = render_prompt(
+        [PATTERN_TEXT],
+        serialize_harness(H0),
+        (),
+        (),
+        k=4,
+        evidence=synthetic_evidence([PATTERN_TEXT], preferred=()),
+    )
     assert "not recorded for this bundle" in absent
 
 
@@ -1535,7 +1748,14 @@ def test_render_prompt_keeps_legacy_answer_dumps_inventory_only():
         f"a: produced '[1f0e3dad99]', expected '[{huge}]'",
         "b: produced '[2c7f9ccb5a]', expected '[2c7f9ccb5a]'",
     ]
-    rendered, _ = render_prompt([pattern], serialize_harness(H0), (), (), k=4)
+    rendered, _ = render_prompt(
+        [pattern],
+        serialize_harness(H0),
+        (),
+        (),
+        k=4,
+        evidence=synthetic_evidence([pattern], preferred=()),
+    )
     assert "a: produced '[1f0e3dad99]'" not in rendered
     assert "b: produced '[2c7f9ccb5a]'" not in rendered
     assert huge not in rendered
@@ -1545,7 +1765,14 @@ def test_duplicate_surface_owner_survives_withdrawal(tmp_path):
     bundle = {"bundle_id": "same-surface", "patterns": [PATTERN_TEXT, PATTERN_TEXT]}
     duplicate = {**TEXT_ITEM, "pattern_index": 1}
     lm = MockLM(responses=[canned_batch(TEXT_ITEM, duplicate), canned_batch()])
-    result = propose_round(bundle, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    result = propose_round(
+        bundle,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((bundle).get("patterns", []), preferred=()),
+    )
     assert len(result.attempts) == 2
     assert "surface S4" in result.attempts[0].violation
     assert len(result.written) == 1
@@ -1573,7 +1800,14 @@ def test_repair_retargets_failed_pattern_and_preserves_independent_member(tmp_pa
     )
     lm = MockLM(responses=[canned_batch(*batch), canned_batch(repaired)])
     work = tmp_path / "work"
-    result = propose_round({"patterns": patterns}, H0, lm, tmp_path / "proposals", workdir=work)
+    result = propose_round(
+        {"patterns": patterns},
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=work,
+        evidence=synthetic_evidence(({"patterns": patterns}).get("patterns", []), preferred=()),
+    )
     assert lm._call_count == 2
     assert [w.candidate_id for w in result.written] == ["r00-c01-s2", "r00-c02-s4"]
     assert (
@@ -1583,13 +1817,25 @@ def test_repair_retargets_failed_pattern_and_preserves_independent_member(tmp_pa
     assert not result.materialization_failures and not result.preflight_failures
     saved = [w.path.read_bytes() for w in result.written]
     replay = propose_round(
-        {"patterns": patterns}, H0, MockLM(responses=[]), tmp_path / "proposals", workdir=work
+        {"patterns": patterns},
+        H0,
+        MockLM(responses=[]),
+        tmp_path / "proposals",
+        workdir=work,
+        evidence=synthetic_evidence(({"patterns": patterns}).get("patterns", []), preferred=()),
     )
     assert [w.path.read_bytes() for w in replay.written] == saved
 
 
 def test_prompt_explains_batch_surface_limit():
-    prompt, _ = render_prompt([PATTERN_TEXT], serialize_harness(H0), [], [], 4)
+    prompt, _ = render_prompt(
+        [PATTERN_TEXT],
+        serialize_harness(H0),
+        [],
+        [],
+        4,
+        evidence=synthetic_evidence([PATTERN_TEXT], preferred=()),
+    )
     assert "at most one edit per surface" in prompt
     assert "one combined candidate" in prompt
     assert "not a quota" in prompt
@@ -1606,13 +1852,21 @@ def test_complete_current_surface_is_shared_and_contract_is_environment_specific
         [],
         4,
         verifier_config={"environment": "oolong_pairs"},
+        evidence=synthetic_evidence([PATTERN_CODE_S9, PATTERN_CODE_S9], preferred=()),
     )
     assert prompt.count(source) == 1
     assert "AnswerDecision.accept(answer)" in prompt
     assert "No valid pairs found." in prompt
     assert "newline" in prompt
     assert "('str', 19006)" in prompt
-    other, _ = render_prompt([PATTERN_CODE_S9], serialization, [], [], 4)
+    other, _ = render_prompt(
+        [PATTERN_CODE_S9],
+        serialization,
+        [],
+        [],
+        4,
+        evidence=synthetic_evidence([PATTERN_CODE_S9], preferred=()),
+    )
     assert "No valid pairs found." not in other
 
 
@@ -1631,8 +1885,9 @@ def test_history_reports_one_shared_verdict_for_bundled_edits():
     ]
     history = _render_history_block([(records, {"promoted": False})])
     assert history.split("\n", 1)[1].count("rejected") == 1
-    assert "S2, S3" in history
-    assert "bundled" not in history.split("\n", 1)[1]
+    rows = json.loads(history.split("\n", 1)[1])["attempts"]
+    assert [r["surface"] for r in rows if r["decision"] == "bundled"] == ["S2", "S3"]
+    assert all("measured" not in r for r in rows if r["decision"] == "bundled")
 
 
 # ---------------------------------------------------------------------------
@@ -1654,7 +1909,7 @@ def test_history_renders_not_materialized_records_with_effect_and_reason():
         }
     ]
     history = _render_history_block([(records, {"round": 4, "promoted": False})])
-    assert "Round 4:" in history
+    assert '"round": 4' in history
     [line] = [line for line in history.splitlines() if "pattern 0 on S9" in line]
     assert "not_materialized" in line
     assert "redirect on an incomplete pair set" in line
@@ -1670,7 +1925,7 @@ def test_history_labels_rounds_by_position_when_the_decision_has_no_round():
             ([], {"round": 7, "promoted": True, "promoted_harness_hash": "abc"}),
         ]
     )
-    assert "Round 0:" in history and "Round 7:" in history
+    assert '"round": 0' in history and '"round": 7' in history
 
 
 def test_history_renders_predicted_effect_on_ledger_records_and_tolerates_absence():
@@ -1688,19 +1943,26 @@ def test_history_renders_predicted_effect_on_ledger_records_and_tolerates_absenc
     ]
     history = _render_history_block([(records, {"round": 1, "promoted": False})])
     assert "the root verifies before answering" in history
-    assert "baseline: rejected" in history
+    assert '"subject_id": "baseline"' in history and '"decision": "rejected"' in history
 
 
 def test_history_renders_a_round_without_records_as_no_record_persisted():
     from shrlm.optimization.proposal import _render_history_block
 
     history = _render_history_block([([], {"round": 2, "promoted": False})])
-    assert "Round 2:" in history
-    assert "no per-edit record persisted" in history
+    assert '"round": 2' in history
+    assert '"attempts": []' in history
 
 
 def test_render_prompt_history_preamble_names_the_no_op_refusal():
-    rendered, _ = render_prompt(ALL_PATTERNS, serialize_harness(H0), (), (), k=4)
+    rendered, _ = render_prompt(
+        ALL_PATTERNS,
+        serialize_harness(H0),
+        (),
+        (),
+        k=4,
+        evidence=synthetic_evidence(ALL_PATTERNS, preferred=()),
+    )
     assert "identical to the current surface" in rendered
 
 
@@ -1710,7 +1972,14 @@ def test_render_prompt_history_preamble_names_the_no_op_refusal():
 def test_invalid_repair_preserves_survivor_and_stops(tmp_path, repair):
     no_op = edit_item(1, {"kind": "policy", "runtime_policy": {}})
     lm = MockLM(responses=[canned_batch(TEXT_ITEM, no_op), repair])
-    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+    )
     assert len(result.attempts) == 2
     assert not result.attempts[-1].accepted
     assert [w.surface for w in result.written] == ["S4"]
@@ -1720,7 +1989,14 @@ def test_invalid_repair_preserves_survivor_and_stops(tmp_path, repair):
 def test_literal_braces_need_no_model_repair(tmp_path):
     item = edit_item(0, {"kind": "text", "new_text": 'Return {"record_id": 1}'})
     lm = MockLM(responses=[canned_batch(item)])
-    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+    )
     assert len(result.attempts) == 1 and len(result.written) == 1
     loaded, rejected = load_candidates(tmp_path / "proposals", H0)
     assert not rejected
@@ -1763,7 +2039,14 @@ def test_literal_surface_display_preserves_live_and_literal_slots(tmp_path):
 
 def test_changed_profile_refused_before_proposal_calls(tmp_path):
     lm = MockLM(responses=[canned_batch(TEXT_ITEM)])
-    propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+    )
     idle = MockLM(responses=[])
     with pytest.raises(ValueError, match="contract changed"):
         propose_round(
@@ -1773,6 +2056,7 @@ def test_changed_profile_refused_before_proposal_calls(tmp_path):
             tmp_path / "proposals",
             workdir=tmp_path / "work",
             preflight_profile="oolong-pairs/v1",
+            evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
         )
     assert idle._call_count == 0
 
@@ -1796,6 +2080,7 @@ def test_changed_evidence_contract_refuses_paid_replay(tmp_path, monkeypatch, ve
         MockLM(responses=[canned_batch()]),
         tmp_path / "proposals",
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     monkeypatch.setattr(
         evidence_module if hasattr(evidence_module, version) else proposal_module,
@@ -1804,7 +2089,14 @@ def test_changed_evidence_contract_refuses_paid_replay(tmp_path, monkeypatch, ve
     )
     idle = MockLM(responses=[])
     with pytest.raises(ValueError, match="contract changed"):
-        propose_round(BUNDLE, H0, idle, tmp_path / "proposals", workdir=tmp_path / "work")
+        propose_round(
+            BUNDLE,
+            H0,
+            idle,
+            tmp_path / "proposals",
+            workdir=tmp_path / "work",
+            evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+        )
     assert idle._call_count == 0
 
 
@@ -1835,7 +2127,12 @@ def test_repair_rejects_occupied_ineligible_unrelated_or_unexplained_target(
     )
     lm = MockLM(responses=[canned_batch(keep, failed), canned_batch(repair)])
     result = propose_round(
-        {"patterns": patterns}, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work"
+        {"patterns": patterns},
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence(({"patterns": patterns}).get("patterns", []), preferred=()),
     )
     assert [w.surface for w in result.written] == ["S2"]
     assert not result.attempts[-1].accepted and lm._call_count == 2
@@ -1856,7 +2153,13 @@ def test_repair_output_budget_exhaustion_keeps_survivor_and_replays(tmp_path):
     cache = ProposalCache(path=str(tmp_path / "cache.jsonl"))
     lm = MockLM(response_fn=respond)
     first = propose_round(
-        BUNDLE, H0, lm, tmp_path / "proposals", cache=cache, workdir=tmp_path / "work"
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        cache=cache,
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert len(calls) == 2
     assert [w.candidate_id for w in first.written] == ["r00-c01-s4"]
@@ -1870,6 +2173,7 @@ def test_repair_output_budget_exhaustion_keeps_survivor_and_replays(tmp_path):
         tmp_path / "proposals",
         cache=ProposalCache(path=str(tmp_path / "cache.jsonl")),
         workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
     )
     assert idle._call_count == 0
     assert replay.written[0].path.read_bytes() == before
@@ -1879,7 +2183,14 @@ def test_repair_output_budget_exhaustion_keeps_survivor_and_replays(tmp_path):
 def test_empty_repair_withdraws_failed_slot_without_replacing_survivor(tmp_path):
     no_op = edit_item(1, {"kind": "policy", "runtime_policy": {}})
     lm = MockLM(responses=[canned_batch(no_op, TEXT_ITEM), canned_batch()])
-    result = propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+    result = propose_round(
+        BUNDLE,
+        H0,
+        lm,
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+    )
     assert len(result.attempts) == 2
     assert [w.candidate_id for w in result.written] == ["r00-c02-s4"]
     assert not result.materialization_failures
@@ -1901,7 +2212,14 @@ def test_interrupted_publication_replays_frozen_survivors_without_gates(tmp_path
     monkeypatch.setattr(proposal_module, "write_proposal", interrupted_writer)
     lm = MockLM(responses=[canned_batch(TEXT_ITEM, CODE_S9_ITEM)])
     with pytest.raises(OSError, match="interrupted publication"):
-        propose_round(BUNDLE, H0, lm, proposals, workdir=work)
+        propose_round(
+            BUNDLE,
+            H0,
+            lm,
+            proposals,
+            workdir=work,
+            evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+        )
     assert lm._call_count == 1
     assert (work / "proposal_result.json").exists()
     first = proposals / "r00-c01-s4" / "proposal.json"
@@ -1913,14 +2231,28 @@ def test_interrupted_publication_replays_frozen_survivors_without_gates(tmp_path
 
     monkeypatch.setattr(proposal_module, "load_candidate", forbidden_gate)
     idle = MockLM(responses=[])
-    replay = propose_round(BUNDLE, H0, idle, proposals, workdir=work)
+    replay = propose_round(
+        BUNDLE,
+        H0,
+        idle,
+        proposals,
+        workdir=work,
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+    )
     assert idle._call_count == 0
     assert [w.candidate_id for w in replay.written] == ["r00-c01-s4", "r00-c02-s9"]
     assert first.read_bytes() == before
     assert {p.name for p in proposals.iterdir()} == {w.candidate_id for w in replay.written}
     (proposals / "unrecorded-candidate").mkdir()
     with pytest.raises(ValueError, match="outside the frozen survivor set"):
-        propose_round(BUNDLE, H0, idle, proposals, workdir=work)
+        propose_round(
+            BUNDLE,
+            H0,
+            idle,
+            proposals,
+            workdir=work,
+            evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+        )
 
 
 def test_proposal_gate_spawn_failure_does_not_spend_repair(tmp_path, monkeypatch):
@@ -1932,7 +2264,14 @@ def test_proposal_gate_spawn_failure_does_not_spend_repair(tmp_path, monkeypatch
     monkeypatch.setattr(candidates_module.subprocess, "run", cannot_spawn)
     lm = MockLM(responses=[canned_batch(TEXT_ITEM)])
     with pytest.raises(OSError, match="process resources exhausted"):
-        propose_round(BUNDLE, H0, lm, tmp_path / "proposals", workdir=tmp_path / "work")
+        propose_round(
+            BUNDLE,
+            H0,
+            lm,
+            tmp_path / "proposals",
+            workdir=tmp_path / "work",
+            evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+        )
     assert lm._call_count == 1
     assert not list((tmp_path / "proposals").iterdir())
     assert not (tmp_path / "work" / "proposal_result.json").exists()
@@ -1952,12 +2291,24 @@ def test_partial_final_proposal_write_replays_from_checkpoint(tmp_path, monkeypa
     monkeypatch.setattr(Path, "write_text", partial_write)
     with pytest.raises(OSError, match="disk write interrupted"):
         propose_round(
-            BUNDLE, H0, MockLM(responses=[canned_batch(TEXT_ITEM)]), proposals, workdir=work
+            BUNDLE,
+            H0,
+            MockLM(responses=[canned_batch(TEXT_ITEM)]),
+            proposals,
+            workdir=work,
+            evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
         )
     assert not list(proposals.glob("*/proposal.json"))
     monkeypatch.setattr(Path, "write_text", original_write)
     idle = MockLM(responses=[])
-    replay = propose_round(BUNDLE, H0, idle, proposals, workdir=work)
+    replay = propose_round(
+        BUNDLE,
+        H0,
+        idle,
+        proposals,
+        workdir=work,
+        evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
+    )
     assert idle._call_count == 0
     assert [w.candidate_id for w in replay.written] == ["r00-c01-s4"]
     assert json.loads(replay.written[0].path.read_text())["surface"] == "S4"

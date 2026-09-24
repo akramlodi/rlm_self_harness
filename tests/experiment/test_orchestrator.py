@@ -97,7 +97,7 @@ from shrlm.optimization.promotion import DECISION_PROMOTED, MERGED_SUBJECT_ID
 from shrlm.optimization.proposal import _import_candidate_function
 from shrlm.optimization.validation import SPLIT_HELDOUT, load_promotion_ledger
 from shrlm.rlm_harness import H0, H0_STAR
-from tests.mock_lm import MockLM
+from tests.mock_lm import MockLM as BaseMockLM
 from tests.optimization.run_worker_support import (
     RUN_SCRIPTED_FACTORY,
     observed_peak_concurrency,
@@ -338,6 +338,32 @@ LOADERS: dict[str, LoaderFn] = {
 }
 
 
+def reference_batch(response, prompt):
+    """Scripted proposer copies actual host-owned operation refs from its prompt."""
+    from shrlm.optimization.proposal_evidence import EVIDENCE_HEADING
+
+    if not isinstance(prompt, list) or EVIDENCE_HEADING not in prompt[0]["content"]:
+        return response
+    try:
+        batch = json.loads(response)
+    except ValueError:
+        return response
+    if not isinstance(batch, dict) or batch.get("format") != "proposal-selection/v2":
+        return response
+    section, _ = json.JSONDecoder().raw_decode(prompt[0]["content"].split(EVIDENCE_HEADING, 1)[1])
+    inventory = {row["index"]: row for row in section["inventory"]}
+    for selection in batch["selections"]:
+        selection["evidence_refs"] = inventory.get(selection["pattern_index"], {}).get(
+            "admitted_refs", []
+        )
+    return json.dumps(batch)
+
+
+class MockLM(BaseMockLM):
+    def completion(self, prompt):
+        return reference_batch(super().completion(prompt), prompt)
+
+
 def attribution(mechanism: str) -> str:
     """A canned live response for orchestration tests, not a semantic judge."""
     payload: dict[str, Any] = {
@@ -347,7 +373,12 @@ def attribution(mechanism: str) -> str:
         "evidence_node_ids": ["r"],
         "symptom_summary": "the model answered without verifying",
         "operation_evidence": [
-            {"node_id": "r", "observation": "The root submitted the produced answer."}
+            {
+                "node_id": "r",
+                "iteration_index": 1,
+                "code_block_index": 0,
+                "observation": "The root submitted the produced answer.",
+            }
         ],
         "verification_limits": "Intermediate results were not semantically verified.",
     }
@@ -1829,6 +1860,32 @@ class TestRoundHistoryLoader:
         assert records == []
         assert (decision["round"], decision["promoted"]) == (4, False)
 
+    def test_collision_owner_resolves_only_to_a_persisted_candidate(self, tmp_path):
+        for saved in (False, True):
+            round_path = tmp_path / str(saved)
+            owner = {"position": 1, "pattern_index": 0, "surface": "S4"}
+            self.write_round(
+                round_path,
+                2,
+                proposals={"r02-c01-s4": {"surface": "S4"}} if saved else None,
+                marker_extra={
+                    "preflight_failures": [
+                        {
+                            "pattern_index": 1,
+                            "surface": "S4",
+                            "gate": "occupancy",
+                            "reason": "already occupied",
+                            "owner": owner,
+                        }
+                    ]
+                },
+            )
+            records, _ = orchestrator_module.load_round_history(round_path, 2, has_ledger=False)
+            observed = records[0]["owner"]
+            assert observed == (
+                {**owner, "round": 2, "subject_id": "r02-c01-s4"} if saved else owner
+            )
+
     def test_ledger_records_and_marker_failures_merge_for_a_partial_batch(self, tmp_path):
         round_path = experiment_round_dir(tmp_path, 2)
         failure = {
@@ -2530,7 +2587,7 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
                     "regression_risks": ["branch error"],
                 }
             )
-            return selected_batch(items)
+            return reference_batch(selected_batch(items), prompt)
 
     proposer = RepairProposer()
     factory = patch_runner(
@@ -2560,7 +2617,7 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
     assert not (validation / "r01-c01-s2").exists()
     history_prompt = proposer.prompts[2][0]["content"]
     assert "the model answered without verifying" in history_prompt
-    assert "mean_f1_all_attempts" in history_prompt and "n_runtime_errors" in history_prompt
+    assert "definition_ref" in history_prompt and "n_unknown" in history_prompt
     assert "AnswerDecision.accept() missing" in history_prompt
     assert "Preserve record identity and coverage" in history_prompt
     assert "Preserve valid answers" in history_prompt

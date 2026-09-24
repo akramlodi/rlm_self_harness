@@ -236,14 +236,26 @@ rejected under this new live contract; historical saved proposals remain readabl
 The prompt shows each eligible incumbent surface in full once. A shared
 32,000-character budget covers the entire rendered held-in evidence section,
 including JSON escaping, diagnoses, questions, verifier observations, contrasts,
-and omission notices. A compact inventory retains all addressable pattern indices;
+and omission notices. A compact inventory retains all recognized pattern indices;
 at most `min(k, 4)` patterns are expanded, preferring distinct mechanisms and
 resolvable operations. Selection may use another matching held-in attempt when
-the first representative is unsuitable. Bundle order and saved evidence are unchanged.
+the first representative is unsuitable. Only rows marked `selectable` may authorize
+an edit. Copy 1–12 `admitted_refs` belonging to that row, its eligible surface, and
+any per-surface predecessor identity. The host uses this same choice map for
+initial admission, skipped-pattern accounting, and repair. An inventory-only row
+cannot borrow another row's evidence. No selectable rows means no proposer call.
+Bundle order and saved evidence are unchanged.
 
 Code blocks and task questions remain complete or are omitted with a reason.
 Cited child calls include relevant caller/consumer context, with at most six
-snippets. Output and child payload excerpts are explicitly marked when truncated.
+snippets. A bounded static name scan skips preview-only prints and follows up to
+two computational hops plus a later observation. A minimum complete chain takes
+priority over optional siblings; explicitly cited comparisons must fit whole.
+This heuristic does not prove data flow or recovery. Output and child payload
+excerpts are explicitly marked when truncated. Complete, bounded, unambiguous
+JSON replies carry type and item counts; those counts do not verify semantics.
+Known client retry notices are summarized separately, preserving other stderr
+and errored children. Notices alone do not establish recovery or authorize S5.
 Shared operations appear once with references. Subsequent operations may show
 recovery, but proximity does not establish it; otherwise a passing held-in run
 with shared operation names supplies a contrast when it fits. Shared names do
@@ -274,7 +286,8 @@ appropriate for answer-visible defects under other eligible mechanisms.
 New candidates must provide `incumbent_behavior`, `observed_failure` and
 `behavioral_change` before `edit`, each a nonempty string of at most 600 characters.
 They distinguish actual execution from instructions, name the unresolved operation
-and verification limits, and explain the precise changed action/value. Challenge
+after later checks or recovery and its verification limits, and explain a changed
+action/value with a minimal example on which the behaviors differ. Challenge
 each edit: if followed perfectly, could the failure still happen for the same
 reason? Coverage checks cannot establish correct labels, and recovery already
 performed is not a new fix for the final result.
@@ -291,14 +304,15 @@ profile in `proposals_complete.json`; old markers use the legacy generic checks.
 Unchanged incumbent middleware does not receive the new domain probes.
 
 After a parseable batch within the count cap, each member is checked independently.
-Selection/candidate mismatches and duplicate JSON keys are rejected. All members
-of a duplicate-pattern or duplicate-surface group are rejected, while
-independent valid members keep their original slots and content. Failed members get
+Selection/candidate mismatches and duplicate JSON keys are rejected. The first
+candidate passing all gates owns its surface and pattern. Later collisions are
+refused individually; failed candidates reserve nothing. Independent valid
+members keep their original slots and content. Failed members get
 at most **one repair response**, within the existing total attempt/output caps;
 repairs must retain each failed member's pattern but may choose another eligible,
 unoccupied surface with a revised behavioral explanation. Collision repairs see
-explicit contender groups and must choose one contender or withdraw the group. Omission withdraws
-that member. Malformed repair or output exhaustion preserves the valid siblings.
+occupied surfaces and the exact remaining choices and references; they cannot
+replace an owner. Omission withdraws that failed member. Malformed repair or output exhaustion preserves the valid siblings.
 Transport, credential, integrity, and interruption failures retain their existing
 handling. A gate process that cannot spawn raises a host error without spending
 the repair response. Only final survivors are published for combined validation.
@@ -306,7 +320,8 @@ the repair response. Only final survivors are published for combined validation.
 Scratch files live under `work/attempt_NN/`; the proposal contract pins prompt,
 validator, evidence-selector/history-renderer versions, response format, text
 contract and slot marker, profile, incumbent and caps. Prompt, validator, and
-evidence-selector versions are `4.0.0`; diagnostic history is `2.0.0`. Capability
+evidence-selector versions are `4.2.0`; diagnostic history is `2.1.0`, and the
+history projection uses `proposal-history/v3`. Capability
 and history contracts, the history budget, behavior schema, and the full
 prior-attempt index are also sealed. Cache keys include the actual repair
 request and retained hashes. Before publishing final candidates,
@@ -333,3 +348,15 @@ predicate. The detailed OOLONG record-ID recipe is removed; its authoritative
 answer contract remains conditional on the environment. The smallest effective
 edit may replace or clearly scope a misleading example rather than append a
 contradictory rule. No semantic judge or extra selection model call is added.
+
+History has a separate 12,000-character cap. Compact rows preserve the last three
+rounds, the current incumbent's originating promotion, and a relevant older
+qualified-positive signal before verbose detail. Required predecessor identities
+are never truncated: if their context cannot fit or resolve uniquely, the choice
+is withheld everywhere without reallocating evidence. Measured or bundled
+predecessors take precedence over refused rewrites; an exact edit fingerprint
+takes precedence when known after materialization. Local refusals, batch members,
+measured outcomes, and observed activation remain separate. Metric definitions
+are deduplicated, keeping direction, version and missingness; unavailable
+comparison or activation remains `not_assessed`. Aggregate held-out history never
+includes held-out questions, answers, or traces.

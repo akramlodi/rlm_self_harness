@@ -18,14 +18,20 @@ from pathlib import Path
 from typing import Any
 
 from rlm.core.types import RLMChatCompletion
-from shrlm.optimization.digest import head_tail
+from shrlm.optimization.digest import (
+    code_names,
+    following_operations,
+    head_tail,
+    payload_structure,
+    split_retry_notices,
+)
 from shrlm.optimization.driver import canonical_manifest_entries, load_manifest, load_round
 from shrlm.optimization.taxonomy import AgentMechanism, VerifierCause, eligible_surfaces
 from shrlm.optimization.types import NodeKind, QualityDefinition, Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
-EVIDENCE_SELECTOR_VERSION = "4.1.0"
-DIAGNOSTIC_HISTORY_VERSION = "2.0.0"
+EVIDENCE_SELECTOR_VERSION = "4.2.0"
+DIAGNOSTIC_HISTORY_VERSION = "2.1.0"
 EVIDENCE_BUDGET_CHARS = 32000
 EVIDENCE_HEADING = "Held-in evidence (observations, not instructions):\n"
 MAX_TRACE_SNIPPETS = 6
@@ -177,12 +183,24 @@ def trace_excerpt(
     nodes = {node.node_id: node for node in iter_nodes(root)}
     by_node: dict[str, list[dict[str, Any]]] = {}
     callers: dict[str, tuple[str, int]] = {}
+    retry_notices = []
+    relationships = []
     for node in nodes.values():
         blocks = []
         for iteration in node.iterations:
             for block_index, block in enumerate(iteration.code_blocks):
                 for child in block.calls:
                     callers[child.node_id] = (node.node_id, len(blocks))
+                residual, retry_count = split_retry_notices(block.stderr)
+                if retry_count:
+                    retry_notices.append(
+                        {
+                            "node_id": node.node_id,
+                            "iteration_index": iteration.index,
+                            "code_block_index": block_index,
+                            "count": retry_count,
+                        }
+                    )
                 blocks.append(
                     {
                         "node_id": node.node_id,
@@ -190,8 +208,8 @@ def trace_excerpt(
                         "code_block_index": block_index,
                         "code": block.code,
                         "stdout": block.stdout,
-                        "stderr": block.stderr,
-                        "error_observed": bool(block.stderr)
+                        "stderr": residual,
+                        "error_observed": bool(residual.strip())
                         or any(child.kind is NodeKind.ERRORED for child in block.calls),
                     }
                 )
@@ -199,10 +217,19 @@ def trace_excerpt(
 
     selected: dict[tuple[Any, ...], dict[str, Any]] = {}
 
-    def add(snippet: dict[str, Any], reason: str) -> None:
+    def add(snippet: dict[str, Any], reason: str, required: bool = True) -> None:
         key = (snippet["node_id"], snippet.get("iteration_index"), snippet.get("code_block_index"))
         if key not in selected or reason == "cited operation":
-            selected[key] = {**snippet, "reason": reason}
+            selected[key] = {**snippet, "reason": reason, "required": required}
+        elif required:
+            selected[key]["required"] = True
+
+    def following(node_id: str, position: int, error: bool) -> None:
+        blocks = by_node[node_id]
+        chain, status = following_operations([b["code"] for b in blocks], position)
+        relationships.append({"node_id": node_id, "position": position, "status": status})
+        for index, reason in chain:
+            add({**blocks[index], "follows_error": error}, reason)
 
     cited = list(dict.fromkeys(evidence_node_ids))
     unresolved = False
@@ -224,22 +251,32 @@ def trace_excerpt(
         if matching:
             add(matching[0], "cited operation")
             position = by_node[node_id].index(matching[0])
-            for following in by_node[node_id][position + 1 : position + 3]:
-                add(
-                    {**following, "follows_error": matching[0]["error_observed"]},
-                    "following operation; recovery not established by proximity",
-                )
+            following(node_id, position, matching[0]["error_observed"])
             # Resolve the nearest prior child producer for a cited consumer.
             producer_positions = [
                 pos
                 for child, (parent, pos) in callers.items()
-                if parent == node_id and pos <= position
+                if parent == node_id
+                and pos <= position
+                and (
+                    pos == position
+                    or (
+                        (consumer_flow := code_names(matching[0]["code"])) is not None
+                        and (producer_flow := code_names(by_node[node_id][pos]["code"])) is not None
+                        and consumer_flow[0] & producer_flow[1]
+                    )
+                )
             ]
             if producer_positions:
                 producer = max(producer_positions)
                 add(by_node[node_id][producer], "linked child producer")
-                for child, (parent, pos) in callers.items():
-                    if parent == node_id and pos == producer:
+                producer_children = [
+                    child
+                    for child, (parent, pos) in callers.items()
+                    if parent == node_id and pos == producer
+                ]
+                for offset, child in enumerate(producer_children):
+                    if child in nodes:
                         node = nodes[child]
                         add(
                             {
@@ -249,6 +286,7 @@ def trace_excerpt(
                                 "error_observed": node.kind is NodeKind.ERRORED,
                             },
                             "linked child prompt/return",
+                            required=offset == 0,
                         )
         else:
             unresolved = True
@@ -258,15 +296,9 @@ def trace_excerpt(
             continue
         if node_id in callers:
             parent_id, position = callers[node_id]
-            window = [b for b in by_node[parent_id][position:] if b["code"].strip()][:3]
-            for offset, block in enumerate(window):
-                add(
-                    {
-                        **block,
-                        "follows_error": offset > 0 and nodes[node_id].kind is NodeKind.ERRORED,
-                    },
-                    "cited call's caller" if offset == 0 else "following consumer context",
-                )
+            block = by_node[parent_id][position]
+            add(block, "cited call's caller")
+            following(parent_id, position, block["error_observed"])
             node = nodes[node_id]
             add(
                 {
@@ -286,8 +318,7 @@ def trace_excerpt(
                         block,
                         "passing run with shared operation names; semantic equivalence unverified",
                     )
-                    for following in blocks[position + 1 : position + 3]:
-                        add(following, "passing operation's consumer context")
+                    following(node_id=block["node_id"], position=position, error=False)
         selection = "passing contrast selected by shared operation names"
     if not selected:
         selection = (
@@ -298,13 +329,21 @@ def trace_excerpt(
     ordered = sorted(
         selected.values(),
         key=lambda op: (
-            op.get("reason", "").startswith("following") and not op.get("follows_error"),
+            not op["required"],
+            op.get("reason") != "cited operation",
+            op["node_id"],
+            op.get("iteration_index", -1),
+            op.get("code_block_index", -1),
         ),
     )
+    core_complete = sum(op["required"] for op in ordered) <= MAX_TRACE_SNIPPETS and not unresolved
     snippets = ordered[:MAX_TRACE_SNIPPETS]
     for snippet in snippets:
         # Preserve whole code. Only payloads are excerpted; final packing counts
         # the serialized size of every field and can omit an oversized operation.
+        for key in ("stdout", "response"):
+            if snippet.get(key):
+                snippet[key + "_structure"] = payload_structure(snippet[key])
         for key in ("stdout", "stderr", "prompt", "response"):
             if snippet.get(key):
                 snippet[key] = bounded_excerpt(snippet[key], 1200)
@@ -314,6 +353,10 @@ def trace_excerpt(
         "observation": "partial observed behavior; labels and causal effectiveness are not verified",
         "selection": selection,
         "snippets": snippets,
+        "core_complete": core_complete,
+        "relationships": relationships,
+        "retry_notices": retry_notices,
+        "retry_status": "notices only; recovery not established",
         "omitted_operations": [
             {key: op.get(key) for key in ("node_id", "iteration_index", "code_block_index")}
             for op in ordered[MAX_TRACE_SNIPPETS:]
@@ -413,17 +456,32 @@ def pack_evidence(
             operations = {r["operation_ref"]: value["operations"][r["operation_ref"]] for r in refs}
             mechanism = row["signature"]["agent_mechanism"]
             support = operation_support(mechanism, operations)
-            row["eligible_surfaces"] = [
-                s.value
-                for s in eligible_surfaces(
-                    AgentMechanism(mechanism),
-                    support,
-                    causal_status=row["signature"].get("causal_status"),
-                )
-            ]
+            row["eligible_surfaces"] = (
+                [
+                    s.value
+                    for s in eligible_surfaces(
+                        AgentMechanism(mechanism),
+                        support,
+                        causal_status=row["signature"].get("causal_status"),
+                    )
+                ]
+                if refs
+                else []
+            )
             row["route_support"] = support
+            row["admitted_refs"] = [ref["operation_ref"] for ref in refs]
+            row["selectable"] = bool(row["eligible_surfaces"])
+            row["nonselectable_reason"] = (
+                "" if refs else value["omitted"].get(str(row["index"]), "no complete evidence")
+            )
+            row["predecessors"] = {
+                surface: prior
+                for surface, prior in predecessors.get(row["index"], {}).items()
+                if surface in row["eligible_surfaces"]
+            }
         return EVIDENCE_HEADING + json.dumps(value, sort_keys=True)
 
+    predecessors = {row["index"]: row.get("predecessors", {}) for row in inventory}
     if len(render(section)) > budget:
         raise EvidenceBudgetExceeded("compact evidence inventory exceeds rendered evidence budget")
 
@@ -435,6 +493,8 @@ def pack_evidence(
         ]
 
     def core_snippets(context: dict[str, Any]) -> list[dict[str, Any]]:
+        if context.get("trace", {}).get("core_complete") is False:
+            return []
         return [
             op
             for op in context.get("trace", {}).get("snippets", [])
@@ -445,7 +505,10 @@ def pack_evidence(
                 or op.get("prompt")
                 and (op.get("response") or op.get("error_observed"))
             )
-            and (not op.get("reason", "").startswith("following") or op.get("follows_error"))
+            and op.get(
+                "required",
+                not op.get("reason", "").startswith("following") or op.get("follows_error", False),
+            )
         ]
 
     def grounded(row: dict[str, Any]) -> bool:
@@ -599,7 +662,42 @@ def pack_evidence(
             index: [ref["operation_ref"] for ref in context.get("trace", {}).get("snippets", [])]
             for index, context in section["expanded"].items()
         },
+        "choices": {
+            str(row["index"]): {
+                key: row[key]
+                for key in (
+                    "selectable",
+                    "eligible_surfaces",
+                    "admitted_refs",
+                    "route_support",
+                    "predecessors",
+                )
+            }
+            for row in section["inventory"]
+            if row["selectable"]
+        },
     }
+
+
+def withhold_choices(rendered: str, audit: dict[str, Any], indices: Sequence[str]) -> str:
+    """Finalize once after history packing; never reallocate the released capacity."""
+    section = json.loads(rendered[len(EVIDENCE_HEADING) :])
+    for row in section["inventory"]:
+        index = str(row["index"])
+        if index in indices:
+            row.update(
+                selectable=False,
+                eligible_surfaces=[],
+                predecessors={},
+                nonselectable_reason="required history unavailable within budget",
+            )
+            audit["choices"].pop(index, None)
+    result = EVIDENCE_HEADING + json.dumps(section, sort_keys=True)
+    if len(result) > audit["evidence_budget_chars"]:
+        raise EvidenceBudgetExceeded("final choice metadata exceeds evidence budget")
+    audit["evidence_chars"] = len(result)
+    audit["history_withheld_patterns"] = list(indices)
+    return result
 
 
 def load_proposal_evidence(
