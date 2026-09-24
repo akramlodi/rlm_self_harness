@@ -119,15 +119,13 @@ surfaces. With a `SubVerifier` this is a checkable fact; without one it is a mod
 ([test_grounding.py](../tests/optimization/test_grounding.py)).
 
 ### `digest.py` — bounded, deterministic trace view
-An RLM trace can exceed a context window — that is the premise of the paradigm — so the attributor
-cannot see the raw trajectory. Summarizing it with a model would insert a second uncontrolled
-sampling step upstream of every mined pattern, so the compression is **entirely mechanical**:
-header + root skeleton (50% of budget) + sub-call table + focused excerpts (50%), with the wide-tree
-case degrading to a per-depth aggregate above 40 sub-calls.
 
-Truncation is always announced in the text, and `TraceDigest.coverage` records how much survived —
-the truncation policy is a hidden hyperparameter of every attribution and belongs in the results.
-`test_digest.py` asserts a digest never leaks REPL locals.
+The digest packs complete operations with bounded outputs under its character cap.
+Actual stderr errors and relevant consumers precede repeated child-call and retry
+noise. Known client retry notices are summarized with counts and locations; they
+are not themselves an unresolved execution error. Structural JSON summaries come
+from bounded complete replies, never truncated previews, and do not verify labels
+or input coverage. Truncation and missing relationships remain explicit.
 
 ### `attribution.py` — LLM labeling, validated
 The model supplies **two of the four** signature components: `causal_status` and `agent_mechanism`.
@@ -374,3 +372,25 @@ Backend initialization, unhandled provider/transport errors, verifier defects,
 persistence errors, cancellation, and host resource failures retain fatal
 handling (or existing worker failure handling). Containment applies to one
 completion, not to the experiment orchestration loop.
+
+### Proposal evidence, choices, and history
+
+`proposal_evidence.py` selects complete cited/producer/consumer chains, with up to
+six snippets and a 32,000-character total evidence cap. It expands distinct
+actionable mechanisms before optional sibling context. `proposal.py` uses the
+same admitted choices for generation, admission and repair; inventory-only
+patterns cannot propose, and zero choices makes zero proposer calls.
+
+`history.py` packs recent outcomes, the incumbent promotion and required
+predecessor identities under 12,000 characters. It prefers measured/bundled
+predecessors to refused rewrites, while exact fingerprints retain priority.
+Qualified dense-quality gains remain alongside contrary exact-match outcomes
+using verifier-owned definitions. Batch effects are not individual edit credit.
+Unknown activation remains unassessed. Prompts ask for the latest unresolved
+state and a minimal behavioral distinction; these checks do not prove causality.
+
+Current contracts: attribution prompt 1.5.0, digest 1.7.0, proposer prompt and
+validator 4.2.0, evidence selector 4.2.0, diagnostic history 2.1.0, and history
+projection `proposal-history/v3`. Saved experiments are not rewritten; mismatched
+unfinished contracts refuse paid replay. See the
+[proposal interface](../docs/harness-proposal-interface.md) for the live contract.

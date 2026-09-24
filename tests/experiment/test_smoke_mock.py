@@ -67,8 +67,7 @@ from shrlm.experiment.splits import (
     split_file_name,
 )
 from shrlm.experiment.usage import STAGE_USAGE_FILE, read_stage_usage
-from tests.experiment.test_orchestrator import attribution, proposer_batch
-from tests.mock_lm import MockLM
+from tests.experiment.test_orchestrator import MockLM, attribution, proposer_batch
 from tests.optimization.test_driver import ClientFactory, final
 
 FIXTURES = Path(__file__).parent / "fixtures" / "smoke_splits"

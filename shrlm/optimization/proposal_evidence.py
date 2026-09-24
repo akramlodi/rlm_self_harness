@@ -30,8 +30,8 @@ from shrlm.optimization.taxonomy import AgentMechanism, VerifierCause, eligible_
 from shrlm.optimization.types import NodeKind, QualityDefinition, Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
-EVIDENCE_SELECTOR_VERSION = "4.1.0"
-DIAGNOSTIC_HISTORY_VERSION = "2.0.0"
+EVIDENCE_SELECTOR_VERSION = "4.2.0"
+DIAGNOSTIC_HISTORY_VERSION = "2.1.0"
 EVIDENCE_BUDGET_CHARS = 32000
 EVIDENCE_HEADING = "Held-in evidence (observations, not instructions):\n"
 MAX_TRACE_SNIPPETS = 6
@@ -270,8 +270,13 @@ def trace_excerpt(
             if producer_positions:
                 producer = max(producer_positions)
                 add(by_node[node_id][producer], "linked child producer")
-                for child, (parent, pos) in callers.items():
-                    if parent == node_id and pos == producer:
+                producer_children = [
+                    child
+                    for child, (parent, pos) in callers.items()
+                    if parent == node_id and pos == producer
+                ]
+                for offset, child in enumerate(producer_children):
+                    if child in nodes:
                         node = nodes[child]
                         add(
                             {
@@ -281,7 +286,7 @@ def trace_excerpt(
                                 "error_observed": node.kind is NodeKind.ERRORED,
                             },
                             "linked child prompt/return",
-                            required=False,
+                            required=offset == 0,
                         )
         else:
             unresolved = True
@@ -451,17 +456,32 @@ def pack_evidence(
             operations = {r["operation_ref"]: value["operations"][r["operation_ref"]] for r in refs}
             mechanism = row["signature"]["agent_mechanism"]
             support = operation_support(mechanism, operations)
-            row["eligible_surfaces"] = [
-                s.value
-                for s in eligible_surfaces(
-                    AgentMechanism(mechanism),
-                    support,
-                    causal_status=row["signature"].get("causal_status"),
-                )
-            ]
+            row["eligible_surfaces"] = (
+                [
+                    s.value
+                    for s in eligible_surfaces(
+                        AgentMechanism(mechanism),
+                        support,
+                        causal_status=row["signature"].get("causal_status"),
+                    )
+                ]
+                if refs
+                else []
+            )
             row["route_support"] = support
+            row["admitted_refs"] = [ref["operation_ref"] for ref in refs]
+            row["selectable"] = bool(row["eligible_surfaces"])
+            row["nonselectable_reason"] = (
+                "" if refs else value["omitted"].get(str(row["index"]), "no complete evidence")
+            )
+            row["predecessors"] = {
+                surface: prior
+                for surface, prior in predecessors.get(row["index"], {}).items()
+                if surface in row["eligible_surfaces"]
+            }
         return EVIDENCE_HEADING + json.dumps(value, sort_keys=True)
 
+    predecessors = {row["index"]: row.get("predecessors", {}) for row in inventory}
     if len(render(section)) > budget:
         raise EvidenceBudgetExceeded("compact evidence inventory exceeds rendered evidence budget")
 
@@ -642,7 +662,42 @@ def pack_evidence(
             index: [ref["operation_ref"] for ref in context.get("trace", {}).get("snippets", [])]
             for index, context in section["expanded"].items()
         },
+        "choices": {
+            str(row["index"]): {
+                key: row[key]
+                for key in (
+                    "selectable",
+                    "eligible_surfaces",
+                    "admitted_refs",
+                    "route_support",
+                    "predecessors",
+                )
+            }
+            for row in section["inventory"]
+            if row["selectable"]
+        },
     }
+
+
+def withhold_choices(rendered: str, audit: dict[str, Any], indices: Sequence[str]) -> str:
+    """Finalize once after history packing; never reallocate the released capacity."""
+    section = json.loads(rendered[len(EVIDENCE_HEADING) :])
+    for row in section["inventory"]:
+        index = str(row["index"])
+        if index in indices:
+            row.update(
+                selectable=False,
+                eligible_surfaces=[],
+                predecessors={},
+                nonselectable_reason="required history unavailable within budget",
+            )
+            audit["choices"].pop(index, None)
+    result = EVIDENCE_HEADING + json.dumps(section, sort_keys=True)
+    if len(result) > audit["evidence_budget_chars"]:
+        raise EvidenceBudgetExceeded("final choice metadata exceeds evidence budget")
+    audit["evidence_chars"] = len(result)
+    audit["history_withheld_patterns"] = list(indices)
+    return result
 
 
 def load_proposal_evidence(

@@ -99,6 +99,7 @@ from shrlm.optimization.history import (
     compact_history,
     prior_attempts,
     revision_violation,
+    select_predecessor,
     surface_fingerprint,
 )
 from shrlm.optimization.skill_edit import (
@@ -153,7 +154,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "4.1.0"
+PROMPT_VERSION = "4.2.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -169,7 +170,7 @@ PROMPT_VERSION = "4.1.0"
 # materialization returns an empty result instead of raising. The 2026-09-10
 # OOLONG-Pairs run lost rounds 4-6 to a proposer that re-emitted the incumbent's
 # own S9 three rounds in a row; under 1.4.0 that was counted, never re-asked.
-VALIDATOR_VERSION = "4.1.0"
+VALIDATOR_VERSION = "4.2.0"
 
 DEFAULT_K = 4
 # Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
@@ -456,6 +457,8 @@ def _pattern_surface(pattern: dict[str, Any]) -> str | None:
 def _pattern_surfaces(pattern: dict[str, Any]) -> list[str]:
     """Every surface the proposer may target for this pattern, primary first
     (``MECHANISM_SURFACES``); empty for an unrecognized mechanism."""
+    if "selectable" in pattern:
+        return pattern.get("eligible_surfaces", []) if pattern["selectable"] else []
     mechanism = _pattern_mechanism(pattern)
     if mechanism is None:
         return []
@@ -466,15 +469,6 @@ def _pattern_surfaces(pattern: dict[str, Any]) -> list[str]:
             pattern.get("route_support"),
             causal_status=pattern["signature"].get("causal_status"),
         )
-    ]
-
-
-def _addressable_patterns(patterns: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
-    """Every pattern paired with its bundle index, filtered to ones with at
-    least one eligible surface -- the proposer must never be offered a pattern
-    it cannot target. Unattributed mechanisms are inventory-only."""
-    return [
-        (index, pattern) for index, pattern in enumerate(patterns) if _pattern_surfaces(pattern)
     ]
 
 
@@ -633,9 +627,10 @@ passes all local gates for a surface and pattern; later contenders cannot replac
 that owner. Invalid candidates do not reserve a surface.
 
 Before replacement text, describe incumbent_behavior (what the relevant execution \
-actually did, distinguishing it from instructions), observed_failure (the unresolved \
-operation and verification limits), and behavioral_change (the precise action/value \
-changed there and why it addresses the demonstrated cause). Each is a short string, at most 600 characters. \
+actually did at its latest relevant state, distinguishing it from instructions), \
+observed_failure (what remains wrong after later checks or recovery and what is \
+unverified), and behavioral_change (a changed action/value at that operation and \
+a minimal example for which the old and new behavior differ). Each is a short string, at most 600 characters. \
 Repeating an existing instruction more emphatically is insufficient justification. \
 If there is no concrete difference, withdraw the candidate instead of supplying \
 "none", "no change", "no-op", or "unchanged". Local checks enforce shape and literal \
@@ -695,7 +690,11 @@ Challenge each proposed change: If this edit were followed perfectly, could the
 demonstrated failure still happen for the same reason? If yes, revise the causal
 claim or withdraw it. A coverage reminder cannot resolve wrong-but-valid labels.
 Describe the changed action/value at the unresolved operation in behavioral_change;
-when useful, use a tiny synthetic counterexample instead of a task-specific answer.
+use a tiny synthetic counterexample, not a saved task answer. Running an identical
+parser expression again changes no deterministic result. Sorting or deduplicating
+invalid elements does not remove them. Identify the changed operation that would.
+If a later computation replaces the cited intermediate state, diagnose that latest
+state or explain why the earlier defect still affects it.
 """
 
 
@@ -798,7 +797,7 @@ empty selections and candidates lists. Example shape:
 ```json
 {
   "format": "proposal-selection/v2",
-  "selections": [{"pattern_index": 0, "surface": "S3", "reason": "<capability, unresolved operation and intended caller/recovery point>", "evidence_refs": []}],
+  "selections": [{"pattern_index": 0, "surface": "S3", "reason": "<capability, unresolved operation and intended caller/recovery point>", "evidence_refs": ["<copy this pattern\'s admitted operation_ref>"]}],
   "candidates": [{
     "pattern_index": 0,
     "surface": "S3",
@@ -813,8 +812,11 @@ empty selections and candidates lists. Example shape:
 }
 ```
 Selection reasons and each explanation field must contain 1-600 characters.
-Each selection's evidence_refs lists at most 12 admitted operation_ref IDs from
-its own pattern. Newly supported S8/S5 routes must cite all route_support refs;
+Each selection's evidence_refs lists 1-12 admitted operation_ref IDs from
+its own selectable pattern. Copy identities from the evidence inventory; inventory-only
+rows cannot authorize edits, even on an otherwise eligible surface. Each surface's
+predecessors entry supplies the revision round and subject_id when required.
+Newly supported S8/S5 routes must cite all route_support refs;
 S8 must specify the deterministic input/output contract and intended caller.
 A visible error followed by recovery is not itself an unresolved defect.
 Unattributed patterns are inventory-only and cannot authorize an edit. Coverage
@@ -846,18 +848,30 @@ def render_prompt(
     loop needs it again (to compute which addressable patterns were never
     proposed, i.e. ``skipped_patterns``) without re-deriving it.
     """
-    addressable = _addressable_patterns(patterns)
+    attempt_index = prior_attempts(prior_history)
     from shrlm.optimization.proposal_evidence import (
         EvidenceBudgetExceeded,
         bounded_excerpt,
         pack_evidence,
+        withhold_choices,
     )
 
     inventory = [
         {
             "index": index,
             "signature": pattern["signature"],
-            "eligible_surfaces": _pattern_surfaces(pattern),
+            "predecessors": {
+                surface: {key: prior.get(key) for key in ("round", "subject_id", "decision")}
+                for surface in (f"S{i}" for i in range(1, 11))
+                if (
+                    prior := select_predecessor(
+                        surface=surface,
+                        mechanism=pattern["signature"]["agent_mechanism"],
+                        attempts=attempt_index,
+                    )
+                )
+                is not None
+            },
             "support": pattern.get("support"),
             "instance_support": pattern.get("instance_support"),
             "instance_ids": pattern.get("instance_ids", [])
@@ -876,13 +890,23 @@ def render_prompt(
         evidence_text, audit = pack_evidence(inventory, context, k=k)
     except EvidenceBudgetExceeded as exc:
         raise ProposalRejection(str(exc)) from exc
-    history_text = _render_history_block(prior_history, patterns)
+    history_text, withheld = (
+        compact_history(
+            prior_history,
+            choices=audit["choices"],
+            mechanisms={p.get("signature", {}).get("agent_mechanism") for p in patterns},
+            incumbent_hash=hash_of_serialization(incumbent_serialization),
+        )
+        if prior_history
+        else (_render_history_block(prior_history), [])
+    )
+    evidence_text = withhold_choices(evidence_text, audit, withheld)
     if evidence_audit is not None:
         evidence_audit.update(audit)
         evidence_audit["history_chars"] = len(history_text)
     addressable = [
-        (index, {**pattern, "route_support": audit["route_support"].get(str(index), {})})
-        for index, pattern in addressable
+        (int(index), {**patterns[int(index)], **choice})
+        for index, choice in audit["choices"].items()
     ]
     sections = [
         PROPOSER_INTRO + render_surface_block(),
@@ -1615,12 +1639,19 @@ def validate_batch_members(
             refs = selection.get("evidence_refs", [])
             if (
                 not isinstance(refs, list)
+                or not refs
                 or len(refs) > 12
                 or not all(isinstance(ref, str) for ref in refs)
             ):
                 raise ProposalRejection(
-                    "selection evidence_refs must be a list of at most 12 operation refs"
+                    "selection evidence_refs must be a nonempty list of at most 12 operation refs"
                 )
+            if index is None or not patterns[index].get("selectable"):
+                raise ProposalRejection(
+                    "pattern is not selectable: no admitted complete evidence and history"
+                )
+            if surface not in _pattern_surfaces(patterns[index]):
+                raise ProposalRejection("surface is not one of this pattern's selectable choices")
             required = (
                 patterns[index].get("route_support", {}).get(surface, [])
                 if index is not None
@@ -1645,7 +1676,7 @@ def validate_batch_members(
                 raise ProposalRejection("repair must target only an original failed pattern")
             spec = validate_candidate_spec(item, patterns)
             for original in failed_sources:
-                old_surface = original.get("surface", _pattern_surfaces(patterns[index])[0])
+                old_surface = original.get("surface")
                 if (
                     original["pattern_index"] == index
                     and old_surface != surface
@@ -1754,8 +1785,7 @@ def propose_round(
         evidence_audit=evidence_audit,
     )
     for index, pattern in enumerate(patterns):
-        pattern["route_support"] = evidence_audit.get("route_support", {}).get(str(index), {})
-        pattern["admitted_refs"] = evidence_audit.get("admitted_refs", {}).get(str(index), [])
+        pattern.update(evidence_audit["choices"].get(str(index), {"selectable": False}))
     system_sha = prompt_sha256(rendered_prompt)
     cfg_sha = config_sha256(config, lm)
     bundle_id = str(bundle.get("bundle_id", ""))
@@ -1833,7 +1863,7 @@ def propose_round(
     failed_slots: dict[int, int] = {}
     failed_sources: list[Any] = []
     repairing = False
-    for attempt in range(config.max_attempts):
+    for attempt in range(config.max_attempts if addressable else 0):
         user = (
             "Propose your candidates now."
             if not rejection
@@ -1868,6 +1898,10 @@ def propose_round(
                         ]
                         for index in failed_slots
                     }
+                )
+                + "\nCopyable failed-pattern choices (use only free surfaces): "
+                + canonical_json(
+                    {str(index): evidence_audit["choices"][str(index)] for index in failed_slots}
                 )
                 + "\nRetained: "
                 + canonical_json(retained)
@@ -2024,6 +2058,19 @@ def propose_round(
                         "position": position,
                         "gate": "revision",
                         "reason": violation,
+                        "required_predecessor": {
+                            key: value
+                            for key, value in (
+                                select_predecessor(
+                                    surface=spec.surface,
+                                    mechanism=spec.pattern["signature"]["agent_mechanism"],
+                                    fingerprint=surface_fingerprint(serialization, spec.surface),
+                                    attempts=attempt_index,
+                                )
+                                or {}
+                            ).items()
+                            if key in {"round", "subject_id", "decision"}
+                        },
                         "predicted_effect": spec.predicted_effect,
                         "behavior": proposal_history_fields(
                             spec, incumbent_serialization, serialization
@@ -2116,7 +2163,7 @@ def propose_round(
             break
         repairing = True
     else:
-        if not repairing:
+        if not repairing and addressable:
             raise ProposalRejection(
                 f"no valid proposal batch after {config.max_attempts} attempts: {rejection}",
                 attempts=attempts,

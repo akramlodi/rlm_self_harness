@@ -9,7 +9,7 @@ from shrlm.harness_identity import canonical_json_sha256
 from shrlm.optimization.candidates import SURFACE_SERIALIZATION_KEYS
 
 HISTORY_BUDGET_CHARS = 12000
-HISTORY_SCHEMA = "proposal-history/v2"
+HISTORY_SCHEMA = "proposal-history/v3"
 
 
 def surface_fingerprint(serialization: dict[str, Any], surface: str) -> str:
@@ -129,6 +129,7 @@ def compact_history(
 ) -> tuple[str, list[str]]:
     """Pack recent facts first, then whole mandatory identities per offered choice."""
     attempts = prior_attempts(history)
+    identity_counts = Counter((r["round"], r.get("subject_id")) for r in attempts)
     definitions: dict[str, Any] = {}
 
     def diagnostics(value: dict[str, Any]) -> dict[str, Any]:
@@ -142,6 +143,17 @@ def compact_history(
             "exact_passes": value.get("exact_passes"),
             "n_attempts": value.get("n_attempts"),
             "quality": quality or {"status": "not_assessed"},
+            **{
+                key: value[key]
+                for key in (
+                    "n_runtime_errors",
+                    "terminal_failures",
+                    "total_cost",
+                    "n_cost_measurements",
+                    "first_runtime_error",
+                )
+                if key in value
+            },
         }
 
     def row(record: dict[str, Any]) -> dict[str, Any]:
@@ -167,7 +179,16 @@ def compact_history(
         activation = record.get("activation") or {"status": "not_assessed"}
         result["activation"] = {
             key: activation[key]
-            for key in ("status", "reason", "n_observed", "n_eligible")
+            for key in (
+                "status",
+                "reason",
+                "detector",
+                "scope",
+                "intended_behavior",
+                "count",
+                "n_measured_runs",
+                "n_unknown_runs",
+            )
             if key in activation
         }
         if record.get("decision") in {"preflight_rejected", "not_materialized"}:
@@ -199,6 +220,9 @@ def compact_history(
                 {
                     "subject_id": r.get("subject_id"),
                     "decision": r.get("decision"),
+                    "quality_signal": r.get("diagnostic_progress", {}).get(
+                        "status", "not_assessed"
+                    ),
                     "measured": diagnostics(r.get("diagnostics") or {}),
                 }
                 for r in records
@@ -220,7 +244,15 @@ def compact_history(
         if i not in selected_rounds
         and any(
             r.get("diagnostic_progress", {}).get("status") == "potentially_promising"
-            and (not mechanisms or r.get("mechanism") in mechanisms)
+            and (
+                not mechanisms
+                or r.get("mechanism") in mechanisms
+                or any(
+                    member.get("subject_id") in (r.get("merge") or {}).get("constituent_ids", [])
+                    and member.get("mechanism") in mechanisms
+                    for member in records
+                )
+            )
             for r in records
         )
     ]
@@ -243,7 +275,6 @@ def compact_history(
             "attempts_omitted": len(attempts) - len(selected),
             "status_totals": dict(Counter(str(r.get("decision", "unknown")) for r in attempts)),
             "omission_reason": "rendered budget; full archive and reference index retained",
-            "withheld_choices": omitted_choices,
             "metric_definitions": {k: v for k, v in definitions.items() if k in serialized},
         }
         return json.dumps(header, sort_keys=True) + "\n" + serialized
@@ -253,10 +284,14 @@ def compact_history(
     # These complete identity rows must be visible if their choices are offered.
     for choice_id, choice in (choices or {}).items():
         before = dict(selected)
+        ambiguous = False
         for prior in choice.get("predecessors", {}).values():
             key = (prior["round"], prior["subject_id"])
-            selected[key] = rows[key]
-        if len(render()) > budget:
+            if identity_counts[key] != 1:
+                ambiguous = True
+            else:
+                selected[key] = rows[key]
+        if ambiguous or len(render()) > budget:
             selected = before
             omitted_choices.append(choice_id)
     # Recent/promotion/qualified-positive detail precedes optional old context.

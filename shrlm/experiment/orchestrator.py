@@ -457,13 +457,18 @@ def load_round_history(
             }
         )
     for failure in marker.get("preflight_failures", []):
+        owner = dict(failure.get("owner") or {})
+        if owner:
+            subject = f"r{round_index:02d}-c{owner['position']:02d}-{owner['surface'].lower()}"
+            if subject in marker.get("candidate_ids", []):
+                owner.update(round=round_index, subject_id=subject)
         records.append(
             {
                 **failure.get("behavior", {}),
                 "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
                 "surface": failure["surface"],
                 "decision": "preflight_rejected",
-                **({"owner": failure["owner"]} if failure.get("owner") else {}),
+                **({"owner": owner} if owner else {}),
                 "predicted_effect": failure.get("predicted_effect", ""),
                 "reasons": [f"{failure['gate']}: {failure['reason']}"],
             }

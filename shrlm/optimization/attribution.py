@@ -41,7 +41,7 @@ from shrlm.optimization.types import (
     iter_nodes,
 )
 
-PROMPT_VERSION = "1.4.0"
+PROMPT_VERSION = "1.5.0"
 
 # Version of the validation logic in this module (validate, parse_enum,
 # extract_json_block). The validator's rejection text seeds re-asks, so a
@@ -126,7 +126,11 @@ actually verifies that claim; failing-level grounding alone is not such a check.
 Use other for a semantic mechanism outside the vocabulary. If the relevant \
 operation is not visible, state the limitation and use correlated or unattributed \
 rather than asserting a causal mechanism. Evidence citations resolve locations; \
-they do not independently prove causality.
+they do not independently prove causality. In symptom_summary and operation
+observations, identify the latest relevant state after visible checks or recovery.
+An earlier error is not an unresolved mechanism if a later operation replaces its
+result successfully. Describe any remaining discrepancy and unverified semantics;
+do not infer that repeated parsing or complete containers correct wrong values.
 
 For incomplete_coverage, also supply coverage_basis with exactly four fields:
 status (observed_loss, not_established, or contradicted), input_scope,

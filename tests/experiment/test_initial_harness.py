@@ -67,9 +67,13 @@ class TestGateAcceptsAnH0StarIncumbent:
 
 
 def test_pattern_block_renders_against_h0_star_empty_surfaces():
+    from tests.optimization.test_proposal import synthetic_evidence
+
     # ``whole_input_subcall_collapse`` routes to S2, which is "" under H0*.
     pattern = make_pattern("whole_input_subcall_collapse")
-    rendered, addressable = render_prompt([pattern], serialize_harness(H0_STAR), (), (), k=4)
+    rendered, addressable = render_prompt(
+        [pattern], serialize_harness(H0_STAR), (), (), k=4, evidence=synthetic_evidence([pattern])
+    )
     assert [index for index, _ in addressable] == [0]
     assert '"eligible_surfaces": ["S2"' in rendered
     assert '"S2_decomposition_instruction": ""' in rendered

@@ -864,7 +864,8 @@ def test_oversized_question_is_omitted_whole_with_inventory_preserved():
     )
     section = json.loads(rendered.removeprefix(EVIDENCE_HEADING))
     assert section["inventory"][0]["index"] == inventory[0]["index"]
-    assert section["inventory"][0]["eligible_surfaces"] == ["S3", "S4"]
+    assert section["inventory"][0]["eligible_surfaces"] == []
+    assert not section["inventory"][0]["selectable"]
     assert not section["expanded"]
     assert "QUESTION_SENTINEL" not in rendered
     assert "exceeds remaining budget" in audit["omitted_patterns"]["9"]
