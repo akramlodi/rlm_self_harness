@@ -241,7 +241,9 @@ class ObservationRecorder:
             purpose,
             model,
             coordinates,
-            parent_call_id=parent.call_id if parent and parent.recorder is self else None,
+            parent_call_id=coordinates.pop(
+                "parent_call_id", parent.call_id if parent and parent.recorder is self else None
+            ),
         )
         call.emit("started")
         recorder_token = ACTIVE_RECORDER.set(self)

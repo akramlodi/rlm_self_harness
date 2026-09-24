@@ -69,6 +69,7 @@ class LMResponse:
     error: str | None = None
     chat_completion: RLMChatCompletion | None = None
     chat_completions: list[RLMChatCompletion] | None = None
+    error_kind: str | None = None
 
     @property
     def success(self) -> bool:
@@ -85,6 +86,7 @@ class LMResponse:
         if self.error is not None:
             return {
                 "error": self.error,
+                **({"error_kind": self.error_kind} if self.error_kind is not None else {}),
                 "chat_completion": None,
                 "chat_completions": None,
             }
@@ -119,6 +121,7 @@ class LMResponse:
 
         return cls(
             error=data.get("error"),
+            error_kind=data.get("error_kind"),
             chat_completion=chat_completion,
             chat_completions=chat_completions,
         )
@@ -256,7 +259,7 @@ def send_lm_request_batched(
 
         if not response.success:
             # Return error responses for all prompts
-            return [LMResponse.error_response(response.error)] * len(prompts)
+            return [response] * len(prompts)
 
         if response.chat_completions is None:
             return [LMResponse.error_response("No completions returned")] * len(prompts)

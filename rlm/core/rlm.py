@@ -3,9 +3,17 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
+from uuid import uuid4
 
 from rlm.clients import BaseLM, get_client
 from rlm.core import subcall_context
+from rlm.core.llm_observation import (
+    ACTIVE_RECORDER,
+    ObservationPersistenceError,
+    ObservationRecorder,
+    observation_refs,
+    observe_call,
+)
 from rlm.core.lm_handler import LMHandler
 from rlm.core.types import (
     ANSWER_REDIRECTED,
@@ -136,6 +144,7 @@ class RLM:
         | None = None,
         runtime_policy: dict[str, Any] | None = None,
         capacity_sentence: str | None = None,
+        observation_recorder: ObservationRecorder | None = None,
     ):
         """
         Args:
@@ -260,6 +269,11 @@ class RLM:
         # depend on a task-specific tips message (e.g. BC+).
         self.user_prologue = user_prologue
         self.logger = logger
+        self.observation_recorder = observation_recorder
+        self.running_observation_recorder = observation_recorder
+        self.observation_rlm_id: str | None = None
+        self.observation_parent_call_id: str | None = None
+        self.observation_turn_call_id: str | None = None
         self.verbose = VerbosePrinter(enabled=verbose)
 
         # Event callbacks for live tree display
@@ -344,7 +358,11 @@ class RLM:
                 self.other_backends[0], self.other_backend_kwargs[0]
             )
 
-        lm_handler = LMHandler(client, other_backend_client=other_backend_client)
+        lm_handler = LMHandler(
+            client,
+            other_backend_client=other_backend_client,
+            observation_recorder=self.running_observation_recorder,
+        )
 
         # Register other clients to be available as sub-call options (by model name).
         # Reuse other_backend_client for the first entry so each (backend, kwargs)
@@ -451,6 +469,18 @@ class RLM:
     def completion(
         self, prompt: str | dict[str, Any], root_prompt: str | None = None
     ) -> RLMChatCompletion:
+        previous = self.running_observation_recorder
+        self.running_observation_recorder = ACTIVE_RECORDER.get() or self.observation_recorder
+        self.observation_rlm_id = uuid4().hex
+        self.observation_turn_call_id = None
+        try:
+            return self.completion_impl(prompt, root_prompt)
+        finally:
+            self.running_observation_recorder = previous
+
+    def completion_impl(
+        self, prompt: str | dict[str, Any], root_prompt: str | None = None
+    ) -> RLMChatCompletion:
         """
         Recursive Language Model completion call. This is the main entry point for querying an RLM, and
         can replace a regular LM completion call.
@@ -478,6 +508,8 @@ class RLM:
 
         if self.logger:
             self.logger.clear_iterations()
+            if self.depth == 0:
+                self.logger.observation_recorder = self.running_observation_recorder
 
         with self._spawn_completion_context(prompt) as (lm_handler, environment):
             message_history = self._setup_prompt(prompt, root_prompt=root_prompt)
@@ -898,7 +930,15 @@ class RLM:
                 ),
             }
         ]
-        summary = lm_handler.completion(summary_prompt)
+        with observe_call(
+            "compaction",
+            (self.backend_kwargs or {}).get("model_name"),
+            recorder=self.running_observation_recorder,
+            rlm_id=self.observation_rlm_id,
+            depth=self.depth,
+            compaction=compaction_count,
+        ):
+            summary = lm_handler.completion(summary_prompt)
         if hasattr(environment, "append_compaction_entry"):
             environment.append_compaction_entry({"type": "summary", "content": summary})
         # Keep system + initial assistant (metadata), then summary + continue
@@ -928,12 +968,28 @@ class RLM:
         and code execution + tool execution.
         """
         iter_start = time.perf_counter()
-        response = lm_handler.completion(prompt)
+        with observe_call(
+            "root_turn" if self.depth == 0 else "child_turn",
+            (self.backend_kwargs or {}).get("model_name"),
+            recorder=self.running_observation_recorder,
+            rlm_id=self.observation_rlm_id,
+            depth=self.depth,
+            iteration=self.logger.iteration_count + 1 if self.logger else None,
+            parent_call_id=self.observation_parent_call_id,
+        ) as observed:
+            response = lm_handler.completion(prompt)
+        self.observation_turn_call_id = observed.call_id if observed else None
+        lm_handler.observation_coordinates = {
+            "parent_call_id": self.observation_turn_call_id,
+            "rlm_id": self.observation_rlm_id,
+        }
         code_block_strs = find_code_blocks(response)
         code_blocks = []
 
         for code_block_str in code_block_strs:
             code_result: REPLResult = environment.execute_code(code_block_str)
+            if self.running_observation_recorder:
+                self.running_observation_recorder.check()
             code_blocks.append(CodeBlock(code=code_block_str, result=code_result))
 
         iteration_time = time.perf_counter() - iter_start
@@ -942,6 +998,7 @@ class RLM:
             response=response,
             code_blocks=code_blocks,
             iteration_time=iteration_time,
+            llm_observations=observation_refs(observed),
         )
 
     def _default_answer(self, message_history: list[dict[str, Any]], lm_handler: LMHandler) -> str:
@@ -955,13 +1012,21 @@ class RLM:
                 "content": "Please provide a final answer to the user's question based on the information provided.",
             }
         ]
-        response = lm_handler.completion(current_prompt)
+        with observe_call(
+            "default_answer",
+            (self.backend_kwargs or {}).get("model_name"),
+            recorder=self.running_observation_recorder,
+            rlm_id=self.observation_rlm_id,
+            depth=self.depth,
+        ) as observed:
+            response = lm_handler.completion(current_prompt)
 
         if self.logger:
             self.logger.log(
                 RLMIteration(
                     prompt=current_prompt,
                     response=response,
+                    llm_observations=observation_refs(observed),
                     final_answer=response,
                     code_blocks=[],
                 )
@@ -974,7 +1039,14 @@ class RLM:
         Fallback behavior if the RLM is actually at max depth, and should be treated as an LM.
         """
         client: BaseLM = self.create_client(self.backend, self.backend_kwargs)
-        response = client.completion(message)
+        with observe_call(
+            "depth_fallback",
+            client.model_name,
+            recorder=self.running_observation_recorder,
+            rlm_id=self.observation_rlm_id,
+            depth=self.depth,
+        ):
+            response = client.completion(message)
         return response
 
     def _subcall(
@@ -1015,8 +1087,17 @@ class RLM:
                 client = self.create_client(self.backend, child_backend_kwargs or {})
             root_model = model or client.model_name
             start_time = time.perf_counter()
+            observed = None
             try:
-                response = client.completion(prompt)
+                with observe_call(
+                    "depth_fallback",
+                    root_model,
+                    recorder=self.running_observation_recorder,
+                    parent_call_id=self.observation_turn_call_id,
+                    depth=next_depth,
+                    rlm_id=self.observation_rlm_id,
+                ) as observed:
+                    response = client.completion(prompt)
                 end_time = time.perf_counter()
                 model_usage = client.get_last_usage()
                 usage_summary = UsageSummary(model_usage_summaries={root_model: model_usage})
@@ -1029,13 +1110,18 @@ class RLM:
                     response=response,
                     usage_summary=usage_summary,
                     execution_time=end_time - start_time,
+                    llm_observations=observation_refs(observed),
                 )
+            except ObservationPersistenceError:
+                self._record_subcall_usage(client.get_usage_summary())
+                raise
             except Exception as e:
                 end_time = time.perf_counter()
                 return RLMChatCompletion(
                     root_model=root_model,
                     prompt=prompt,
                     response=f"Error: LM query failed at max depth - {e}",
+                    llm_observations=observation_refs(observed),
                     usage_summary=UsageSummary(model_usage_summaries={}),
                     execution_time=end_time - start_time,
                 )
@@ -1118,6 +1204,7 @@ class RLM:
             other_backend_kwargs=self.other_backend_kwargs,
             # Give child its own logger so its trajectory is captured in metadata
             logger=RLMLogger() if self.logger else None,
+            observation_recorder=self.running_observation_recorder,
             verbose=False,
             # Propagate custom tools to children (sub_tools become the child's tools)
             custom_tools=self.custom_sub_tools,
@@ -1128,10 +1215,14 @@ class RLM:
             on_subcall_start=self.on_subcall_start,
             on_subcall_complete=self.on_subcall_complete,
         )
+        child.observation_parent_call_id = self.observation_turn_call_id
         try:
             result = child.completion(prompt, root_prompt=None)
             self._record_subcall_usage(result.usage_summary)
             return result
+        except ObservationPersistenceError as e:
+            self._record_subcall_usage(_terminated_child_usage(child, e, resolved_model))
+            raise
         except BudgetExceededError as e:
             self._record_subcall_usage(_terminated_child_usage(child, e, resolved_model))
             error_msg = f"Budget exceeded - {e}"

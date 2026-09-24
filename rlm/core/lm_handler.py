@@ -11,6 +11,13 @@ from threading import Thread
 
 from rlm.clients.base_lm import BaseLM
 from rlm.core.comms_utils import LMRequest, LMResponse, socket_recv, socket_send
+from rlm.core.llm_observation import (
+    ACTIVE_CALL,
+    ObservationPersistenceError,
+    ObservationRecorder,
+    observation_refs,
+    observe_call,
+)
 from rlm.core.types import RLMChatCompletion, UsageSummary
 
 
@@ -44,6 +51,9 @@ class LMRequestHandler(StreamRequestHandler):
             # when workers complete and close their sockets. Silently ignore.
             pass
 
+        except ObservationPersistenceError as e:
+            self._safe_send(LMResponse(error=str(e), error_kind="observation_persistence"))
+
         except Exception as e:
             # Try to send error response, but don't fail if socket is broken
             response = LMResponse.error_response(str(e))
@@ -63,7 +73,14 @@ class LMRequestHandler(StreamRequestHandler):
         client = handler.get_client(request.model, request.depth)
 
         start_time = time.perf_counter()
-        content = client.completion(request.prompt)
+        with observe_call(
+            "plain_child",
+            client.model_name,
+            recorder=handler.observation_recorder,
+            depth=request.depth,
+            **handler.observation_coordinates,
+        ) as observed:
+            content = client.completion(request.prompt)
         end_time = time.perf_counter()
 
         model_usage = client.get_last_usage()
@@ -74,6 +91,7 @@ class LMRequestHandler(StreamRequestHandler):
                 root_model=root_model,
                 prompt=request.prompt,
                 response=content,
+                llm_observations=observation_refs(observed),
                 usage_summary=usage_summary,
                 execution_time=end_time - start_time,
             )
@@ -87,17 +105,33 @@ class LMRequestHandler(StreamRequestHandler):
 
         sem = asyncio.Semaphore(handler.batch_max_concurrent)
 
-        async def run_one(prompt: str):
-            async with sem:
-                return await client.acompletion(prompt)
+        observations = [None] * len(request.prompts)
+
+        async def run_one(index: int, prompt: str):
+            observed = None
+            try:
+                async with sem:
+                    with observe_call(
+                        "plain_child",
+                        client.model_name,
+                        recorder=handler.observation_recorder,
+                        depth=request.depth,
+                        batch_index=index,
+                        **handler.observation_coordinates,
+                    ) as observed:
+                        return await client.acompletion(prompt)
+            finally:
+                observations[index] = observation_refs(observed)
 
         async def run_all():
-            tasks = [run_one(prompt) for prompt in request.prompts]
+            tasks = [run_one(index, prompt) for index, prompt in enumerate(request.prompts)]
             # return_exceptions=True so one failed call doesn't abort the whole
             # batch; failures are surfaced per-prompt as error completions below.
             return await asyncio.gather(*tasks, return_exceptions=True)
 
         results = asyncio.run(run_all())
+        if handler.observation_recorder:
+            handler.observation_recorder.check()
         end_time = time.perf_counter()
 
         total_time = end_time - start_time
@@ -106,7 +140,7 @@ class LMRequestHandler(StreamRequestHandler):
         usage_summary = UsageSummary(model_usage_summaries={root_model: model_usage})
 
         chat_completions = []
-        for prompt, content in zip(request.prompts, results, strict=True):
+        for prompt, content, refs in zip(request.prompts, results, observations, strict=True):
             if isinstance(content, BaseException):
                 # Per-prompt failure: this slot returns an error; other prompts
                 # still succeed. The error message is carried back to the caller.
@@ -114,6 +148,7 @@ class LMRequestHandler(StreamRequestHandler):
                     RLMChatCompletion(
                         root_model=root_model,
                         prompt=prompt,
+                        llm_observations=refs,
                         response="",
                         usage_summary=UsageSummary(model_usage_summaries={}),
                         execution_time=0.0,
@@ -125,6 +160,7 @@ class LMRequestHandler(StreamRequestHandler):
                     RLMChatCompletion(
                         root_model=root_model,
                         prompt=prompt,
+                        llm_observations=refs,
                         response=content,
                         usage_summary=usage_summary,
                         execution_time=total_time
@@ -157,7 +193,10 @@ class LMHandler:
         port: int = 0,  # auto-assign available port
         other_backend_client: BaseLM | None = None,
         batch_max_concurrent: int = 16,
+        observation_recorder: ObservationRecorder | None = None,
     ):
+        self.observation_recorder = observation_recorder
+        self.observation_coordinates: dict = {}
         self.default_client = client
         self.other_backend_client = other_backend_client
         self.clients: dict[str, BaseLM] = {}
@@ -224,7 +263,10 @@ class LMHandler:
 
     def completion(self, prompt: str, model: str | None = None) -> str:
         """Direct completion call (for main process use)."""
-        return self.get_client(model).completion(prompt)
+        if ACTIVE_CALL.get() is not None:
+            return self.get_client(model).completion(prompt)
+        with observe_call("direct", model, recorder=self.observation_recorder):
+            return self.get_client(model).completion(prompt)
 
     def __enter__(self):
         self.start()
