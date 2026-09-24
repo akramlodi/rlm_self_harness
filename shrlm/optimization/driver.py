@@ -70,6 +70,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rlm.core.llm_observation import ObservationPersistenceError, observation_session
 from rlm.core.types import ExecutionFailure, ModelUsageSummary, RLMChatCompletion, UsageSummary
 from rlm.utils.exceptions import (
     BudgetExceededError,
@@ -83,6 +84,11 @@ from rlm.utils.exceptions import (
 )
 from shrlm.harness_identity import harness_hash, write_harness_json
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
+from shrlm.optimization.llm_observation_store import (
+    discover_observations,
+    observation_recorder,
+    verify_observations,
+)
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import RunTraceLink, Verdict, Verifier
@@ -152,6 +158,10 @@ _BACKEND_ENV_KEYS: dict[str, tuple[str, ...]] = {
 
 class RoundPersistenceError(RuntimeError):
     """Persisted round state contradicts itself or the caller's configuration."""
+
+
+class RoundObservationPersistenceError(RoundPersistenceError, ObservationPersistenceError):
+    """Observation storage failed; stop at the round persistence boundary."""
 
 
 @dataclass(frozen=True)
@@ -489,6 +499,7 @@ def verify_trace(path: Path, entry: dict[str, Any]) -> Path:
             "after it was recorded. Refusing to overwrite -- resolve the discrepancy "
             "before resuming."
         )
+    verify_observations(json.loads(trace_path.read_text()), trace_path.parent)
     return trace_path
 
 
@@ -586,6 +597,7 @@ def persist_run(
     """
     trace_rel = f"{TRACES_DIR}/{run_id}.json"
     trace_path = path / trace_rel
+    verify_observations(completion.to_dict(), trace_path.parent)
     trace_path.write_text(json.dumps(completion.to_dict(), sort_keys=True) + "\n")
 
     entry = {
@@ -632,6 +644,7 @@ def read_child_trace(trace_path: Path) -> RLMChatCompletion | None:
         return None
     if not isinstance(payload, dict) or "response" not in payload:
         return None
+    verify_observations(payload, trace_path.parent)
     return RLMChatCompletion.from_dict(payload)
 
 
@@ -662,6 +675,7 @@ def append_child_run(
         raise RoundPersistenceError(
             f"cannot record run {run_id!r}: its child left no trace at {trace_path}"
         )
+    verify_observations(completion.to_dict(), trace_path.parent)
     entry = {
         "run_id": run_id,
         "instance_id": instance_id,
@@ -752,6 +766,9 @@ def persist_interrupted_run(
                 model_name=model_name,
                 error=error,
                 elapsed_seconds=0.0,
+            )
+            completion.llm_observations = discover_observations(
+                trace_path_for(path, candidate_run_id)
             )
             verdict = Verdict(
                 passed=False,
@@ -873,6 +890,37 @@ def execute_run(
     *,
     model_name: str,
     verifier: Verifier | None = None,
+    trace_path: Path | None = None,
+    observation_owner: dict[str, Any] | None = None,
+) -> RunOutcome:
+    """Execute with durable observations when the caller owns a trace destination."""
+    if trace_path is None:
+        return execute_run_impl(harnessed, instance, model_name=model_name, verifier=verifier)
+    recorder = observation_recorder(
+        trace_path,
+        {
+            "run_id": trace_path.stem,
+            "instance_id": str(instance.get("id", "")),
+            **(observation_owner or {}),
+        },
+    )
+    try:
+        with observation_session(recorder):
+            outcome = execute_run_impl(
+                harnessed, instance, model_name=model_name, verifier=verifier
+            )
+        outcome.completion.llm_observations = list(recorder.references)
+        return outcome
+    except ObservationPersistenceError as error:
+        raise RoundObservationPersistenceError(str(error)) from error
+
+
+def execute_run_impl(
+    harnessed: HarnessedRLM,
+    instance: dict[str, Any],
+    *,
+    model_name: str,
+    verifier: Verifier | None = None,
 ) -> RunOutcome:
     """Execute one run and describe its outcome, persisting nothing.
 
@@ -914,6 +962,8 @@ def execute_run(
         try:
             run = harnessed.completion(prompt)
             completion = run.completion
+        except ObservationPersistenceError:
+            raise
         except ROOT_LIMIT_EXCEPTIONS:
             raise
         except Exception as error:
@@ -1041,6 +1091,7 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
             instance,
             model_name=model_name,
             verifier=config.verifier,
+            trace_path=trace_path_for(path, run_id_for(instance_id, attempt)),
         )
         # ``config.verifier`` is mandatory, so the in-process path always gets a
         # verdict back; only a run child omits the verifier, and it never
@@ -1065,6 +1116,7 @@ def run_round(config: RoundConfig, *, stop_after: int | None = None) -> list[dic
 # ---------------------------------------------------------------------------
 # The mining phase: disk in, evidence bundle out
 # ---------------------------------------------------------------------------
+
 
 def load_round_runs(
     out_dir: Path | str, round_index: int
@@ -1100,6 +1152,7 @@ def load_round_runs(
         verdicts.append(Verdict.from_dict(entry["verdict"]))
         entries.append(entry)
     return runs, verdicts, entries
+
 
 def load_round(
     out_dir: Path | str, round_index: int
@@ -1188,20 +1241,26 @@ def mine_round(
         for entry in entries
     ]
     cache_path = miner.attributor.cache.path
-    result = miner.mine(
-        runs,
-        round_index=round_index,
-        harness_version=harness_version or str(envelope["hash"]),
-        split_id=split_id,
-        created_at=created_at,
-        verdicts=verdicts,
-        trace_links=trace_links,
-        harness_hash=str(envelope["hash"]),
-        sampling_seed=_sampling_seed(runs),
-        attribution_cache_path=(
-            os.path.relpath(cache_path, path) if cache_path is not None else None
-        ),
+    recorder = observation_recorder(
+        path / "attributions.jsonl",
+        {"stage": "attribution", "round": round_index},
+        namespace="llm_calls/attribution",
     )
+    with observation_session(recorder):
+        result = miner.mine(
+            runs,
+            round_index=round_index,
+            harness_version=harness_version or str(envelope["hash"]),
+            split_id=split_id,
+            created_at=created_at,
+            verdicts=verdicts,
+            trace_links=trace_links,
+            harness_hash=str(envelope["hash"]),
+            sampling_seed=_sampling_seed(runs),
+            attribution_cache_path=(
+                os.path.relpath(cache_path, path) if cache_path is not None else None
+            ),
+        )
     _persist_mining_artifacts(path, result)
     return result
 

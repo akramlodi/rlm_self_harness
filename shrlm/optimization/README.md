@@ -4,6 +4,10 @@ Fork research code, kept out of the vendored `rlm/` package tree. Everything her
 `docs/Self Harnessing RLMs.md`; where the code and that document disagree, the document is the
 specification.
 
+## Saved provider reasoning
+
+New runs and meta-model attempts keep provider-returned reasoning in separate, hash-verified observation files. This does not change model prompts, mining evidence, cache keys, or promotion decisions. See [the output guide](../../docs/experiment-reasoning.md) for exact paths, failed-call records, and legacy/cache behavior.
+
 ## The loop this belongs to
 
 A fixed-weight model improves its own *harness* — the scaffolding around the model — instead of its

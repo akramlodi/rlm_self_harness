@@ -49,6 +49,8 @@ Where to look next:
 
 ## Self-Harness experiments
 
+New experiment calls save provider-returned reasoning beside their traces and meta attempts. See [saved reasoning outputs](docs/experiment-reasoning.md) for locations, cache behavior, and availability meanings.
+
 The Self-Harness experiment (the optimization loop in `shrlm/experiment/`) is driven by
 `examples/run_experiment.py`, which loads one profile from one TOML in `configs/`.
 Every experiment parameter lives in that TOML — the code hardcodes none of them — and the

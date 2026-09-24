@@ -46,6 +46,7 @@ from shrlm.optimization.driver import (
     run_id_for,
     run_round,
 )
+from shrlm.optimization.llm_observation_store import verify_observations
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
@@ -895,6 +896,12 @@ class TestCanonicalManifestReads:
                 created_at="2026-09-02T00:00:00",
             )
             destination = tmp_path / label
+            # Independent attribution calls have fresh observation IDs. Verify
+            # those artifacts before comparing their deterministic evidence.
+            for attribution in result.raw_attributions:
+                verify_observations(attribution, round_path)
+                for attempt in attribution.get("attempts", []):
+                    attempt.pop("llm_observations", None)
             write_bundle(
                 result.bundle,
                 result.records,

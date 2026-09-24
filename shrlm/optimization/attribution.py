@@ -14,16 +14,17 @@ validates is recorded as unattributed rather than coerced to OTHER.
 
 import hashlib
 import json
-import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import ObservationPersistenceError, observation_refs, observe_call
 from rlm.utils.exceptions import TokenLimitExceededError
 from shrlm.optimization.digest import TraceDigest
 from shrlm.optimization.grounding import GroundingResult
+from shrlm.optimization.response_cache import ResponseCache
 from shrlm.optimization.taxonomy import (
     TAXONOMY_VERSION,
     AgentMechanism,
@@ -80,7 +81,13 @@ def truncate_for_prompt(text: str, limit: int = PROMPT_RENDER_MAX_CHARS) -> str:
 # allowlist of retryable exception names would be brittle; this small denylist
 # of definitely-deterministic types is the safer cut: everything else is
 # treated as plausibly transient and retried.
-NON_TRANSPORT_ERRORS = (TypeError, AttributeError, KeyError, ValueError)
+NON_TRANSPORT_ERRORS = (
+    TypeError,
+    AttributeError,
+    KeyError,
+    ValueError,
+    ObservationPersistenceError,
+)
 
 
 def _is_content_filter_error(exc: Exception) -> bool:
@@ -309,15 +316,20 @@ class AttributionAttempt:
     raw_response: str
     accepted: bool
     violation: str = ""
+    llm_observations: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "attempt": self.attempt,
             "cached": self.cached,
             "raw_response": self.raw_response,
             "accepted": self.accepted,
             "violation": self.violation,
         }
+
+        if self.llm_observations is not None:
+            result["llm_observations"] = self.llm_observations
+        return result
 
 
 @dataclass
@@ -358,38 +370,8 @@ class AttributorConfig:
             )
 
 
-@dataclass
-class AttributionCache:
-    """
-    Persistent map from (prompt, digest, config) to the raw model response.
-
-    Temperature zero against a hosted API is not determinism. This is what
-    actually makes a mining round reproducible: a re-run with unchanged inputs
-    replays byte-identical responses and costs nothing.
-    """
-
-    path: str | None = None
-    entries: dict[str, str] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.path and os.path.exists(self.path):
-            with open(self.path) as handle:
-                for line in handle:
-                    line = line.strip()
-                    if line:
-                        entry = json.loads(line)
-                        self.entries[entry["key"]] = entry["response"]
-
-    def get(self, key: str) -> str | None:
-        return self.entries.get(key)
-
-    def put(self, key: str, response: str) -> None:
-        self.entries[key] = response
-        if self.path:
-            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-            with open(self.path, "a") as handle:
-                json.dump({"key": key, "response": response}, handle)
-                handle.write("\n")
+class AttributionCache(ResponseCache):
+    """Persistent text and observation cache; existing response keys stay unchanged."""
 
 
 def extract_json_block(text: str) -> dict[str, Any]:
@@ -749,15 +731,42 @@ class LLMAttributor:
             key = self.cache_key(digest, grounding.grounded, attempt)
             response = self.cache.get(key)
             cached = response is not None
-            if response is None:
-                response = self._completion_with_retry(
-                    [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    attempts,
-                )
-                self.cache.put(key, response)
+            observed = None
+            try:
+                with observe_call(
+                    "attribution" if attempt == 0 else "attribution_repair",
+                    self.lm.model_name,
+                    attempt=attempt + 1,
+                    digest_sha256=digest.sha256,
+                ) as observed:
+                    if cached:
+                        if observed:
+                            observed.replay(self.cache.get_observations(key))
+                    else:
+                        response = self._completion_with_retry(
+                            [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": user},
+                            ],
+                            attempts,
+                        )
+            except (
+                AttributionTransportError,
+                AttributionContentFiltered,
+                AttributionBudgetExhausted,
+            ) as error:
+                if observed:
+                    error.attempts = [
+                        *attempts,
+                        AttributionAttempt(
+                            attempt + 1, cached, "", False, str(error), observation_refs(observed)
+                        ),
+                    ]
+                raise
+            assert response is not None
+            if not cached:
+                self.cache.put(key, response, observations=observed.responses if observed else None)
+            refs = observation_refs(observed)
 
             try:
                 payload = extract_json_block(response)
@@ -771,13 +780,18 @@ class LLMAttributor:
                         raw_response=response,
                         accepted=False,
                         violation=rejection,
+                        llm_observations=refs,
                     )
                 )
                 continue
 
             attempts.append(
                 AttributionAttempt(
-                    attempt=attempt + 1, cached=cached, raw_response=response, accepted=True
+                    attempt=attempt + 1,
+                    cached=cached,
+                    raw_response=response,
+                    accepted=True,
+                    llm_observations=refs,
                 )
             )
             failing_level = grounding.failing_level if grounding.grounded else level

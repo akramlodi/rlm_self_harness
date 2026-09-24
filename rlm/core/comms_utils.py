@@ -69,6 +69,8 @@ class LMResponse:
     error: str | None = None
     chat_completion: RLMChatCompletion | None = None
     chat_completions: list[RLMChatCompletion] | None = None
+    error_kind: str | None = None
+    llm_observations: list[dict[str, Any]] | None = None
 
     @property
     def success(self) -> bool:
@@ -85,6 +87,12 @@ class LMResponse:
         if self.error is not None:
             return {
                 "error": self.error,
+                **({"error_kind": self.error_kind} if self.error_kind is not None else {}),
+                **(
+                    {"llm_observations": self.llm_observations}
+                    if self.llm_observations is not None
+                    else {}
+                ),
                 "chat_completion": None,
                 "chat_completions": None,
             }
@@ -119,6 +127,8 @@ class LMResponse:
 
         return cls(
             error=data.get("error"),
+            error_kind=data.get("error_kind"),
+            llm_observations=data.get("llm_observations"),
             chat_completion=chat_completion,
             chat_completions=chat_completions,
         )
@@ -256,7 +266,7 @@ def send_lm_request_batched(
 
         if not response.success:
             # Return error responses for all prompts
-            return [LMResponse.error_response(response.error)] * len(prompts)
+            return [response] * len(prompts)
 
         if response.chat_completions is None:
             return [LMResponse.error_response("No completions returned")] * len(prompts)
@@ -264,7 +274,9 @@ def send_lm_request_batched(
         # Convert batched response to list of individual responses. A completion
         # carrying an error means only that prompt failed; the rest still succeed.
         return [
-            LMResponse.error_response(chat_completion.error)
+            LMResponse(
+                error=chat_completion.error, llm_observations=chat_completion.llm_observations
+            )
             if chat_completion.error
             else LMResponse.success_response(chat_completion)
             for chat_completion in response.chat_completions

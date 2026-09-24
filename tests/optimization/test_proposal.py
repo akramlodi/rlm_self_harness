@@ -1202,7 +1202,9 @@ def test_propose_round_budget_exhaustion_is_raised_once_without_re_asking(tmp_pa
             evidence=synthetic_evidence((BUNDLE).get("patterns", []), preferred=()),
         )
     assert lm._call_count == 1
-    assert excinfo.value.attempts == []
+    assert len(excinfo.value.attempts) == 1
+    assert not excinfo.value.attempts[0].accepted
+    assert excinfo.value.attempts[0].llm_observations
     assert not any((tmp_path / "proposals").glob("*/proposal.json"))
 
 

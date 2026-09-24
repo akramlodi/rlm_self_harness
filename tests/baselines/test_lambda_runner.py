@@ -196,6 +196,8 @@ def test_persists_exhausted_pairwise_format_rejection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from shrlm.optimization.llm_observation_store import read_observation
+
     prompt = build_prompt(
         [
             OolongEntry(
@@ -231,6 +233,14 @@ def test_persists_exhausted_pairwise_format_rejection(
     assert entry["cost"] == pytest.approx(0.003)
     assert entry["usage_lower_bound"] is False
     assert trace["error"].startswith("ClassificationRejectedError:")
+    observations = [
+        read_observation(reference, round_dir(tmp_path, 1) / "runs")
+        for reference in trace["llm_observations"]
+        if reference.get("attempt_id")
+    ]
+    assert len(observations) == 3
+    assert all(record["purpose"] == "lambda" for record in observations)
+    assert all(record["availability"] == "unsupported_client" for record in observations)
     failure = trace["metadata"]["pairwise_failure"]
     assert failure["execution"]["task_id"] == 16
     assert failure["failed_batch"]["batch_index"] == 0

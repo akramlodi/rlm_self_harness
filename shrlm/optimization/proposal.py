@@ -54,7 +54,6 @@ never a reimplementation that could drift from it.
 import ast
 import hashlib
 import json
-import os
 import re
 import tempfile
 import time
@@ -65,6 +64,7 @@ from string import Formatter
 from typing import Any
 
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import ObservationPersistenceError, observation_refs
 from rlm.environments.base_env import RESERVED_TOOL_NAMES
 from rlm.utils.exceptions import TokenLimitExceededError
 from shrlm.harness_identity import (
@@ -102,6 +102,8 @@ from shrlm.optimization.history import (
     select_predecessor,
     surface_fingerprint,
 )
+from shrlm.optimization.llm_observation_store import observation_recorder, verify_observations
+from shrlm.optimization.response_cache import ResponseCache
 from shrlm.optimization.skill_edit import (
     SKILLS_EDIT_FORMAT,
     SkillEditRejection,
@@ -190,7 +192,13 @@ JSON_BLOCK_PATTERN = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 # Deterministic programming/contract errors that must propagate rather than be
 # retried as transient transport failures. Same rationale and set as
 # attribution.py's NON_TRANSPORT_ERRORS.
-NON_TRANSPORT_ERRORS = (TypeError, AttributeError, KeyError, ValueError)
+NON_TRANSPORT_ERRORS = (
+    TypeError,
+    AttributeError,
+    KeyError,
+    ValueError,
+    ObservationPersistenceError,
+)
 
 # S1-S5: the Harness field each string surface fills.
 TEXT_SURFACE_FIELDS: dict[str, str] = {
@@ -293,6 +301,7 @@ class ProposalAttempt:
     accepted: bool
     violation: str = ""
     admissions: list[dict[str, Any]] = field(default_factory=list)
+    llm_observations: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -302,6 +311,8 @@ class ProposalAttempt:
             "accepted": self.accepted,
             "violation": self.violation,
         }
+        if self.llm_observations is not None:
+            result["llm_observations"] = self.llm_observations
         if self.admissions:
             result["admissions"] = self.admissions
         return result
@@ -402,34 +413,8 @@ class ProposerConfig:
             )
 
 
-@dataclass
-class ProposalCache:
-    """Persistent map from a (prompt, bundle, config, attempt) key to the raw
-    model response. Same shape as ``attribution.AttributionCache``: what makes
-    a re-run of a proposal round replay free."""
-
-    path: str | None = None
-    entries: dict[str, str] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.path and os.path.exists(self.path):
-            with open(self.path) as handle:
-                for line in handle:
-                    line = line.strip()
-                    if line:
-                        entry = json.loads(line)
-                        self.entries[entry["key"]] = entry["response"]
-
-    def get(self, key: str) -> str | None:
-        return self.entries.get(key)
-
-    def put(self, key: str, response: str) -> None:
-        self.entries[key] = response
-        if self.path:
-            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-            with open(self.path, "a") as handle:
-                json.dump({"key": key, "response": response}, handle)
-                handle.write("\n")
+class ProposalCache(ResponseCache):
+    """Persistent text and observation cache; existing response keys stay unchanged."""
 
 
 # ---------------------------------------------------------------------------
@@ -1714,6 +1699,17 @@ def validate_batch_members(
     return slots, failures
 
 
+def persist_proposal_failure(
+    workdir: Path, error: Exception, attempts: list[ProposalAttempt]
+) -> None:
+    """Retain the terminal attempt audit without marking the stage successful."""
+    pending = workdir / "proposal_failure.tmp"
+    pending.write_text(
+        canonical_json({"error": str(error), "attempts": [a.to_dict() for a in attempts]}) + "\n"
+    )
+    pending.replace(workdir / "proposal_failure.json")
+
+
 def propose_round(
     bundle: dict[str, Any],
     incumbent: Harness,
@@ -1770,6 +1766,11 @@ def propose_round(
         Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="shrlm-proposal-"))
     )
 
+    recorder = observation_recorder(
+        workdir / "proposal_result.json",
+        {"stage": "proposal", "round": round_index},
+        namespace="llm_calls/proposal",
+    )
     patterns = [dict(pattern) for pattern in bundle.get("patterns", [])]
     attempt_index = prior_attempts(prior_history)
     incumbent_serialization = serialize_harness(incumbent)
@@ -1847,6 +1848,7 @@ def propose_round(
         saved = json.loads(result_path.read_text())
         if saved["sha256"] != prompt_sha256(canonical_json(saved["result"])):
             raise ValueError("proposal result checkpoint hash mismatch")
+        verify_observations(saved, result_path.parent)
         if saved["contract"] != contract:
             raise ValueError("proposal result checkpoint contract mismatch")
         return publish_proposal_result(
@@ -1919,12 +1921,19 @@ def propose_round(
         evidence_audit.setdefault("attempt_prompt_chars", []).append(
             len(rendered_prompt) + len(user)
         )
+        observed = None
         try:
-            budget_failure = cache.get(key + ":budget_exhausted")
-            if budget_failure is not None:
-                raise ProposalBudgetExhausted(budget_failure, attempts)
-            if response is None:
-                try:
+            with recorder.call(
+                "proposal_repair" if attempt else "proposal",
+                lm.model_name,
+                attempt=attempt + 1,
+            ) as observed:
+                budget_failure = cache.get(key + ":budget_exhausted")
+                if budget_failure is not None:
+                    cached = True
+                    observed.replay(cache.get_observations(key + ":budget_exhausted"))
+                    raise ProposalBudgetExhausted(budget_failure, attempts)
+                if response is None:
                     response = _completion_with_retry(
                         lm,
                         [
@@ -1934,15 +1943,33 @@ def propose_round(
                         config,
                         attempts,
                     )
-                except ProposalBudgetExhausted as exc:
-                    cache.put(key + ":budget_exhausted", str(exc))
-                    raise
-                cache.put(key, response)
-        except ProposalBudgetExhausted as exc:
-            if not repairing:
+                else:
+                    observed.replay(cache.get_observations(key))
+        except (ProposalBudgetExhausted, ProposalTransportError) as exc:
+            if isinstance(exc, ProposalBudgetExhausted) and not cached:
+                cache.put(
+                    key + ":budget_exhausted",
+                    str(exc),
+                    observations=observed.responses if observed else None,
+                )
+            attempts.append(
+                ProposalAttempt(
+                    attempt + 1,
+                    cached,
+                    "",
+                    False,
+                    str(exc),
+                    llm_observations=observation_refs(observed),
+                )
+            )
+            exc.attempts = list(attempts)
+            if not repairing or isinstance(exc, ProposalTransportError):
+                persist_proposal_failure(workdir, exc, attempts)
                 raise
-            attempts.append(ProposalAttempt(attempt + 1, cached, "", False, str(exc)))
             break
+        if not cached:
+            cache.put(key, response, observations=observed.responses if observed else None)
+        refs = observation_refs(observed)
 
         try:
             parsed = extract_proposal_response(response)
@@ -1954,7 +1981,11 @@ def propose_round(
                 )
         except ProposalRejection as exc:
             rejection = str(exc)
-            attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
+            attempts.append(
+                ProposalAttempt(
+                    attempt + 1, cached, response, False, rejection, llm_observations=refs
+                )
+            )
             if repairing:
                 break
             continue
@@ -1986,7 +2017,11 @@ def propose_round(
         )
         if repairing and local_failures and not slots:
             rejection = "; ".join(failure["reason"] for failure in local_failures)
-            attempts.append(ProposalAttempt(attempt + 1, cached, response, False, rejection))
+            attempts.append(
+                ProposalAttempt(
+                    attempt + 1, cached, response, False, rejection, llm_observations=refs
+                )
+            )
             break
         admissions = []
         new_materialization_failures = []
@@ -2157,17 +2192,21 @@ def propose_round(
         rejection = "; ".join(reasons)
         has_failures = bool(materialization_failures or preflight_failures)
         attempts.append(
-            ProposalAttempt(attempt + 1, cached, response, not has_failures, rejection, admissions)
+            ProposalAttempt(
+                attempt + 1, cached, response, not has_failures, rejection, admissions, refs
+            )
         )
         if repairing or not failed_slots:
             break
         repairing = True
     else:
         if not repairing and addressable:
-            raise ProposalRejection(
+            error = ProposalRejection(
                 f"no valid proposal batch after {config.max_attempts} attempts: {rejection}",
                 attempts=attempts,
             )
+            persist_proposal_failure(workdir, error, attempts)
+            raise error
 
     all_indices = {index for index, _ in addressable}
     proposed_indices = {spec.pattern_index for _, spec, _ in materialized} | set(failed_slots)

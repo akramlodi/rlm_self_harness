@@ -1,0 +1,160 @@
+import json
+
+import pytest
+
+from rlm.core.llm_observation import ObservationPersistenceError
+from shrlm.optimization.llm_observation_store import observation_recorder, verify_observations
+
+
+def test_files_survive_failed_call_and_resolve_after_move(tmp_path):
+    trace = tmp_path / "runs" / "example.json"
+    recorder = observation_recorder(trace, {"run_id": "example"})
+    with pytest.raises(ValueError), recorder.call("root_turn") as call:
+        call.receive({"availability": "returned", "reasoning": {"reasoning": "full text"}})
+        raise ValueError("execution failed")
+    payload = {"llm_observations": recorder.references}
+    verify_observations(payload, trace.parent)
+    moved = tmp_path / "moved"
+    trace.parent.rename(moved)
+    verify_observations(payload, moved)
+    response = next(r for r in recorder.references if r.get("attempt_id"))
+    assert json.loads((moved / response["path"]).read_text())["reasoning"] == {
+        "reasoning": "full text"
+    }
+    (moved / response["path"]).write_text("corrupt")
+    with pytest.raises(ObservationPersistenceError, match="sha256"):
+        verify_observations(payload, moved)
+
+
+def test_reference_cannot_escape_owner(tmp_path):
+    with pytest.raises(ObservationPersistenceError, match="outside"):
+        verify_observations(
+            {"llm_observations": [{"path": "../secret", "sha256": "abc"}]}, tmp_path
+        )
+
+
+def test_legacy_payload_needs_no_files(tmp_path):
+    verify_observations({"response": "old", "metadata": {"iterations": []}}, tmp_path)
+
+
+def test_started_call_is_durable_without_finished_marker(tmp_path):
+    recorder = observation_recorder(tmp_path / "run.json", {})
+    with recorder.call("root_turn"):
+        files = list(tmp_path.rglob("*.json"))
+        assert len(files) == 1
+        assert json.loads(files[0].read_text())["event"] == "started"
+
+
+def test_driver_preserves_response_before_execution_failure(tmp_path, monkeypatch):
+    from shrlm.optimization.driver import build_round_rlm, execute_run
+    from shrlm.runner import RLM
+    from tests.clients.test_openai_transport import good_response, make_client
+    from tests.optimization.test_driver import make_round_config
+
+    response = good_response()
+    response.choices[0].message.reasoning_content = "saved before failed execution"
+    client = make_client(response)
+    monkeypatch.setitem(RLM.__init__.__globals__, "get_client", lambda *args: client)
+    original = RLM._completion_turn
+
+    def fail_after_response(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        raise RuntimeError("post-response failure")
+
+    monkeypatch.setattr(RLM, "_completion_turn", fail_after_response)
+    harnessed = build_round_rlm(make_round_config(tmp_path))
+    trace = tmp_path / "runs" / "test.json"
+    outcome = execute_run(
+        harnessed, {"id": "test", "prompt": "task"}, model_name="model", trace_path=trace
+    )
+    assert outcome.completion.execution_failure is not None
+    assert outcome.completion.llm_observations is not None
+    assert outcome.completion.execution_failure.cause == "runtime_error"
+    verify_observations(outcome.completion.to_dict(), trace.parent)
+    assert len([r for r in outcome.completion.llm_observations if r.get("attempt_id")]) == 1
+
+
+def test_driver_write_failure_is_not_a_task_failure_or_paid_retry(tmp_path, monkeypatch):
+    import shrlm.optimization.driver as driver
+    from rlm.core.llm_observation import ObservationRecorder
+    from shrlm.runner import RLM
+    from tests.clients.test_openai_transport import good_response, make_client
+    from tests.optimization.test_driver import make_round_config
+
+    client = make_client(good_response())
+    monkeypatch.setitem(RLM.__init__.__globals__, "get_client", lambda *args: client)
+
+    def fail_response(record):
+        if record["event"] == "response":
+            raise OSError("disk full")
+        return {"observation": record}
+
+    monkeypatch.setattr(
+        driver, "observation_recorder", lambda *args: ObservationRecorder(sink=fail_response)
+    )
+    harnessed = driver.build_round_rlm(make_round_config(tmp_path))
+    with pytest.raises(driver.RoundPersistenceError, match="disk full"):
+        driver.execute_run(
+            harnessed, {"prompt": "task"}, model_name="model", trace_path=tmp_path / "trace.json"
+        )
+    assert client.client.chat.completions.create.call_count == 1
+    assert harnessed.rlm.last_completion_usage is not None
+    assert harnessed.rlm.last_completion_usage.total_calls == 1
+
+
+def test_killed_process_observations_are_indexed_without_a_paid_retry(tmp_path):
+    import subprocess
+    import sys
+
+    from shrlm.optimization.llm_observation_store import discover_observations, read_observation
+
+    trace = tmp_path / "run.json"
+    script = """
+import os, sys
+from pathlib import Path
+from shrlm.optimization.llm_observation_store import observation_recorder
+recorder = observation_recorder(Path(sys.argv[1]), {"run_id": "run"})
+with recorder.call("root_turn") as call:
+    call.receive({"availability": "returned", "reasoning": {"reasoning": "committed"}})
+    os._exit(7)
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(trace)], check=False)
+    assert result.returncode == 7
+    references = discover_observations(trace)
+    assert references is not None
+    records = [read_observation(ref, trace.parent) for ref in references]
+    assert {r["event"] for r in records} == {"started", "response"}
+    assert (
+        next(r for r in records if r["event"] == "response")["reasoning"]["reasoning"]
+        == "committed"
+    )
+
+
+def test_worker_persistence_error_wins_over_simultaneous_timeout(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from shrlm.optimization.costs import CandidateSpendBreaker, _reap_run
+    from shrlm.optimization.driver import RoundObservationPersistenceError, run_id_for
+    from tests.optimization.test_costs import CAPS, make_config
+
+    config = make_config(tmp_path)
+    live = {
+        "instance": config.instances[0],
+        "path": tmp_path / "worker",
+        "attempt": 1,
+        "process": SimpleNamespace(returncode=1),
+    }
+    monkeypatch.setattr(
+        "shrlm.optimization.costs.read_run_result",
+        lambda path: {"error_kind": "observation_persistence", "error": "disk full"},
+    )
+    with pytest.raises(RoundObservationPersistenceError, match="disk full"):
+        _reap_run(
+            tmp_path,
+            run_id_for(str(config.instances[0]["id"]), 1),
+            live,
+            config,
+            timed_out=True,
+            breaker=CandidateSpendBreaker(CAPS),
+        )
+    assert not list(tmp_path.rglob("runs.jsonl"))

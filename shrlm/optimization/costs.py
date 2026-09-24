@@ -97,6 +97,7 @@ from shrlm.optimization.candidates import (
 )
 from shrlm.optimization.driver import (
     RoundConfig,
+    RoundObservationPersistenceError,
     append_child_run,
     load_manifest,
     persist_interrupted_run,
@@ -824,6 +825,9 @@ def _reap_run(
     # would leave the lost attempt's spend uncharged and punch a hole in the
     # contiguous tail (KTD11). The error names what actually happened -- a child
     # killed at its deadline is a timeout, a child that died is not.
+    result = read_run_result(live["path"])
+    if result is not None and result.get("error_kind") == "observation_persistence":
+        raise RoundObservationPersistenceError(str(result["error"]))
     error: Exception
     if timed_out:
         elapsed = hard_deadline_seconds(config.max_timeout) or 0.0
@@ -836,7 +840,6 @@ def _reap_run(
             ),
         )
     else:
-        result = read_run_result(live["path"])
         detail = (result or {}).get("error") or (
             f"run worker exited {live['process'].returncode} without a usable trace"
         )

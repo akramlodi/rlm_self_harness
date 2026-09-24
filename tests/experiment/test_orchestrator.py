@@ -1958,7 +1958,11 @@ CLOCK_KEYS = frozenset(
 def scrub_clock(payload: Any) -> Any:
     """A JSON payload with every clock-derived value removed, recursively."""
     if isinstance(payload, dict):
-        return {key: scrub_clock(value) for key, value in payload.items() if key not in CLOCK_KEYS}
+        return {
+            key: scrub_clock(value)
+            for key, value in payload.items()
+            if key not in CLOCK_KEYS | {"llm_observations", "observations"}
+        }
     if isinstance(payload, list):
         return [scrub_clock(item) for item in payload]
     return payload
@@ -1983,12 +1987,23 @@ def persisted_tree(out: Path) -> dict[str, Any]:
         rel = path.relative_to(out).as_posix()
         if rel.startswith(f"{ANALYSIS_DIR}/") or "__pycache__" in rel:
             continue
+        if "/llm_calls/" in rel or ".llm_calls/" in rel:
+            continue  # Unique call IDs are observational; integrity is tested separately.
         if f"/{TRACES_DIR}/" in rel:
             tree[rel] = "<trace>"
         elif rel.endswith(".jsonl"):
             tree[rel] = [
                 scrub_clock(json.loads(line)) for line in path.read_text().splitlines() if line
             ]
+        elif rel.endswith("/proposal_result.json"):
+            from shrlm.harness_identity import canonical_json
+            from shrlm.optimization.proposal import prompt_sha256
+
+            payload = json.loads(path.read_text())
+            assert payload["sha256"] == prompt_sha256(canonical_json(payload["result"]))
+            tree[rel] = scrub_clock(
+                {key: value for key, value in payload.items() if key != "sha256"}
+            )
         elif rel.endswith(".json"):
             tree[rel] = scrub_clock(json.loads(path.read_text()))
         else:
@@ -2321,6 +2336,9 @@ class _FakeCompletion:
         self.response = response
         self.usage_summary = _FakeUsageSummary()
 
+    def to_dict(self) -> dict[str, Any]:
+        return {"response": self.response}
+
 
 class _FakeOutcome:
     def __init__(self, completion: _FakeCompletion, verdict: Any) -> None:
@@ -2330,7 +2348,13 @@ class _FakeOutcome:
 
 
 def _fake_real_execute_run(
-    harnessed: Any, instance: dict[str, Any], *, model_name: str, verifier: Any = None
+    harnessed: Any,
+    instance: dict[str, Any],
+    *,
+    model_name: str,
+    verifier: Any = None,
+    trace_path: Path | None = None,
+    observation_owner: dict[str, Any] | None = None,
 ) -> _FakeOutcome:
     response = "FINAL: 2"  # matches the fake loader's answer_raw "[2]"
     completion = _FakeCompletion(response)
