@@ -135,6 +135,22 @@ def coverage_run():
     )
 
 
+def test_response_examples_obey_live_conditional_contract():
+    root, _ = coverage_run()
+    attributor = LLMAttributor(MockLM())
+    for grounding in (UNGROUNDED, GROUNDED):
+        prompt = attributor.system_prompt(grounding.grounded, False, True)
+        examples = [
+            json.loads(block) for block in attribution_module.JSON_BLOCK_PATTERN.findall(prompt)
+        ]
+        assert len(examples) == 3
+        for example in examples:
+            attributor.validate(example, root, grounding)
+        assert examples[0]["coverage_basis"]["status"] == "observed_loss"
+        assert examples[1]["coverage_basis"]["status"] == "not_established"
+        assert "coverage_basis" not in examples[2]
+
+
 @pytest.mark.parametrize("status", ["not_established", "contradicted"])
 def test_unestablished_coverage_is_normalized_without_reask(status):
     root, stats = coverage_run()
@@ -465,7 +481,7 @@ class TestModeSeparation:
         attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)
         prompt = attributor.system_prompt(grounded=False)
         assert "failing_level (choose exactly one)" in prompt
-        assert '"failing_level": "<value>"' in prompt
+        assert '"failing_level": "undetermined"' in prompt
 
     def test_validate_demands_failing_level_only_when_ungrounded(self):
         attributor = LLMAttributor(RecordingLM([]), config=FAST_CONFIG)

@@ -145,21 +145,10 @@ Omit coverage_basis for other mechanisms.
 {taxonomy}
 {failing_level}
 
-Respond with a single fenced JSON block and nothing else:
-
-```json
-{{
-  "causal_status": "<value>",
-  "agent_mechanism": "<value>",
-  "causal_status_detail": "<free text, required only for unattributed>",
-  "agent_mechanism_detail": "<free text, required only for other>",{failing_level_field}
-  "evidence_node_ids": ["<node_id from the sub-call table>"],
-  "operation_evidence": [{{"node_id": "r", "iteration_index": 1, \
-"code_block_index": 0, "observation": "<observed operation, at most 500 characters>"}}],
-  "verification_limits": "<what remains unverified, at most 500 characters>",
-  "symptom_summary": "<one sentence describing the observed behavior>"
-}}
-```
+Respond with one fenced JSON block. The following independent examples illustrate
+observed loss, uncertainty, and a noncoverage diagnosis for hypothetical traces.
+Use only coordinates and observations from the actual run; do not copy example facts.
+{response_examples}
 
 {evidence_instruction}
 Supply at most four operation_evidence entries. Coordinates are the displayed \
@@ -169,7 +158,59 @@ An empty operation_evidence list requires explicit verification_limits and \
 correlated/unattributed causal status. Never invent observations or coordinates.
 """
 
-FAILING_LEVEL_FIELD = '\n  "failing_level": "<value>",'
+
+def response_examples(grounded: bool) -> str:
+    common = {
+        "evidence_node_ids": [],
+        "verification_limits": "Intermediate classifications were not independently verified.",
+        **({} if grounded else {"failing_level": "undetermined"}),
+    }
+    observed = {
+        **common,
+        "causal_status": "causal",
+        "agent_mechanism": "incomplete_coverage",
+        "operation_evidence": [
+            {
+                "node_id": "r",
+                "iteration_index": 1,
+                "code_block_index": 0,
+                "observation": "range(9) processes only nine of ten original pages.",
+            }
+        ],
+        "symptom_summary": "The loop skips the last original page.",
+        "coverage_basis": {
+            "status": "observed_loss",
+            "input_scope": "Original pages 0 through 9",
+            "loss_observation": "r iteration 1 code[0] omits page 9.",
+            "counterevidence": "No later processing of page 9 is visible.",
+        },
+    }
+    uncertain = {
+        **common,
+        "causal_status": "unattributed",
+        "agent_mechanism": "incomplete_coverage",
+        "operation_evidence": [],
+        "symptom_summary": "The answer is incomplete; the input processing is not visible.",
+        "coverage_basis": {
+            "status": "not_established",
+            "input_scope": "The original set of pages is unverified.",
+            "loss_observation": "",
+            "counterevidence": "No visible operation establishes skipped input; answer errors alone do not.",
+        },
+    }
+    other = {
+        **common,
+        "causal_status": "unattributed",
+        "agent_mechanism": "other",
+        "causal_status_detail": "The latest available state does not establish the cause.",
+        "agent_mechanism_detail": "Wrong-but-valid classifications remain possible.",
+        "operation_evidence": [],
+        "symptom_summary": "A wrong result remains despite reported coverage checks.",
+    }
+    return "\n\n".join(
+        "```json\n" + json.dumps(row, indent=2) + "\n```" for row in (observed, uncertain, other)
+    )
+
 
 # The evidence-citation demand depends on what the digest could show. A
 # per-call sub-call table names every node id, so citations from it are
@@ -421,7 +462,7 @@ class LLMAttributor:
         return ATTRIBUTOR_SYSTEM_PROMPT.format(
             taxonomy=render_taxonomy_block(),
             failing_level="" if grounded else "\n" + render_failing_level_block(),
-            failing_level_field="" if grounded else FAILING_LEVEL_FIELD,
+            response_examples=response_examples(grounded),
             evidence_instruction=(
                 EVIDENCE_INSTRUCTION_NO_SUBCALLS
                 if no_subcalls

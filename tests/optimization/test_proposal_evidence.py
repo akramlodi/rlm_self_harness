@@ -1,5 +1,6 @@
 """Diagnostics use saved outcomes and keep held-out payloads out of proposals."""
 
+import copy
 import hashlib
 import json
 from dataclasses import replace
@@ -647,7 +648,7 @@ def mining_fixture(tmp_path, monkeypatch, *, attempts=2, produced="[(1, 2)]"):
     run_round(config)
     runs, verdicts, _, entries = load_round(tmp_path, 1)
     path = tmp_path / "round_01"
-    pattern = dict(PATTERN_TEXT, representatives=["held-in"])
+    pattern = {**copy.deepcopy(PATTERN_TEXT), "representatives": ["held-in"]}
     bundle = {
         "bundle_id": "synthetic",
         "patterns": [pattern],
