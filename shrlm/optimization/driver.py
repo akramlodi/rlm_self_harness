@@ -84,7 +84,11 @@ from rlm.utils.exceptions import (
 )
 from shrlm.harness_identity import harness_hash, write_harness_json
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
-from shrlm.optimization.llm_observation_store import observation_recorder, verify_observations
+from shrlm.optimization.llm_observation_store import (
+    discover_observations,
+    observation_recorder,
+    verify_observations,
+)
 from shrlm.optimization.mining import MiningResult, WeaknessMiner
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import RunTraceLink, Verdict, Verifier
@@ -763,6 +767,9 @@ def persist_interrupted_run(
                 error=error,
                 elapsed_seconds=0.0,
             )
+            completion.llm_observations = discover_observations(
+                trace_path_for(path, candidate_run_id)
+            )
             verdict = Verdict(
                 passed=False,
                 cause=VerifierCause.RESOURCE_TERMINATED,
@@ -1234,20 +1241,26 @@ def mine_round(
         for entry in entries
     ]
     cache_path = miner.attributor.cache.path
-    result = miner.mine(
-        runs,
-        round_index=round_index,
-        harness_version=harness_version or str(envelope["hash"]),
-        split_id=split_id,
-        created_at=created_at,
-        verdicts=verdicts,
-        trace_links=trace_links,
-        harness_hash=str(envelope["hash"]),
-        sampling_seed=_sampling_seed(runs),
-        attribution_cache_path=(
-            os.path.relpath(cache_path, path) if cache_path is not None else None
-        ),
+    recorder = observation_recorder(
+        path / "attributions.jsonl",
+        {"stage": "attribution", "round": round_index},
+        namespace="llm_calls/attribution",
     )
+    with observation_session(recorder):
+        result = miner.mine(
+            runs,
+            round_index=round_index,
+            harness_version=harness_version or str(envelope["hash"]),
+            split_id=split_id,
+            created_at=created_at,
+            verdicts=verdicts,
+            trace_links=trace_links,
+            harness_hash=str(envelope["hash"]),
+            sampling_seed=_sampling_seed(runs),
+            attribution_cache_path=(
+                os.path.relpath(cache_path, path) if cache_path is not None else None
+            ),
+        )
     _persist_mining_artifacts(path, result)
     return result
 

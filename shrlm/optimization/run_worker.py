@@ -231,6 +231,7 @@ def run_run_worker(request_path: str | Path) -> dict[str, Any]:
     run_path = request_path.parent
     run_id = "<unknown>"
     factory: Any = None
+    harnessed = None
     try:
         request = json.loads(request_path.read_text())
         if request.get("format") != REQUEST_FORMAT:
@@ -305,6 +306,8 @@ def run_run_worker(request_path: str | Path) -> dict[str, Any]:
         }
         if isinstance(error, ObservationPersistenceError):
             result["error_kind"] = "observation_persistence"
+            if harnessed is not None and harnessed.rlm.last_completion_usage is not None:
+                result["usage_summary"] = harnessed.rlm.last_completion_usage.to_dict()
     finally:
         if factory is not None:
             calls = getattr(factory, "total_calls", None)

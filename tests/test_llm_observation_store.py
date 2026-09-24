@@ -96,3 +96,30 @@ def test_driver_write_failure_is_not_a_task_failure_or_paid_retry(tmp_path, monk
         )
     assert client.client.chat.completions.create.call_count == 1
     assert harnessed.rlm.last_completion_usage.total_calls == 1
+
+
+def test_killed_process_observations_are_indexed_without_a_paid_retry(tmp_path):
+    import subprocess
+    import sys
+
+    from shrlm.optimization.llm_observation_store import discover_observations, read_observation
+
+    trace = tmp_path / "run.json"
+    script = """
+import os, sys
+from pathlib import Path
+from shrlm.optimization.llm_observation_store import observation_recorder
+recorder = observation_recorder(Path(sys.argv[1]), {"run_id": "run"})
+with recorder.call("root_turn") as call:
+    call.receive({"availability": "returned", "reasoning": {"reasoning": "committed"}})
+    os._exit(7)
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(trace)], check=False)
+    assert result.returncode == 7
+    references = discover_observations(trace)
+    records = [read_observation(ref, trace.parent) for ref in references]
+    assert {r["event"] for r in records} == {"started", "response"}
+    assert (
+        next(r for r in records if r["event"] == "response")["reasoning"]["reasoning"]
+        == "committed"
+    )

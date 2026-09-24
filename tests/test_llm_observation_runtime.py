@@ -37,6 +37,7 @@ def test_batched_socket_results_keep_call_local_reasoning():
     with LMHandler(client, observation_recorder=recorder) as handler:
         responses = send_lm_request_batched(handler.address, ["duplicate"] * 3)
     assert arrived == 3
+    assert received(responses[1].llm_observations)[0]["availability"] == "no_response"
     assert responses[1].error
     for slot in (0, 2):
         completion = responses[slot].chat_completion

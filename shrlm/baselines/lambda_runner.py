@@ -56,7 +56,7 @@ from shrlm.optimization.driver import (
     run_id_for,
     verify_trace,
 )
-from shrlm.optimization.llm_observation_store import observation_recorder
+from shrlm.optimization.llm_observation_store import discover_observations, observation_recorder
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict, Verifier
 
@@ -456,6 +456,9 @@ def persist_interrupted_lambda_run(
                 model_input.prompt,
                 error,
                 elapsed_seconds=0.0,
+            )
+            completion.llm_observations = discover_observations(
+                path / TRACES_DIR / f"{run_id}.json"
             )
             verdict = lambda_resource_verdict(completion, error)
             return persist_run(

@@ -73,14 +73,20 @@ class LMRequestHandler(StreamRequestHandler):
         client = handler.get_client(request.model, request.depth)
 
         start_time = time.perf_counter()
-        with observe_call(
-            "plain_child",
-            client.model_name,
-            recorder=handler.observation_recorder,
-            depth=request.depth,
-            **handler.observation_coordinates,
-        ) as observed:
-            content = client.completion(request.prompt)
+        observed = None
+        try:
+            with observe_call(
+                "plain_child",
+                client.model_name,
+                recorder=handler.observation_recorder,
+                depth=request.depth,
+                **handler.observation_coordinates,
+            ) as observed:
+                content = client.completion(request.prompt)
+        except ObservationPersistenceError:
+            raise
+        except Exception as error:
+            return LMResponse(error=str(error), llm_observations=observation_refs(observed))
         end_time = time.perf_counter()
 
         model_usage = client.get_last_usage()

@@ -86,3 +86,50 @@ def verify_observations(payload: Any, anchor: Path) -> None:
                 visit(child)
 
     visit(payload)
+
+
+def rebase_observations(payload: Any, source: Path, destination: Path) -> Any:
+    """Copy references into a containing artifact's coordinate system."""
+    verify_observations(payload, source)
+    prefix = source.resolve().relative_to(destination.resolve())
+
+    def copy(value: Any) -> Any:
+        if isinstance(value, dict):
+            result = {key: copy(child) for key, child in value.items() if key != "llm_observations"}
+            if "llm_observations" in value:
+                result["llm_observations"] = [
+                    {**ref, "path": (prefix / ref["path"]).as_posix()}
+                    for ref in value["llm_observations"] or []
+                ]
+            return result
+        if isinstance(value, list):
+            return [copy(child) for child in value]
+        return value
+
+    return copy(payload)
+
+
+def discover_observations(artifact: Path) -> list[dict[str, Any]] | None:
+    """Index committed events left by a worker that never published its trace."""
+    directory = artifact.parent / f"{artifact.stem}.llm_calls"
+    if not directory.exists():
+        return None
+    references = []
+    try:
+        for path in sorted(directory.glob("*/*.json")):
+            payload = path.read_bytes()
+            record = json.loads(payload)
+            reference = {
+                "path": path.relative_to(artifact.parent).as_posix(),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "call_id": record["call_id"],
+            }
+            if "attempt_id" in record:
+                reference["attempt_id"] = record["attempt_id"]
+            read_observation(reference, artifact.parent)
+            references.append(reference)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ObservationPersistenceError(
+            f"cannot index interrupted observations: {error}"
+        ) from error
+    return references

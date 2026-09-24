@@ -112,6 +112,7 @@ from typing import TYPE_CHECKING, Any
 
 from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import ObservationPersistenceError
 from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier
 from shrlm.environments.oolong import (
     OolongSubVerifier,
@@ -163,6 +164,7 @@ from shrlm.optimization.driver import (
     mine_round,
 )
 from shrlm.optimization.history import prior_evaluations
+from shrlm.optimization.llm_observation_store import rebase_observations, verify_observations
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.promotion import DECISION_PROMOTED, PromotionConfig
 from shrlm.optimization.proposal import (
@@ -520,6 +522,7 @@ def _load_marker(path: Path, expected_format: str) -> dict[str, Any]:
     payload = json.loads(path.read_text())
     if payload.get("format") != expected_format:
         raise ExperimentPersistenceError(f"{path} is not a {expected_format} document")
+    verify_observations(payload, path.parent)
     return payload
 
 
@@ -1036,6 +1039,9 @@ class _Experiment:
         marker_path = mining_round_path / EVIDENCE_MARKER_FILENAME
         if marker_path.exists():
             _load_marker(marker_path, EVIDENCE_MARKER_FORMAT)
+            verify_observations(
+                read_jsonl(mining_round_path / ATTRIBUTIONS_FILENAME), mining_round_path
+            )
             return json.loads(bundle_path.read_text())
         cache_path = _operational_path(self.out_dir, self.config.operational.attribution_cache_path)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1169,6 +1175,7 @@ class _Experiment:
                     "skipped_patterns": [],
                     "n_materialization_failures": 0,
                     "materialization_failures": [],
+                    "attempts": [attempt.to_dict() for attempt in exc.attempts],
                     "stage_failure": {
                         "kind": kind,
                         "error": str(exc),
@@ -1196,6 +1203,7 @@ class _Experiment:
             payload["preflight_failures"] = result.preflight_failures
             payload["evidence_audit"] = result.evidence_audit
             payload["attempts"] = [attempt.to_dict() for attempt in result.attempts]
+        payload = rebase_observations(payload, round_path / WORK_DIR, round_path)
         _persist_once(
             marker_path,
             payload,
@@ -1314,8 +1322,18 @@ class _Experiment:
             try:
                 harnessed = build_round_rlm(round_config)
                 for instance in instances:
+                    trace_path = check_dir / "runs" / f"check-{len(rows) + 1}.json"
                     outcome = execute_run(
-                        harnessed, instance, model_name=model_name, verifier=verifier
+                        harnessed,
+                        instance,
+                        model_name=model_name,
+                        verifier=verifier,
+                        trace_path=trace_path,
+                        observation_owner={"stage": STAGE_REAL_CHECK},
+                    )
+                    trace_path.parent.mkdir(parents=True, exist_ok=True)
+                    trace_path.write_text(
+                        json.dumps(outcome.completion.to_dict(), sort_keys=True) + "\n"
                     )
                     summary = outcome.completion.usage_summary
                     cost = summary.total_cost
@@ -1339,6 +1357,8 @@ class _Experiment:
                             "cost_usd": cost,
                         }
                     )
+            except ObservationPersistenceError:
+                raise
             except Exception as error:  # noqa: BLE001 -- must never break the round
                 sys.stderr.write(
                     f"OOLONG-real check failed for {tag}: {type(error).__name__}: {error}\n"
@@ -1712,7 +1732,10 @@ def run_experiment(
         verifier_factory=verifier_factory,
         client_factory=client_factory,
     )
-    return experiment.run()
+    try:
+        return experiment.run()
+    except ObservationPersistenceError as error:
+        raise ExperimentPersistenceError(str(error)) from error
 
 
 __all__ = [
