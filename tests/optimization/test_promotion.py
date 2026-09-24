@@ -92,7 +92,7 @@ def make_summary(
 ) -> dict[str, Any]:
     return {
         "format": "shrlm-validation-summary/v2",
-        "validation_protocol": "heldout-batch/v1",
+        "validation_protocol": "heldout-batch/v2",
         "subject_id": subject_id,
         "harness_hash": f"hash-{subject_id}",
         "repetitions": 2,
@@ -201,22 +201,33 @@ class TestAcceptanceRule:
             SPLIT_HELDOUT in reason and "tau_regression" in reason for reason in decision.reasons
         )
 
-    def test_flat_on_both_splits_rejects(self):
+    def test_flat_on_both_splits_accepts(self):
         decision = score(2, 2)
-        assert decision.decision == DECISION_REJECTED
-        assert any("tau_improvement" in reason for reason in decision.reasons)
+        assert decision.decision == DECISION_ACCEPTED
+        assert decision.reasons == ()
 
     def test_regressing_both_splits_rejects_with_both_reasons(self):
         decision = score(1, 1)
         assert decision.decision == DECISION_REJECTED
         assert sum("tau_regression" in reason for reason in decision.reasons) == 1
 
-    def test_zero_thresholds_reproduce_the_strict_paper_rule(self):
-        # Any single-run regression rejects; any single-run improvement with a
-        # flat other split accepts.
+    def test_zero_thresholds_allow_heldout_ties_but_reject_regressions(self):
+        # Held-in scores do not contribute to the gate.
         assert score(3, 1).decision == DECISION_REJECTED
-        assert score(3, 2).decision == DECISION_REJECTED
+        assert score(3, 2).decision == DECISION_ACCEPTED
+        assert score(0, 2).decision == DECISION_ACCEPTED
         assert score(0, 3).decision == DECISION_ACCEPTED
+
+    def test_zero_exact_passes_can_tie(self):
+        baseline = make_summary(BASELINE_ID, 0, 0)
+        candidate = make_summary("cand-a", 0, 0)
+        assert score_candidate(baseline, candidate, PromotionConfig()).accepted
+
+    def test_strict_gate_evidence_cannot_be_rescored_as_inclusive(self):
+        candidate = make_summary("cand-a", 2, 2)
+        candidate["validation_protocol"] = "heldout-batch/v1"
+        with pytest.raises(ValueError, match="current validation protocol"):
+            score_candidate(BASELINE, candidate, PromotionConfig())
 
 
 class TestNoiseMargins:
@@ -231,10 +242,10 @@ class TestNoiseMargins:
         assert not any("tau_regression" in reason for reason in score(4, 1, config).reasons)
         assert score(4, 0, config).decision == DECISION_REJECTED
 
-    def test_sub_margin_improvement_rejects(self):
+    def test_improvement_boundary_is_inclusive(self):
         config = PromotionConfig(tau_improvement=1)
-        # Improvement boundary is strict: delta exactly tau_imp is not enough.
-        assert score(3, 3, config).decision == DECISION_REJECTED
+        assert score(3, 2, config).decision == DECISION_REJECTED
+        assert score(3, 3, config).decision == DECISION_ACCEPTED
         assert score(2, 4, config).decision == DECISION_ACCEPTED
 
     def test_thresholds_are_recorded_on_every_decision(self):
@@ -256,6 +267,13 @@ class TestNoiseMargins:
 
 
 class TestBand:
+    def test_exact_pass_tie_still_requires_the_cost_band(self):
+        config = PromotionConfig(cost_band=Band(0.0, 1.5))
+        decision = score(2, 2, config, heldout_kwargs={"mean_cost": 4.0})
+        assert decision.decision == DECISION_REJECTED
+        assert decision.band["mean_cost"]["within"] is False
+        assert not any("tau_improvement" in reason for reason in decision.reasons)
+
     def test_cost_outside_the_band_rejects_a_rule_passing_candidate(self):
         config = PromotionConfig(cost_band=Band(0.0, 1.5))
         decision = score(4, 4, config, heldout_kwargs={"mean_cost": 8.0})
@@ -422,7 +440,7 @@ class TestAssessRound:
         ]
         good, flat, burn, broken = decisions
         assert good.decision == DECISION_ACCEPTED
-        assert flat.decision == DECISION_REJECTED
+        assert flat.decision == DECISION_ACCEPTED
         assert burn.decision == DECISION_OVER_BUDGET
         assert burn.rule is None and burn.band is None
         assert broken.decision == DECISION_REJECTED

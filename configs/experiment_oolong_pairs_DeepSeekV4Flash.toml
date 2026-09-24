@@ -36,9 +36,9 @@ seed = 0 # seeded partition of the OOLONG-Pairs pools
 m = 2 # mining repetitions per held-in instance
 v = 1 # validation repetitions per held-out instance per subject
 k = 4 # maximum candidate edits per round, at most one per surface
-# Restored to the preregistered 15-round ceiling for this separate pair-task
-# identity. Changing it later requires a fresh out-dir (R3).
-t = 15 # maximum optimization rounds
+# Three-round assessment of the revised mining/proposer and inclusive gate.
+# Changing this ceiling later requires a fresh out-dir (R3).
+t = 3 # maximum optimization rounds
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
 environment = "oolong_pairs" # this profile mines/validates OOLONG-Pairs (identity key)
 # Start from the shipped reference prompt plus the orchestrator addendum, so
@@ -46,10 +46,9 @@ environment = "oolong_pairs" # this profile mines/validates OOLONG-Pairs (identi
 initial_harness = "H0*R"
 
 [promotion]
-# Preregistered promotion rule, sections 3.2 and 3.10 rows 6-7. Zero
-# thresholds reproduce the strict non-regression rule of Zhang et al.; the
-# pilot replaces them before optimization starts. Bands are inclusive
-# multipliers on the baseline's mean.
+# Exact held-out passes must be >= the incumbent at these zero thresholds.
+# Cost and sub-call bands still apply; ties are not evidence of improvement.
+# Bands are inclusive multipliers on the baseline's mean.
 tau_regression = 0.0
 tau_improvement = 0.0
 # The upper bound is the single most cost-sensitive value in this file. It

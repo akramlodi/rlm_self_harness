@@ -1009,7 +1009,8 @@ def test_explicit_h0_hashes_identically_to_the_default(tmp_path: Path) -> None:
     assert identity_hash(load_config("full", path=explicit)) == identity_hash(load_config())
 
 
-def test_validation_protocol_changes_identity_even_with_one_repetition():
+@pytest.mark.parametrize("previous_protocol", [None, "heldout-batch/v1"])
+def test_validation_protocol_changes_identity_even_with_one_repetition(previous_protocol):
     from shrlm.experiment.config import IDENTITY_OPERATIONAL_KEYS, IDENTITY_SECTIONS
     from shrlm.harness_identity import canonical_json_sha256
 
@@ -1019,4 +1020,6 @@ def test_validation_protocol_changes_identity_even_with_one_repetition():
     legacy["operational"] = {
         key: getattr(config.operational, key) for key in IDENTITY_OPERATIONAL_KEYS
     }
+    if previous_protocol is not None:
+        legacy["validation_protocol"] = previous_protocol
     assert identity_hash(config) != canonical_json_sha256(legacy)
