@@ -121,7 +121,7 @@
 Recursive language models (\rlms) let a bounded-context model operate over inputs larger
 than its context window by offloading the input, decomposing it, invoking recursive model
 calls, and aggregating their outputs. Vanilla RLMs suffer from many failure
-modes, necessitating the need for fine-tuning LLMs or extended the RLM harness by hand to overcome limitations in specific tasks. We propose adapting the \sh{} framework to \rlms, so that a fixed model improves its own recursive harness from evidence produced while running: it mines recurring failure mechanisms from verifier-grounded execution traces, proposes minimal edits to declared harness surfaces, and promotes only edits that survive non-regressive
+modes, necessitating the need to fine-tune LLMs or extend the RLM harness by hand to overcome limitations in specific tasks. We propose adapting the \sh{} framework to \rlms, so that a fixed model improves its own recursive harness from evidence produced while running: it mines recurring failure mechanisms from verifier-grounded execution traces, proposes minimal edits to declared harness surfaces, and promotes only edits that survive non-regressive
 validation. The optimized harness is frozen and evaluated on instances $8$--$32\times$
 longer than any seen during optimization and in new target environments. Results forthcoming.
 \end{abstract}
@@ -129,137 +129,185 @@ longer than any seen during optimization and in new target environments. Results
 \textbf{Submission target: NeurIPS (tiny paper), AAAI fallback}
 
 \section{Introduction}
-Frontier language models are bounded by a fixed context window, and exhibit performance declines as the context increases, otherwise known as \emph{context rot} ~\citep{hong2025contextrot}. Recursive language models (\rlms) address this by pushing the 
-prompt into an environment variable, programmatically interacting with it, decomposing it, and recursively calling additional \rlms over subsections of the prompt ~\citep{zhang2025rlm}.
-Every individual call stays inside the native context window, letting a bounded-context model reason over prompts orders of magnitude larger than it's context window. 
+Frontier language models are bounded by a fixed context window, and quality degrades on
+inputs longer than what the model was effectively trained and evaluated on, well before the
+window limit is reached, a failure mode termed \emph{context rot}~\citep{hong2025contextrot}.
+An input is called \emph{in-distribution} when its length and structure resemble what the model reliably handles, and \emph{out-of-distribution} otherwise, where behavior degrades unpredictably. Recursive language models (\rlms) scale inference-time compute instead of the
+context window~\citep{snell2024scaling}: a model decomposes its own context and invokes fresh
+copies of itself on the pieces~\citep{zhang2025rlm}, turning a long out-of-distribution input
+into sub-calls that are individually shorter~\citep{zhang2026harness}; shortening addresses
+the length dimension of the mismatch, though it does not by itself guarantee a sub-call's
+content is otherwise in-distribution.
+Performance therefore depends on the harness governing recursion, not just the model, and multiple possible failure modes implicate the harness:
+policies collapse into a single sub-call~\citep{zhang2026harness},
+deeper recursion degrades accuracy while inflating cost~\citep{wang2026overthink}, and recursion
+halts by heuristic rather than evidence~\citep{guha2026termination}.
+%, failures that implicatethe harness.
 
-However, the RLM harness grants the ability to recur without
-guaranteeing good recursion. Documented failures are recurring and model-specific:
-policies collapse the entire problem into a single sub-call~\citep{zhang2026harness},
-deeper recursion degrades accuracy while inflating cost~\citep{wang2026overthink}, and
-recursion stops by heuristic rather than evidence that further work would not
-help~\citep{guha2026termination}. Each failure implicates the harness rather than the
-model: the same backbone recurs well or poorly depending on the decomposition,
-termination, and recovery instructions it is given, so repairing one instance of a
-failure without addressing its harness-level cause leaves the underlying mechanism free
-to reoccur on the next task.
+Three approaches are mainly used today.
+Fine-tuning the model to work within the
+harness~\citep{zhang2026harness,yang2026recursive} ties any gain to a specific checkpoint.
+Hand-engineering the harness~\citep{alizadeh2026srlm,roy2026ycombinator,lumer2026rah} requires
+frequent expert work that a new model family can outpace. 
+The third, \emph{meta-agent} approach edits the scaffold directly by inspecting an agent's own trajectories, as in \sh{}~\citep{zhang2026selfharness}, which mines execution traces for recurring failures, proposes minimal edits, and promotes only non-regressive ones. We adapt \sh{} to \rlms  (SH-RLM). \rlms are a natural but untested setting for this third approach: failures are individually checkable, grounding attribution in the call tree rather than a proposer's reading of a trace. 
+We ask: \emph{can a language model
+identify recurring failures in its own recursive behavior, convert them into targeted harness
+edits, and build a harness that keeps performing when applied to inputs longer than those it was optimized on? Is a SH-RLM competitive against a hand designed harness-RLM?}
 
-Two remedies dominate current practice. Models are fine-tuned to function within a particular RLM
-harness ~\citep{zhang2026harness,yang2026recursive}, which tie any gains
-to a specific checkpoint, or a new \rlm{} harness is engineered by hand~\citep{alizadeh2026srlm,roy2026ycombinator,lumer2026rah} to fix model-specific failure patterns, a cycle that a new model family can outpace before it completes. 
-An alternative is to give a model access to it's harness execution traces, and let it optimize it's own harness based on the failures observed ~\citep{weng2026harness,lee2026rhi,zhang2026selfharness}. Because the evidence
-driving each harness-edit comes from the deployed model in the deployed task distribution, the
-resulting harness can adapt both to the structure of the task and to model-specific
-capabilities, a fit that no single hand-designed harness appears to provide
-universally~\citep{zhang2026selfharness,lee2026rhi,gupta2026nosuperior}.
+\section{Related Work}
 
-In this study, we propose to adapt the harness optimization loop in \sh{} ~\citep{zhang2026selfharness}, 
-to the \rlm{} harness. Our contributions are:
+We identified two main works that come close to our own proposal.
+
+Prime Agent's Continual Harness lets an RLM accumulate deployment state (history, memory, skills, subagent specs) around a fixed control loop, rather than editing the loop's decision logic directly~\citep{karten2026primeagent}.
+
+Agentic Harness Engineering is the closest instantiation of the propose-evidence-promote pattern we adapt to RLMs, showing a frozen
+evolved harness transfers across benchmarks and model families for coding
+agents~\citep{lin2026agenticharness}. However neither has been tested where recursion depth and
+sub-call decomposition are themselves modifiable by the meta agent. 
+
+% \paragraph{Harness engineering as a deployed lever.}
+% Open-source RLM harnesses have moved from research scaffolding toward general-purpose infrastructure: Prime Agent extends the RLM abstraction with a persistent IPython REPL and a Continual Harness that carries histories, memories, skills, and subagent specifications across trajectories, coordinating recursive subagents through direct agent-to-agent communication~\citep{primeintellect2026primeagent}. Its gains come from accumulating more state around a fixed control loop rather than from editing the loop's decision logic, which is a different lever from the one we study: we ask whether targeted edits to declared harness surfaces, discovered from mined failure evidence and gated by validation, generalize across length and environment, not whether a richer accumulation layer improves single-environment performance.
+
+% \paragraph{Self-optimizing harnesses.}
+% A parallel line treats the harness itself as the object of optimization. Agentic Harness Engineering closes this loop for coding agents through three matched observability pillars --- an explicit, revertible file-level representation of every editable component; a layered evidence corpus distilled from raw trajectories; and a self-declared prediction attached to every edit, later checked against task-level outcomes --- and shows that a frozen evolved harness transfers across benchmarks and across three unrelated model families, with gains localized to tools, middleware, and memory rather than to the system prompt~\citep{lin2026agenticharness}. This is the closest existing instantiation of the propose-evidence-promote pattern we adapt to RLMs, and its results are broadly consistent with our hypothesis that structural edits transfer while prose-level strategy does not; what it leaves open is whether the same loop holds when the editable surfaces are keyed to a recursive control loop rather than to a flat, tool-mediated action space, and whether transfer survives simultaneous changes in task environment and input length rather than benchmark identity alone. \citet{zhang2026selfharness} raises the same open question for agentic coding tasks with a fixed system prompt and tool list; neither has been tested where recursion depth and sub-call decomposition are themselves surfaces under edit.
+
+% \paragraph{Harness optimization via a trained engineer.}
+% A related but distinct design trains a dedicated model to produce the edits rather than using the fixed target model as its own proposer. Harness-R1 post-trains a separate 9B harness engineer with online reinforcement learning, converting batches of a frozen target agent's failures into validated executable patches and rewarding the engineer on same-batch reruns of that frozen target; the resulting gains persist even after the target itself is subsequently fine-tuned, which the authors read as evidence for co-evolving engineer and target rather than treating the two as substitutes~\citep{shao2026harnessr1}. HarnessForge and HarnessX extend this further into joint harness-policy co-evolution: the former alternates fault-guided harness tailoring with harness-conditioned policy alignment and finds that co-evolution outperforms harness-only or policy-only baselines~\citep{chen2026harnessforge}, while the latter assembles typed harness primitives through a substitution algebra and a trace-driven multi-agent evolution engine that turns trajectories into both harness updates and model training signal, organized around a ten-dimensional taxonomy of harness components~\citep{chen2026harnessx}. Our ten surfaces are not an instance of that taxonomy: they are declared directly from the phases of the RLM turn loop rather than from a general compositional scheme for assembling arbitrary agent harnesses, and they are edited without any weight update --- to the target model, to a trained engineer, or to a co-evolving policy. This distinction matters for what a positive result would show: gains attributable to a trained engineer or a co-evolving policy tie the improvement to a specific auxiliary checkpoint in the same way that direct fine-tuning does, whereas a fixed-model propose-validate-promote loop attributes any gain to the harness alone.
+
+% \paragraph{Evaluating harness evolution.}
+% A separate thread questions whether reported harness-evolution gains are genuine. \citet{wang2026rethinkeval} argue that because harness evolution is itself an iterative search driven by task feedback, its gains must be compared against simple task-level search baselines --- repeated sampling under matched inference and feedback budgets --- or the improvement may be an artifact of additional search rather than of harness redesign; they further note that searching and reporting on the same benchmark risks overfitting to that benchmark. Under matched-budget, held-out evaluation, they find that much of the advantage claimed for automatic harness evolution in prior work shrinks substantially. Harness-Bench complements this concern with infrastructure rather than critique, providing 106 sandboxed tasks for measuring harness effects across model backends under shared budgets, motivated by the observation that most benchmarks either abstract away execution or hold the harness fixed while comparing models~\citep{yao2026harnessbench}. Our design --- freezing the harness before any test split is opened, evaluating on source instances an order of magnitude longer than the optimization split, and testing a disjoint target environment --- answers the overfitting concern directly; whether it fully answers the search-budget concern depends on whether our matched-inference-budget comparison against B1 also controls for search budget specifically, which we treat as an open point in our baseline design.
+
+% \paragraph{Capability and the choice of a single frozen backbone.}
+% Finally, \citet{lin2026disentangling} separate harness self-evolution into two capabilities that do not covary as expected: harness-updating, the ability to turn execution evidence into a useful persistent edit, is roughly flat across model capability tiers, while harness-benefit, the ability of an executing agent to invoke and faithfully follow an updated harness, is non-monotonic --- weak-tier models benefit least, mid-tier models benefit most, and strong-tier models benefit less than mid-tier, with weak-tier shortfalls traced to failures of harness-artifact activation or faithful following. Because we use a single fixed model in both the evolver and executor roles, this finding is a caveat rather than a confound: it predicts that a poor outcome on a given backbone could reflect a harness-benefit failure specific to that tier rather than a failure of the propose-validate-promote loop itself, which we return to in our discussion of backbone choice and limitations.
+
+
+
+\section{Our Contributions}
 
 \begin{enumerate}
+\setlength{\itemsep}{1pt}
+\setlength{\topsep}{2pt}
+\setlength{\parskip}{0pt}
 \item \textbf{\sh{} for recursive language models.}
-We adapt \sh{} to \rlms by enabling a model to mine it's own execution failures, propose edits to it's operating harness, and validate non-regression in performance before edits are promoted into the harness. Edits are constrained to ten surfaces of the \rlm{} harness, that are deliberately sparse at initialization (\cref{fig:edit-surfaces}).
+Adapting \sh{} \citep{zhang2026selfharness} to \rlms by declaring ten editable harness surfaces keyed to phases of the \rlm{} loop, starting from a deliberately sparse initial harness and letting a fixed model mine its own traces, propose targeted edits, and validate them without weight updates or a stronger external model.
 
 \item \textbf{Evidence of length generalization.}
-We optimize only on short source instances in an environment, freeze the harness, and evaluate it on instances in the same environment $8$--$32\times$ longer, testing whether self-discovered harness improvements generalize to similar tasks at much greater context lengths.
+Optimising only on short source instances, freeze the harness, and evaluate on source instances $8$--$32\times$ longer.
 
 \item \textbf{Evidence of cross-environment transfer.}
-We apply the same frozen harness to the short and long splits of an unseen target environment. This tests whether the recovered strategy transfers beyond the environment that produced it and whether it survives simultaneous changes in task environment and input length.
+Applying the same frozen harness to an unseen target environment's short and long splits.
 \end{enumerate}
 
+\section{Preliminaries and Self-Harness Optimization}
+\label{sec:method}
 
-\section{Self-Harness and Recursive Language Model}
+An \rlm{} answers a query by driving a Python REPL (read-eval-print loop) turn by turn: on each
+turn the model writes one code block, sees only that block's printed output, and works toward a
+final answer accumulated in a REPL variable~\citep{zhang2025rlm}. We call this sequence, from
+query to submitted answer, the \rlm{} \textbf{turn loop}. Three invariants of the reference
+implementation stay fixed throughout: \textbf{prompt-as-variable} (the prompt lives in the REPL
+as a variable, never copied into the root context), \textbf{programmatic sub-calls} (recursive
+calls to fresh copies of the model are issued by code, in loops, over slices of the prompt
+variable), and \textbf{outputs-in-variables} (the final answer accumulates in, and is returned
+from, a REPL variable). \sh{} edits the policies governing this loop, not the model's weights: it acts through four runtime injection points, an injected metadata function, answer-protocol middleware, sub-call retry/validation, and enforceable batch caps, each of which defaults to the reference implementation's shipped behavior. These hooks let SELF-HARNESS tune the loop's behavior without altering the three invariants above, the model's weights, external tools, or the evaluator, all of which remain fixed throughout.
 
-\subsection{Model and Harness}
-\label{sec:model-and-harness}
-Use a single frozen language model, with the same model and decoding configuration serving the root and all recursive sub-calls. Three invariants of the initial reference \rlm{} implementation of \citet{zhang2025rlm}, remain fixed. 
-\begin{enumerate}
-\item \textbf{Prompt-as-variable.} The prompt lives in the environment as a REPL variable and is never copied into the root context.
-\item \textbf{Programmatic sub-calls.} Sub-calls are issued by code, in loops, over slices of the prompt.
-\item \textbf{Outputs-in-variables.} The final answer is accumulated in REPL variable and returned from it.
-\end{enumerate}
-Their runtime is extended with four injection points: an injected metadata function, answer-protocol middleware, sub-call retry and validation, and enforceable batch caps. Each defaults to the shipped behavior, so an unconfigured harness is byte-identical to the reference implementation. These are the seams through which the declared surfaces act; model weights, external tools, and the evaluator remain fixed.
 
-Following \citet{zhang2026selfharness}, whose initial harness declares ten builder functions as configuration points of the agent loop, we declare \textbf{ten editable surfaces keyed to phases of the \rlm{} turn loop}, each a builder function in a single harness-definition module. \Cref{fig:edit-surfaces} shows the initial harness \hzero{} in full: each surface with the value it returns at the starting point of optimization (the condition reported as B1 in \cref{sec:baselines}). 
-
-Declaring the surfaces from the loop's phase structure, rather than selecting them from failures already documented for \rlms{}, is deliberate. A surface set chosen by reading a published catalogue of failures would make it impossible at analysis time to separate what the optimization loop discovered from what its designer already knew. Surface \emph{selection} is part of the fixed scaffold shared by every condition, exactly as it is in \citet{zhang2026selfharness}: the model proposes bounded edits to declared surfaces and does not choose which surfaces exist.
-
-\hzero{} is deliberately sparse. Seven of its ten surfaces return nothing, a disabled policy, or a single generic line, so the orchestration guidance a capable harness eventually carries is guidance the loop has to recover from its own traces rather than reread from its own system prompt.
+Following \citet{zhang2026selfharness}, we declare \textbf{ten editable surfaces} (see \cref{app:surfaces} for the complete list). %, one for eachphase of the turn loop above. 
+Each surface is implemented as
+a single builder function that \sh{} may rewrite. The surfaces are declared
+directly from the loop's phase structure rather than selected from a published catalogue of
+known \rlm{} failure modes, so anything the optimization loop discovers can be attributed to
+the loop itself rather than to a designer who already knew what to fix. Optimization is started
+from a minimal initial harness \hzero{}:
+seven of the ten surfaces return nothing, a disabled policy, or a single generic line (Figure~\ref{fig:edit-surfaces}), so any
+orchestration guidance a tuned harness carries must be recovered from the loop's own execution
+traces rather than inherited from \hzero{}.
 
 \input{Figure_1.tex}
-
 
 \subsection{Self-Harness Optimization}
 \label{sec:sho}
 
-% \SC{Clarification: the process still has a very small meta-harness that informs the current harness of the task for which it is being summoned (solve a dataset instance or improve itself), correct?}
+SH-RLMs adapt the \sh{} framework of \citet{zhang2026selfharness} to \rlms: the same fixed
+model executes tasks and proposes harness changes. A proposal modifies exactly one of the ten
+declared surfaces. One further surface is permanently excluded: letting the proposer truncate or
+pre-summarize the prompt variable into root context, which would violate the first invariant by
+turning the \rlm{} back into a compaction agent. Each round runs the three following stages.
 
-% \SC{A diagram similar to the one from the self-harness paper that highlighs the  RLM specificities would be useful here and reusable for the paper.The more detailed the better.}
+\textbf{Weakness mining} runs the current harness on short mining-data instances, recording the verifier outcome and full recursive trace of every run. 
+% Each sub-call is scored by the environment's sub-verifier; since sub-problems are authored by the model itself, a sub-call may be correct, incorrect, or uncheckable. Mining is additionally run with the sub-verifier withheld, so the proposer sees only root outcomes and raw traces; execution is otherwise identical, so the two mining passes differ only in whether child-level evidence is available to the same fixed model judging causal status. Each failure becomes a structured record: the verifier-level cause and failing level come from the verifier and sub-verifier, while the causal status and implicated mechanism are judged by the same fixed model from a compressed trace digest, validated against a closed mechanism vocabulary mapped one-to-one to editable surfaces. 
+Failures are clustered by exact agreement on the verifier-grounded signature $\phi(r_i)=(\textit{verifier cause}, \textit{failing level}, \textit{causal status}, \textit{agent mechanism})$, and the resulting evidence bundle ranks each recurring pattern by instances affected and estimated actionability, describing weaknesses without prescribing edits.
 
-% \SC{It seems to me that this could be more detailed (or perhaps simply clearer / more structured) when listing the components that go in the pipeline. This would be useful to spread the work.}
 
-SH-RLMs adapt the \sh{} framework of \citet{zhang2026selfharness} to \rlms. The model weights remain fixed throughout, and the same model is used both to execute tasks and to propose harness changes. The editable surfaces are the ten declared in \cref{fig:edit-surfaces}, and a proposal modifies exactly one of them. The model may not modify the evaluator, external tools, or any of the three invariants of \cref{sec:model-and-harness}. One further surface is permanently excluded: allowing the proposer to truncate or pre-summarize the prompt variable into root context. It would likely show held-in gains, and it violates the first invariant by turning the \rlm{} back into a compaction agent. Each optimization round has three stages (\cref{fig:sh-loop}): \textbf{Weakness Mining}, which converts failed runs into a verifier-grounded evidence bundle of recurring failure patterns; \textbf{Harness Proposal}, which turns mined patterns into a small set of minimal candidate edits; and \textbf{Proposal Validation}, which promotes only edits that survive regression testing on data never shown to the proposer.
+\textbf{Harness proposal} gives the same fixed model the failure patterns of the evidence bundle, a record of passing behaviors to preserve, and a summary of previously attempted edits, and asks it to generate several distinct, minimal candidate edits. Each proposal must target one mined failure pattern, modify one declared surface, state its predicted effect, and identify possible regressions.
 
-\subsubsection{Weakness Mining}
-\label{sec:weakness-mining}
 
-Weakness mining runs the current harness on short held-in instances from a source environment, recording the verifier outcome and full recursive execution trace of every run, including runs terminated by resource limits. Each recorded sub-call is then scored post hoc by the environment's synthesized sub-verifier; because sub-problems are authored by the model itself, a sub-call may be correct, incorrect, or uncheckable, and the level at which the error signal first appears is treated as a checked fact only when at least one sub-call was checkable. Records with no checkable sub-call are marked ungrounded and their failing level falls to the model's judgment. Mining runs in both conditions — with the sub-verifier and with it withheld, in which case every record is ungrounded — and because sub-verification is applied post hoc to recorded traces, both conditions can mine the same runs, holding execution fixed while only the grounding signal varies; the comparison is the ablation of \cref{app:ablations}. Each failure is converted into a structured record: the verifier-level cause and the failing level are derived from the verifier and sub-verifier, while the causal status of the associated agent behavior and the implicated mechanism are judged by the same fixed model from a bounded, mechanically compressed digest of the trace. These judgments are validated against a closed vocabulary of mechanisms, each mapping to exactly one editable surface, and a judgment that never validates is recorded as unattributed rather than coerced. Failures are then clustered by exact agreement on the verifier-grounded signature
-\begin{equation*}
-\phi(r_i)=(\text{verifier cause},\ \text{failing level},\ \text{causal status},\ \text{agent mechanism}),
-\end{equation*}
-and the resulting evidence bundle ranks each recurring pattern by the number of distinct instances it affects and its estimated actionability, carrying cluster size, mechanically computed shared symptoms, and representative trace excerpts. The bundle describes weaknesses without prescribing edits, and all artifacts behind it, the traces, per-child labels, digests, and judgments, are persisted for audit.
-
-\subsubsection{Harness Proposal}
-\label{sec:harness-proposal}
-
-Harness proposal provides the same fixed model with the verifier- and sub-verifier-grounded failure patterns of the evidence bundle, a record of passing behaviors that should be preserved, and a summary of previously attempted edits, and asks it to generate several distinct, minimal candidate edits, excluding patterns not plausibly addressable by an editable surface. The summary covers every prior round, including rounds that produced no validated candidate, listing each attempted edit with its surface, predicted effect, and the outcome and reason it was refused, whether at materialization, at the loader gate, or at the promotion rule. A candidate that does not change the current harness is rejected and re-asked with the reason, like a malformed proposal, rather than closing the round. Each proposal must target one mined failure pattern, modify one declared harness surface, state its predicted behavioral effect, and identify possible regressions.
-
-\subsubsection{Proposal Validation}
-\label{sec:proposal-validation}
-
-Proposal validation evaluates the incumbent and each candidate on both the source held-in split and a disjoint short held-out split that is never shown to the proposer, with a preregistered number of repetitions per instance; pass counts are aggregated across repeats. Candidates that fail a structural check (a stale base harness, zero or multiple surfaces changed, or a harness-invariant violation) are rejected without evaluation. A candidate is accepted only if $\Delta_{\mathrm{in}} \ge -\tau_{\mathrm{reg}}$, $\Delta_{\mathrm{ho}} \ge -\tau_{\mathrm{reg}}$, and $\max(\Delta_{\mathrm{in}}, \Delta_{\mathrm{ho}}) > \tau_{\mathrm{imp}}$, where the $\Delta$ are aggregated pass-count differences against the incumbent on each split and the tolerances are preregistered from pilot variance (zero recovers the strict rule of \citet{zhang2026selfharness}), and only if its mean sub-call count and cost fall within a preregistered band relative to the incumbent. Because the runtime policy is itself an editable surface, evaluation limits (recursion depth, iterations, per-run and per-candidate budgets) are enforced by the experiment outside the harness; a candidate's policy may tighten them but never exceed them. Unlike \citet{zhang2026selfharness}, when multiple accepted edits touch disjoint surfaces, we re-evaluate the merged harness under the same rule before promotion; if the merge fails, the round promotes nothing, since falling back to individually accepted edits after observing the merge result would be post-hoc selection outside the preregistered rule. Optimization stops after a fixed number of rounds or several consecutive rounds without a promotion.
+\textbf{Proposal validation} evaluates the incumbent harness and each candidate on the mining data and a disjoint validation split never shown to the proposer, running a preregistered number of repetitions per instance. Candidates that fail a structural check (a stale base harness, zero or multiple surfaces changed, an invariant violation) are rejected without evaluation. For every remaining candidate we compute two numbers relative to the incumbent: $\Delta_{\text{mine}}$, the change in pass count on the mining data, and $\Delta_{\text{val}}$, the change in pass count on the validation data. A candidate is promoted only if it satisfies three conditions: it does not regress on either split by more than a preregistered tolerance $\tau_{\text{reg}}$ (that is, $\Delta_{\text{mine}} \geq -\tau_{\text{reg}}$ and $\Delta_{\text{val}} \geq -\tau_{\text{reg}}$); it improves on at least one split by more than a second preregistered threshold $\tau_{\text{imp}}$ (that is, $\max(\Delta_{\text{mine}}, \Delta_{\text{val}}) > \tau_{\text{imp}}$); and its mean sub-call count and cost fall within a preregistered band. Both tolerances are fixed from pilot variance before optimization begins, so they cannot be tuned to favor a particular candidate; setting them to zero recovers the strict no-regression rule of Zhang et al.~\cite{zhang2026selfharness}. Evaluation limits are enforced outside the harness, so a candidate's runtime policy may tighten these limits but never exceed them. Unlike Zhang et al.~\cite{zhang2026selfharness}, when multiple accepted edits touch disjoint surfaces we re-evaluate the merged harness before promotion; if the merge fails, the round promotes nothing. Optimization stops after a fixed number of rounds or several consecutive rounds without promotion.
 
 \section{Experiments}
-
+ 
 \subsection{Setup}
 \label{sec:setup}
 The experiments consist of a two-stage procedure in which the self-optimized recursive language model harness (SH-RLM) is produced and evaluated:(1) a Self-Harness optimization stage, in which a frozen-weight RLM iteratively edits its own harness against held-in and held-out data and (2) a fixed-weight evaluation stage, in which the frozen final harness is compared against fixed baselines. All hyperparameters marked are set via a pilot calibration run  prior to the main experiment and are reported with their final values in the results section.
 \newline
+All conditions share a single frozen backbone model, \textbf{Deepseek V4 Flash}, with an identical decoding configuration used for both root and recursive sub-calls. No condition updates model weights; only the harness code surrounding the model differs between conditions. 
+ 
+\subsection{Environments and splits.}
+\label{sec:envs-and-splits}
+ 
+The models are evaluated on \textbf{OOLONG-Pairs}, the confirmed source (optimization) environment; a second, held-out target environment is to be selected (\cref{sec:cost}).
+ 
+\begin{itemize}
+\item \textbf{OOLONG-Pairs}, a modified variant of OOLONG~\citep{bertsch2025oolong} that asks for pairs of elements satisfying a given constraint. A candidate pair either satisfies the constraint or does not, which is checkable in isolation.
+\item \textbf{Second environment (to be selected)}, chosen to differ from OOLONG-Pairs in surface task and data distribution while admitting 
+% a synthesized sub-verifier and 
+matched short/long instances, per the criteria below.
+\end{itemize}
+ 
+\noindent Both environments will require decomposing an input into independently solvable units and aggregating their outputs, but will differ in surface task and data distribution, which is the preregistered structural criterion by which the second environment will be chosen. Each provides matched short and long instances, with long inputs approximately $8$--$32\times$ larger, and a deterministic verifier that we use unmodified. OOLONG-Pairs is preregistered as the source environment; the target environment is to be selected (\cref{sec:cost}).
+ 
+Both environments must additionally admit \emph{synthesized sub-verifiers}: the sub-problems a decomposition produces are themselves checkable without reference to the root answer. This is what makes the failure attribution of \cref{sec:sho} more than a model judgment. When the root answer is wrong, running the sub-verifier on each child separates a root failure, in which correct children were aggregated into a wrong answer, from a child failure, in which a sub-call returned a wrong local result that the root faithfully combined. The two implicate different editable surfaces, and without sub-verification the distinction rests on the proposer's reading of a trace rather than on a checkable outcome.
+ 
+Each environment provides a \textit{short} split (comparable to typical single-context lengths) and a \textit{long} split, constructed to be approximately 8–32× longer than the short split.
+The source environment's short split is partitioned into three disjoint subsets:
+ 
+\begin{itemize}
+    \item \textbf{Held-in} (n\_in = 24 instances): used for weakness mining and as one arm of proposal validation.
+    \item \textbf{Held-out} (n\_ho = 40 instances): used only for proposal validation, never for mining. Provides an unbiased check that a candidate edit generalizes beyond the failures that motivated it.
+    \item \textbf{Test} (40 short-test instances; number of long-test instances depending on remaining budget, ideally 150): withheld entirely until the harness is frozen.
+\end{itemize}
 
+\input{Figure_2.tex} 
+\subsection{Baselines and Evaluation}
+\label{sec:baselines}
+ 
 The Self-Harnessed RLM (SH-RLM) is evaluated against three fixed-weight
-baselines, using the same \JB{Placeholder for the Model} backbone, decoding
+baselines, using the same \textbf{Deepseek V4 Flash} backbone, decoding
 settings, test instances, verifiers, and resource limits:
-
+ 
 \begin{itemize}
     \item \textbf{B1: initial \rlm{} (\hzero{}).} The unmodified reference harness with every surface of \cref{fig:edit-surfaces} at its \hzero{} default, and the starting point of optimization.
-
+ 
     \item \textbf{RLM reference (\hzerostar{})~\citep{zhang2025rlm}.}
     The hand-designed upstream RLM harness, representing expert prompt and
     orchestration engineering.
-
+ 
     \item \textbf{$\lambda$-RLM %
     ~\citep{roy2026ycombinator}.} A typed alternative to free-form recursive
     execution. We use the pinned implementation and reconstruct its unreleased
     OOLONG-Pairs \textsc{Split}--\textsc{Map}--\textsc{Parse}--
     \textsc{Filter}--\textsc{Cross} procedure from the paper.
 \end{itemize}
-
+ 
 B1 measures improvement over the initial harness, while \hzerostar{} and
 $\lambda$-RLM test whether automatic harness optimization can compete with
 manual harness and algorithm design. We evaluate every condition on untouched
 source-short, source-long, target-short, and target-long test sets, using three
-repetitions per instance. The primary metric is exact verifier accuracy;
-pair-level precision, recall, and F1 are additionally reported for
+repetitions per instance. 
+The primary metric is exact verifier accuracy.
+Pair-level precision, recall, and F1 are additionally reported for
 OOLONG-Pairs, together with token use, model calls, cost, and runtime.
-
-Prime Agent~\citep{karten2026primeagent} is a complementary general-purpose
-RLM harness combining a persistent IPython environment, recursive subagents,
-and continually updated memories, skills, and prompts. We discuss it as
-related work rather than a matched baseline because its published evaluation
-uses different tasks, backbones, tools, and resource budgets. In contrast,
-our study isolates whether verifier-grounded, held-out optimization can improve
-a fixed RLM harness under a controlled long-context evaluation.
-
+ 
 Each condition is evaluated on four untouched categories of test set, with the two target categories reported separately for each target environment:
 \begin{enumerate}
 \item \textbf{source-short}, measuring improvement at the optimization length;
@@ -267,86 +315,15 @@ Each condition is evaluated on four untouched categories of test set, with the t
 \item \textbf{target-short}, measuring cross-environment transfer without a length shift; and
 \item \textbf{target-long}, measuring cross-environment transfer under an additional length shift.
 \end{enumerate}
-
-
-\subsection{Backbone and harness invariants}
-\label{sec:backbone-and-harness-invariants}
-
-All conditions (B1, SH-RLM) share a single frozen backbone model, Qwen3-30B-A3B-Instruct-2507, with an identical decoding configuration ([temperature, placeholder], [top-p, placeholder], [max output tokens, placeholder]) used for both root and recursive sub-calls. No condition updates model weights; only the harness code surrounding the model differs between conditions.
-Ten harness surfaces remain editable throughout optimization, each corresponding to a declared position in the RLM turn loop:
-
-
-At initialization (harness B1) all ten surfaces are set to minimal/unmodified defaults; a candidate edit targets exactly one surface per proposal.
-
-Ten harness surfaces remain editable throughout optimization, each corresponding to a declared position in the RLM turn loop:
-
-\begin{table}[htbp]
-    \centering
-    \renewcommand{\arraystretch}{1.4}
-    \begin{tabular}{p{0.25\textwidth} p{0.70\textwidth}}
-        \hline
-        \textbf{Surface} & \textbf{Governs} \\
-        \hline
-        \textbf{S1} --- REPL contract & The factual contract given to the root model: available names, the answer protocol, per-turn REPL-block and stdout conventions, truncation behavior. \\
-        \hline
-        \textbf{S2} --- Decomposition instruction & Turns 1--2: how the root probes the input and whether/how it plans a decomposition. \\
-        \hline
-        \textbf{S3} --- Execution instruction & Per-turn discipline: what to print, when to offload to a sub-call vs. read directly, how to aggregate results. \\
-        \hline
-        \textbf{S4} --- Verification instruction & What the root checks before marking an answer ready. \\
-        \hline
-        \textbf{S5} --- Recovery instruction & What the root does when a sub-call errors or returns something unusable. \\
-        \hline
-        \textbf{S6} --- Runtime policy & Numeric limits and switches: chars per prompt, batch width, max calls per turn/total, recursion depth, retry-on-error, sub-output validation. \\
-        \hline
-        \textbf{S7} --- Metadata function & What carries across turns --- the harness's memory of prior calls. \\
-        \hline
-        \textbf{S8} --- REPL helpers & Harness-local functions and data injected into the REPL namespace (chunkers, batch wrappers, etc.). \\
-        \hline
-        \textbf{S9} --- Answer  middle-ware & Programmatic inspection of the detected final answer, with the ability to redirect (suppress and continue) rather than accept it. \\
-        \hline
-        \textbf{S10} --- Skills &
-        Named, reusable procedures available across turns. The system prompt exposes
-        a name--description index, while full skill bodies are loaded on demand through
-        \texttt{load\_skill(name)} in the root and recursive child REPLs. \\
-        \hline
-    \end{tabular}
-    \caption{Overview of the ten editable RLM harness surfaces and the behavior governed by each.}
-    \label{tab:surfaces}
-\end{table}
-
-\subsection{Environments and splits.}
-\label{sec:envs-and-splits}
-
-The models are evaluated on two environments from the length-generalization suite of \citet{zhang2026harness}.
-
-\SC{Need to remove Graphwalks and adapt to new dataset}
-\begin{itemize}
-\item \textbf{GraphWalks}~\citep{openai2025graphwalks}, multi-hop reachability and traversal queries over a graph presented in context. A sub-call asking for reachability within an induced subgraph has a checkable answer, so a child can be verified directly.
-\item \textbf{OOLONG-Pairs}, a modified variant of OOLONG~\citep{bertsch2025oolong} that asks for pairs of elements satisfying a given constraint. A candidate pair either satisfies the constraint or does not, which is checkable in isolation.
-\end{itemize}
-
-\noindent Both require decomposing an input into independently solvable units and aggregating their outputs, but they differ in surface task and data distribution, which is the preregistered structural criterion by which they were chosen. Each provides matched short and long instances, with long inputs approximately $8$--$32\times$ larger, and a deterministic verifier that we use unmodified. One is preregistered as the source environment and the other serves as the target.
-
-Both environments were selected because they additionally admit \emph{synthesized sub-verifiers}: the sub-problems a decomposition produces are themselves checkable without reference to the root answer. This is what makes the failure attribution of \cref{sec:sho} more than a model judgment. When the root answer is wrong, running the sub-verifier on each child separates a root failure, in which correct children were aggregated into a wrong answer, from a child failure, in which a sub-call returned a wrong local result that the root faithfully combined. The two implicate different editable surfaces, and without sub-verification the distinction rests on the proposer's reading of a trace rather than on a checkable outcome.
-
-\SC{Need to give the size of the datasets and splits here, which probably means fusing with the following subsubsection that does contain them.}
-Only the source environment is used for optimization. Its short split is partitioned into held-in, held-out, and test sets. Held-in traces support weakness mining, the held-out split serves only as the promotion gate, and the source-short test and source-long test remain inaccessible until the harness is frozen. No target-environment instances, traces, verifier outcomes, or aggregate results are exposed during optimization. The frozen harness is subsequently evaluated on both the short and long target splits.
-
-\input{Figure_2.tex} 
-\subsection{Baselines and Evaluation}
-\label{sec:baselines}
-
+ 
 The primary comparisons are SH-RLM versus B1 on source-long, target-short, and target-long. Improvement on source-long indicates that the learned harness changes survive a length shift within the optimization environment. Improvement on target-short provides the cleanest evidence that the edits capture a transferable compositional strategy rather than a source-specific rule. Improvement on target-long tests whether that transfer remains effective when environment and input length change simultaneously.
-
-
-
+ 
 The primary metric is verifier accuracy, reported separately for all four test
 sets. Results are averaged over repeated seeded runs and accompanied by
 bootstrap confidence intervals over task instances. B1 and SH-RLM are compared
 using a paired per-instance test; the exact test and repetition-to-instance
 aggregation rule will be preregistered.
-
+ 
 Secondary efficiency metrics are total input and output tokens, recursive-call
 count, maximum recursion depth, and accuracy per million tokens. Trace analysis
 tests whether optimization changes the mechanisms it was intended to repair. In
@@ -357,32 +334,23 @@ decomposition. Using the sub-verifiers, we also report the share of failures
 attributable to the root and to the children in each condition and split,
 which shows whether optimization moved errors down the call tree, repaired
 them, or merely relocated them.
-
+ 
 Two ablations, one withholding the sub-verifier signal from the optimization loop
 and one removing each promoted edit from the final harness, are specified in
 \cref{app:ablations}. Additionally, we include an optional analysis on 
 alignment drift in \cref{app:alignment}.
-Two long-context environments are used: \textbf{GraphWalks} and \textbf{OOLONG-Pairs}. \textbf{GraphWalks is the source environment}(used for optimization) and \textbf{OOLONG-Pairs is the target environment} (held out entirely from optimization, used only for evaluation).
-
-Each environment provides a \textit{short} split (comparable to typical single-context lengths) and a \textit{long} split, constructed to be approximately 8–32× longer than the short split ([construction method, placeholder — not specified in the source plan]).
-The source environment's short split is partitioned into three disjoint subsets:
-
-\begin{itemize}
-    \item \textbf{Held-in} (n\_in = 24 instances): used for weakness mining and as one arm of proposal validation.
-    \item \textbf{Held-out} (n\_ho = 40 instances): used only for proposal validation, never for mining. Provides an unbiased check that a candidate edit generalizes beyond the failures that motivated it.
-    \item \textbf{Test} (40 short-test instances; the matching long-test set is 150 instances — the same 40/150 sizes are used for the target environment's short/long test sets): withheld entirely until the harness is frozen.
-\end{itemize}
-The source-long split, and both splits of the target environment, are held out from optimization in their entirety and are used exclusively in the evaluation stage. No harness edit, promotion decision, or hyperparameter choice may be conditioned on any instance from these four sets.
-
+\textbf{OOLONG-Pairs is the source environment} (used for optimization); the target environment is to be selected (\cref{sec:cost}).
+ 
+ 
 \subsection{\sh{} loop}
 \label{sec:sh-loop}
-
+ 
 The three-step process of the Self-Harnessing loop is run,  when it meets the stopping criterion, the harness is frozen and evaluated against the environments mentioned in \ref{sec:baselines}.
 \noindent
 Total per-round evaluation volume is $(n_{\text{in}} \cdot m) + (n_{\text{in}} + n_{\text{ho}}) \cdot (K + 1) \cdot v$ runs. At $n_{\text{in}} = 24$, $n_{\text{ho}} = 40$, $m = 2$, $v = 4$, $K = 4$, this is $1{,}328$ runs per round and $19{,}920$ short runs in total over $T = 15$ rounds. The following algorithm is used for the self-optimization of the harness.
-
-\vspace{0.5em}
-
+ 
+\vspace{0.1em}
+ 
 \noindent
 \fbox{%
 \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}
@@ -409,10 +377,10 @@ Total per-round evaluation volume is $(n_{\text{in}} \cdot m) + (n_{\text{in}} +
     \textbf{return} $H$ \hfill \textit{\% frozen as SH-RLM}
 \end{minipage}%
 }
-
+ 
 \subsection{Feasibility and Cost}
 \label{sec:cost}
-
+ 
 The budget assumes that optimization uses only the 8K-token OOLONG-Pairs
 pool: 10 held-in instances, 10 held-out instances, two mining repetitions,
 three validation repetitions, four candidate proposals, and at most 15 rounds.
@@ -420,8 +388,7 @@ A second environment will be added later. Final evaluation covers OOLONG-Pairs a
 additional environment selected to have comparable short- and long-context
 costs, with 20 short and 40 long test instances per environment, the three
 conditions configured for this run, and three repetitions.
-
-
+ 
 \begin{table}[t]
 \centering
 \small
@@ -439,7 +406,7 @@ Final evaluation (two environments) & 1,080 & 2.05B & \$425 \\
 \bottomrule
 \end{tabularx}
 \end{table}
-
+ 
 The projection applies the completed DeepSeek-V4-Flash calibration means
 (1.08M tokens per mining run and 0.568M per validation run), includes the
 expected merged-candidate checks in half of rounds, and extrapolates the
@@ -450,32 +417,53 @@ calibration runs and uncertainty in the not-yet-selected second environment; a
 short pilot in that environment will replace this contingency before full
 evaluation. Fine-tuning and optional ablations are excluded.
 
-%\section{Conclusion}
+% \section{Conclusion}
+
+% SH-RLM asks whether a fixed language model can discover, by mining its own recursive
+% execution traces, an orchestration harness that generalizes across input length and
+% across an environment it was never optimized on, and whether that discovered harness is
+% competitive with harnesses built by hand. The propose-validate-promote loop adapted from
+% SELF-HARNESS is fully specified, and two of its components (the evaluation environments
+% and Weakness Mining) are already implemented and operational; the remaining work follows
+% a preregistered, dependency-ordered path from Harness Proposal and Proposal Validation
+% through the fixed-weight evaluation against B1, H0*, and lambda-RLM. A positive result --
+% SH-RLM matching or exceeding hand-designed harness engineering without any weight update,
+% and holding up under an 8-32x length shift and a disjoint target environment -- would be
+% the first evidence that harness self-optimization transfers from the flat, tool-based
+% action spaces it has so far been tested in to a harness whose editable surfaces are tied
+% to a recursive control loop. A null result would still be informative, isolating whether
+% the gap lies in the declared surfaces, the evidence used to mine failures, or the
+% promotion rule itself. The ablations of Appendix C and the optional alignment-drift
+% analysis of Appendix D are designed to distinguish these possibilities rather than leave
+% a single aggregate number to speak for the whole loop.
+
 %\SC{TODO :  remove for the proposal}
 %1.  Short summary of the paper \newline
 %2.  Essentially giving a response to the research question \textit{"Can a language model identify recurring failures in its own recursive behavior,
 %convert them into targeted harness edits, and discover an orchestration harness
 %that transfers across input lengths and task environments?} but maybe more interesting to answer the question: \textit{Is a SH-RLM competitive against a hand designed harness-RLM?"} 
 
-\section{Related Work}
+% \section{Related Work}
 
-\paragraph{Harness engineering as a deployed lever.}
-Open-source RLM harnesses have moved from research scaffolding toward general-purpose infrastructure: Prime Agent extends the RLM abstraction with a persistent IPython REPL and a Continual Harness that carries histories, memories, skills, and subagent specifications across trajectories, coordinating recursive subagents through direct agent-to-agent communication~\citep{primeintellect2026primeagent}. Its gains come from accumulating more state around a fixed control loop rather than from editing the loop's decision logic, which is a different lever from the one we study: we ask whether targeted edits to declared harness surfaces, discovered from mined failure evidence and gated by validation, generalize across length and environment, not whether a richer accumulation layer improves single-environment performance.
+% \paragraph{Harness engineering as a deployed lever.}
+% Open-source RLM harnesses have moved from research scaffolding toward general-purpose infrastructure: Prime Agent extends the RLM abstraction with a persistent IPython REPL and a Continual Harness that carries histories, memories, skills, and subagent specifications across trajectories, coordinating recursive subagents through direct agent-to-agent communication~\citep{primeintellect2026primeagent}. Its gains come from accumulating more state around a fixed control loop rather than from editing the loop's decision logic, which is a different lever from the one we study: we ask whether targeted edits to declared harness surfaces, discovered from mined failure evidence and gated by validation, generalize across length and environment, not whether a richer accumulation layer improves single-environment performance.
 
-\paragraph{Self-optimizing harnesses.}
-A parallel line treats the harness itself as the object of optimization. Agentic Harness Engineering closes this loop for coding agents through three matched observability pillars --- an explicit, revertible file-level representation of every editable component; a layered evidence corpus distilled from raw trajectories; and a self-declared prediction attached to every edit, later checked against task-level outcomes --- and shows that a frozen evolved harness transfers across benchmarks and across three unrelated model families, with gains localized to tools, middleware, and memory rather than to the system prompt~\citep{lin2026agenticharness}. This is the closest existing instantiation of the propose-evidence-promote pattern we adapt to RLMs, and its results are broadly consistent with our hypothesis that structural edits transfer while prose-level strategy does not; what it leaves open is whether the same loop holds when the editable surfaces are keyed to a recursive control loop rather than to a flat, tool-mediated action space, and whether transfer survives simultaneous changes in task environment and input length rather than benchmark identity alone. \citet{zhang2026selfharness} raises the same open question for agentic coding tasks with a fixed system prompt and tool list; neither has been tested where recursion depth and sub-call decomposition are themselves surfaces under edit.
+% \paragraph{Self-optimizing harnesses.}
+% A parallel line treats the harness itself as the object of optimization. Agentic Harness Engineering closes this loop for coding agents through three matched observability pillars --- an explicit, revertible file-level representation of every editable component; a layered evidence corpus distilled from raw trajectories; and a self-declared prediction attached to every edit, later checked against task-level outcomes --- and shows that a frozen evolved harness transfers across benchmarks and across three unrelated model families, with gains localized to tools, middleware, and memory rather than to the system prompt~\citep{lin2026agenticharness}. This is the closest existing instantiation of the propose-evidence-promote pattern we adapt to RLMs, and its results are broadly consistent with our hypothesis that structural edits transfer while prose-level strategy does not; what it leaves open is whether the same loop holds when the editable surfaces are keyed to a recursive control loop rather than to a flat, tool-mediated action space, and whether transfer survives simultaneous changes in task environment and input length rather than benchmark identity alone. \citet{zhang2026selfharness} raises the same open question for agentic coding tasks with a fixed system prompt and tool list; neither has been tested where recursion depth and sub-call decomposition are themselves surfaces under edit.
 
-\paragraph{Harness optimization via a trained engineer.}
-A related but distinct design trains a dedicated model to produce the edits rather than using the fixed target model as its own proposer. Harness-R1 post-trains a separate 9B harness engineer with online reinforcement learning, converting batches of a frozen target agent's failures into validated executable patches and rewarding the engineer on same-batch reruns of that frozen target; the resulting gains persist even after the target itself is subsequently fine-tuned, which the authors read as evidence for co-evolving engineer and target rather than treating the two as substitutes~\citep{shao2026harnessr1}. HarnessForge and HarnessX extend this further into joint harness-policy co-evolution: the former alternates fault-guided harness tailoring with harness-conditioned policy alignment and finds that co-evolution outperforms harness-only or policy-only baselines~\citep{chen2026harnessforge}, while the latter assembles typed harness primitives through a substitution algebra and a trace-driven multi-agent evolution engine that turns trajectories into both harness updates and model training signal, organized around a ten-dimensional taxonomy of harness components~\citep{chen2026harnessx}. Our ten surfaces are not an instance of that taxonomy: they are declared directly from the phases of the RLM turn loop rather than from a general compositional scheme for assembling arbitrary agent harnesses, and they are edited without any weight update --- to the target model, to a trained engineer, or to a co-evolving policy. This distinction matters for what a positive result would show: gains attributable to a trained engineer or a co-evolving policy tie the improvement to a specific auxiliary checkpoint in the same way that direct fine-tuning does, whereas a fixed-model propose-validate-promote loop attributes any gain to the harness alone.
+% \paragraph{Harness optimization via a trained engineer.}
+% A related but distinct design trains a dedicated model to produce the edits rather than using the fixed target model as its own proposer. Harness-R1 post-trains a separate 9B harness engineer with online reinforcement learning, converting batches of a frozen target agent's failures into validated executable patches and rewarding the engineer on same-batch reruns of that frozen target; the resulting gains persist even after the target itself is subsequently fine-tuned, which the authors read as evidence for co-evolving engineer and target rather than treating the two as substitutes~\citep{shao2026harnessr1}. HarnessForge and HarnessX extend this further into joint harness-policy co-evolution: the former alternates fault-guided harness tailoring with harness-conditioned policy alignment and finds that co-evolution outperforms harness-only or policy-only baselines~\citep{chen2026harnessforge}, while the latter assembles typed harness primitives through a substitution algebra and a trace-driven multi-agent evolution engine that turns trajectories into both harness updates and model training signal, organized around a ten-dimensional taxonomy of harness components~\citep{chen2026harnessx}. Our ten surfaces are not an instance of that taxonomy: they are declared directly from the phases of the RLM turn loop rather than from a general compositional scheme for assembling arbitrary agent harnesses, and they are edited without any weight update --- to the target model, to a trained engineer, or to a co-evolving policy. This distinction matters for what a positive result would show: gains attributable to a trained engineer or a co-evolving policy tie the improvement to a specific auxiliary checkpoint in the same way that direct fine-tuning does, whereas a fixed-model propose-validate-promote loop attributes any gain to the harness alone.
 
-\paragraph{Evaluating harness evolution.}
-A separate thread questions whether reported harness-evolution gains are genuine. \citet{wang2026rethinkeval} argue that because harness evolution is itself an iterative search driven by task feedback, its gains must be compared against simple task-level search baselines --- repeated sampling under matched inference and feedback budgets --- or the improvement may be an artifact of additional search rather than of harness redesign; they further note that searching and reporting on the same benchmark risks overfitting to that benchmark. Under matched-budget, held-out evaluation, they find that much of the advantage claimed for automatic harness evolution in prior work shrinks substantially. Harness-Bench complements this concern with infrastructure rather than critique, providing 106 sandboxed tasks for measuring harness effects across model backends under shared budgets, motivated by the observation that most benchmarks either abstract away execution or hold the harness fixed while comparing models~\citep{yao2026harnessbench}. Our design --- freezing the harness before any test split is opened, evaluating on source instances an order of magnitude longer than the optimization split, and testing a disjoint target environment --- answers the overfitting concern directly; whether it fully answers the search-budget concern depends on whether our matched-inference-budget comparison against B1 also controls for search budget specifically, which we treat as an open point in our baseline design.
+% \paragraph{Evaluating harness evolution.}
+% A separate thread questions whether reported harness-evolution gains are genuine. \citet{wang2026rethinkeval} argue that because harness evolution is itself an iterative search driven by task feedback, its gains must be compared against simple task-level search baselines --- repeated sampling under matched inference and feedback budgets --- or the improvement may be an artifact of additional search rather than of harness redesign; they further note that searching and reporting on the same benchmark risks overfitting to that benchmark. Under matched-budget, held-out evaluation, they find that much of the advantage claimed for automatic harness evolution in prior work shrinks substantially. Harness-Bench complements this concern with infrastructure rather than critique, providing 106 sandboxed tasks for measuring harness effects across model backends under shared budgets, motivated by the observation that most benchmarks either abstract away execution or hold the harness fixed while comparing models~\citep{yao2026harnessbench}. Our design --- freezing the harness before any test split is opened, evaluating on source instances an order of magnitude longer than the optimization split, and testing a disjoint target environment --- answers the overfitting concern directly; whether it fully answers the search-budget concern depends on whether our matched-inference-budget comparison against B1 also controls for search budget specifically, which we treat as an open point in our baseline design.
 
-\paragraph{Capability and the choice of a single frozen backbone.}
-Finally, \citet{lin2026disentangling} separate harness self-evolution into two capabilities that do not covary as expected: harness-updating, the ability to turn execution evidence into a useful persistent edit, is roughly flat across model capability tiers, while harness-benefit, the ability of an executing agent to invoke and faithfully follow an updated harness, is non-monotonic --- weak-tier models benefit least, mid-tier models benefit most, and strong-tier models benefit less than mid-tier, with weak-tier shortfalls traced to failures of harness-artifact activation or faithful following. Because we use a single fixed model in both the evolver and executor roles, this finding is a caveat rather than a confound: it predicts that a poor outcome on a given backbone could reflect a harness-benefit failure specific to that tier rather than a failure of the propose-validate-promote loop itself, which we return to in our discussion of backbone choice and limitations.
+% \paragraph{Capability and the choice of a single frozen backbone.}
+% Finally, \citet{lin2026disentangling} separate harness self-evolution into two capabilities that do not covary as expected: harness-updating, the ability to turn execution evidence into a useful persistent edit, is roughly flat across model capability tiers, while harness-benefit, the ability of an executing agent to invoke and faithfully follow an updated harness, is non-monotonic --- weak-tier models benefit least, mid-tier models benefit most, and strong-tier models benefit less than mid-tier, with weak-tier shortfalls traced to failures of harness-artifact activation or faithful following. Because we use a single fixed model in both the evolver and executor roles, this finding is a caveat rather than a confound: it predicts that a poor outcome on a given backbone could reflect a harness-benefit failure specific to that tier rather than a failure of the propose-validate-promote loop itself, which we return to in our discussion of backbone choice and limitations.
 
 
-  \section{Timeline}
+
+\clearpage
+\section{Timeline}
 
 \paragraph{Completed work.} Three components of the system are already built and working. Both evaluation environments are implemented with their deterministic verifiers and synthesized sub-verifiers integrated. The initial \rlm{} is implemented with the ten editable harness surfaces of \cref{fig:edit-surfaces} declared and their runtime injection points in place. The first stage of the \sh{} loop, \textbf{Weakness Mining}, is operational: recursive execution traces are collected, converted into structured failure records, and clustered by verifier-grounded signature.
 
@@ -515,10 +503,107 @@ The critical path runs through chunk (i) of each week: preregistration, pilot, l
 \clearpage
 \appendix
 
-\section{Full initial REPL contract}
-\label{app:full-repl-contract}
+\section{Editable Surface Reference}
+\label{app:surfaces}
 
-\input{Figure_A1.tex}
+\begin{table}[htbp]
+    \centering
+    \renewcommand{\arraystretch}{1.4}
+    \begin{tabular}{p{0.25\textwidth} p{0.70\textwidth}}
+        \hline
+        \textbf{Surface} & \textbf{Governs} \\
+        \hline
+        \textbf{S1} --- REPL contract & The factual contract given to the root model: available names, the answer protocol, per-turn REPL-block and stdout conventions, truncation behavior. \\
+        \hline
+        \textbf{S2} --- Decomposition instruction & Turns 1--2: how the root probes the input and whether/how it plans a decomposition. \\
+        \hline
+        \textbf{S3} --- Execution instruction & Per-turn discipline: what to print, when to offload to a sub-call vs. read directly, how to aggregate results. \\
+        \hline
+        \textbf{S4} --- Verification instruction & What the root checks before marking an answer ready. \\
+        \hline
+        \textbf{S5} --- Recovery instruction & What the root does when a sub-call errors or returns something unusable. \\
+        \hline
+        \textbf{S6} --- Runtime policy & Numeric limits and switches: chars per prompt, batch width, max calls per turn/total, recursion depth, retry-on-error, sub-output validation. \\
+        \hline
+        \textbf{S7} --- Metadata function & What carries across turns --- the harness's memory of prior calls. \\
+        \hline
+        \textbf{S8} --- REPL helpers & Harness-local functions and data injected into the REPL namespace (chunkers, batch wrappers, etc.). \\
+        \hline
+        \textbf{S9} --- Answer  middle-ware & Programmatic inspection of the detected final answer, with the ability to redirect (suppress and continue) rather than accept it. \\
+        \hline
+        \textbf{S10} --- Skills &
+        Named, reusable procedures available across turns. The system prompt exposes
+        a name--description index, while full skill bodies are loaded on demand through
+        \texttt{load\_skill(name)} in the root and recursive child REPLs. \\
+        \hline
+    \end{tabular}
+    \caption{Overview of the ten editable RLM harness surfaces and the behavior governed by each.}
+    \label{tab:surfaces}
+\end{table}
+
+
+
+% Appendix figure: exact, unabridged initial S1 REPL contract.
+% Figure 1 intentionally contains a display-only condensation of this prompt.
+\begin{figure}[!tbp]
+    \centering
+    \begin{lstlisting}[style=harness]
+    MINIMAL_REPL_CONTRACT = textwrap.dedent(
+        """\
+        You are a Recursive Language Model (RLM): a language model whose prompt-related information lives in a Python REPL that you drive turn by turn. You will be queried turn-by-turn until you have an answer to the query.
+
+        Available in the REPL:
+        - `context`: the information related to the prompt (typically `str` or `list[str]`).
+        - `llm_query(prompt: str, model: str | None = None) -> str`: a single sub-LLM completion.
+        - `llm_query_batched(prompts: list[str], model=None) -> list[str]`: several sub-LLM completions in parallel; same order out as in.
+        - `rlm_query(prompt, model=None)` / `rlm_query_batched(prompts, model=None)`: recursive RLM sub-calls. Fall back to `llm_query` / `llm_query_batched` when recursion is disabled.
+        - `SHOW_VARS() -> str`: list every variable currently in the REPL.
+        - `answer`: dict initialized to `{{"content": "", "ready": False}}`. To submit, set `answer["content"]` to the final answer and `answer["ready"] = True` inside a ```repl``` block.
+        {custom_tools_section}
+
+        Write code in ```repl``` blocks, one block per turn; the REPL persists across turns. The REPL is NOT a Jupyter cell - only `print(...)` output (stdout) is shown back to you between turns; a bare expression on the last line is silently discarded. REPL outputs over ~20K characters are truncated."""
+    )
+    \end{lstlisting}
+    \caption{The complete initial \sid{S1} REPL contract. Figure~\ref{fig:edit-surfaces}
+    uses a display-only condensation so that all ten editable harness surfaces remain
+    legible on one page; the optimization loop receives the literal prompt shown here.}
+    \label{fig:full-repl-contract}
+\end{figure}
+
+\section{Fine-tuned \rlm{} baseline (F1)}
+\label{app:finetune}
+ 
+F1 reproduces the weight-training arm of \citet{zhang2026harness} so that harness
+optimization and weight optimization are compared on the same backbone, harness, and
+environment. The recipe below follows their reported setup; any deviation forced by our
+compute allocation will be recorded before training begins.
+ 
+\begin{description}
+  \item[Backbone.] \textbf{Deepseek V4 Flash}, the same backbone used for B1, \hzerostar{},
+    $\lambda$-RLM, and SH-RLM, so that F1 differs from B1 only in its weights.
+  \item[Algorithm.] RL with \texttt{prime-rl}: decoupled PPO with GRPO-style advantages
+    and a KL penalty against the initial policy.
+  \item[Reward.] The environment's deterministic verifier on the final answer, identical
+    to the evaluation metric and to the promotion signal used by \sh{}, so the two
+    optimizers are driven by the same outcome measure.
+  \item[Rollouts.] Batch size $64$ with $4$ rollouts per sample.
+  \item[Steps.] $150$ optimization steps for the length-generalization setting, with
+    evaluation every $10$ steps; \citet{zhang2026harness} run $500$ steps, evaluating
+    every $20$, for their cross-domain strategy experiments.
+  \item[Training inputs.] Short instances only, at $8$k--$64$k tokens, drawn from the
+    same source-environment short split used for harness optimization. Long instances are
+    never trained on.
+  \item[Evaluation.] The frozen checkpoint is evaluated on the same four untouched test
+    sets as B1, \hzerostar{}, $\lambda$-RLM, and SH-RLM, at $256$k--$2$M tokens on the long splits.
+  \item[Hardware.] $8\times$H100 nodes.
+\end{description}
+ 
+Two conditions govern whether F1 is reported at all. If the published checkpoint is
+obtainable, we evaluate it directly rather than retraining, and say so. If neither the
+checkpoint nor the compute for training is available, F1 is dropped and its absence is
+reported alongside the published figures for the same environment and backbone. F1 is
+budgeted and evaluated separately from the fixed-weight conditions (B1, \hzerostar{}, $\lambda$-RLM, SH-RLM).
+
 
 \section{Ablations}
 \label{app:ablations}
