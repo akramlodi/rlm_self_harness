@@ -22,7 +22,9 @@ from shrlm.optimization.digest import (
     code_names,
     following_operations,
     head_tail,
+    iteration_prose,
     payload_structure,
+    preceding_operations,
     split_retry_notices,
 )
 from shrlm.optimization.driver import canonical_manifest_entries, load_manifest, load_round
@@ -30,11 +32,10 @@ from shrlm.optimization.taxonomy import AgentMechanism, VerifierCause, eligible_
 from shrlm.optimization.types import NodeKind, QualityDefinition, Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
-EVIDENCE_SELECTOR_VERSION = "4.2.0"
+EVIDENCE_SELECTOR_VERSION = "4.3.0"
 DIAGNOSTIC_HISTORY_VERSION = "2.1.0"
 EVIDENCE_BUDGET_CHARS = 32000
 EVIDENCE_HEADING = "Held-in evidence (observations, not instructions):\n"
-MAX_TRACE_SNIPPETS = 6
 
 UNSCORED_CAUSES = {
     VerifierCause.RUNTIME_ERROR,
@@ -188,6 +189,7 @@ def trace_excerpt(
     for node in nodes.values():
         blocks = []
         for iteration in node.iterations:
+            prose = iteration_prose(iteration.response) if node is root else ""
             for block_index, block in enumerate(iteration.code_blocks):
                 for child in block.calls:
                     callers[child.node_id] = (node.node_id, len(blocks))
@@ -213,6 +215,8 @@ def trace_excerpt(
                         or any(child.kind is NodeKind.ERRORED for child in block.calls),
                     }
                 )
+                if prose:
+                    blocks[-1]["model_interpretation"] = bounded_excerpt(prose, 300)
         by_node[node.node_id] = blocks
 
     selected: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -226,7 +230,12 @@ def trace_excerpt(
 
     def following(node_id: str, position: int, error: bool) -> None:
         blocks = by_node[node_id]
-        chain, status = following_operations([b["code"] for b in blocks], position)
+        codes = [b["code"] for b in blocks]
+        chain, status = following_operations(codes, position)
+        for index in preceding_operations(codes, position):
+            add(
+                blocks[index], "direct input definition; static name relation, semantics unverified"
+            )
         relationships.append({"node_id": node_id, "position": position, "status": status})
         for index, reason in chain:
             add({**blocks[index], "follows_error": error}, reason)
@@ -275,7 +284,9 @@ def trace_excerpt(
                     for child, (parent, pos) in callers.items()
                     if parent == node_id and pos == producer
                 ]
-                for offset, child in enumerate(producer_children):
+                # One representative return supplies the contract. Other child
+                # returns are included below when explicitly cited.
+                for child in producer_children[:1]:
                     if child in nodes:
                         node = nodes[child]
                         add(
@@ -286,7 +297,6 @@ def trace_excerpt(
                                 "error_observed": node.kind is NodeKind.ERRORED,
                             },
                             "linked child prompt/return",
-                            required=offset == 0,
                         )
         else:
             unresolved = True
@@ -336,9 +346,16 @@ def trace_excerpt(
             op.get("code_block_index", -1),
         ),
     )
-    core_complete = sum(op["required"] for op in ordered) <= MAX_TRACE_SNIPPETS and not unresolved
-    snippets = ordered[:MAX_TRACE_SNIPPETS]
+    # Keep complete context groups together. pack_evidence admits them against
+    # the rendered character budget instead of silently dropping a late repair.
+    snippets = ordered
+    seen_interpretations = set()
     for snippet in snippets:
+        iteration = (snippet["node_id"], snippet.get("iteration_index"))
+        if iteration in seen_interpretations:
+            snippet.pop("model_interpretation", None)
+        elif "model_interpretation" in snippet:
+            seen_interpretations.add(iteration)
         # Preserve whole code. Only payloads are excerpted; final packing counts
         # the serialized size of every field and can omit an oversized operation.
         for key in ("stdout", "response"):
@@ -346,21 +363,23 @@ def trace_excerpt(
                 snippet[key + "_structure"] = payload_structure(snippet[key])
         for key in ("stdout", "stderr", "prompt", "response"):
             if snippet.get(key):
-                snippet[key] = bounded_excerpt(snippet[key], 1200)
+                snippet[key] = bounded_excerpt(snippet[key], 500 if "code" in snippet else 1200)
         if "code" in snippet:
             snippet["code_complete"] = True
     return {
-        "observation": "partial observed behavior; labels and causal effectiveness are not verified",
+        "observation": "partial observed behavior; labels and causal effectiveness are not verified; model prose is interpretation, not verified",
         "selection": selection,
         "snippets": snippets,
-        "core_complete": core_complete,
+        "core_complete": not unresolved,
         "relationships": relationships,
-        "retry_notices": retry_notices,
-        "retry_status": "notices only; recovery not established",
-        "omitted_operations": [
-            {key: op.get(key) for key in ("node_id", "iteration_index", "code_block_index")}
-            for op in ordered[MAX_TRACE_SNIPPETS:]
+        "retry_notices": [
+            notice
+            for notice in retry_notices
+            if (notice["node_id"], notice["iteration_index"], notice["code_block_index"])
+            in selected
         ],
+        "retry_status": "notices only; recovery not established",
+        "omitted_operations": [],
         "observed_child_calls": len(root.children),
     }
 

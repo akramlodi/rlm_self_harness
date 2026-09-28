@@ -1373,13 +1373,8 @@ class TestPromotionLedger:
             )
 
     def test_no_promotion_round_still_ledgers(self, tmp_path, monkeypatch):
-        # Baseline all-pass; the lone candidate regresses on both splits.
-        script = [final("RIGHT")] * 4 + [
-            final("RIGHT"),
-            final("WRONG"),
-            final("RIGHT"),
-            final("WRONG"),
-        ]
+        # Two held-out runs each: the candidate regresses from 2 passes to 1.
+        script = [final("RIGHT")] * 2 + [final("RIGHT"), final("WRONG")]
         factory = ClientFactory(script)
         monkeypatch.setattr(rlm_module, "get_client", factory)
         config = make_config(tmp_path, caps=LEDGER_CAPS, repetitions=1)

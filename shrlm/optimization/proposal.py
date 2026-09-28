@@ -156,7 +156,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "4.2.0"
+PROMPT_VERSION = "4.3.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -612,11 +612,16 @@ passes all local gates for a surface and pattern; later contenders cannot replac
 that owner. Invalid candidates do not reserve a surface.
 
 Before replacement text, describe incumbent_behavior (what the relevant execution \
-actually did at its latest relevant state, distinguishing it from instructions), \
+actually did at its latest relevant state, compared with the instructions already \
+shown across incumbent surfaces and prior attempts), \
 observed_failure (what remains wrong after later checks or recovery and what is \
-unverified), and behavioral_change (a changed action/value at that operation and \
-a minimal example for which the old and new behavior differ). Each is a short string, at most 600 characters. \
-Repeating an existing instruction more emphatically is insufficient justification. \
+unverified), and behavioral_change (the changed operation, input, or invocation \
+condition and a minimal example for which execution differs). Each is a short \
+string, at most 600 characters. Changing surfaces does not establish a new behavior: \
+apply the same comparison when retargeting. If the needed incumbent or history \
+context is unavailable, say the comparison is unverified. Repeating or relocating \
+an already-followed instruction is insufficient; identify what changes when or \
+how it is invoked or enforced. \
 If there is no concrete difference, withdraw the candidate instead of supplying \
 "none", "no change", "no-op", or "unchanged". Local checks enforce shape and literal \
 changes, not semantic novelty; you must assess the behavioral difference.
@@ -674,10 +679,8 @@ performed is not a new final-answer fix; explain what remains wrong afterward.
 Challenge each proposed change: If this edit were followed perfectly, could the
 demonstrated failure still happen for the same reason? If yes, revise the causal
 claim or withdraw it. A coverage reminder cannot resolve wrong-but-valid labels.
-Describe the changed action/value at the unresolved operation in behavioral_change;
-use a tiny synthetic counterexample, not a saved task answer. Running an identical
-parser expression again changes no deterministic result. Sorting or deduplicating
-invalid elements does not remove them. Identify the changed operation that would.
+Use a tiny synthetic counterexample, not a saved task answer. Repeating the same
+deterministic operation with the same inputs changes no result.
 If a later computation replaces the cited intermediate state, diagnose that latest
 state or explain why the earlier defect still affects it.
 """
@@ -686,7 +689,9 @@ state or explain why the earlier defect still affects it.
 PROPOSER_QUALITY = """\
 Candidate quality rules:
 - Promotion evaluates one combined candidate on held-out runs only, requiring \
-strictly more exact passes and the configured cost band. For each \
+an exact-pass gain at least the configured minimum and the configured cost band. \
+Equality meets the threshold; with a zero minimum, tied exact passes qualify. \
+Dense-quality metrics are diagnostic and do not change this gate. For each \
 candidate, predicted_effect must also state which currently-passing behaviors the \
 edit deliberately leaves untouched and why the edit cannot plausibly harm them. An \
 edit whose upside on the failing pattern is bought with plausible harm to passing \
@@ -1884,7 +1889,9 @@ def propose_round(
                 "One repair response only. Return replacements only for the failed original "
                 "patterns; omit a failed member to withdraw it. You may choose another eligible, "
                 "unoccupied surface for that same pattern. Explain the revised behavioral change "
-                "when retargeting. Keep retained edits unchanged; no new patterns. "
+                "when retargeting: compare with all shown incumbent surfaces and prior attempts, "
+                "and identify the changed operation, input, or invocation condition. Moving the "
+                "same instruction alone is insufficient. Keep retained edits unchanged; no new patterns. "
                 "Return selections followed by candidates. Select in priority order and remove "
                 "each selected surface from further consideration. Occupied surfaces cannot "
                 "be selected again. Do not move an edit to an unsuitable surface just to fill "

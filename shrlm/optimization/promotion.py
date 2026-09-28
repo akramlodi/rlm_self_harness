@@ -110,7 +110,7 @@ class Band:
 class PromotionConfig:
     """Promotion thresholds and resource multiplier bands.
 
-    The held-out delta must exceed ``tau_improvement`` and must not fall below
+    The held-out delta must meet ``tau_improvement`` and must not fall below
     ``-tau_regression``. Bands use held-out means only. Every decision records
     these round-level parameters, including unscored constituent records."""
 
@@ -309,9 +309,9 @@ def score_candidate(
                 f"{split_id} pass-count delta {delta} regresses beyond "
                 f"tau_regression={config.tau_regression}"
             )
-    if max(deltas.values()) <= config.tau_improvement:
+    if max(deltas.values()) < config.tau_improvement:
         reasons.append(
-            f"no split improves beyond tau_improvement={config.tau_improvement} "
+            f"heldout pass-count delta is below tau_improvement={config.tau_improvement} "
             f"(heldout {deltas[SPLIT_HELDOUT]:+d})"
         )
 

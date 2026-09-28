@@ -609,10 +609,10 @@ class TestPatience:
         factory = patch_runner(
             monkeypatch,
             MINING_FAIL
-            + SUBJECT_FAIL
-            + SUBJECT_FAIL  # round 1: candidate no better
+            + SUBJECT_PASS
+            + SUBJECT_FAIL  # round 1: candidate regresses
             + MINING_FAIL_V2
-            + SUBJECT_FAIL
+            + SUBJECT_PASS
             + SUBJECT_FAIL,  # round 2: same
         )
         attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
@@ -638,7 +638,7 @@ class TestInitialHarness:
         config = make_config(tmp_path, t=2, patience=1, initial_harness="H0*")
         assert config.loop.initial_harness == "H0*"
         out = tmp_path / "exp"
-        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_FAIL)
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_PASS + SUBJECT_FAIL)
         attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
         result = run(config, out, attributor, proposer)

@@ -78,7 +78,9 @@ SPLIT_HELDOUT = "heldout"
 EVAL_ROUND_INDEX = 0
 
 SUMMARY_FILENAME = "summary.json"
-VALIDATION_PROTOCOL = "heldout-batch/v1"
+# v2 admits equality at the exact-pass improvement threshold. Keep old
+# experiments from silently resuming under a different promotion rule.
+VALIDATION_PROTOCOL = "heldout-batch/v2"
 SUMMARY_FORMAT = "shrlm-validation-summary/v3"
 
 # The promotion ledger (U5): one JSONL record per candidate (and per merged
