@@ -38,7 +38,7 @@ from shrlm.optimization.walker import iter_skill_loads
 # the trace's run-start record names a skill index (a loader was installed,
 # i.e. S10 was non-empty). A trace without one -- every pre-S10 trace, and
 # every trace under an empty S10 -- renders byte-identically to 1.1.0.
-DIGEST_VERSION = "1.7.0"
+DIGEST_VERSION = "1.8.0"
 
 DEFAULT_CHAR_BUDGET = 12000
 DEFAULT_FOCUS_K = 4
@@ -135,17 +135,13 @@ def code_names(code: str) -> tuple[set[str], set[str], bool] | None:
 
 
 def following_operations(codes: Sequence[str], position: int) -> tuple[list[tuple[int, str]], str]:
-    """Select two computational hops and a later observation within this node only."""
+    """Select two computational hops and their immediate chronological follow-up."""
     origin = code_names(codes[position])
-    if origin is None:
-        return [], "unestablished: cited code could not be parsed"
-    names = origin[1]
-    if not names:
-        return [], "unestablished: no named produced value"
+    names = set(origin[1]) if origin else set()
     selected = []
-    scanned = [
+    scanned = (
         (i, code_names(codes[i])) for i in range(position + 1, min(len(codes), position + 129))
-    ]
+    )
     for i, flow in scanned:
         if flow is not None and flow[2] and names.intersection(flow[0] | flow[1]):
             selected.append(
@@ -155,13 +151,34 @@ def following_operations(codes: Sequence[str], position: int) -> tuple[list[tupl
             if len(selected) == 2:
                 break
     last = selected[-1][0] if selected else position
-    observations = [i for i, flow in scanned if i > last and flow is not None and names & flow[0]]
-    if observations:
-        selected.append((observations[-1], "later related observation; recovery not established"))
-    return (
-        selected,
-        "static name relation only" if selected else "unestablished: no related later operation",
+    status = (
+        "static name relation only" if selected else "unestablished: no related later operation"
     )
+    for index in range(last + 1, min(len(codes), last + 3)):
+        selected.append((index, "nearby follow-up; relevance and recovery not established"))
+    return selected, status
+
+
+def preceding_operations(codes: Sequence[str], position: int) -> list[int]:
+    """Nearest direct name definitions, bounded to this node; no dependency traversal."""
+    origin = code_names(codes[position])
+    if origin is None:
+        return []
+    unresolved = set(origin[0])
+    selected = []
+    for index in range(position - 1, max(-1, position - 129), -1):
+        flow = code_names(codes[index])
+        if flow is not None and unresolved & flow[1]:
+            selected.append(index)
+            unresolved -= flow[1]
+            if not unresolved:
+                break
+    return sorted(selected)
+
+
+def iteration_prose(response: str) -> str:
+    """Ordinary response text only; code is shown separately as complete operations."""
+    return re.sub(r"```[^\n]*\n.*?(?:```|\Z)", "", response, flags=re.DOTALL).strip()
 
 
 @dataclass(frozen=True)
@@ -431,13 +448,19 @@ def build_digest(
         for iteration in node.iterations
         for index, block in enumerate(iteration.code_blocks)
     ]
-    chars_available = sum(
-        len(b.code) + len(b.stdout) + len(b.stderr) for _, _, _, b in blocks
-    ) + sum(n.prompt_chars + n.response_chars for n in nodes[1:])
+    root_prose = {
+        iteration.index: iteration_prose(iteration.response) for iteration in root.iterations
+    }
+    chars_available = (
+        sum(len(b.code) + len(b.stdout) + len(b.stderr) for _, _, _, b in blocks)
+        + sum(n.prompt_chars + n.response_chars for n in nodes[1:])
+        + sum(map(len, root_prose.values()))
+    )
     chars_kept = 0
     # Admit complete operations by structural priority before filling spare
     # space with omission coordinates. A wide prefix must not evict a late fault.
     skeleton: dict[int, str] = {}
+    complete_positions: set[int] = set()
     fallback_lines = [
         f"{node.node_id} iteration {iteration.index}: no code executed; answer synthesized by the fallback"
         for node in nodes
@@ -453,7 +476,22 @@ def build_digest(
 
     def render_operations() -> None:
         missing = len(blocks) - len(skeleton)
-        rows = [skeleton[position] for position in sorted(skeleton)]
+        rows = []
+        seen_prose = set()
+        for position in sorted(skeleton):
+            node, iteration, _, _ = blocks[position]
+            if (
+                position in complete_positions
+                and node is root
+                and iteration.index not in seen_prose
+                and root_prose[iteration.index]
+            ):
+                rows.append(
+                    f"r iteration {iteration.index} interpretation, not verified:\n"
+                    + head_tail(root_prose[iteration.index], 400)
+                )
+                seen_prose.add(iteration.index)
+            rows.append(skeleton[position])
         if missing:
             rows.append(f"[{missing} additional operation coordinates omitted: budget]")
         sections[1] = "## Root iterations / operation skeleton\n" + (
@@ -500,6 +538,7 @@ def build_digest(
             if block.calls or residuals[global_index][0].strip():
                 chain, _ = following_operations(codes, position)
                 consumers.update(local[index][0] for index, _ in chain)
+                consumers.update(local[index][0] for index in preceding_operations(codes, position))
     ranked = sorted(
         enumerate(blocks),
         key=lambda pair: (
@@ -518,6 +557,7 @@ def build_digest(
     )
     payload_kept: dict[str, int] = {}
     for position, (node, iteration, index, block) in ranked:
+        complete_positions.add(position)
         skeleton[position] = (
             f"{node.node_id} iteration {iteration.index} code[{index}] (complete):\n{block.code}"
         )
@@ -545,6 +585,7 @@ def build_digest(
             payload_kept.update(observed)
         else:
             del skeleton[position]
+            complete_positions.remove(position)
             render_operations()
     for position, (node, iteration, index, block) in enumerate(blocks):
         if position in skeleton:
@@ -597,6 +638,14 @@ def build_digest(
         aggregated = bool(nodes[1:])
     text = "\n\n".join(sections)
     chars_kept += sum(payload_kept.values())
+    chars_kept += sum(
+        min(len(root_prose[index]), 400)
+        for index in {
+            blocks[position][1].index
+            for position in complete_positions
+            if blocks[position][0] is root
+        }
+    )
 
     return TraceDigest(
         text=text,

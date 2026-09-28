@@ -371,7 +371,7 @@ def test_cited_call_reveals_later_coverage_check_and_child_contract():
     assert "Missing indices: []" in rendered
     assert "Classify record IDs" in rendered
     assert "INPUT PREVIEW" not in rendered
-    assert "answer['ready']" not in rendered
+    assert "answer['ready']" in rendered
     assert excerpt == trace_excerpt(coverage_trace(), ["r/i2/b0/c0"] * 5)
 
 
@@ -968,5 +968,86 @@ def test_required_sibling_comparison_is_not_partially_admitted():
         [{"index": 0, "signature": {"agent_mechanism": "lossy_aggregation"}}],
         {"patterns": {0: {"trace": trace}}},
         k=1,
+        budget=3500,
     )
     assert not audit["expanded_patterns"]
+
+
+def correction_trace():
+    child = completion_dict(prompt="Process the input", response="[]", iterations=[], max_depth=2)
+    codes = [
+        "options = {'limit': 'all'}",
+        "print('unrelated preview')",
+        "replies = rlm_query(options)",
+        "parsed = parse(replies)",
+        "checked = check(parsed)",
+        "print(parsed)",
+        "checked = corrected_check(parsed)",
+        "unrelated = 0",
+        "answer['content'] = format_result(checked)",
+    ]
+    return as_completion(
+        completion_dict(
+            prompt="Process the input",
+            response="wrong",
+            max_depth=2,
+            iterations=[
+                iteration_entry(
+                    i,
+                    ("The earlier check used the wrong condition.\n" if i == 6 else "")
+                    + f"```repl\n{code}\n```",
+                    code_blocks=[code_block(code=code, rlm_calls=[child] if i == 2 else [])],
+                )
+                for i, code in enumerate(codes)
+            ],
+        )
+    )
+
+
+def test_input_and_nearby_correction_survive_whole_packet_packing():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    trace = trace_excerpt(
+        correction_trace(), [], [{"node_id": "r", "iteration_index": 2, "code_block_index": 0}]
+    )
+    inventory = [{"index": 0, "signature": {"agent_mechanism": "unparsed_child_output"}}]
+    rendered, audit = pack_evidence(inventory, {"patterns": {0: {"trace": trace}}}, k=1)
+    section = json.loads(rendered.split("\n", 1)[1])
+    operations = list(section["operations"].values())
+    codes = [op["code"] for op in operations if "code" in op]
+    assert "options = {'limit': 'all'}" in codes
+    assert "checked = corrected_check(parsed)" in codes
+    assert "print(parsed)" in codes
+    assert len(operations) > 6
+    assert "earlier check used the wrong condition" in rendered
+    assert "interpretation, not verified" in rendered
+    assert rendered.count("checked = corrected_check(parsed)") == 1
+    assert "format_result" not in rendered
+    assert audit["route_support"]["0"]["S8"]
+    assert len(rendered) <= 32000
+    assert (rendered, audit) == pack_evidence(inventory, {"patterns": {0: {"trace": trace}}}, k=1)
+
+
+@pytest.mark.parametrize("origin", ["print(result)", "result = ("])
+def test_followup_submission_does_not_require_named_outputs_or_parseable_code(origin):
+    completion = as_completion(
+        completion_dict(
+            prompt="Process input",
+            response="",
+            max_depth=1,
+            iterations=[
+                iteration_entry(0, "Inspecting the result", code_blocks=[code_block(code=origin)]),
+                iteration_entry(
+                    1,
+                    "Submitting the result",
+                    code_blocks=[code_block(code="answer['content'] = ''\nanswer['ready'] = True")],
+                ),
+            ],
+        )
+    )
+    excerpt = trace_excerpt(
+        completion, [], [{"node_id": "r", "iteration_index": 0, "code_block_index": 0}]
+    )
+    rendered = json.dumps(excerpt)
+    assert "answer['ready'] = True" in rendered
+    assert "Submitting the result" in rendered

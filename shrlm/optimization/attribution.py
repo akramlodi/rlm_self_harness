@@ -42,7 +42,7 @@ from shrlm.optimization.types import (
     iter_nodes,
 )
 
-PROMPT_VERSION = "1.5.0"
+PROMPT_VERSION = "1.6.0"
 
 # Version of the validation logic in this module (validate, parse_enum,
 # extract_json_block). The validator's rejection text seeds re-asks, so a
@@ -123,21 +123,16 @@ Choose exactly one value from each vocabulary below. Use the literal string \
 value. If nothing fits, choose the "other"/"unattributed" member and explain \
 in the corresponding detail field -- do not stretch a member that does not fit.
 
-Separate these possibilities: records skipped, labels wrong or uncertain, and \
-predicate/aggregation wrong. Missing output elements alone do not prove missing \
-input coverage. Cite the operation that supports the mechanism: a skipped input \
-slice, parsing loss, ID coverage check, merge, or predicate. State the covered \
-universe (original input versus parsed records). Complete IDs and valid JSON do \
-not establish correct labels. Do not assert child correctness unless a check \
-actually verifies that claim; failing-level grounding alone is not such a check.
-Use other for a semantic mechanism outside the vocabulary. If the relevant \
-operation is not visible, state the limitation and use correlated or unattributed \
-rather than asserting a causal mechanism. Evidence citations resolve locations; \
-they do not independently prove causality. In symptom_summary and operation
-observations, identify the latest relevant state after visible checks or recovery.
-An earlier error is not an unresolved mechanism if a later operation replaces its
-result successfully. Describe any remaining discrepancy and unverified semantics;
-do not infer that repeated parsing or complete containers correct wrong values.
+In operation_evidence, describe the visible action and result before assigning a
+cause. In symptom_summary, describe what remains wrong after visible later checks
+or corrections. In verification_limits, state what is unverified or contradicted
+by that later evidence. Missing context does not establish that an action never
+occurred. Set causal_status from the support these observations provide; use
+correlated or unattributed when they do not establish the cause. Citations locate
+evidence; they do not prove causality, and failing-level grounding does not verify
+intermediate correctness. A failed outcome alone does not identify which
+intermediate operation was wrong. Complete containers do not establish correct
+values. Use other for a supported mechanism outside the vocabulary.
 
 For incomplete_coverage, also supply coverage_basis with exactly four fields:
 status (observed_loss, not_established, or contradicted), input_scope,
