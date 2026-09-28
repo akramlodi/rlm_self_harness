@@ -4,6 +4,7 @@ factory helpers that feed the existing optimization constructors."""
 
 import dataclasses
 import re
+import tomllib
 from pathlib import Path
 from typing import Any, cast
 
@@ -268,8 +269,14 @@ def test_smoke_may_override_mining_run_workers(tmp_path: Path) -> None:
     sorted(Path("configs").glob("experiment*.toml")),
 )
 @pytest.mark.parametrize("profile", ["full", "smoke"])
-def test_shipped_profiles_set_mining_run_workers_to_five(path: Path, profile: str) -> None:
-    assert load_config(profile, path=path).operational.mining_run_workers == 5
+def test_shipped_profiles_load_declared_mining_run_workers(path: Path, profile: str) -> None:
+    declared = tomllib.loads(path.read_text())
+    expected = declared["operational"]["mining_run_workers"]
+    if profile == "smoke":
+        expected = (
+            declared.get("smoke", {}).get("operational", {}).get("mining_run_workers", expected)
+        )
+    assert load_config(profile, path=path).operational.mining_run_workers == expected
 
 
 def test_smoke_may_override_validation_run_workers(tmp_path: Path) -> None:
@@ -464,7 +471,7 @@ def test_deepseek_oolong_pairs_config_uses_the_complete_finite_inventory() -> No
     config = load_config("full", path=Path("configs/experiment_oolong_pairs_DeepSeekV4Flash.toml"))
 
     assert config.loop.environment == "oolong_pairs"
-    assert (config.splits.n_in, config.splits.n_ho, config.splits.test_short) == (10, 10, 20)
+    assert (config.splits.n_in, config.splits.n_ho, config.splits.test_short) == (20, 10, 10)
     assert config.splits.test_long == 40
     assert config.splits.n_in + config.splits.n_ho + config.splits.test_short == 40
     assert config.environments.oolong_pairs.n_short == 40
@@ -974,12 +981,19 @@ class TestGptOssOolongConfig:
         assert args["reasoning_effort"] == "medium"
         assert "chat_template_kwargs" not in args["extra_body"]
 
-    def test_inherits_the_kimi_profile_except_the_swapped_tables(self) -> None:
-        gptoss = load_config("full", path=self.PATH)
-        kimi = load_config("full", path=self.KIMI_PATH)
-        for section in ("caps", "splits", "loop", "promotion", "environments"):
-            assert getattr(gptoss, section) == getattr(kimi, section)
-        assert gptoss.operational == kimi.operational
+    def test_full_profile_uses_its_own_experiment_settings(self) -> None:
+        config = load_config("full", path=self.PATH)
+        assert config.caps.max_budget == 1.0
+        assert config.caps.max_timeout == 1800.0
+        assert (
+            config.splits.n_in,
+            config.splits.n_ho,
+            config.splits.test_short,
+            config.splits.test_long,
+        ) == (24, 24, 24, 0)
+        assert config.loop.v == 4
+        assert config.loop.environment == "oolong_synth"
+        assert config.loop.initial_harness == "H0*R"
 
     def test_identity_differs_from_the_kimi_profile(self) -> None:
         gptoss = load_config("full", path=self.PATH)
