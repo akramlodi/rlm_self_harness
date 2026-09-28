@@ -442,11 +442,13 @@ class TestOolongPairsEnvironment:
         )
 
         expected_counts = {
-            "oolong_pairs_short_held_in.jsonl": 10,
-            "oolong_pairs_short_held_out.jsonl": 10,
-            "oolong_pairs_short_test.jsonl": 20,
-            "oolong_pairs_long_test.jsonl": 40,
+            "oolong_pairs_short_held_in.jsonl": config.splits.n_in,
+            "oolong_pairs_short_held_out.jsonl": config.splits.n_ho,
+            "oolong_pairs_short_test.jsonl": config.splits.test_short,
+            "oolong_pairs_long_test.jsonl": config.splits.test_long,
         }
         manifest = json.loads((splits_dir / MANIFEST_FILE).read_text())
         files = manifest["environments"]["oolong_pairs"]["files"]
         assert {name: details["count"] for name, details in files.items()} == expected_counts
+        for name, count in expected_counts.items():
+            assert len((splits_dir / name).read_text().splitlines()) == count
