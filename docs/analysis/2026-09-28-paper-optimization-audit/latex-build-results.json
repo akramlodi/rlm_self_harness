@@ -1,0 +1,34 @@
+[
+  {
+    "paper": "proposal",
+    "exit_code": 1,
+    "messages": [
+      "Package epstopdf Warning: Shell escape feature is not enabled.",
+      "LaTeX Warning: No \\author given.",
+      "! Font T1/phv/m/n/6=phvr8t at 6.0pt not loadable: Metric (TFM) file not found.",
+      "!  ==> Fatal error occurred, no output PDF file produced!"
+    ],
+    "log": "docs/analysis/2026-09-28-paper-optimization-audit/proposal-build.log"
+  },
+  {
+    "paper": "neurIPS_short_paper",
+    "exit_code": 1,
+    "messages": [
+      "Package epstopdf Warning: Shell escape feature is not enabled.",
+      "Package natbib Warning: Citation `zhang2025rlm' on page 1 undefined on input li",
+      "Package natbib Warning: Citation `zhang2026selfharness' on page 1 undefined on ",
+      "! Font T1/phv/m/n/6=phvr8t at 6.0pt not loadable: Metric (TFM) file not found.",
+      "!  ==> Fatal error occurred, no output PDF file produced!"
+    ],
+    "log": "docs/analysis/2026-09-28-paper-optimization-audit/neurIPS_short_paper-build.log"
+  },
+  {
+    "paper": "proposal-old",
+    "exit_code": 1,
+    "messages": [
+      "! LaTeX Error: \\usepackage before \\documentclass.",
+      "!  ==> Fatal error occurred, no output PDF file produced!"
+    ],
+    "log": "docs/analysis/2026-09-28-paper-optimization-audit/proposal-old-build.log"
+  }
+]

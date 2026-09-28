@@ -22,10 +22,7 @@
     \foreach \y in {0.3,0.1,-0.1,-0.3}{
       \draw[line width=0.5pt, black!40] (-0.26,\y) -- (0.28,\y);}
   },
-  % recursion call-tree with per-child sub-verifier status: green = child
-  % passes, red = child fails, dark = root / intermediate sub-RLM. All nodes
-  % uniform size; the third child recursed further and its children are also
-  % labeled.
+  % Execution call tree; uniform nodes carry no semantic correctness labels.
   calltree/.pic={
     % edges first, dots after, so the dots sit on top
     \draw[black!55] (0,0.55) -- (-0.45,0.0);
@@ -34,11 +31,11 @@
     \draw[black!55] (0.45,0.0) -- (0.27,-0.48);
     \draw[black!55] (0.45,0.0) -- (0.63,-0.48);
     \fill[inkcol] (0,0.55) circle (0.07);
-    \fill[editgreen] (-0.45,0.0) circle (0.07);
-    \fill[rejred] (0,0.0) circle (0.07);
+    \fill[inkcol] (-0.45,0.0) circle (0.07);
+    \fill[inkcol] (0,0.0) circle (0.07);
     \fill[inkcol] (0.45,0.0) circle (0.07);
-    \fill[editgreen] (0.27,-0.48) circle (0.07);
-    \fill[rejred] (0.63,-0.48) circle (0.07);
+    \fill[inkcol] (0.27,-0.48) circle (0.07);
+    \fill[inkcol] (0.63,-0.48) circle (0.07);
   },
   % two failure clusters grouped by signature
   clusterpair/.pic={
@@ -66,18 +63,18 @@
     \fill[editgreen] (0,0) circle (0.16);
     \draw[white, line width=1.1pt, line cap=round] (-0.08,0) -- (-0.02,-0.08) -- (0.1,0.1);
   },
-  % mining data + validation data evaluation; the validation card is dashed (never shown to proposer)
+  % Incumbent and combined candidate on the same held-out validation tasks.
   splitcheck/.pic={
     \draw[rounded corners=1.5pt, fill=white, draw=black!40] (-0.45,0.06) rectangle (0.45,0.62);
     \draw[line width=0.5pt, black!40] (-0.3,0.44) -- (0.18,0.44);
     \draw[line width=0.5pt, black!40] (-0.3,0.24) -- (0.28,0.24);
     \draw[editgreen, line width=0.8pt, line cap=round] (0.2,0.4) -- (0.27,0.33) -- (0.4,0.5);
-    \draw[rounded corners=1.5pt, fill=white, draw=black!50, dashed] (-0.45,-0.62) rectangle (0.45,-0.06);
+    \draw[rounded corners=1.5pt, fill=white, draw=black!50] (-0.45,-0.62) rectangle (0.45,-0.06);
     \draw[line width=0.5pt, black!40] (-0.3,-0.24) -- (0.18,-0.24);
     \draw[line width=0.5pt, black!40] (-0.3,-0.44) -- (0.28,-0.44);
     \draw[editgreen, line width=0.8pt, line cap=round] (0.2,-0.28) -- (0.27,-0.35) -- (0.4,-0.18);
   },
-  % accuracy + preregistered sub-call/cost band as a gauge
+  % Verifier-pass counts and configured resource bands.
   bandgauge/.pic={
     \draw[black!45, line width=1.1pt] (-0.45,0) arc (180:0:0.45);
     \draw[editgreen, line width=2pt] (-0.32,0.32) arc (135:45:0.45);
@@ -130,7 +127,7 @@
      \node at (0,-0.95) {run $\mathrm{H}_t$\\ mining data};
      \draw[->, black!55] (0.6,0) -- (1.0,0);
      \pic at (1.7,0) {calltree};
-     \node at (1.7,-0.95) {per-child\\ labels};
+     \node at (1.7,-0.95) {trace-based\\ diagnosis};
      \draw[->, black!55] (2.45,0) -- (2.85,0);
      \pic at (3.65,0) {clusterpair};
      \node at (3.65,-0.95) {cluster\\ by $\phi$};
@@ -142,41 +139,41 @@
      % stacked proposer inputs, each with its own arrow into the proposer card;
      % arrows are anchored on the text nodes so they land at the right height
      % (the two-line item's arrow starts at its vertical center)
-     \node[anchor=east, align=right, font=\sffamily\tiny] (inp1) at (0.35,0.52) {failure patterns};
-     \node[anchor=east, align=right, font=\sffamily\tiny] (inp2) at (0.35,0.1) {behaviors to\\ preserve};
+     \node[anchor=east, align=right, font=\sffamily\tiny] (inp1) at (0.35,0.52) {operation evidence};
+     \node[anchor=east, align=right, font=\sffamily\tiny] (inp2) at (0.35,0.1) {surface\\ capabilities};
      \node[anchor=east, align=right, font=\sffamily\tiny] (inp3) at (0.35,-0.32) {prior edits};
      \foreach \n in {inp1,inp2,inp3}{
        \draw[->, black!55] ([xshift=2pt]\n.east) -- ([xshift=17pt]\n.east);}
      \pic at (1.55,0.1) {proposercard};
      \node[font=\tiny, text=black!55] at (1.55,-0.27) {$\mathrm{H}_t$};
-     \node at (1.55,-0.8) {proposer\\(fixed harness)};
+     \node at (1.55,-0.8) {proposer\\(fixed model)};
      % same S1-S9 grid as the harness boxes; its middle row sits at the proposer
      % card's vertical center (0.035), and the arrow is anchored on the middle-
      % row cell so all three land on one line
      \foreach \j [count=\r from 0] in {2,1,0}{
        \foreach \i in {0,1,2}{
          \pgfmathtruncatemacro{\slab}{\r*3+\i+1}
-         \ifnum\slab=2 \tikzset{c/.style=celledited}\else
-         \ifnum\slab=6 \tikzset{c/.style=celledited}\else
+         \ifnum\slab=4 \tikzset{c/.style=celledited}\else
+         \ifnum\slab=8 \tikzset{c/.style=celledited}\else
            \tikzset{c/.style=cellplain}\fi\fi
          \node[c] (propcell\slab) at ({3.1+\i*0.46},{\j*0.46-0.15}) {S\slab};}}
      \draw[->, black!55] ([xshift=-20pt]propcell4.west) -- ([xshift=-9pt]propcell4.west);
      \path (propcell4.north east) pic {checkbadge};
      \node[cellplain] (propcell10) at ({3.1+1*0.46},{-1*0.46-0.15}) {S10};
-     \node at (3.56,-1.05) {each edit targets\\ one surface};
+     \node at (3.56,-1.05) {at most one edit\\ per surface};
    \end{tikzpicture}};
 
 \node[stage, fill=subtint, below=10mm of prop] (val)
   {{\cardhd\color{valhd} Proposal Validation}\\[4pt]
    \begin{tikzpicture}[glyphrow]
      \pic at (0,0) {splitcheck};
-     \node at (0,-1.05) {mining +\\ validation};
+     \node at (0,-1.05) {paired runs\\ held-out only};
      \draw[->, black!55] (0.65,0) -- (1.05,0);
      \pic at (1.8,-0.15) {bandgauge};
-     \node at (1.8,-1.05) {accuracy +\\ cost band};
+     \node at (1.8,-1.05) {pass counts +\\ resource bands};
      \draw[->, black!55] (2.55,0) -- (2.95,0);
      \pic at (3.5,0) {acceptreject};
-     \node at (3.5,-1.05) {accept /\\ reject};
+     \node at (3.5,-1.05) {promote /\\ reject batch};
    \end{tikzpicture}};
 
 % ================= side columns: current and updated harness =================
@@ -225,8 +222,9 @@
          \pgfmathtruncatemacro{\slab}{\r*3+\i+1}
          \ifnum\slab=2 \tikzset{c/.style=celledited}\else
          \ifnum\slab=4 \tikzset{c/.style=cellnew}\else
+         \ifnum\slab=8 \tikzset{c/.style=cellnew}\else
          \ifnum\slab=6 \tikzset{c/.style=celledited}\else
-           \tikzset{c/.style=cellplain}\fi\fi\fi
+           \tikzset{c/.style=cellplain}\fi\fi\fi\fi
          \node[c] (newcell\slab) at ({1.62+\i*0.46},{\j*0.46-0.46}) {S\slab};}}
      \coordinate (plusmidn) at ($(mcn.east)!0.5!(newcell4.west)$);
      \draw[black!55, line width=1.1pt, line cap=round]
@@ -235,40 +233,30 @@
        ($(plusmidn)+(0,-0.12)$) -- ($(plusmidn)+(0,0.12)$);
      \node[cellplain] (newcell10) at ({1.62+1*0.46},{-1*0.46-0.46}) {S10};
    \end{tikzpicture}\\[4pt]
-   {\cardsb merged edit at \sid{S4}}};
+   {\cardsb joint update at \sid{S4} and \sid{S8}}};
 
 % ================= loop arrows =================
 % current harness up into weakness mining
 \draw[flow] (cur.north) |- node[flowlab, pos=0.72, above]{run on tasks} (mine.west);
 % mining -> proposal -> validation
 \draw[flow] (mine.south) -- node[flowlab, right=1mm]{failure patterns} (prop.north);
-\draw[flow] (prop.south) -- node[flowlab, right=1mm]{candidate edits} (val.north);
+\draw[flow] (prop.south) -- node[flowlab, right=1mm, align=left]{admit + compose\\ one candidate} (val.north);
 % all rejected: back to the same harness
-\draw[flow, rejred] (val.west) -| node[flowlab, text=rejred, pos=0.28, below]{all rejected --- keep $\mathrm{H}_t$} (cur.south);
-% promoted: merge into the updated harness
-\draw[flow, editgreen] (val.east) -| node[flowlab, text=editgreen, pos=0.28, below]{promoted --- merge} (new.south);
+\draw[flow, rejred] (val.west) -| node[flowlab, text=rejred, pos=0.28, below]{no promotion --- keep $\mathrm{H}_t$} (cur.south);
+% Promotion adopts the already composed and measured candidate.
+\draw[flow, editgreen] (val.east) -| node[flowlab, text=editgreen, pos=0.28, below]{promote measured batch} (new.south);
 % updated harness starts the next round
 \draw[flow, dashed] (new.north) -- ++(0,12.5mm) node[flowlab, above=0.5mm, align=center]{next round\\ ($\mathrm{H}_{t+1}$ becomes current)};
 
 \end{tikzpicture}}
-\caption{One \sh{} optimization round. The current harness $\mathrm{H}_t$ is run on
-short mining-data tasks from the source environment; each recursive sub-call carries a
-per-child sub-verifier label (green: correct; red: incorrect) beside the
-root outcome, and failures are clustered by the signature $\phi$ into recurring
-failure patterns (weakness mining). The same fixed model, given the mined patterns,
-passing behaviors to preserve, and prior edit history, generates minimal candidate
-edits, each modifying exactly one of the ten declared surfaces (harness proposal),
-including the skill library (\sid{S10}), whose entries the proposer may add, edit,
-or remove like any other surface. Candidates are evaluated on the mining data and a
-disjoint validation split never shown to
-the proposer (dashed), and promoted only if root and sub-call accuracy do not
-regress and sub-call count and cost stay within the preregistered band; compatible
-passing edits are merged and the merged harness re-evaluated before promotion
-(proposal validation). If every candidate is rejected the round ends with the
-harness unchanged; otherwise the next round starts from the updated harness
-$\mathrm{H}_{t+1}$. The side grids show the ten declared surfaces S1--S10
-(\cref{tab:surfaces}, \cref{app:surfaces}): tinted cells were edited in earlier rounds, and the
-solid cell carries the newly merged edit. Model weights and the
-evaluator stay fixed throughout.}
+\caption{One \sh{} round. Final-answer outcomes and selected execution operations
+support model-inferred diagnoses. The proposer selects interventions and supplies
+edits on distinct surfaces. Admitted edits are composed \emph{before} comparing
+one candidate with a fresh incumbent on the same held-out validation tasks.
+The current gate permits ties in verifier-pass count within resource bands;
+the whole batch is promoted or rejected. Validation summaries inform later
+history, but validation traces are not mined. An empty or skipped batch schedules
+no validation. Side grids illustrate prior edits and two jointly promoted edits;
+they are not individual efficacy measurements. Weights and evaluator stay fixed.}
 \label{fig:sh-loop}
 \end{figure}

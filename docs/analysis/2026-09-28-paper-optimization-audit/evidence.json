@@ -1,0 +1,2766 @@
+{
+  "date": "2026-09-28",
+  "experiments": [
+    {
+      "completed_rounds": 6,
+      "config_source": null,
+      "directory": "experiment_oolong_pairs_dsv4f",
+      "launch_commit": null,
+      "promoted_batches": 3,
+      "rounds": [
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r01-c01-s4"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "r01-c01-s4",
+              "surface": "S4"
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v1",
+          "round": 1,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 3,
+                  "quality_known": 10,
+                  "quality_mean": 0.7270000000000001,
+                  "total_cost": 1.0953939799999999
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "2e7849f9e4a982a5d95e9544936ef453de1091e4416339c7e3580176629e9a75",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f/opt/round_01/validation/round_01/r01-c01-s4/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 4,
+                  "quality_known": 10,
+                  "quality_mean": 0.8384,
+                  "total_cost": 1.2738490600000003
+                }
+              },
+              "subject_id": "r01-c01-s4",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r02-c01-s9"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "r02-c01-s9",
+              "surface": "S9"
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v1",
+          "round": 2,
+          "subjects": [
+            {
+              "harness_hash": "2e7849f9e4a982a5d95e9544936ef453de1091e4416339c7e3580176629e9a75",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 3,
+                  "quality_known": 10,
+                  "quality_mean": 0.7003,
+                  "total_cost": 1.37937924
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "61d708215307adf7025c1569c0839e2fe64e9ae5cf2487f1f4a4ddf65ae0f18f",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f/opt/round_02/validation/round_02/r02-c01-s9/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 5,
+                  "quality_known": 10,
+                  "quality_mean": 0.7567,
+                  "total_cost": 0.9907538100000001
+                }
+              },
+              "subject_id": "r02-c01-s9",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r03-c01-s4"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "r03-c01-s4",
+              "surface": "S4"
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v1",
+          "round": 3,
+          "subjects": [
+            {
+              "harness_hash": "61d708215307adf7025c1569c0839e2fe64e9ae5cf2487f1f4a4ddf65ae0f18f",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 0,
+                  "quality_known": 10,
+                  "quality_mean": 0.6106999999999999,
+                  "total_cost": 1.5370494899999998
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "2fc2449c10dab14afc4ecee84ba12ce4c7abe255447e64b56d62223e19e61566",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f/opt/round_03/validation/round_03/r03-c01-s4/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.8114000000000001,
+                  "total_cost": 1.49889501
+                }
+              },
+              "subject_id": "r03-c01-s4",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 4
+        },
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 5
+        },
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 6
+        }
+      ]
+    },
+    {
+      "completed_rounds": 3,
+      "config": {
+        "loop": {
+          "environment": "oolong_pairs",
+          "initial_harness": "H0*R",
+          "k": 4,
+          "m": 2,
+          "patience": 3,
+          "t": 15,
+          "v": 1
+        },
+        "promotion": {
+          "cost_band": [
+            0.5,
+            1.25
+          ],
+          "tau_improvement": 0.0,
+          "tau_regression": 0.0
+        },
+        "splits": {
+          "n_ho": 10,
+          "n_in": 10,
+          "seed": 0,
+          "test_long": 40,
+          "test_short": 20
+        }
+      },
+      "config_sha256": "f4b79b77ddd73ead6481c5a5ff828f57fffa344bd85fd9360694b6804760abfe",
+      "config_source": "experiment_oolong_pairs_dsv4f_20260911_1458/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
+      "directory": "experiment_oolong_pairs_dsv4f_20260911_1458",
+      "launch_commit": "a1f930eccae98135927befed5d550aedff4c5d7e",
+      "promoted_batches": 0,
+      "rounds": [
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r01-c01-s9"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r01-c01-s9",
+              "surface": "S9"
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 1,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7551,
+                  "total_cost": 0.53080259
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "eca167767c28cb34c68479d0a673f9097d6d97bdf1094a49217e4fe47c19a11c",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_01/validation/round_01/r01-c01-s9/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.4822,
+                  "total_cost": 1.67617741
+                }
+              },
+              "subject_id": "r01-c01-s9",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r02-c01-s2",
+            "r02-c02-s3"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c01-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c02-s3",
+              "surface": "S3"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 2,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7836000000000001,
+                  "total_cost": 0.85025035
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "44972745bcb6a69a611823c21742bd815c993b29565184368c817079a9231439",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_02/validation/round_02/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 4,
+                  "quality_known": 10,
+                  "quality_mean": 0.9201,
+                  "total_cost": 0.32147748000000004
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r03-c01-s9",
+            "r03-c03-s6"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r03-c02-s2",
+              "surface": null
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r03-c01-s9",
+              "surface": "S9"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r03-c03-s6",
+              "surface": "S6"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 3,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 4,
+                  "quality_known": 10,
+                  "quality_mean": 0.8549,
+                  "total_cost": 0.90956004
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "f60a40299d162665058207e0dc59500ee158374bd21fd8abee6eaf084e21b499",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_1458/opt/round_03/validation/round_03/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.6486,
+                  "total_cost": 1.19248945
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "completed_rounds": 5,
+      "config": {
+        "loop": {
+          "environment": "oolong_pairs",
+          "initial_harness": "H0*R",
+          "k": 4,
+          "m": 2,
+          "patience": 3,
+          "t": 15,
+          "v": 1
+        },
+        "promotion": {
+          "cost_band": [
+            0.0,
+            1.25
+          ],
+          "tau_improvement": 0.0,
+          "tau_regression": 0.0
+        },
+        "splits": {
+          "n_ho": 10,
+          "n_in": 20,
+          "seed": 0,
+          "test_long": 40,
+          "test_short": 10
+        }
+      },
+      "config_sha256": "5f7d9ca2cd3bd61f7183139e54045cfc5fc23dd507e6adfd3670ab9256a55527",
+      "config_source": "experiment_oolong_pairs_dsv4f_20260911_213930/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
+      "directory": "experiment_oolong_pairs_dsv4f_20260911_213930",
+      "launch_commit": "b3a8058284f96bb7f7c7def06958da43404222ae",
+      "promoted_batches": 1,
+      "rounds": [
+        {
+          "completed": true,
+          "constituent_ids": [],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r01-c01-s9",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 1,
+          "subjects": []
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r02-c01-s2",
+            "r02-c02-s9"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c01-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c02-s9",
+              "surface": "S9"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v1",
+          "round": 2,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 0,
+                  "quality_known": 10,
+                  "quality_mean": 0.6819999999999999,
+                  "total_cost": 1.14804273
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_02/validation/round_02/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7769,
+                  "total_cost": 0.6047062400000001
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r03-c01-s9"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r03-c02-s2",
+              "surface": null
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r03-c01-s9",
+              "surface": "S9"
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 3,
+          "subjects": [
+            {
+              "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": null,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.6104,
+                  "total_cost": 0.7462027100000002
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "c637df3f81bf22c323416740572ba7f06b9abc1ee0afa5cd4cc6f59ec1bece18",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_03/validation/round_03/r03-c01-s9/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 8,
+                  "pass_count": 0,
+                  "quality_known": 10,
+                  "quality_mean": 0.0,
+                  "total_cost": 0.61473066
+                }
+              },
+              "subject_id": "r03-c01-s9",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r04-c01-s2",
+            "r04-c02-s9"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r04-c01-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r04-c02-s9",
+              "surface": "S9"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 4,
+          "subjects": [
+            {
+              "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/validation/round_04/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.5721,
+                  "total_cost": 0.44301285999999995
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "2a558ae1bef3297a4f7ac2c0e4ff4d4f8d0052bc89c8a118fbfdece6f9ee44ca",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_04/validation/round_04/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 5,
+                  "pass_count": 0,
+                  "quality_known": 10,
+                  "quality_mean": 0.0,
+                  "total_cost": 0.7039477800000001
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r05-c02-s9"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r05-c02-s9",
+              "surface": "S9"
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 5,
+          "subjects": [
+            {
+              "harness_hash": "9daafa2ac732df94bea53012e05a138a858aac3974c7a2235ff108bc9e5adc4f",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/validation/round_05/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7284,
+                  "total_cost": 0.51332142
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "f3735015737de323a1d6db5410978cbf788ebc4794a6470ec66838d6bfac5da0",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260911_213930/opt/round_05/validation/round_05/r05-c02-s9/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 8,
+                  "pass_count": 0,
+                  "quality_known": 10,
+                  "quality_mean": 0.0,
+                  "total_cost": 0.46989444
+                }
+              },
+              "subject_id": "r05-c02-s9",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "completed_rounds": 4,
+      "config": {
+        "loop": {
+          "environment": "oolong_pairs",
+          "initial_harness": "H0*R",
+          "k": 4,
+          "m": 2,
+          "patience": 3,
+          "t": 15,
+          "v": 1
+        },
+        "promotion": {
+          "cost_band": [
+            0.0,
+            1.25
+          ],
+          "tau_improvement": 0.0,
+          "tau_regression": 0.0
+        },
+        "splits": {
+          "n_ho": 10,
+          "n_in": 20,
+          "seed": 0,
+          "test_long": 40,
+          "test_short": 10
+        }
+      },
+      "config_sha256": "5f7d9ca2cd3bd61f7183139e54045cfc5fc23dd507e6adfd3670ab9256a55527",
+      "config_source": "experiment_oolong_pairs_dsv4f_20260913_132607/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
+      "directory": "experiment_oolong_pairs_dsv4f_20260913_132607",
+      "launch_commit": "3d8c8ef4a9002a84f0305abf3af27f2456c8f1a6",
+      "promoted_batches": 1,
+      "rounds": [
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r01-c01-s9",
+            "r01-c02-s2"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c01-s9",
+              "surface": "S9"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c02-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v1",
+          "round": 1,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260913_132607/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 0,
+                  "quality_known": 10,
+                  "quality_mean": 0.6486000000000001,
+                  "total_cost": 0.8717507899999998
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "b94b9fc1341dc3cc8549bc59743781c05dc3260253e4147705f15e63bf72e8dc",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260913_132607/opt/round_01/validation/round_01/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.5640000000000001,
+                  "total_cost": 0.9226950099999999
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 2
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r03-c01-s2"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r03-c01-s2",
+              "surface": "S2"
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 3,
+          "subjects": [
+            {
+              "harness_hash": "b94b9fc1341dc3cc8549bc59743781c05dc3260253e4147705f15e63bf72e8dc",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260913_132607/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.6388,
+                  "total_cost": 1.04946289
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "c543474998723465192631b9b6cd29e92a41de6755b31fd7f7a03b7cfc957076",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260913_132607/opt/round_03/validation/round_03/r03-c01-s2/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.7561000000000001,
+                  "total_cost": 0.83828669
+                }
+              },
+              "subject_id": "r03-c01-s2",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 4
+        }
+      ]
+    },
+    {
+      "completed_rounds": 3,
+      "config": {
+        "loop": {
+          "environment": "oolong_pairs",
+          "initial_harness": "H0*R",
+          "k": 4,
+          "m": 2,
+          "patience": 3,
+          "t": 15,
+          "v": 1
+        },
+        "promotion": {
+          "cost_band": [
+            0.0,
+            1.25
+          ],
+          "tau_improvement": 0.0,
+          "tau_regression": 0.0
+        },
+        "splits": {
+          "n_ho": 10,
+          "n_in": 20,
+          "seed": 0,
+          "test_long": 40,
+          "test_short": 10
+        }
+      },
+      "config_sha256": "5f7d9ca2cd3bd61f7183139e54045cfc5fc23dd507e6adfd3670ab9256a55527",
+      "config_source": "experiment_oolong_pairs_dsv4f_20260914_111506/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
+      "directory": "experiment_oolong_pairs_dsv4f_20260914_111506",
+      "launch_commit": "fcc62f6e5c564772570936e5fa14aaa5424f0ca0",
+      "promoted_batches": 0,
+      "rounds": [
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r01-c01-s2"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r01-c01-s2",
+              "surface": "S2"
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 1,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260914_111506/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.6256999999999999,
+                  "total_cost": 0.8031994100000001
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "e7247e59c6cc077b802b39a4f20268341a00f547a7a1abbcfda82f1d5a7d118e",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260914_111506/opt/round_01/validation/round_01/r01-c01-s2/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.5847,
+                  "total_cost": 0.99071471
+                }
+              },
+              "subject_id": "r01-c01-s2",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 2
+        },
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 3
+        }
+      ]
+    },
+    {
+      "completed_rounds": 3,
+      "config": {
+        "loop": {
+          "environment": "oolong_pairs",
+          "initial_harness": "H0*R",
+          "k": 4,
+          "m": 2,
+          "patience": 3,
+          "t": 15,
+          "v": 1
+        },
+        "promotion": {
+          "cost_band": [
+            0.0,
+            1.25
+          ],
+          "tau_improvement": 0.0,
+          "tau_regression": 0.0
+        },
+        "splits": {
+          "n_ho": 10,
+          "n_in": 20,
+          "seed": 0,
+          "test_long": 40,
+          "test_short": 10
+        }
+      },
+      "config_sha256": "5f7d9ca2cd3bd61f7183139e54045cfc5fc23dd507e6adfd3670ab9256a55527",
+      "config_source": "experiment_oolong_pairs_dsv4f_20260915_180003/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
+      "directory": "experiment_oolong_pairs_dsv4f_20260915_180003",
+      "launch_commit": "f95d06d88c908e88322bbff30f69e4b1f5c0acea",
+      "promoted_batches": 0,
+      "rounds": [
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r01-c01-s4",
+            "r01-c02-s10"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c01-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c02-s10",
+              "surface": "S10"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 1,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260915_180003/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.5875,
+                  "total_cost": 0.7482993
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "5cd153f6cd4af060654a396016a43ed18b2a0109a0d96ab3b3df8553d770a9c1",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260915_180003/opt/round_01/validation/round_01/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.5033000000000001,
+                  "total_cost": 1.42656213
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r02-c01-s4",
+            "r02-c02-s2",
+            "r02-c03-s10"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c01-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c02-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c03-s10",
+              "surface": "S10"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 2,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260915_180003/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7152999999999999,
+                  "total_cost": 0.97485268
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "60730ee00de56995a2506dbf7917507c534e4cf55cfd5bada2274d60287e73c1",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260915_180003/opt/round_02/validation/round_02/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.5005,
+                  "total_cost": 1.3735457499999997
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r03-c01-s2",
+            "r03-c02-s10",
+            "r03-c03-s4"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r03-c01-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r03-c02-s10",
+              "surface": "S10"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r03-c03-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 3,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260915_180003/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.5063,
+                  "total_cost": 0.7136600700000001
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "95c53e28b345093df2edc939c18e37b34798606a6dd61ffc7b871984a9bab0d3",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260915_180003/opt/round_03/validation/round_03/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.6385,
+                  "total_cost": 2.11357697
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "completed_rounds": 8,
+      "config": {
+        "loop": {
+          "environment": "oolong_pairs",
+          "initial_harness": "H0*R",
+          "k": 4,
+          "m": 2,
+          "patience": 3,
+          "t": 15,
+          "v": 1
+        },
+        "promotion": {
+          "cost_band": [
+            0.0,
+            3
+          ],
+          "tau_improvement": 0.0,
+          "tau_regression": 0.0
+        },
+        "splits": {
+          "n_ho": 10,
+          "n_in": 20,
+          "seed": 0,
+          "test_long": 40,
+          "test_short": 10
+        }
+      },
+      "config_sha256": "75c4f3f03098caa70ac93c8117bed22f1a5585a97a8e051476540c7755916076",
+      "config_source": "experiment_oolong_pairs_dsv4f_20260916_131837/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
+      "directory": "experiment_oolong_pairs_dsv4f_20260916_131837",
+      "launch_commit": "7aad3bc54b4a7f5e950fa142187e4119f9015a5e",
+      "promoted_batches": 3,
+      "rounds": [
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r01-c01-s4",
+            "r01-c02-s9"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c01-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c02-s9",
+              "surface": "S9"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 1,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7085,
+                  "total_cost": 0.6962737000000001
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "ef7069ed40b89e605056674a9267aa794dfc367b220232be301978a6794e807b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_01/validation/round_01/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.5429,
+                  "total_cost": 1.1386643399999998
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r02-c01-s2",
+            "r02-c02-s4",
+            "r02-c03-s3"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c01-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c02-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c03-s3",
+              "surface": "S3"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 2,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.7156,
+                  "total_cost": 0.66074984
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "15241717f25e458dfc5136530c8dcb4440ea2b5b5aab5f4a60a632ed437841b4",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_02/validation/round_02/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 0,
+                  "quality_known": 10,
+                  "quality_mean": 0.6098000000000001,
+                  "total_cost": 1.80090495
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r03-c01-s4"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "r03-c01-s4",
+              "surface": "S4"
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v1",
+          "round": 3,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.5980000000000001,
+                  "total_cost": 0.5860043000000001
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "13efc32c8ac7aad100fef40cfa92922de567217597512e814d003bf22f5950d1",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_03/validation/round_03/r03-c01-s4/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 3,
+                  "quality_known": 10,
+                  "quality_mean": 0.6790999999999999,
+                  "total_cost": 1.12883055
+                }
+              },
+              "subject_id": "r03-c01-s4",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r04-c01-s4",
+            "r04-c02-s2"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r04-c01-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r04-c02-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v1",
+          "round": 4,
+          "subjects": [
+            {
+              "harness_hash": "13efc32c8ac7aad100fef40cfa92922de567217597512e814d003bf22f5950d1",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_04/validation/round_04/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.6532,
+                  "total_cost": 1.5660047000000001
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "50de298a8fa910be808cd85f1ca83a00d72c9f1a91eb39d9568e863fba2a380e",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_04/validation/round_04/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7250000000000001,
+                  "total_cost": 2.1114237499999997
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r05-c01-s2",
+            "r05-c02-s4"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r05-c01-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r05-c02-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v1",
+          "round": 5,
+          "subjects": [
+            {
+              "harness_hash": "50de298a8fa910be808cd85f1ca83a00d72c9f1a91eb39d9568e863fba2a380e",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_05/validation/round_05/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.6859,
+                  "total_cost": 2.5307739099999997
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "1714e1cdf98fad7f700c3109d99cfb753d14e37a0eeb2e84712feed57fb10cc3",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_05/validation/round_05/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 1,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7354,
+                  "total_cost": 3.76159372
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r06-c01-s6"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r06-c01-s6",
+              "surface": "S6"
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 6,
+          "subjects": [
+            {
+              "harness_hash": "1714e1cdf98fad7f700c3109d99cfb753d14e37a0eeb2e84712feed57fb10cc3",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_06/validation/round_06/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.6194,
+                  "total_cost": 2.39664128
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "5125b7d7c23f33f877bac311663aa8831633faa3cc639c1f8773fa6b17dc6341",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_06/validation/round_06/r06-c01-s6/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 0,
+                  "quality_known": 10,
+                  "quality_mean": 0.7193,
+                  "total_cost": 3.50955649
+                }
+              },
+              "subject_id": "r06-c01-s6",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r07-c01-s4",
+            "r07-c03-s3"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r07-c01-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r07-c03-s3",
+              "surface": "S3"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 7,
+          "subjects": [
+            {
+              "harness_hash": "1714e1cdf98fad7f700c3109d99cfb753d14e37a0eeb2e84712feed57fb10cc3",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_07/validation/round_07/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.6355000000000001,
+                  "total_cost": 2.6134112899999997
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "fbc73d7582ee6bb44c394e7db209c14c280f56dc4a1453d11980ac5f26603abe",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_07/validation/round_07/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.5915999999999999,
+                  "total_cost": 2.0648637
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r08-c01-s6",
+            "r08-c02-s4",
+            "r08-c03-s3"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r08-c01-s6",
+              "surface": "S6"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r08-c02-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r08-c03-s3",
+              "surface": "S3"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 8,
+          "subjects": [
+            {
+              "harness_hash": "1714e1cdf98fad7f700c3109d99cfb753d14e37a0eeb2e84712feed57fb10cc3",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_08/validation/round_08/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 3,
+                  "quality_known": 10,
+                  "quality_mean": 0.6128,
+                  "total_cost": 2.3541822
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "02df55a8525bf9ceadadbb72d3cb143b5b02ce1ac06c93d7159717438c516c72",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260916_131837/opt/round_08/validation/round_08/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.6950999999999999,
+                  "total_cost": 4.01377642
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "completed_rounds": 1,
+      "config": {
+        "loop": {
+          "environment": "oolong_pairs",
+          "initial_harness": "H0*R",
+          "k": 4,
+          "m": 2,
+          "patience": 3,
+          "t": 15,
+          "v": 1
+        },
+        "promotion": {
+          "cost_band": [
+            0.0,
+            3
+          ],
+          "tau_improvement": 0.0,
+          "tau_regression": 0.0
+        },
+        "splits": {
+          "n_ho": 10,
+          "n_in": 20,
+          "seed": 0,
+          "test_long": 40,
+          "test_short": 10
+        }
+      },
+      "config_sha256": "75c4f3f03098caa70ac93c8117bed22f1a5585a97a8e051476540c7755916076",
+      "config_source": "experiment_oolong_pairs_dsv4f_20260923_123738/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
+      "directory": "experiment_oolong_pairs_dsv4f_20260923_123738",
+      "launch_commit": "0298b1ec74e24309e58c53075988f64642a5b34a",
+      "promoted_batches": 0,
+      "rounds": [
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 1
+        },
+        {
+          "completed": false,
+          "promoted": null,
+          "round": 2
+        }
+      ]
+    },
+    {
+      "completed_rounds": 5,
+      "config": {
+        "loop": {
+          "environment": "oolong_pairs",
+          "initial_harness": "H0*R",
+          "k": 4,
+          "m": 2,
+          "patience": 3,
+          "t": 15,
+          "v": 1
+        },
+        "promotion": {
+          "cost_band": [
+            0.0,
+            3
+          ],
+          "tau_improvement": 0.0,
+          "tau_regression": 0.0
+        },
+        "splits": {
+          "n_ho": 10,
+          "n_in": 20,
+          "seed": 0,
+          "test_long": 40,
+          "test_short": 10
+        }
+      },
+      "config_sha256": "75c4f3f03098caa70ac93c8117bed22f1a5585a97a8e051476540c7755916076",
+      "config_source": "experiment_oolong_pairs_dsv4f_20260923_163355/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
+      "directory": "experiment_oolong_pairs_dsv4f_20260923_163355",
+      "launch_commit": "99812551d52a7b64d45cfffadcc5f78bb6fe9f55",
+      "promoted_batches": 1,
+      "rounds": [
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r01-c01-s3",
+            "r01-c02-s4"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c01-s3",
+              "surface": "S3"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c02-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 1,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260923_163355/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 3,
+                  "quality_known": 10,
+                  "quality_mean": 0.6063,
+                  "total_cost": 0.8452981700000001
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "36cf9187e9c815aaba9425546055ff0e3de6556a4ebe892ead6416d8aa7caf39",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260923_163355/opt/round_01/validation/round_01/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7975000000000001,
+                  "total_cost": 1.0977412500000001
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r02-c02-s3"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "r02-c02-s3",
+              "surface": "S3"
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v1",
+          "round": 2,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260923_163355/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 3,
+                  "quality_known": 10,
+                  "quality_mean": 0.7120000000000001,
+                  "total_cost": 0.7664446
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "5a17ec5698696976b27dd1238f37c92b9850bb83efda8f5ffb3e858066007425",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260923_163355/opt/round_02/validation/round_02/r02-c02-s3/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 0,
+                  "quality_known": 10,
+                  "quality_mean": 0.6064,
+                  "total_cost": 0.8079471200000001
+                }
+              },
+              "subject_id": "r02-c02-s3",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r03-c01-s2",
+            "r03-c02-s4"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r03-c01-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r03-c02-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v1",
+          "round": 3,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260923_163355/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.5256000000000001,
+                  "total_cost": 0.6481485
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v1"
+            },
+            {
+              "harness_hash": "44869d769d1a48e2b4209e6692c1c578b36ddb714ae109a74acb840bc0bd2df3",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260923_163355/opt/round_03/validation/round_03/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 3,
+                  "quality_known": 10,
+                  "quality_mean": 0.6656,
+                  "total_cost": 0.9025148599999999
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v1"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 4
+        },
+        {
+          "completed": true,
+          "promoted": false,
+          "round": 5
+        },
+        {
+          "completed": false,
+          "promoted": null,
+          "round": 6
+        }
+      ]
+    },
+    {
+      "completed_rounds": 3,
+      "config": {
+        "loop": {
+          "environment": "oolong_pairs",
+          "initial_harness": "H0*R",
+          "k": 4,
+          "m": 2,
+          "patience": 3,
+          "t": 3,
+          "v": 1
+        },
+        "promotion": {
+          "cost_band": [
+            0.0,
+            3
+          ],
+          "tau_improvement": 0.0,
+          "tau_regression": 0.0
+        },
+        "splits": {
+          "n_ho": 10,
+          "n_in": 20,
+          "seed": 0,
+          "test_long": 40,
+          "test_short": 10
+        }
+      },
+      "config_sha256": "d9b1b185cb3d5015b60c01e02e165769875403d3095976c4189923e52441ae3b",
+      "config_source": "experiment_oolong_pairs_dsv4f_20260924_161551_3rounds/.launch/source/configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
+      "directory": "experiment_oolong_pairs_dsv4f_20260924_161551_3rounds",
+      "launch_commit": "ad2ac00147d7e350bdaed12eb67ae941a36f08d6",
+      "promoted_batches": 2,
+      "rounds": [
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r01-c01-s10",
+            "r01-c02-s8"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c01-s10",
+              "surface": "S10"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r01-c02-s8",
+              "surface": "S8"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v2",
+          "round": 1,
+          "subjects": [
+            {
+              "harness_hash": "0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260924_161551_3rounds/opt/round_01/validation/round_01/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.7318,
+                  "total_cost": 1.17080421
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v2"
+            },
+            {
+              "harness_hash": "4d0da0f83aafb2b736304e878f26df8e0bd1f02f0ff27596ee8ccd504dad5676",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260924_161551_3rounds/opt/round_01/validation/round_01/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7602,
+                  "total_cost": 1.7092292800000002
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v2"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r02-c01-s2",
+            "r02-c02-s3"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c01-s2",
+              "surface": "S2"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r02-c02-s3",
+              "surface": "S3"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "promoted",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": true,
+          "protocol": "heldout-batch/v2",
+          "round": 2,
+          "subjects": [
+            {
+              "harness_hash": "4d0da0f83aafb2b736304e878f26df8e0bd1f02f0ff27596ee8ccd504dad5676",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260924_161551_3rounds/opt/round_02/validation/round_02/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.7908000000000001,
+                  "total_cost": 1.55733125
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v2"
+            },
+            {
+              "harness_hash": "e9ae3b12d7c46da61d4f2974a5b7eccc0de8f47a2de95e9f4e4cd49d509f58d6",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260924_161551_3rounds/opt/round_02/validation/round_02/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 2,
+                  "quality_known": 10,
+                  "quality_mean": 0.6809999999999999,
+                  "total_cost": 1.4011162500000003
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v2"
+            }
+          ]
+        },
+        {
+          "completed": true,
+          "constituent_ids": [
+            "r03-c01-s4",
+            "r03-c02-s10"
+          ],
+          "ledger_decisions": [
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r03-c01-s4",
+              "surface": "S4"
+            },
+            {
+              "batch_subject_id": "merged",
+              "decision": "bundled",
+              "subject_id": "r03-c02-s10",
+              "surface": "S10"
+            },
+            {
+              "batch_subject_id": null,
+              "decision": "rejected",
+              "subject_id": "merged",
+              "surface": null
+            }
+          ],
+          "promoted": false,
+          "protocol": "heldout-batch/v2",
+          "round": 3,
+          "subjects": [
+            {
+              "harness_hash": "e9ae3b12d7c46da61d4f2974a5b7eccc0de8f47a2de95e9f4e4cd49d509f58d6",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260924_161551_3rounds/opt/round_03/validation/round_03/baseline/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 3,
+                  "quality_known": 10,
+                  "quality_mean": 0.6805000000000001,
+                  "total_cost": 2.38302199
+                }
+              },
+              "subject_id": "baseline",
+              "validation_protocol": "heldout-batch/v2"
+            },
+            {
+              "harness_hash": "d4d4470136b41215f38d8cde4ae4c591dde3d12c707646c51c2a5a11187607fc",
+              "outcome": "completed",
+              "repetitions": 1,
+              "splits": {
+                "heldout": {
+                  "manifest": "experiment_oolong_pairs_dsv4f_20260924_161551_3rounds/opt/round_03/validation/round_03/merged/heldout/round_00/runs.jsonl",
+                  "n_instances": 10,
+                  "n_resource_terminated": 0,
+                  "n_runs": 10,
+                  "n_runtime_errors": 0,
+                  "pass_count": 1,
+                  "quality_known": 10,
+                  "quality_mean": 0.5882000000000001,
+                  "total_cost": 2.1493410299999995
+                }
+              },
+              "subject_id": "merged",
+              "validation_protocol": "heldout-batch/v2"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "head": "070d1a8493d79999ce4a5b01b19a2d0dc85b7637",
+  "latest_split_corpora": {
+    "oolong_pairs_long_test": {
+      "corpora": {
+        "704d4395edbab4550cfcae3e470da7728eacbe7f22faa7e791a833a6836838de": {
+          "characters": 604601,
+          "num_entries": 6374,
+          "tasks": [
+            8,
+            2,
+            10,
+            19,
+            15,
+            1,
+            18,
+            3,
+            20,
+            4,
+            16,
+            14,
+            17,
+            9,
+            11,
+            6,
+            12,
+            13,
+            7,
+            5
+          ],
+          "window_id": 10
+        },
+        "d620cb8ff8fe75a620149b3604ea42ac413a40b673c462618b33acd414670677": {
+          "characters": 617594,
+          "num_entries": 6374,
+          "tasks": [
+            1,
+            13,
+            16,
+            2,
+            8,
+            6,
+            11,
+            14,
+            15,
+            18,
+            9,
+            4,
+            10,
+            5,
+            7,
+            19,
+            12,
+            20,
+            17,
+            3
+          ],
+          "window_id": 9
+        }
+      },
+      "n": 40,
+      "sha256": "730efd0b12feb8f32f1b61b96fc469800a9f31383b30a18f1e14ceb7f4b8198d",
+      "unique_ids": 40
+    },
+    "oolong_pairs_short_held_in": {
+      "corpora": {
+        "5f067945b6760331dfc4975abbba6aa5e920216a3b438380b1b90dd034bae320": {
+          "characters": 18487,
+          "num_entries": 188,
+          "tasks": [
+            1,
+            13,
+            16,
+            2,
+            8,
+            6,
+            11,
+            14,
+            15,
+            18
+          ],
+          "window_id": 9
+        },
+        "e939371361d4f7c926c3ca99ab41ca990df9509d1fe594a84aa16bc3e0e0c9e6": {
+          "characters": 17843,
+          "num_entries": 188,
+          "tasks": [
+            8,
+            2,
+            10,
+            19,
+            15,
+            1,
+            18,
+            3,
+            20,
+            4
+          ],
+          "window_id": 10
+        }
+      },
+      "n": 20,
+      "sha256": "bb1d170c7676d1944897747e8bd2bc16d42e367cb52b86b4d23ad233a03f3e3f",
+      "unique_ids": 20
+    },
+    "oolong_pairs_short_held_out": {
+      "corpora": {
+        "5f067945b6760331dfc4975abbba6aa5e920216a3b438380b1b90dd034bae320": {
+          "characters": 18487,
+          "num_entries": 188,
+          "tasks": [
+            9,
+            4,
+            10,
+            5,
+            7,
+            19
+          ],
+          "window_id": 9
+        },
+        "e939371361d4f7c926c3ca99ab41ca990df9509d1fe594a84aa16bc3e0e0c9e6": {
+          "characters": 17843,
+          "num_entries": 188,
+          "tasks": [
+            16,
+            14,
+            17,
+            9
+          ],
+          "window_id": 10
+        }
+      },
+      "n": 10,
+      "sha256": "799e86439a8f472d23a79d7f35cf94900271c905d139542fc0cf50350250466d",
+      "unique_ids": 10
+    },
+    "oolong_pairs_short_test": {
+      "corpora": {
+        "5f067945b6760331dfc4975abbba6aa5e920216a3b438380b1b90dd034bae320": {
+          "characters": 18487,
+          "num_entries": 188,
+          "tasks": [
+            12,
+            20,
+            17,
+            3
+          ],
+          "window_id": 9
+        },
+        "e939371361d4f7c926c3ca99ab41ca990df9509d1fe594a84aa16bc3e0e0c9e6": {
+          "characters": 17843,
+          "num_entries": 188,
+          "tasks": [
+            11,
+            6,
+            12,
+            13,
+            7,
+            5
+          ],
+          "window_id": 10
+        }
+      },
+      "n": 10,
+      "sha256": "d7a486c3f1d5652c3ba664e7394eee2ee738866300836c2ee0b59c0d8e18202d",
+      "unique_ids": 10
+    }
+  },
+  "long_evaluation": {
+    "edited_partial": {
+      "causes": {
+        "resource_terminated": 2,
+        "wrong_format": 1
+      },
+      "completed_attempts": 3,
+      "exact_passes": 0,
+      "quality_known": 3,
+      "quality_mean": 0.0,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/eval/paired_20260923T140326Z/sh_rlm/oolong_pairs_long/round_00/runs.jsonl",
+      "source_sha256": "b1f7d180e49a952402bac53d46bb37f8c8f522243be75ef285bc6bd91eae259e",
+      "unique_tasks": 1
+    },
+    "initial": {
+      "causes": {
+        "mixed_set_error": 3,
+        "resource_terminated": 45
+      },
+      "completed_attempts": 48,
+      "exact_passes": 0,
+      "quality_known": 48,
+      "quality_mean": 0.005791666666666667,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/eval/initial/oolong_pairs_long/round_00/runs.jsonl",
+      "source_sha256": "7874b11e667e469d796876f743ae7bf18ff06263dba9cd6b97b7fd4ee133c6ac",
+      "unique_tasks": 16
+    },
+    "initial_matched": {
+      "causes": {
+        "resource_terminated": 3
+      },
+      "completed_attempts": 3,
+      "exact_passes": 0,
+      "quality_known": 3,
+      "quality_mean": 0.0,
+      "source": "experiment_oolong_pairs_dsv4f_20260916_131837/eval/initial/oolong_pairs_long/round_00/runs.jsonl",
+      "source_sha256": "7874b11e667e469d796876f743ae7bf18ff06263dba9cd6b97b7fd4ee133c6ac",
+      "unique_tasks": 1
+    }
+  },
+  "method": "Read-only manifest, configuration, verdict and LaTeX inventory; F1 uses recorded f1/v1 or exact legacy grammar plus declared terminal zeros; no model calls. Context hash is prefix before the exact task question.",
+  "tex": [
+    {
+      "file": "paper/Figure_1.tex",
+      "includes": [],
+      "lines": 92,
+      "missing_includes": [],
+      "sha256": "f9fc9a3d9f925ec5ddb401e76d4f82616588a71957a6744240a13813d47d1a80",
+      "todo_answers": 0
+    },
+    {
+      "file": "paper/Figure_2.tex",
+      "includes": [],
+      "lines": 274,
+      "missing_includes": [],
+      "sha256": "f8f7067e37bdfd01c77c322d9e4d8d173a46374b6197810a5164f81e1d07e3ab",
+      "todo_answers": 0
+    },
+    {
+      "file": "paper/Figure_2B.tex",
+      "includes": [],
+      "lines": 261,
+      "missing_includes": [],
+      "sha256": "7d0558742e59cc0230693743fd91df36e213b40b443cb0ead0201b99bbbc2a27",
+      "todo_answers": 0
+    },
+    {
+      "file": "paper/Figure_A1.tex",
+      "includes": [],
+      "lines": 26,
+      "missing_includes": [],
+      "sha256": "9f774ff6bf75098032deec1b4a94abe837017832cc60d037ba106435dc9f89ca",
+      "todo_answers": 0
+    },
+    {
+      "file": "paper/checklist.tex",
+      "includes": [],
+      "lines": 251,
+      "missing_includes": [],
+      "sha256": "780ba13c480f652dcc42e69ed61a752ce0ea270f15d332d4a45b059dabad84f6",
+      "todo_answers": 16
+    },
+    {
+      "file": "paper/neurIPS_short_paper.tex",
+      "includes": [
+        "figure_short_paper",
+        "Figure_1.tex"
+      ],
+      "lines": 461,
+      "missing_includes": [
+        "figure_short_paper"
+      ],
+      "sha256": "6080b41cea191626fb10d66aaa0c58c6756896e355c3bd6a0e9f491f4ac10b11",
+      "todo_answers": 0
+    },
+    {
+      "file": "paper/neurips_2026.tex",
+      "includes": [
+        "checklist.tex"
+      ],
+      "lines": 491,
+      "missing_includes": [],
+      "sha256": "2880f23a3bf697e53e6860b7616f5e96615680a3950b1ea75b6b6b020c0c6e6b",
+      "todo_answers": 0
+    },
+    {
+      "file": "paper/proposal-old.tex",
+      "includes": [
+        "Figure_1.tex",
+        "Figure_2.tex"
+      ],
+      "lines": 603,
+      "missing_includes": [],
+      "sha256": "0dec6ce1b8fbb4e97b797a22d2d14ce49832d2e846dbdb50c2123f4bc06951f8",
+      "todo_answers": 0
+    },
+    {
+      "file": "paper/proposal.tex",
+      "includes": [
+        "Figure_1.tex",
+        "Figure_2.tex"
+      ],
+      "lines": 662,
+      "missing_includes": [],
+      "sha256": "408534f46e703c8db907569de5afa527cf1a258983c4451f9bd8fef0ed733bfb",
+      "todo_answers": 0
+    }
+  ]
+}
