@@ -1,0 +1,194 @@
+# =============================================================================
+# configs/experiment_obliq_bench_math_DeepSeekV4Flash.matched20.toml -- a
+# dedicated copy of experiment_obliq_bench_math_DeepSeekV4Flash.toml for a
+# standalone matched H0/H0*/lambda_rlm comparison on 20 NEW query ids (not
+# among the 10 fixed ids used by dataset_qualification_dsv4f_v1). Cloned
+# rather than editing the shared file in place, so this run's higher
+# max_budget/max_iterations never leak into the real mining loop's own caps --
+# same precedent as configs/experiment_obliq_bench_math_DeepSeekV4Flash.qualification-frozen.toml.
+#
+# Only [caps] differs from the source file: max_budget 2.0 -> 1.0 (explicit
+# request), max_iterations 30 -> 45 (explicit request). attempts was already 1.
+# Everything else (backend=azure_foundry, pricing, [splits]/[loop]/
+# [environments.*]) is inert for this script -- examples/obliq_bench_math_smoke.py
+# only harvests round_config_kwargs() (backend, backend_kwargs, caps).
+#
+# The 20 query ids (sorted, disjoint from the qualification study's 10):
+# Random(0).sample() over the 141 remaining ids after excluding
+# {q00201, q00076, q00096, q00408, q02550, q00355, q00999, q00211, q00239, q00077}
+# from the full 151-query pool -- reproducible via the command below.
+#
+# Run (full corpus per instance, matching the qualification study's own
+# protocol for apples-to-apples comparison against its 10-query results):
+#   uv run python examples/obliq_bench_math_smoke.py --live \
+#       --config configs/experiment_obliq_bench_math_DeepSeekV4Flash.matched20.toml \
+#       --methods 'H0,H0*,lambda_rlm' \
+#       --query-ids q00551,q00844,q00847,q01122,q01165,q01497,q01630,q01654,q01798,q01890,q01905,q02137,q02279,q02678,q02765,q02998,q03023,q03097,q03159,q03422 \
+#       --out-dir ./obliq_bench_math_matched20
+# =============================================================================
+
+[decoding]
+temperature = 0
+top_p = 0.95
+max_output_tokens = 8192
+
+[splits]
+n_in = 15
+n_ho = 15
+test_short = 20
+test_long = 1
+seed = 0
+
+[loop]
+m = 2
+v = 1
+k = 4
+t = 15
+patience = 3
+environment = "obliq_bench_math"
+initial_harness = "H0*"
+
+[promotion]
+tau_regression = 0.0
+tau_improvement = 0.0
+cost_band = [0.0, 3]
+
+# -----------------------------------------------------------------------------
+# Inert-but-mandatory below (graphwalks/oolong_pairs/oolong): schema fields
+# other environments own; this file's [caps] is what the smoke script reads.
+# -----------------------------------------------------------------------------
+
+[environments.graphwalks]
+dataset_repo = "openai/graphwalks"
+dataset_file_short = "graphwalks_128k_and_shorter.parquet"
+dataset_file_long = "graphwalks_256k_to_1mil.parquet"
+dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead"
+max_chars = 128000
+min_chars = 0
+problem_types = ["bfs", "parents"]
+
+[environments.oolong_pairs]
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192
+context_length_long = 262144
+max_scan = 50000
+n_short = 40
+n_long = 40
+
+[environments.oolong]
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+subsets = []
+task_groups = ["counting", "user", "timeline"]
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd"
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb"
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
+
+[environments.obliq_bench_math]
+dataset_revision = "4ebee29f68ceeb62ca00bd73d5478acdd3cd7764"
+candidate_pool_size = 200
+
+# -----------------------------------------------------------------------------
+# Live section: what examples/obliq_bench_math_smoke.py actually reads.
+# -----------------------------------------------------------------------------
+
+[caps]
+attempts = 1
+max_iterations = 45 # was 30
+max_depth = 3
+max_budget = 1.0 # USD per run -- was 2.0
+max_timeout = 3600.0 # seconds per run -- unchanged; flag if 45 iterations need more
+candidate_budget = 100.0 # USD; inert (no validation stage in the smoke script)
+
+[backends.runner]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
+
+[backends.attributor]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
+
+[backends.proposer]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
+
+[backends.openrouter]
+provider_order = []
+allow_fallbacks = true
+
+[backends.azure_foundry]
+thinking = true
+
+[pricing.promo]
+input_per_million = 0.19
+output_per_million = 0.51
+
+[pricing.list_price]
+input_per_million = 0.19
+output_per_million = 0.51
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true
+sensitivity_range = [1.99, 3.49]
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2400.0
+long = 700.0
+
+[report]
+p_merge = 0.5
+eval_conditions = 3
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution_obliq_bench_math_matched20.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_obliq_bench_math_matched20.jsonl"
+eval_repetitions = 3
+validation_workers = 5
+validation_run_workers = 1
+mining_run_workers = 5
+real_check_every_n_rounds = 0
+
+[smoke.splits]
+n_in = 3
+n_ho = 3
+test_short = 4
+test_long = 2
+
+[smoke.loop]
+m = 1
+v = 1
+k = 2
+t = 1
+
+[smoke.caps]
+max_budget = 0.5
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+real_check_every_n_rounds = 0
+
+[smoke.environments.obliq_bench_math]
+candidate_pool_size = 20
