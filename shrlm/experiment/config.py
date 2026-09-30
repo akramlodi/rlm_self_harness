@@ -134,6 +134,7 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
         "environments.oolong.synth.max_scan",
         "environments.oolong.real.max_scan",
         "environments.oolong.real.n_check",
+        "environments.obliq_bench_math.candidate_pool_size",
     }
 )
 
@@ -194,10 +195,11 @@ class LoopConfig:
     patience: int
     initial_harness: str = "H0"
     # Which environment the loop mines and validates: ``graphwalks`` (default),
-    # ``oolong_synth``, or ``oolong_pairs``. Identity key like the counts -- which
-    # environment round 1 mines decides every run that lands on disk -- so a run
-    # against a different environment gets a distinct experiment identity and
-    # its own out-dir. ``load_config`` validates it before any spend.
+    # ``oolong_synth``, ``oolong_pairs``, or ``obliq_bench_math``. Identity key
+    # like the counts -- which environment round 1 mines decides every run that
+    # lands on disk -- so a run against a different environment gets a distinct
+    # experiment identity and its own out-dir. ``load_config`` validates it
+    # before any spend.
     environment: str = "graphwalks"
 
 
@@ -303,10 +305,24 @@ class OolongConfig:
 
 
 @dataclass(frozen=True)
+class ObliqBenchMathConfig:
+    """OBLIQ-Bench Math (Analogue Queries retrieval, NDCG@10): the mining/
+    validation pool when ``loop.environment == "obliq_bench_math"``. One
+    seeded query-id pool over the dataset's 151 queries -- like oolong_synth,
+    there is no short/long context-length axis to split on; ``candidate_pool_size``
+    is a per-instance cost ceiling (gold ids plus that many random negatives),
+    not a difficulty split. None uses the full ~277k-token corpus per query."""
+
+    dataset_revision: str
+    candidate_pool_size: int | None = None
+
+
+@dataclass(frozen=True)
 class EnvironmentsConfig:
     graphwalks: GraphWalksConfig
     oolong_pairs: OolongPairsConfig
     oolong: OolongConfig
+    obliq_bench_math: ObliqBenchMathConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -556,14 +572,20 @@ def _validate_initial_harness(loop: LoopConfig) -> LoopConfig:
     return loop
 
 
-SELECTABLE_ENVIRONMENTS: tuple[str, ...] = ("graphwalks", "oolong_pairs", "oolong_synth")
+SELECTABLE_ENVIRONMENTS: tuple[str, ...] = (
+    "graphwalks",
+    "oolong_pairs",
+    "oolong_synth",
+    "obliq_bench_math",
+)
 
 
 def _validate_environment(loop: LoopConfig) -> LoopConfig:
     """Reject a ``[loop] environment`` the orchestrator cannot mine/validate.
 
-    ``graphwalks``, ``oolong_pairs``, and ``oolong_synth`` are supported as the
-    mined/validated pool. The OOLONG-real check remains evaluation-only.
+    ``graphwalks``, ``oolong_pairs``, ``oolong_synth``, and ``obliq_bench_math``
+    are supported as the mined/validated pool. The OOLONG-real check remains
+    evaluation-only.
     """
     if loop.environment not in SELECTABLE_ENVIRONMENTS:
         raise ValueError(
@@ -657,11 +679,19 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     tuplify(promotion_table, "sub_call_band")
 
     env_table = raw["environments"]
-    check_keys(env_table, ("graphwalks", "oolong_pairs", "oolong"), "environments")
+    check_keys(
+        env_table,
+        ("graphwalks", "oolong_pairs", "oolong"),
+        "environments",
+        optional=("obliq_bench_math",),
+    )
     graphwalks_table = dict(env_table["graphwalks"])
     tuplify(graphwalks_table, "problem_types")
     oolong_pairs_table = dict(env_table["oolong_pairs"])
     tuplify(oolong_pairs_table, "task_ids")
+    obliq_bench_math_table = (
+        dict(env_table["obliq_bench_math"]) if "obliq_bench_math" in env_table else None
+    )
 
     oolong_env_table = env_table["oolong"]
     check_keys(oolong_env_table, ("synth", "real"), "environments.oolong")
@@ -724,13 +754,21 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         tuplify(scenario, "sensitivity_range")
         scenarios.append(build_section(GpuScenario, scenario, f"gpu_scenarios[{index}]"))
 
+    loop = _validate_environment(
+        _validate_initial_harness(build_section(LoopConfig, raw["loop"], "loop"))
+    )
+    if loop.environment == "obliq_bench_math" and obliq_bench_math_table is None:
+        raise ValueError(
+            "[loop] environment = 'obliq_bench_math' selects the OBLIQ-Bench Math "
+            "environment, but [environments.obliq_bench_math] is absent; the table is "
+            "optional only for configs that never select this environment"
+        )
+
     return ExperimentConfig(
         profile=profile,
         decoding=build_section(DecodingConfig, raw["decoding"], "decoding"),
         splits=build_section(SplitsConfig, raw["splits"], "splits"),
-        loop=_validate_environment(
-            _validate_initial_harness(build_section(LoopConfig, raw["loop"], "loop"))
-        ),
+        loop=loop,
         promotion=build_section(PromotionSettings, promotion_table, "promotion"),
         caps=build_section(CapsConfig, raw["caps"], "caps"),
         environments=EnvironmentsConfig(
@@ -743,6 +781,13 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
                     OolongSynthConfig, oolong_synth_table, "environments.oolong.synth"
                 ),
                 real=build_section(OolongRealConfig, oolong_real_table, "environments.oolong.real"),
+            ),
+            obliq_bench_math=(
+                build_section(
+                    ObliqBenchMathConfig, obliq_bench_math_table, "environments.obliq_bench_math"
+                )
+                if obliq_bench_math_table is not None
+                else None
             ),
         ),
         backends=BackendsConfig(

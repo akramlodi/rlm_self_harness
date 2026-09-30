@@ -20,6 +20,8 @@ from shrlm.environments.obliq_bench_math import (
     build_prompt,
     extract_ranked_ids,
     load_obliq_bench_math,
+    load_obliq_bench_math_from_config,
+    make_obliq_bench_math_verifier,
     ndcg_at_10,
     recorded_ndcg,
 )
@@ -332,3 +334,55 @@ class TestLoadObliqBenchMath:
 
         actual_ids = re.findall(r"^\[([^]]+)]$", instance["prompt"], re.MULTILINE)
         assert actual_ids == expected_ids
+
+
+# ---------------------------------------------------------------------------
+# Loop-integration surface: make_obliq_bench_math_verifier,
+# load_obliq_bench_math_from_config
+# ---------------------------------------------------------------------------
+
+
+class TestMakeObliqBenchMathVerifier:
+    def test_factory_produces_a_working_verifier(self):
+        verifier = make_obliq_bench_math_verifier()
+        assert isinstance(verifier, ObliqBenchMathVerifier)
+        verdict = verifier({"gold_relevant_ids": ["a"]}, 'RANKED: ["a"]')
+        assert verdict.passed
+
+
+class _FakeObliqBenchMathEnv:
+    def __init__(self, candidate_pool_size: int | None, dataset_revision: str) -> None:
+        self.candidate_pool_size = candidate_pool_size
+        self.dataset_revision = dataset_revision
+
+
+class _FakeEnvironments:
+    def __init__(self, obliq_bench_math: _FakeObliqBenchMathEnv) -> None:
+        self.obliq_bench_math = obliq_bench_math
+
+
+class _FakeConfig:
+    def __init__(self, obliq_bench_math: _FakeObliqBenchMathEnv) -> None:
+        self.environments = _FakeEnvironments(obliq_bench_math)
+
+
+class TestLoadObliqBenchMathFromConfig:
+    def test_forwards_candidate_pool_size_and_revision(self, monkeypatch, tmp_path):
+        stub_download(monkeypatch, tmp_path)
+        config = _FakeConfig(
+            _FakeObliqBenchMathEnv(candidate_pool_size=1, dataset_revision="rev-x")
+        )
+        instances = load_obliq_bench_math_from_config(config, n=1, seed=0)
+        assert len(instances) == 1
+        # candidate_pool_size=1 is below the 2-gold-id floor for q1, so if q1
+        # was drawn its pool is exactly 2 (gold-only, no room for negatives);
+        # q2 has a single gold id, so its capped pool is exactly 1.
+        assert instances[0]["pool_size"] in (1, 2)
+
+    def test_full_corpus_when_candidate_pool_size_is_none(self, monkeypatch, tmp_path):
+        stub_download(monkeypatch, tmp_path)
+        config = _FakeConfig(
+            _FakeObliqBenchMathEnv(candidate_pool_size=None, dataset_revision="rev-x")
+        )
+        instances = load_obliq_bench_math_from_config(config, n=1, seed=0)
+        assert instances[0]["pool_size"] in (len(CORPUS_ROWS), len(CORPUS_ROWS) - 1)

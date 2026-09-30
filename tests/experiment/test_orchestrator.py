@@ -27,6 +27,7 @@ import rlm.core.rlm as rlm_module
 import shrlm.experiment.analysis_io as analysis_io_module
 import shrlm.experiment.incumbent_quality as incumbent_quality_module
 import shrlm.experiment.orchestrator as orchestrator_module
+from shrlm.environments.obliq_bench_math import ObliqBenchMathVerifier
 from shrlm.environments.oolong import OolongSubVerifier, OolongVerifier
 from shrlm.environments.oolong_pairs import OolongPairsVerifier
 from shrlm.experiment.analysis_io import (
@@ -53,6 +54,7 @@ from shrlm.experiment.orchestrator import (
     EVIDENCE_MARKER_FILENAME,
     FROZEN_DIR,
     FROZEN_HARNESS_FILENAME,
+    OBLIQ_BENCH_MATH_VERIFIER_FACTORY,
     OOLONG_PAIRS_VERIFIER_FACTORY,
     OOLONG_SYNTH_VERIFIER_FACTORY,
     POST_ROUND_BATCH_TOOL,
@@ -241,6 +243,10 @@ question_types = []
 episode_counts = [1, 2]
 max_scan = 100
 n_check = 2
+
+[environments.obliq_bench_math]
+dataset_revision = "rev-obliq"
+candidate_pool_size = 50
 
 [backends.runner]
 backend = "openai"
@@ -2353,6 +2359,57 @@ class TestOolongEnvironment:
         )
         assert not (out / "opt" / REAL_CHECK_DIR).exists()
         assert not (out / SPLITS_DIR / split_file_name("oolong_real", "short", "check")).exists()
+
+
+class TestObliqBenchMathEnvironment:
+    def test_resolve_env_binding_selects_obliq_bench_math(self, tmp_path):
+        config = make_config(tmp_path)
+        config = replace(config, loop=replace(config.loop, environment="obliq_bench_math"))
+
+        binding = resolve_env_binding(config)
+
+        assert (binding.name, binding.length) == ("obliq_bench_math", "short")
+        assert isinstance(binding.verifier, ObliqBenchMathVerifier)
+        assert binding.sub_verifier is None
+        assert binding.verifier_factory == OBLIQ_BENCH_MATH_VERIFIER_FACTORY
+
+    def test_offline_round_mines_and_validates_obliq_bench_math_only(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path, t=1)
+        config = replace(config, loop=replace(config.loop, environment="obliq_bench_math"))
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL)
+        run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 2),
+            proposer_lm=MockLM(responses=[EMPTY_BATCH]),
+            loaders={"obliq_bench_math": fake_loader("obliq_bench_math")},
+        )
+        splits = out / SPLITS_DIR
+        assert (splits / split_file_name("obliq_bench_math", "short", "held_in")).exists()
+        assert not (splits / split_file_name("graphwalks", "short", "held_in")).exists()
+
+    def test_load_config_rejects_obliq_bench_math_without_its_table(self, tmp_path):
+        text = TOML_TEMPLATE.format(
+            temperature=0.7,
+            v=1,
+            t=1,
+            patience=3,
+            candidate_budget=1.0,
+            graphwalks_revision="rev-gw",
+            proposer_model="proposer-test",
+        ).replace(
+            '[environments.obliq_bench_math]\ndataset_revision = "rev-obliq"\n'
+            "candidate_pool_size = 50\n\n",
+            "",
+            1,
+        )
+        text = text.replace("[loop]\n", '[loop]\nenvironment = "obliq_bench_math"\n', 1)
+        path = tmp_path / "experiment.toml"
+        path.write_text(text)
+        with pytest.raises(ValueError, match="obliq_bench_math"):
+            load_config("full", path=path)
 
 
 @pytest.mark.parametrize("subject_workers,run_workers", [(1, 1), (1, 2), (2, 1), (2, 2)])

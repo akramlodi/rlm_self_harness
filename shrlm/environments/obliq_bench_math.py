@@ -244,6 +244,17 @@ def load_obliq_bench_math(
     return instances
 
 
+def load_obliq_bench_math_from_config(config: Any, n: int, seed: int) -> list[dict[str, Any]]:
+    """``load_obliq_bench_math`` with repo/pin/pool facts taken from the experiment config."""
+    env = config.environments.obliq_bench_math
+    return load_obliq_bench_math(
+        n=n,
+        seed=seed,
+        candidate_pool_size=env.candidate_pool_size,
+        revision=env.dataset_revision,
+    )
+
+
 def recorded_ndcg(verdict: Verdict) -> float | None:
     """Read the saved NDCG@10 out of a verdict's ``detail`` string; never rescore
     a partial or redirected answer (mirrors ``oolong_pairs.recorded_pair_metrics``)."""
@@ -333,3 +344,8 @@ class ObliqBenchMathVerifier:
         else:
             cause = VerifierCause.SPURIOUS
         return Verdict(passed=False, cause=cause, gold=gold, produced=produced_str, detail=detail)
+
+
+def make_obliq_bench_math_verifier() -> ObliqBenchMathVerifier:
+    """Zero-arg factory for validation child processes (EvaluationConfig.verifier_factory)."""
+    return ObliqBenchMathVerifier()
