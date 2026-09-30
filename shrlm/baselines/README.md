@@ -26,6 +26,24 @@ Each pairwise run persists its raw batch responses, retry rejections, parsed
 record labels, label counts, and bounded call totals under
 `metadata.pairwise_audit` in the run trace.
 
+All λ-RLM runs also persist the wrapper-observed model calls under
+`metadata.lambda_subcall_audit`. The audit records each call's inferred phase,
+prompt length and preview, full response, cumulative usage, and the upstream
+YES/NO relevance-filter decision. It observes the pinned runtime without
+modifying its splitting, filtering, or reduction behavior. These are the raw
+model decisions; the upstream filter retains every chunk when all decisions
+within one filter operation are NO. Inspect a run with:
+
+```bash
+jq '.metadata.lambda_subcall_audit | {
+  calls_observed, phase_counts, filter_decisions
+}' path/to/round_00/runs/INSTANCE__a01.json
+
+jq '.metadata.lambda_subcall_audit.calls[] | {
+  sequence, phase, prompt_chars, filter_decision, response, error
+}' path/to/round_00/runs/INSTANCE__a01.json
+```
+
 - Byte-identical upstream implementation: `shrlm/baselines/upstream/lambda_rlm.py`
 - OOLONG-Pairs paper reconstruction: `shrlm/baselines/paper_lambda_rlm.py`
 - Local evaluation adapter: `shrlm/baselines/lambda_rlm.py`
@@ -121,7 +139,8 @@ records paired per-instance NDCG, outcome, cost, runtime, and aggregate metrics.
 Add `H0*R` to `--methods` only when explicitly testing recursion policy; it is
 a local diagnostic variant rather than a peer reference baseline.
 
-`--method` accepts one of `H0`, `H0*`, `H0*R`, or `lambda_rlm`; `--methods`
+`--method` accepts one of `H0`, `H0*`, `H0*R`, `lambda_rlm`, or
+`lambda_rlm_obliq`; `--methods`
 accepts a comma-separated matched selection. The older `--harness`
 alias continues to accept `H0`, `H0*`, or `H0*R` (a locally-authored, non-reference
 variant that makes `rlm_query` legible -- not one of this repo's documented
@@ -129,6 +148,54 @@ baselines, so it is opt-in, not the default). `--query-ids` selects specific
 queries (comma-separated) instead of a seeded `--n`-sized sample. Backend and
 pricing come from `configs/experiment_obliq_bench_math_DeepSeekV4Flash.toml`
 (DeepSeek-V4-Flash via Azure Foundry) unless `--config` points elsewhere.
+
+The upstream generic QA reducer can discard document IDs on the full-corpus
+ranking task. A separately identified document-aware adaptation is available
+for research comparisons; it does not replace the pinned `lambda_rlm`
+baseline:
+
+```bash
+uv run python examples/obliq_bench_math_smoke.py --live \
+    --method lambda_rlm_obliq --query-ids q01522 \
+    --config configs/experiment_obliq_bench_math_DeepSeekV4Flash.toml \
+    --max-budget 0.25 --max-timeout 3600 \
+    --out-dir ./experiment_obliq_math_lambda_obliq_sanity
+```
+
+`lambda_rlm_obliq` splits only at bracketed document boundaries, ranks each
+batch, preserves exact IDs through reduction, and persists its own distinct
+method identity. Its development profile uses at most 64 documents and 25,000
+document characters per batch, with three attempts to repair a malformed
+batch response. These parameters apply only to `lambda_rlm_obliq`; the pinned
+generic `lambda_rlm`, H0/H0*, and OOLONG-Pairs methods are unchanged. Use a
+new output directory; an existing `lambda_rlm` round cannot be resumed as the
+adapted method. Likewise, do not resume a 128-document
+`lambda_rlm_obliq` round with this 64-document profile because its persisted
+method identity is different.
+
+## Dataset qualification study
+
+Before wiring a candidate environment into the optimization loop, compare the
+fixed baselines on matched long-context samples from OBLIQ Math and
+OOLONG-Pairs:
+
+```bash
+# No-spend preflight: validates the strict study TOML and prints the $30 cap.
+uv run python examples/dataset_qualification.py
+
+# Execute or resume the preregistered study.
+uv run python examples/dataset_qualification.py --live \
+    --out-dir ./dataset_qualification_dsv4f_v1
+```
+
+The study configuration is
+`configs/dataset_qualification_DeepSeekV4Flash.toml`. It fixes ten instances
+per dataset, two attempts, H0/H0*/lambda-RLM, a shared DeepSeek-V4-Flash
+backend, and a `$0.25` per-run cap. OBLIQ NDCG@10 and OOLONG-Pairs F1 remain
+separate; `dataset_comparison.json` compares score coverage, technical
+failures, method separation, cost, calls, and observed recursion rather than
+averaging incompatible metrics. The live output directory records
+`study.json` and refuses to resume under a changed study configuration.
 
 ## SH-RLM
 
