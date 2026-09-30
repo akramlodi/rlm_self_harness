@@ -66,11 +66,12 @@ from shrlm.environments.oolong_pairs import (
     load_oolong_pairs,
     recorded_pair_metrics,
 )
-from shrlm.experiment.config import load_config, round_config_kwargs
+from shrlm.experiment.config import CONFIG_PATH, load_config, round_config_kwargs
 from shrlm.optimization.driver import RoundConfig, run_round
 from shrlm.optimization.types import Verdict
 from shrlm.rlm_harness import HARNESSES
 
+DEFAULT_CONFIG = CONFIG_PATH
 DEFAULT_TASK_IDS = (1,)
 
 B1_CONDITION = "b1"
@@ -88,6 +89,7 @@ CONTEXT_LENGTH_CHOICES = ("short", "long")
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="actually spend money")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument(
         "--compare-b1",
         action="store_true",
@@ -274,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(f"--n must be >= 1, got {args.n}")
 
     load_dotenv()
-    config = load_config("full")
+    config = load_config("full", path=args.config)
     oolong_cfg = config.environments.oolong_pairs
     context_length = (
         oolong_cfg.context_length_short

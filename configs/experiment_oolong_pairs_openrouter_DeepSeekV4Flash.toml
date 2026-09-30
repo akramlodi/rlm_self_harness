@@ -1,0 +1,189 @@
+# =============================================================================
+# configs/experiment_oolong_pairs_openrouter_DeepSeekV4Flash.toml -- OOLONG-Pairs
+# on OpenRouter's DeepSeek V4 Flash 0423 (model slug deepseek/deepseek-v4-flash),
+# for a standalone comparison run independent of the Azure Foundry-backed
+# dataset_qualification_dsv4f_v1 study. Cloned from
+# configs/experiment_oolong_pairs_DeepSeekV4Flash.toml with the backend swapped.
+#
+# This file is consumed by examples/lambda_rlm_oolong_pairs_long_smoke.py via
+# its --config flag; that script only harvests round_config_kwargs() (backend,
+# backend_kwargs, caps) and never touches [splits]/[loop]/[promotion] -- those
+# sections are present-but-inert schema requirements, copied verbatim from the
+# Azure template, same precedent as
+# configs/experiment_obliq_bench_math_DeepSeekV4Flash.toml.
+#
+# OpenRouter returns real per-response cost (usage.cost), so unlike
+# azure_foundry, [pricing.*] below does NOT drive the live spend breaker --
+# see rlm/clients/openai.py's _track_cost. It only feeds GPU-scenario/report
+# cost projections.
+#
+# Run (standalone comparison, own output dir, safe to run concurrently with
+# any Azure-backed study):
+#   uv run python examples/lambda_rlm_oolong_pairs_long_smoke.py --live \
+#       --config configs/experiment_oolong_pairs_openrouter_DeepSeekV4Flash.toml \
+#       --compare-b1 --compare-h0-star --n <N> --task-ids <...> \
+#       --context-length long --out-dir ./oolong_pairs_openrouter_dsv4f_smoke
+# =============================================================================
+
+[decoding]
+temperature = 0
+top_p = 0.95
+max_output_tokens = 8192
+
+[splits]
+n_in = 20
+n_ho = 10
+test_short = 10
+test_long = 40
+seed = 0
+
+[loop]
+m = 2
+v = 1
+k = 4
+t = 15
+patience = 3
+environment = "oolong_pairs"
+initial_harness = "H0*R"
+
+[promotion]
+tau_regression = 0.0
+tau_improvement = 0.0
+cost_band = [0.0, 3]
+
+[caps]
+# Capped at $1/run per explicit request for the silent background comparison
+# run (H0/H0*/lambda_rlm on OOLONG-Pairs). Real long-context DeepSeek-V4-Flash
+# OOLONG-Pairs runs have cost ~$0.20 each in this session's data, so this cap
+# is a backstop, not the expected spend. worst_case_spend = n x conditions x
+# max_budget (examples/lambda_rlm_oolong_pairs_long_smoke.py's own printed
+# figure) -- with 3 conditions this is $3 x n worst case, not a total cap.
+attempts = 1
+max_iterations = 30
+max_depth = 3
+max_budget = 1.0 # USD per run
+max_timeout = 3600.0 # seconds per run
+candidate_budget = 100.0 # USD across all of one subject's runs
+
+[environments.graphwalks]
+dataset_repo = "openai/graphwalks"
+dataset_file_short = "graphwalks_128k_and_shorter.parquet"
+dataset_file_long = "graphwalks_256k_to_1mil.parquet"
+dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead"
+max_chars = 128000
+min_chars = 0
+problem_types = ["bfs", "parents"]
+
+[environments.oolong_pairs]
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192
+context_length_long = 262144
+max_scan = 50000
+n_short = 40
+n_long = 40
+
+[environments.oolong]
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+subsets = []
+task_groups = ["counting", "user", "timeline"]
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd"
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb"
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
+
+[backends.runner]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash" # OpenRouter slug for "DeepSeek V4 Flash 0423"
+
+[backends.attributor]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+
+[backends.proposer]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+
+[backends.openrouter]
+provider_order = []
+allow_fallbacks = true
+
+[pricing.promo]
+# OpenRouter listed rate for deepseek/deepseek-v4-flash, USD per 1M tokens
+# (read 2026-09-30; refresh before real spend). Report/GPU-scenario input
+# only -- the live spend breaker uses OpenRouter's returned usage.cost.
+input_per_million = 0.009
+output_per_million = 1.28
+
+[pricing.list_price]
+input_per_million = 0.009
+output_per_million = 1.28
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true
+sensitivity_range = [1.99, 3.49]
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2400.0
+long = 700.0
+
+[report]
+p_merge = 0.5
+eval_conditions = 3
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution_oolong_pairs_openrouter.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_oolong_pairs_openrouter.jsonl"
+eval_repetitions = 3
+validation_workers = 5
+validation_run_workers = 1
+mining_run_workers = 3
+real_check_every_n_rounds = 0
+
+[smoke.splits]
+n_in = 3
+n_ho = 3
+test_short = 4
+test_long = 2
+
+[smoke.loop]
+m = 1
+v = 1
+k = 2
+t = 1
+
+[smoke.caps]
+max_budget = 0.5
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+real_check_every_n_rounds = 0
+
+[smoke.environments.oolong.synth]
+max_scan = 2000
+
+[smoke.environments.oolong.real]
+max_scan = 2000
+n_check = 4
