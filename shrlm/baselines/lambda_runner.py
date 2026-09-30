@@ -8,7 +8,9 @@ the round's canonical instance, trace, and manifest formats.
 
 import json
 import os
+import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -31,6 +33,7 @@ from shrlm.baselines.lambda_rlm import (
     lambda_method_envelope,
     write_lambda_method_json,
 )
+from shrlm.baselines.obliq_lambda_rlm import ObliqRankingRejectedError
 from shrlm.baselines.paper_lambda_rlm import ClassificationRejectedError, PaperLambdaRLM
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
 from shrlm.optimization.costs import (
@@ -56,12 +59,82 @@ from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict, Verifier
 
 METHOD_FILE = "method.json"
+LAMBDA_SUBCALL_AUDIT_FORMAT = "shrlm-lambda-subcall-audit/v1"
+SUBCALL_PROMPT_PREVIEW_CHARS = 500
 
 # These values intentionally match the core round driver's safety policy.
 # Backend kwargs are copied into model traces, so credentials must stay in the
 # environment rather than becoming persisted experiment artifacts.
 SENSITIVE_KWARG_FRAGMENTS = ("key", "token", "secret", "password", "authorization")
 BACKEND_ENV_KEYS: dict[str, str] = {"openrouter": "OPENROUTER_API_KEY"}
+
+
+def lambda_prompt_text(prompt: str | dict[str, Any]) -> str:
+    """Return a stable text representation for one audited model request."""
+    if isinstance(prompt, str):
+        return prompt
+    return json.dumps(prompt, sort_keys=True, ensure_ascii=False)
+
+
+def lambda_subcall_phase(prompt: str | dict[str, Any]) -> str:
+    """Classify a pinned λ-RLM request without changing its execution."""
+    text = lambda_prompt_text(prompt)
+    if text.startswith("Based on the metadata below, select the single most appropriate task"):
+        return "task_detection"
+    if text.startswith("OBLIQ_LAMBDA_MAP"):
+        return "obliq_map_rank"
+    if text.startswith("OBLIQ_LAMBDA_REDUCE"):
+        return "obliq_reduce_rank"
+    if "Does this excerpt contain information relevant to answering the question?" in text:
+        return "relevance_filter"
+    if "Synthesise these partial answers into one complete, accurate answer:" in text:
+        return "reduce_select_relevant"
+    if text.startswith("Using the following context, answer:"):
+        return "leaf_qa"
+    if text.startswith("Answer based on the following context:"):
+        return "leaf_qa"
+    if text.startswith("Summarize the following text concisely:"):
+        return "leaf_summarization"
+    if text.startswith("Translate the following text:"):
+        return "leaf_translation"
+    if text.startswith("Classify the following text:"):
+        return "leaf_classification"
+    if text.startswith("Extract all key information from:"):
+        return "leaf_extraction"
+    if text.startswith("Analyze the following text and provide insights:"):
+        return "leaf_analysis"
+    if text.startswith("Process the following and provide a response:"):
+        return "leaf_general"
+    if text.startswith("Merge these partial summaries into one concise, coherent summary."):
+        return "reduce_summaries"
+    if text.startswith("Combine these partial analyses into one comprehensive"):
+        return "reduce_analysis"
+    if text.startswith("Classify the expected ANSWER TYPE"):
+        return "pairwise_classification"
+    return "unknown"
+
+
+def lambda_filter_decision(phase: str, response: str) -> str | None:
+    """Record the upstream filter's raw decision before its retain-all fallback."""
+    if phase != "relevance_filter":
+        return None
+    return "yes" if response.strip().upper().startswith("Y") else "no"
+
+
+@dataclass(frozen=True)
+class LambdaSubcallAudit:
+    """One observed model request made by the pinned λ-RLM implementation."""
+
+    sequence: int
+    mode: str
+    phase: str
+    prompt_chars: int
+    prompt_preview: str
+    response: str
+    response_chars: int
+    filter_decision: str | None
+    usage_after: dict[str, Any]
+    error: str | None
 
 
 class BudgetGuardClient(BaseLM):
@@ -90,6 +163,59 @@ class BudgetGuardClient(BaseLM):
         self.max_budget = None if max_budget is None else float(max_budget)
         self.spent: float | None = None
         self.budget_error: BudgetExceededError | None = None
+        self.subcall_audits: list[LambdaSubcallAudit] = []
+        self.audit_lock = threading.Lock()
+        self.next_sequence = 1
+
+    def reserve_sequence(self) -> int:
+        """Allocate a stable call-start sequence across sync and async requests."""
+        with self.audit_lock:
+            sequence = self.next_sequence
+            self.next_sequence += 1
+        return sequence
+
+    def record_subcall(
+        self,
+        *,
+        sequence: int,
+        mode: str,
+        prompt: str | dict[str, Any],
+        response: str = "",
+        error: Exception | None = None,
+    ) -> None:
+        """Record one completed or failed delegated call for later persistence."""
+        prompt_text = lambda_prompt_text(prompt)
+        phase = lambda_subcall_phase(prompt)
+        audit = LambdaSubcallAudit(
+            sequence=sequence,
+            mode=mode,
+            phase=phase,
+            prompt_chars=len(prompt_text),
+            prompt_preview=prompt_text[:SUBCALL_PROMPT_PREVIEW_CHARS],
+            response=response,
+            response_chars=len(response),
+            filter_decision=lambda_filter_decision(phase, response),
+            usage_after=self.delegate.get_usage_summary().to_dict(),
+            error=None if error is None else f"{type(error).__name__}: {error}",
+        )
+        with self.audit_lock:
+            self.subcall_audits.append(audit)
+
+    def subcall_audit_dict(self) -> dict[str, Any]:
+        """Return all observed calls in invocation order with compact diagnostics."""
+        with self.audit_lock:
+            calls = sorted(self.subcall_audits, key=lambda audit: audit.sequence)
+        phase_counts = Counter(audit.phase for audit in calls)
+        filter_counts = Counter(
+            audit.filter_decision for audit in calls if audit.filter_decision is not None
+        )
+        return {
+            "format": LAMBDA_SUBCALL_AUDIT_FORMAT,
+            "calls_observed": len(calls),
+            "phase_counts": dict(sorted(phase_counts.items())),
+            "filter_decisions": dict(sorted(filter_counts.items())),
+            "calls": [asdict(audit) for audit in calls],
+        }
 
     def enforce_budget(self) -> None:
         """Refresh cumulative spend and raise once it exceeds the configured cap."""
@@ -106,13 +232,45 @@ class BudgetGuardClient(BaseLM):
 
     def completion(self, prompt: str | dict[str, Any]) -> str:
         self.enforce_budget()
-        response = self.delegate.completion(prompt)
+        sequence = self.reserve_sequence()
+        try:
+            response = self.delegate.completion(prompt)
+        except Exception as error:
+            self.record_subcall(
+                sequence=sequence,
+                mode="sync",
+                prompt=prompt,
+                error=error,
+            )
+            raise
+        self.record_subcall(
+            sequence=sequence,
+            mode="sync",
+            prompt=prompt,
+            response=response,
+        )
         self.enforce_budget()
         return response
 
     async def acompletion(self, prompt: str | dict[str, Any]) -> str:
         self.enforce_budget()
-        response = await self.delegate.acompletion(prompt)
+        sequence = self.reserve_sequence()
+        try:
+            response = await self.delegate.acompletion(prompt)
+        except Exception as error:
+            self.record_subcall(
+                sequence=sequence,
+                mode="async",
+                prompt=prompt,
+                error=error,
+            )
+            raise
+        self.record_subcall(
+            sequence=sequence,
+            mode="async",
+            prompt=prompt,
+            response=response,
+        )
         self.enforce_budget()
         return response
 
@@ -155,6 +313,25 @@ class LambdaClientGuard:
     @property
     def usage_summary(self) -> UsageSummary | None:
         return None if self.client is None else self.client.get_usage_summary()
+
+    @property
+    def subcall_audit(self) -> dict[str, Any] | None:
+        return None if self.client is None else self.client.subcall_audit_dict()
+
+
+def attach_lambda_subcall_audit(
+    completion: RLMChatCompletion,
+    guard: LambdaClientGuard | None,
+) -> None:
+    """Add wrapper-observed subcalls to a completion without touching upstream code."""
+    audit = None if guard is None else guard.subcall_audit
+    if audit is None:
+        return
+    metadata = dict(completion.metadata or {})
+    if "lambda_subcall_audit" in metadata:
+        raise RuntimeError("λ-RLM completion already contains a lambda_subcall_audit")
+    metadata["lambda_subcall_audit"] = audit
+    completion.metadata = metadata
 
 
 @contextmanager
@@ -377,6 +554,47 @@ def lambda_format_verdict(
     )
 
 
+def obliq_lambda_format_completion(
+    config: LambdaRoundConfig,
+    prompt: str,
+    error: ObliqRankingRejectedError,
+    elapsed_seconds: float,
+    guard: LambdaClientGuard,
+) -> RLMChatCompletion:
+    """Preserve an exhausted OBLIQ batch repair as an auditable failed run."""
+    usage_summary = guard.usage_summary
+    assert usage_summary is not None
+    return RLMChatCompletion(
+        root_model=str(config.backend_kwargs.get("model_name", "unknown")),
+        prompt=prompt,
+        response="",
+        usage_summary=usage_summary,
+        execution_time=elapsed_seconds,
+        metadata={"obliq_ranking_failure": error.audit_dict()},
+        error=f"{type(error).__name__}: {error}",
+    )
+
+
+def obliq_lambda_format_verdict(
+    verifier: Verifier,
+    instance: dict[str, Any],
+    error: ObliqRankingRejectedError,
+) -> Verdict:
+    """Build a schema-correct wrong-format verdict for a rejected batch."""
+    base = verifier(instance, "")
+    if base.cause is not VerifierCause.WRONG_FORMAT:
+        raise RuntimeError(
+            "the verifier did not classify an empty OBLIQ response as wrong_format"
+        )
+    return Verdict(
+        passed=False,
+        cause=VerifierCause.WRONG_FORMAT,
+        gold=base.gold,
+        produced=base.produced,
+        detail=f"{base.detail}; {type(error).__name__}: {error}",
+    )
+
+
 def run_lambda_round(
     config: LambdaRoundConfig,
     *,
@@ -461,8 +679,19 @@ def run_lambda_round(
                     method,
                 )
                 verdict = lambda_format_verdict(config.verifier, instance, caught)
+            elif isinstance(caught, ObliqRankingRejectedError):
+                assert guard is not None
+                completion = obliq_lambda_format_completion(
+                    config,
+                    model_input.prompt,
+                    caught,
+                    time.perf_counter() - run_started,
+                    guard,
+                )
+                verdict = obliq_lambda_format_verdict(config.verifier, instance, caught)
             else:
                 raise
+        attach_lambda_subcall_audit(completion, guard)
         entries.append(
             persist_run(
                 path,

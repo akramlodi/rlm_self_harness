@@ -32,6 +32,10 @@ def test_method_selector_supports_lambda_and_harness_alias() -> None:
     assert smoke.selected_method(smoke.parse_args([])) == "H0*"
     assert smoke.selected_method(smoke.parse_args(["--method", "lambda_rlm"])) == "lambda_rlm"
     assert smoke.selected_method(smoke.parse_args(["--harness", "H0*R"])) == "H0*R"
+    assert (
+        smoke.selected_method(smoke.parse_args(["--method", "lambda_rlm_obliq"]))
+        == "lambda_rlm_obliq"
+    )
     assert smoke.selected_methods(smoke.parse_args(["--methods", "lambda_rlm,H0"])) == (
         "H0",
         "lambda_rlm",
@@ -101,6 +105,51 @@ def test_lambda_method_uses_lambda_runner_without_calling_harness_runner(
     assert captured["config"].max_timeout == 30.0
     assert captured["breaker"].caps.candidate_budget == 0.10
     assert (out_dir / "summary.json").is_file()
+
+
+def test_obliq_lambda_method_uses_distinct_adapted_config(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    instance = {
+        "id": "q1",
+        "question": "question",
+        "source_query": "source",
+        "prompt": "prompt",
+        "gold_relevant_ids": ["id_a"],
+        "excluded_ids": [],
+        "pool_size": 1,
+    }
+    monkeypatch.setattr(smoke, "load_obliq_bench_math", lambda **kwargs: [instance])
+    captured = {}
+
+    def fake_lambda_run(config, breaker):
+        captured["method"] = config.method
+        config.out_dir.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(entries=[entry("q1", 1.0)])
+
+    monkeypatch.setattr(smoke, "run_governed_lambda_round", fake_lambda_run)
+    result = smoke.main(
+        [
+            "--live",
+            "--method",
+            "lambda_rlm_obliq",
+            "--query-ids",
+            "q1",
+            "--candidate-pool-size",
+            "1",
+            "--config",
+            "configs/experiment.toml",
+            "--max-budget",
+            "0.10",
+            "--max-timeout",
+            "30",
+            "--out-dir",
+            str(tmp_path / "adapted"),
+        ]
+    )
+
+    assert result == 0
+    assert isinstance(captured["method"], smoke.ObliqLambdaBaselineConfig)
 
 
 def test_matched_methods_share_instances_and_write_comparison(

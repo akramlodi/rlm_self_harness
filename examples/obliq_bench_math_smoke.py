@@ -57,7 +57,10 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from shrlm.baselines.lambda_rlm import LambdaBaselineConfig
+from shrlm.baselines.lambda_rlm import (
+    LambdaBaselineConfig,
+    ObliqLambdaBaselineConfig,
+)
 from shrlm.baselines.lambda_runner import LambdaRoundConfig, run_governed_lambda_round
 from shrlm.environments.obliq_bench_math import (
     ObliqBenchMathVerifier,
@@ -73,12 +76,18 @@ from shrlm.rlm_harness import HARNESSES
 DEFAULT_CONFIG = Path("configs/experiment_obliq_bench_math_DeepSeekV4Flash.toml")
 HARNESS_CHOICES = ("H0", "H0*", "H0*R")
 LAMBDA_METHOD = "lambda_rlm"
-METHOD_CHOICES = (*HARNESS_CHOICES, LAMBDA_METHOD)
+OBLIQ_LAMBDA_METHOD = "lambda_rlm_obliq"
+METHOD_CHOICES = (
+    *HARNESS_CHOICES,
+    LAMBDA_METHOD,
+    OBLIQ_LAMBDA_METHOD,
+)
 METHOD_OUT_DIRS = {
     "H0": "h0",
     "H0*": "h0_star",
     "H0*R": "h0_star_r",
     LAMBDA_METHOD: LAMBDA_METHOD,
+    OBLIQ_LAMBDA_METHOD: OBLIQ_LAMBDA_METHOD,
 }
 COMPARISON_FILENAME = "comparison.json"
 
@@ -103,7 +112,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--methods",
         type=str,
         default=None,
-        help="comma-separated matched methods: H0,H0*,H0*R,lambda_rlm",
+        help="comma-separated matched methods: H0,H0*,H0*R,lambda_rlm,lambda_rlm_obliq",
     )
     parser.add_argument("--n", type=int, default=3, help="number of queries to sample")
     parser.add_argument(
@@ -241,7 +250,7 @@ def run_method(
 ) -> list[dict[str, Any]]:
     """Run one method through its production adapter on matched instances."""
     verifier = ObliqBenchMathVerifier()
-    if method != LAMBDA_METHOD:
+    if method not in {LAMBDA_METHOD, OBLIQ_LAMBDA_METHOD}:
         return run_round(
             RoundConfig(
                 round_index=0,
@@ -256,7 +265,7 @@ def run_method(
     max_budget = kwargs["max_budget"]
     max_timeout = kwargs["max_timeout"]
     if max_budget is None or max_timeout is None:
-        raise ValueError("lambda_rlm requires finite max_budget and max_timeout caps")
+        raise ValueError(f"{method} requires finite max_budget and max_timeout caps")
     caps = ValidationCaps(
         max_depth=int(kwargs["max_depth"]),
         max_iterations=int(kwargs["max_iterations"]),
@@ -266,7 +275,10 @@ def run_method(
     )
     lambda_config = LambdaRoundConfig(
         round_index=0,
-        method=LambdaBaselineConfig(),
+        method={
+            LAMBDA_METHOD: LambdaBaselineConfig(),
+            OBLIQ_LAMBDA_METHOD: ObliqLambdaBaselineConfig(),
+        }[method],
         instances=instances,
         verifier=verifier,
         out_dir=out_dir,
