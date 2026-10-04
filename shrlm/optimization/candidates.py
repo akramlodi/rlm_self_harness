@@ -1,4 +1,4 @@
-"""The stage-2 boundary: load and gate ``shrlm-proposal/v1`` candidate proposals.
+"""The stage-2 boundary: load and gate v2 proposals and legacy unpaired v1 proposals.
 
 Stage 2 (the proposer, another developer's work) hands stage 3 a directory of
 candidates, one ``proposal.json`` per candidate directory. Each proposal is the
@@ -1075,6 +1075,11 @@ def load_candidates(
         pair = candidate.proposal.get("activation_pair")
         if pair is None:
             continue
+        if candidate.surface == "S10" and not {skill.name for skill in incumbent.skills}.issubset(
+            skill.name for skill in candidate.harness.skills
+        ):
+            invalid[candidate.candidate_id] = "activation pair cannot remove its capability"
+            continue
         partner = by_id.get(pair["partner_candidate_id"])
         expected = {"id": pair["id"], "partner_candidate_id": candidate.candidate_id}
         if (
@@ -1091,12 +1096,10 @@ def load_candidates(
             invalid[candidate.candidate_id] = (
                 "activation pair partner is missing, rejected, or inconsistent"
             )
-            if partner is not None:
-                invalid[partner.candidate_id] = "activation pair partner is inconsistent"
     for candidate in loaded:
         pair = candidate.proposal.get("activation_pair")
         if pair and pair["partner_candidate_id"] in invalid:
-            invalid[candidate.candidate_id] = "activation pair partner was rejected"
+            invalid.setdefault(candidate.candidate_id, "activation pair partner was rejected")
     rejections.extend(
         CandidateRejection(
             candidate.candidate_id,

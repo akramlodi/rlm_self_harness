@@ -1,4 +1,4 @@
-# The Harness Proposal Interface (`shrlm-proposal/v1`)
+# The Harness Proposal Interface (`shrlm-proposal/v2`)
 
 This is the contract between **Stage 2 (Harness Proposal)** and **Stage 3
 (Proposal Validation)**. Stage 2 produces candidate harness edits as artifacts
@@ -9,18 +9,21 @@ If you are building stage 2, this document plus
 is the executable version of this page, and its tests
 (`tests/optimization/test_candidates.py`) double as worked examples.
 
-Versioning: the `format` tag is the version. The loader rejects anything but
-`shrlm-proposal/v1`; a future v2 will be additive. Unknown extra top-level
-fields are tolerated and ignored, so you may carry your own bookkeeping.
+Versioning: new writes use `shrlm-proposal/v2`; current readers also accept legacy
+unpaired `shrlm-proposal/v1`. Pair metadata is valid only in v2, so old v1-only
+loaders reject paired proposals instead of silently evaluating one member.
+Unknown extra top-level fields remain tolerated, but `activation_pair` is checked.
+The [concise current contract](../../docs/harness-proposal-interface.md) describes
+pair admission, persistence, repair, diagnosis resolution, and intent/history.
 
-The live proposer response uses **`proposal-selection/v2`**. Each selection names
+The live proposer response uses **`proposal-selection/v3`**. Each selection names
 its pattern, surface, reason, and `evidence_refs` (at most 12 admitted operation
 IDs from that pattern). Newly supported S8/S5 routes require all listed support
 references; omitted evidence cannot support a route. Each candidate supplies
 `revision: null` for a new intervention, or `{round, subject_id, explanation}`
 for a revisit. The explanation identifies the changed operation, new applicability,
 or revised joint hypothesis. The host records effective surface fingerprints and
-whether referenced content is unchanged. The stored proposal envelope remains v1,
+whether referenced content is unchanged. The stored proposal envelope uses v2,
 and literal instruction encoding remains `literal-text/v1`.
 
 After loader admission and batch composition, validation refuses an identical
@@ -55,7 +58,7 @@ One candidate = one directory = one `proposal.json`:
 
 ```json
 {
-  "format": "shrlm-proposal/v1",
+  "format": "shrlm-proposal/v2",
   "candidate_id": "r00-c01-s4-verify",
   "base_harness_hash": "<sha256 of the incumbent harness>",
   "target_signature": {
@@ -82,7 +85,8 @@ One candidate = one directory = one `proposal.json`:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `format` | string | Exactly `"shrlm-proposal/v1"`. |
+| `format` | string | `"shrlm-proposal/v2"` for new writes; legacy unpaired v1 remains readable. |
+| `activation_pair` | object, optional | `{id, partner_candidate_id}` with reciprocal membership; v2 only. The batch loader rejects incomplete/inconsistent pairs. |
 | `candidate_id` | string | Stable identity; equals the directory name; filesystem-safe. |
 | `base_harness_hash` | string | `harness_hash(...)` of the harness this edit starts from. Must be the current incumbent or the candidate is rejected. |
 | `target_signature` | object | The four φ strings of the mined failure pattern this edit targets, verbatim from the bundle's `patterns[i].signature`. Each value must be in the closed vocabulary of `shrlm/optimization/taxonomy.py` (`VerifierCause`, `FailingLevel`, `CausalStatus`, `AgentMechanism`). |
@@ -224,12 +228,15 @@ different declared id is preserved in the rejection reason.
 
 ## Proposal context and local repair
 
-The live response uses `proposal-selection/v2`, separate from the saved
-`shrlm-proposal/v1` envelope. It contains `format`, an ordered `selections` list
+The live response uses `proposal-selection/v3`, separate from the saved
+`shrlm-proposal/v2` envelope. It contains `format`, an ordered `selections` list
 of `{pattern_index, surface, reason, evidence_refs}`, and a `candidates` list with exactly one
 matching replacement per selection. Select the best-supported intervention per
 surface first, then write its replacement. Both lists must have at most `k`
-entries; each pattern and surface may appear once. Reasons contain 1–600
+entries; each surface may appear once. Each pattern permits one singleton or one
+complete activation pair: S8/S10 capability plus S2/S3 caller, both eligible, with
+the same optional `activation_pair` label on selections and candidates. Pairs
+consume two slots and survive/fail together, including repair and reload. Reasons contain 1–600
 characters. Empty lists withdraw all proposals. Legacy response arrays are
 rejected under this new live contract; historical saved proposals remain readable.
 
@@ -239,7 +246,11 @@ including JSON escaping, diagnoses, questions, verifier observations, contrasts,
 and omission notices. A compact inventory retains all recognized pattern indices;
 at most `min(k, 4)` patterns are expanded, preferring distinct mechanisms and
 resolvable operations. Selection may use another matching held-in attempt when
-the first representative is unsuitable. Only rows marked `selectable` may authorize
+the first representative is unsuitable. Complete unresolved representatives are
+preferred; recovered-only patterns are contrast rather than actionable targets,
+and unknown/legacy resolution stays explicit. Saved concrete level, causal, and
+mechanism details accompany the cited operations within the same budget.
+Only rows marked `selectable` may authorize
 an edit. Copy 1–12 `admitted_refs` belonging to that row, its eligible surface, and
 any per-surface predecessor identity. The host uses this same choice map for
 initial admission, skipped-pattern accounting, and repair. An inventory-only row
@@ -257,8 +268,9 @@ JSON replies carry type and item counts; those counts do not verify semantics.
 Known client retry notices are summarized separately, preserving other stderr
 and errored children. Notices alone do not establish recovery or authorize S5.
 Shared operations appear once with references. Subsequent operations may show
-recovery, but proximity does not establish it; otherwise a passing held-in run
-with shared operation names supplies a contrast when it fits. Shared names do
+recovery, but proximity does not establish it. Before optional snippets, a passing
+held-in run with shared operation names supplies a contrast when it fits,
+preferring the same task instance. Shared names do
 not prove equivalent semantics. Missing citations or contrasts are explicit;
 there is no arbitrary first/last code fallback. Trusted verifier diagnostics
 replace repeated produced/expected dumps; unknown formats remain bounded,
@@ -305,14 +317,17 @@ Unchanged incumbent middleware does not receive the new domain probes.
 
 After a parseable batch within the count cap, each member is checked independently.
 Selection/candidate mismatches and duplicate JSON keys are rejected. The first
-candidate passing all gates owns its surface and pattern. Later collisions are
+intervention passing all gates owns its surface(s) and pattern. Pair membership
+is all-or-neither; later collisions are
 refused individually; failed candidates reserve nothing. Independent valid
 members keep their original slots and content. Failed members get
 at most **one repair response**, within the existing total attempt/output caps;
 repairs must retain each failed member's pattern but may choose another eligible,
 unoccupied surface with a revised behavioral explanation. Collision repairs see
 occupied surfaces and the exact remaining choices and references; they cannot
-replace an owner. Omission withdraws that failed member. Malformed repair or output exhaustion preserves the valid siblings.
+replace an owner. Omission withdraws a failed singleton or the complete failed pair.
+Pair repair retains its label and capability/caller roles. Malformed repair or
+output exhaustion preserves the valid siblings.
 Transport, credential, integrity, and interruption failures retain their existing
 handling. A gate process that cannot spawn raises a host error without spending
 the repair response. Only final survivors are published for combined validation.

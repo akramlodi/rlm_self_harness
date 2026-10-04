@@ -4,7 +4,7 @@
   "candidate_id": "r01-c01-s4",
   "changed_skill": null,
   "effective_edit_fingerprint": "68c6b7191433b33f5fdde9dee5ccdc21077a8b3dccb64d1eb0b3a65198d7fcfc",
-  "format": "shrlm-proposal/v1",
+  "format": "shrlm-proposal/v2",
   "harness": {
     "format": "shrlm-harness/v2",
     "harness": {

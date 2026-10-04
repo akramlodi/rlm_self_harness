@@ -222,26 +222,27 @@ def test_extract_proposal_response_fenced_and_unfenced():
     assert extract_proposal_response("answer: " + response + " done") == expected
 
 
-def activation_pair_items(capability="S8"):
+def activation_pair_items(capability="S8", caller="S3"):
     edit = REPL_HELPER_ITEM["edit"] if capability == "S8" else SKILLS_ITEM["edit"]
     return [
         edit_item(0, edit, surface=capability, activation_pair="invoke"),
         edit_item(
             0,
             {"kind": "text", "new_text": "Invoke the new capability before aggregating."},
-            surface="S3",
+            surface=caller,
             activation_pair="invoke",
         ),
     ]
 
 
 @pytest.mark.parametrize("capability", ["S8", "S10"])
-def test_activation_pair_survives_publication_reload_and_replay(tmp_path, capability):
+@pytest.mark.parametrize("caller", ["S2", "S3"])
+def test_activation_pair_survives_publication_reload_and_replay(tmp_path, capability, caller):
     patterns = [make_pattern("other")]
-    lm = MockLM(responses=[canned_batch(*activation_pair_items(capability))])
+    lm = MockLM(responses=[canned_batch(*activation_pair_items(capability, caller))])
     kwargs = dict(workdir=tmp_path / "work", evidence=synthetic_evidence(patterns))
     result = propose_round({"patterns": patterns}, H0, lm, tmp_path / "proposals", **kwargs)
-    assert [p.surface for p in result.written] == [capability, "S3"]
+    assert [p.surface for p in result.written] == [capability, caller]
     payloads = [json.loads(p.path.read_text()) for p in result.written]
     for item, partner in zip(payloads, reversed(payloads), strict=True):
         assert item["format"] == "shrlm-proposal/v2"
@@ -261,7 +262,71 @@ def test_activation_pair_survives_publication_reload_and_replay(tmp_path, capabi
     assert any("partner" in r.reason for r in rejected)
 
 
-@pytest.mark.parametrize("repair", ["repair", "withdraw", "orphan"])
+@pytest.mark.parametrize("corruption", ["pointer", "json", "format"])
+def test_corrupt_pair_on_reload_preserves_unrelated_edit(tmp_path, corruption):
+    patterns = [make_pattern("other"), make_pattern("skipped_verification")]
+    result = propose_round(
+        {"patterns": patterns},
+        H0,
+        MockLM(
+            responses=[canned_batch(*activation_pair_items(), {**TEXT_ITEM, "pattern_index": 1})]
+        ),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence(patterns),
+    )
+    path = result.written[0].path
+    payload = json.loads(path.read_text())
+    if corruption == "pointer":
+        payload["activation_pair"]["partner_candidate_id"] = result.written[-1].candidate_id
+    elif corruption == "format":
+        payload["format"] = "shrlm-proposal/v1"
+    path.write_text("broken JSON" if corruption == "json" else json.dumps(payload))
+    loaded, rejected = load_candidates(tmp_path / "proposals", H0)
+    assert [candidate.candidate_id for candidate in loaded] == [result.written[-1].candidate_id]
+    assert {item.candidate_id for item in rejected} == {
+        proposal.candidate_id for proposal in result.written[:2]
+    }
+
+
+def test_local_refusal_retains_protection_intent(tmp_path):
+    patterns = [make_pattern("skipped_verification")]
+    item = {
+        **TEXT_ITEM,
+        "edit": {"kind": "text", "new_text": H0.verification_instruction},
+        "regression_risks": ["Preserve already verified inputs; protection is unassessed."],
+    }
+    result = propose_round(
+        {"patterns": patterns},
+        H0,
+        MockLM(responses=[canned_batch(item)]),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence(patterns),
+        config=ProposerConfig(max_attempts=1),
+    )
+    assert not result.written
+    assert (
+        result.materialization_failures[0].behavior["regression_risks"] == item["regression_risks"]
+    )
+
+
+def test_activation_pair_requires_two_available_slots(tmp_path):
+    patterns = [make_pattern("other")]
+    with pytest.raises(ProposalRejection, match="more than the allowed 1"):
+        propose_round(
+            {"patterns": patterns},
+            H0,
+            MockLM(responses=[canned_batch(*activation_pair_items())]),
+            tmp_path / "proposals",
+            workdir=tmp_path / "work",
+            evidence=synthetic_evidence(patterns),
+            config=ProposerConfig(k=1, max_attempts=1),
+        )
+    assert not list((tmp_path / "proposals").glob("*/proposal.json"))
+
+
+@pytest.mark.parametrize("repair", ["repair", "retarget", "withdraw", "orphan"])
 @pytest.mark.parametrize("gate", ["spec", "materialization", "preflight"])
 def test_activation_pair_failure_keeps_unrelated_edit(tmp_path, monkeypatch, repair, gate):
     import shrlm.optimization.proposal as proposer
@@ -288,6 +353,9 @@ def test_activation_pair_failure_keeps_unrelated_edit(tmp_path, monkeypatch, rep
         repaired = []
     elif repair == "orphan":
         repaired = repaired[1:]
+    elif repair == "retarget":
+        repaired[1]["surface"] = "S2"
+        repaired[1]["behavioral_change"] = "Invoke the capability while planning the decomposition."
     result = propose_round(
         {"patterns": patterns},
         H0,
@@ -297,9 +365,15 @@ def test_activation_pair_failure_keeps_unrelated_edit(tmp_path, monkeypatch, rep
         evidence=synthetic_evidence(patterns),
     )
     assert [p.surface for p in result.written] == (
-        ["S8", "S3", "S4"] if repair == "repair" else ["S4"]
+        ["S8", "S2" if repair == "retarget" else "S3", "S4"]
+        if repair in {"repair", "retarget"}
+        else ["S4"]
     )
     assert result.written[-1].candidate_id == "r00-c03-s4"
+    original_sibling = (
+        tmp_path / "work" / "attempt_01" / "proposals" / "r00-c03-s4" / "proposal.json"
+    )
+    assert result.written[-1].path.read_bytes() == original_sibling.read_bytes()
 
 
 @pytest.mark.parametrize(

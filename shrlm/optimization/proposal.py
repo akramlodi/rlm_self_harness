@@ -1398,6 +1398,7 @@ def proposal_history_fields(
     """Preserve known intent on refused attempts without inventing an effective edit."""
     return {
         **{name: getattr(spec, name) for name in BEHAVIOR_FIELDS},
+        "regression_risks": list(spec.regression_risks),
         "mechanism": spec.pattern["signature"]["agent_mechanism"],
         "incumbent_hash": hash_of_serialization(incumbent_serialization),
         "revision": spec.revision,

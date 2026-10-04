@@ -697,6 +697,40 @@ def test_load_candidates_on_an_empty_directory(tmp_path):
     assert rejections == []
 
 
+def test_skill_removal_cannot_be_loaded_as_an_activation_pair(tmp_path):
+    incumbent = replace(H0, skills=[SKILL])
+    for surface, harness, candidate_id, partner in [
+        ("S10", H0, "remove", "caller"),
+        (
+            "S3",
+            replace(incumbent, execution_instruction="Load the skill before aggregating."),
+            "caller",
+            "remove",
+        ),
+    ]:
+        write_payload(
+            tmp_path,
+            proposal_payload(
+                harness,
+                surface,
+                candidate_id=candidate_id,
+                format="shrlm-proposal/v2",
+                base_harness_hash=harness_hash(incumbent),
+                target_signature={**TARGET_SIGNATURE, "agent_mechanism": "other"},
+                activation_pair={"id": "invoke", "partner_candidate_id": partner},
+            ),
+        )
+    loaded, rejected = load_candidates(tmp_path, incumbent)
+    assert not loaded and {item.candidate_id for item in rejected} == {"caller", "remove"}
+    assert any("remove" in item.reason for item in rejected)
+    # Removing a skill remains a valid unpaired edit.
+    path = tmp_path / "remove" / "proposal.json"
+    payload = json.loads(path.read_text())
+    del payload["activation_pair"]
+    path.write_text(json.dumps(payload))
+    assert isinstance(load_candidate(path, incumbent), LoadedCandidate)
+
+
 @pytest.mark.parametrize(
     "source,reason",
     [

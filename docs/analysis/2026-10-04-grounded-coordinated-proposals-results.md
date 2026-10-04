@@ -46,9 +46,31 @@ Accounting: **18 SDK requests**, **$0.00411348** estimated from reported usage a
 - Supplied proposals and their materialization audits are under each family's `proposals/` and `work/`. The live free-choice response, saved observations, proposal, and audit are under `free-choice/`.
 - Temporary output directories are local verification artifacts; this committed report preserves the conclusions and accounting. Re-running requires a new directory.
 
-Focused checks during development passed 178 attribution/evidence/history/type/candidate tests and 276 proposal/batch/analysis/reasoning tests. The constructed-harness test module passed all three tests. Final suite and review results are recorded below when complete.
+Focused checks during development passed 178 attribution/evidence/history/type/candidate tests and 276 proposal/batch/analysis/reasoning tests. The constructed-harness test module passed all three tests.
+
+Final verification:
+
+- The full `uv run pytest` invocation completed in 18m10s: **2,552 passed, 7 skipped, 21 deselected, 2 failed**. Both failures were production-writer snapshots retaining the old proposal format tag. Regenerating those two fixtures with the production writers resolved them: the complete fixture module passed all 8 tests and the final `uv run pytest --lf -q` rerun passed both previously failing tests.
+- After review fixes, **318 tests passed** across proposal, candidates, history, batch validation, loader fixtures, and constructed execution. This includes both S2/S3 callers, retargeting, an insufficient slot budget, corrupted persisted members, and byte-identical preservation of an unrelated valid edit.
+- Changed Python files pass Ruff lint and formatting checks. Changed-file pre-commit hooks pass (Ruff, formatting, and the configured non-blocking type hook). The new probe passes direct type checking.
+- The full suite was not repeated after the narrow fixes; affected tests and the two failed cases were rerun. No known test failure remains.
 
 Repository-wide Ruff currently reports 24 issues in the pre-existing Self-Harness clone, example fixtures, and training code. Repository-wide type checking reports existing missing optional imports and typing debt; new probe type-narrowing issues were fixed. These checks do not authorize rewriting unrelated files. Final changed-file checks and the review distinguish introduced defects from those pre-existing diagnostics.
+
+The untouched versions of four tracked files at base `e323f432` reproduce **9 Ruff errors** independently of the cloned comparison repository. Those repository-wide lint failures block the workflow's publishing gate. The implementation is committed locally; no PR is published by this run.
+
+## Review and corrections
+
+`ce-simplify-code` applied the reuse, quality, and efficiency rubrics inline; the existing materializers and bounded two-member grouping were retained, and two probe type-narrowing issues were fixed. `ce-code-review` completed correctness, standards, testing, maintainability, agent-facing context, API-contract, reliability, and adversarial passes inline, as required by this repository's tool mapping. There was **no independent agent or cross-model corroboration**.
+
+Four findings were corrected:
+
+1. A corrupt pair pointer could reject an unrelated singleton. Rejection now follows actual declared dependencies without marking an arbitrary referenced candidate invalid.
+2. A persisted S10 removal could pass as a capability member. The loader now rejects that pair while preserving unpaired skill removal.
+3. The pre-existing detailed interface under `shrlm/docs/` still named old contracts. It now matches the new versions and links the concise contract; the old handoff is explicitly marked historical.
+4. Locally refused attempts dropped protection intent. Their behavior records now retain `regression_risks` for history compaction too.
+
+The three runtime failures were reproduced before fixing them. Review receipt: `/tmp/compound-engineering-501/ce-code-review/20261004-grounded-coordinated/review.json` (`status: complete`, reviewed head `2318aa92`); subsequent caller-applied corrections are covered by the 318-test result above. No actionable review finding remains. R1–R6 and U1–U5 are implemented; empirical discovery/generalization remains unproven. All pre-existing workspace status entries were preserved.
 
 ## Interpretation and paper follow-up
 
