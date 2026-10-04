@@ -483,6 +483,7 @@ class AttributionDetail:
     operation_evidence: list[OperationEvidence] = field(default_factory=list)
     verification_limits: str = ""
     coverage_basis: dict[str, str] | None = None
+    resolution: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -498,6 +499,8 @@ class AttributionDetail:
             result["verification_limits"] = self.verification_limits
         if self.coverage_basis is not None:
             result["coverage_basis"] = dict(self.coverage_basis)
+        if self.resolution is not None:
+            result["resolution"] = self.resolution
         return result
 
 

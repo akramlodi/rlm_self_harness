@@ -71,7 +71,7 @@ def test_proposal_repair_replay_is_self_contained_and_checks_integrity(tmp_path)
     bad.choices[0].message.content = "not JSON"
     good.choices[
         0
-    ].message.content = '{"format": "proposal-selection/v2", "selections": [], "candidates": []}'
+    ].message.content = '{"format": "proposal-selection/v3", "selections": [], "candidates": []}'
     for index, response in enumerate((bad, good)):
         response.choices[0].message.reasoning = f"PROPOSAL_PRIVATE_{index}"
     client = make_client()

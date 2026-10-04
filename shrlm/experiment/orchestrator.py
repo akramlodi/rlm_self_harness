@@ -149,7 +149,11 @@ from shrlm.optimization.bundle import (
     round_dir,
     write_bundle,
 )
-from shrlm.optimization.candidates import CandidateRejection, materialize_harness
+from shrlm.optimization.candidates import (
+    SUPPORTED_PROPOSAL_FORMATS,
+    CandidateRejection,
+    materialize_harness,
+)
 from shrlm.optimization.costs import (
     CandidateSpendBreaker,
     ValidationCaps,
@@ -170,7 +174,6 @@ from shrlm.optimization.promotion import DECISION_PROMOTED, PromotionConfig
 from shrlm.optimization.proposal import (
     HISTORY_NOT_MATERIALIZED,
     PROPOSAL_FILENAME,
-    PROPOSAL_FORMAT,
     ProposalBudgetExhausted,
     ProposalCache,
     ProposalRejection,
@@ -494,7 +497,7 @@ def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, Any]:
         payload = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-    if not isinstance(payload, dict) or payload.get("format") != PROPOSAL_FORMAT:
+    if not isinstance(payload, dict) or payload.get("format") not in SUPPORTED_PROPOSAL_FORMATS:
         return {}
     result = {
         name: payload[name]
@@ -515,6 +518,12 @@ def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, Any]:
     result["activation_applicable"] = payload.get("activation_applicable", surface != "S6")
     result["changed_skill"] = payload.get("changed_skill")
     result["revision_unchanged"] = payload.get("revision_unchanged")
+    if isinstance(payload.get("regression_risks"), list):
+        result["regression_risks"] = [
+            risk for risk in payload["regression_risks"] if isinstance(risk, str)
+        ]
+    if payload.get("activation_pair"):
+        result["activation_pair"] = payload["activation_pair"]
     return result
 
 

@@ -82,7 +82,8 @@ from shrlm.optimization.taxonomy import (
 from shrlm.rlm_harness import Harness, SkillEntry
 from shrlm.runner import check_answer_fixtures, check_harness
 
-PROPOSAL_FORMAT = "shrlm-proposal/v1"
+PROPOSAL_FORMAT = "shrlm-proposal/v2"
+SUPPORTED_PROPOSAL_FORMATS = ("shrlm-proposal/v1", PROPOSAL_FORMAT)
 BEHAVIOR_FIELDS = ("incumbent_behavior", "observed_failure", "behavioral_change")
 BEHAVIOR_MAX_CHARS = 600
 
@@ -333,8 +334,22 @@ def _schema_violation(payload: Any) -> str | None:
     """
     if not isinstance(payload, dict):
         return f"proposal must be a JSON object, got {type(payload).__name__}"
-    if payload.get("format") != PROPOSAL_FORMAT:
-        return f"format must be {PROPOSAL_FORMAT!r}, got {payload.get('format')!r}"
+    if payload.get("format") not in SUPPORTED_PROPOSAL_FORMATS:
+        return f"unsupported proposal format: {payload.get('format')!r}"
+    pair = payload.get("activation_pair")
+    if pair is not None:
+        if payload["format"] != PROPOSAL_FORMAT:
+            return "activation_pair requires shrlm-proposal/v2"
+        if (
+            not isinstance(pair, dict)
+            or set(pair) != {"id", "partner_candidate_id"}
+            or not all(
+                isinstance(value, str) and FILESYSTEM_SAFE_ID_PATTERN.fullmatch(value)
+                for value in pair.values()
+            )
+            or pair["partner_candidate_id"] == payload.get("candidate_id")
+        ):
+            return "activation_pair must name a safe id and a distinct partner_candidate_id"
     candidate_id = payload.get("candidate_id")
     if not isinstance(candidate_id, str) or not FILESYSTEM_SAFE_ID_PATTERN.fullmatch(candidate_id):
         return (
@@ -1054,7 +1069,57 @@ def load_candidates(
             loaded.append(result)
         else:
             rejections.append(result)
-    return loaded, rejections
+    by_id = {candidate.candidate_id: candidate for candidate in loaded}
+    invalid: dict[str, str] = {}
+    for candidate in loaded:
+        pair = candidate.proposal.get("activation_pair")
+        if pair is None:
+            continue
+        partner = by_id.get(pair["partner_candidate_id"])
+        expected = {"id": pair["id"], "partner_candidate_id": candidate.candidate_id}
+        if (
+            partner is None
+            or partner.proposal.get("activation_pair") != expected
+            or partner.proposal["target_signature"] != candidate.proposal["target_signature"]
+            or partner.proposal["base_harness_hash"] != candidate.proposal["base_harness_hash"]
+            or activation_pair_surface_violation([candidate.surface, partner.surface])
+            or sum(
+                (c.proposal.get("activation_pair") or {}).get("id") == pair["id"] for c in loaded
+            )
+            != 2
+        ):
+            invalid[candidate.candidate_id] = (
+                "activation pair partner is missing, rejected, or inconsistent"
+            )
+            if partner is not None:
+                invalid[partner.candidate_id] = "activation pair partner is inconsistent"
+    for candidate in loaded:
+        pair = candidate.proposal.get("activation_pair")
+        if pair and pair["partner_candidate_id"] in invalid:
+            invalid[candidate.candidate_id] = "activation pair partner was rejected"
+    rejections.extend(
+        CandidateRejection(
+            candidate.candidate_id,
+            GATE_SCHEMA,
+            invalid[candidate.candidate_id],
+            str(candidate.path),
+        )
+        for candidate in loaded
+        if candidate.candidate_id in invalid
+    )
+    return [candidate for candidate in loaded if candidate.candidate_id not in invalid], rejections
+
+
+def activation_pair_surface_violation(surfaces: list[str]) -> str | None:
+    """The only coordinated intervention is one capability plus one caller."""
+    if (
+        len(surfaces) != 2
+        or not all(isinstance(surface, str) for surface in surfaces)
+        or len(set(surfaces) & {"S8", "S10"}) != 1
+        or len(set(surfaces) & {"S2", "S3"}) != 1
+    ):
+        return "activation pair requires exactly one S8/S10 capability and one S2/S3 caller"
+    return None
 
 
 if __name__ == "__main__":

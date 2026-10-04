@@ -348,7 +348,7 @@ def reference_batch(response, prompt):
         batch = json.loads(response)
     except ValueError:
         return response
-    if not isinstance(batch, dict) or batch.get("format") != "proposal-selection/v2":
+    if not isinstance(batch, dict) or batch.get("format") != "proposal-selection/v3":
         return response
     section, _ = json.JSONDecoder().raw_decode(prompt[0]["content"].split(EVIDENCE_HEADING, 1)[1])
     inventory = {row["index"]: row for row in section["inventory"]}
@@ -423,7 +423,7 @@ def proposer_batch(
 def selected_batch(items: list[dict]) -> str:
     return json.dumps(
         {
-            "format": "proposal-selection/v2",
+            "format": "proposal-selection/v3",
             "selections": [
                 {
                     "pattern_index": item["pattern_index"],

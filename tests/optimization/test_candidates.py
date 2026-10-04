@@ -495,7 +495,7 @@ def test_text_gates_execute_no_candidate_code(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("override", "expected_fragment"),
     [
-        ({"format": "shrlm-proposal/v2"}, "format"),
+        ({"format": "shrlm-proposal/v999"}, "format"),
         ({"surface": "S11"}, "surface"),
         ({"surface": ["S2"]}, "surface"),
         ({"predicted_effect": ""}, "predicted_effect"),

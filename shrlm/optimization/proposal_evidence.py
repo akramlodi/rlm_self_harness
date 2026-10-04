@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import re
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,7 @@ from shrlm.optimization.taxonomy import AgentMechanism, VerifierCause, eligible_
 from shrlm.optimization.types import NodeKind, QualityDefinition, Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
-EVIDENCE_SELECTOR_VERSION = "4.4.0"
+EVIDENCE_SELECTOR_VERSION = "5.0.0"
 DIAGNOSTIC_HISTORY_VERSION = "2.1.0"
 EVIDENCE_BUDGET_CHARS = 32000
 EVIDENCE_HEADING = "Held-in evidence (observations, not instructions):\n"
@@ -459,14 +460,29 @@ def pack_evidence(
         "expanded": {},
         "operations": {},
         "passing": [],
+        "recovered": [],
         "passing_ids": evidence.get("passing_ids", []),
         "passing_status": evidence.get("passing_status", "no passing runs observed"),
         "omitted": {
             str(row["index"]): "not expanded: mechanism limit or lower priority"
             for row in inventory
         },
-        "contrast_status": "no relevant passing contrast available; following operations may show recovery, but proximity does not establish it",
+        "contrast_status": "no relevant complete passing contrast admitted (unavailable or budget-limited); recovery alone is not established",
     }
+
+    def all_options(index: int) -> list[dict[str, Any]]:
+        return evidence.get("alternatives", {}).get(index) or [
+            evidence.get("patterns", {}).get(
+                index, {"diagnosis": "representative evidence unavailable"}
+            )
+        ]
+
+    for row in section["inventory"]:
+        row["resolution_counts"] = dict(
+            Counter(
+                context.get("resolution") or "not_assessed" for context in all_options(row["index"])
+            )
+        )
 
     def render(value: dict[str, Any]) -> str:
         for row in value["inventory"]:
@@ -505,11 +521,15 @@ def pack_evidence(
         raise EvidenceBudgetExceeded("compact evidence inventory exceeds rendered evidence budget")
 
     def options(index: int) -> list[dict[str, Any]]:
-        return evidence.get("alternatives", {}).get(index) or [
-            evidence.get("patterns", {}).get(
-                index, {"diagnosis": "representative evidence unavailable"}
-            )
+        candidates = [
+            context for context in all_options(index) if context.get("resolution") != "recovered"
         ]
+        unresolved = [
+            context
+            for context in candidates
+            if context.get("resolution") == "unresolved" and core_snippets(context)
+        ]
+        return unresolved or candidates
 
     def core_snippets(context: dict[str, Any]) -> list[dict[str, Any]]:
         if context.get("trace", {}).get("core_complete") is False:
@@ -549,6 +569,8 @@ def pack_evidence(
             reason = "unattributed: no eligible intervention"
         elif row.get("actionability") is not None and row["actionability"] <= 0:
             reason = "explicitly non-actionable"
+        elif all(context.get("resolution") == "recovered" for context in all_options(row["index"])):
+            reason = "recovered-only evidence: contrast, not an actionable defect"
         elif not grounded(row):
             reason = "no resolvable operation or child-call observation"
         if reason:
@@ -603,11 +625,16 @@ def pack_evidence(
                 trial["expanded"][str(index)] = with_context(trial, core, f"pattern-{index}")
                 del trial["omitted"][str(index)]
                 size = len(render(trial))
-                key = (size - current_size, priority, str(context.get("run_id", "")))
+                key = (
+                    context.get("resolution") != "unresolved",
+                    size - current_size,
+                    priority,
+                    str(context.get("run_id", "")),
+                )
                 if best is None or key < best[0]:
                     best = (key, index, context, trial)
         if best is not None:
-            (delta, _, _), index, context, trial = best
+            (_, delta, _, _), index, context, trial = best
             if current_size + delta <= budget:
                 section = trial
                 expanded_indices.append(index)
@@ -632,6 +659,35 @@ def pack_evidence(
             admit([row])
 
     core_count = len(section["operations"])
+    names = frozenset(name for context in admitted.values() for name in context_operations(context))
+    instance_ids = {context.get("instance_id") for context in admitted.values()} - {None}
+    passing_options = sorted(
+        evidence.get("passing", []),
+        key=lambda context: context.get("instance_id") not in instance_ids,
+    )
+    for passing in passing_options:
+        if not names.intersection(context_operations(passing)):
+            continue
+        trial = copy.deepcopy(section)
+        trial["passing"].append(with_context(trial, passing, "passing"))
+        trial["contrast_status"] = (
+            "passing held-in run shares operation names; equivalence and intermediate correctness are unverified"
+        )
+        if len(render(trial)) <= budget:
+            section = trial
+            break
+    for context in (context for row in inventory for context in all_options(row["index"])):
+        if (
+            context.get("resolution") != "recovered"
+            or not core_snippets(context)
+            or not names.intersection(context_operations(context))
+        ):
+            continue
+        trial = copy.deepcopy(section)
+        trial["recovered"].append(with_context(trial, context, "recovered"))
+        if len(render(trial)) <= budget:
+            section = trial
+            break
     for index, context in admitted.items():
         for op in context.get("trace", {}).get("snippets", []):
             trial = copy.deepcopy(section)
@@ -646,18 +702,6 @@ def pack_evidence(
                     refs.append(ref)
             if len(render(trial)) <= budget:
                 section = trial
-    names = frozenset(name for context in admitted.values() for name in context_operations(context))
-    for passing in evidence.get("passing", []):
-        if not names.intersection(context_operations(passing)):
-            continue
-        trial = copy.deepcopy(section)
-        trial["passing"].append(with_context(trial, passing, "passing"))
-        trial["contrast_status"] = (
-            "passing held-in run shares operation names; equivalence and intermediate correctness are unverified"
-        )
-        if len(render(trial)) <= budget:
-            section = trial
-            break
     rendered = render(section)
     return rendered, {
         "evidence_selector_version": EVIDENCE_SELECTOR_VERSION,
@@ -769,6 +813,8 @@ def load_proposal_evidence(
             instance = by_instance.get(str(record["instance_id"]), {})
             verdict = Verdict.from_dict(record["verdict"])
             context: dict[str, Any] = {
+                "instance_id": str(record["instance_id"]),
+                "resolution": detail.get("resolution") or "not_assessed",
                 "symptom_summary": head_tail(detail.get("symptom_summary", "unavailable"), 2000),
                 **{
                     field: bounded_excerpt(detail.get(field) or "not recorded", 600)
