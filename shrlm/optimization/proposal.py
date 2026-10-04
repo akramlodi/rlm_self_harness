@@ -156,7 +156,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "4.3.0"
+PROMPT_VERSION = "4.4.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -663,6 +663,9 @@ same no-harm bar as any other.
 """
 
 TASK_REASONING_GUIDANCE = """Task-derived reasoning (use only considerations supported by held-in evidence):
+Diagnosis details are model assessments, not verified facts. Read their operation
+evidence and verification limits. For broad 'other' clusters, bucket support does
+not establish that every member shares the representative's precise mechanism.
 Which information must survive each step, and which task conditions must the final
 computation enforce? Consider counts, dates, identity, ordering, provenance, units,
 and asymmetric roles only when the task needs them. A set discards multiplicity

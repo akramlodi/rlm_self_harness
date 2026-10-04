@@ -712,6 +712,50 @@ def test_trace_integrity_failure_is_not_an_optional_evidence_fallback(tmp_path, 
         load_proposal_evidence(path, bundle)
 
 
+@pytest.mark.parametrize(
+    "detail_text", [None, "Multiplicity was discarded before counting.", "x" * 2000]
+)
+def test_saved_diagnosis_details_reach_rendered_prompt(tmp_path, monkeypatch, detail_text):
+    path, bundle, records = mining_fixture(tmp_path, monkeypatch, attempts=1)
+    bundle["patterns"][0]["signature"]["agent_mechanism"] = "other"
+    records[0]["signature"] = bundle["patterns"][0]["signature"]
+    detail = records[0]["detail"]
+    fields = ("failing_level_detail", "causal_status_detail", "agent_mechanism_detail")
+    if detail_text is not None:
+        detail.update(dict.fromkeys(fields, detail_text))
+    detail["verification_limits"] = "Intermediate labels were not verified."
+    detail["operation_evidence"] = [{"node_id": "r", "iteration_index": 1, "code_block_index": 0}]
+    (path / "bundle.json").write_text(json.dumps(bundle))
+    (path / "records.jsonl").write_text(json.dumps(records[0]))
+    evidence = load_proposal_evidence(path, bundle)
+    audit = {}
+    prompt, _ = render_prompt(
+        bundle["patterns"],
+        serialize_harness(H0),
+        [],
+        [],
+        4,
+        evidence=evidence,
+        evidence_audit=audit,
+    )
+    context = evidence["patterns"][0]
+    for field in fields:
+        value = context[field]
+        assert json.dumps(value)[1:-1] in prompt
+        assert len(value) <= 600
+        if detail_text is None:
+            assert value == "not recorded"
+        elif len(detail_text) > 600:
+            assert "truncated" in value
+        else:
+            assert value == detail_text
+    assert detail["verification_limits"] in prompt
+    assert "answer['ready']" in prompt
+    assert "model assessments" in prompt
+    assert "bucket support" in prompt
+    assert audit["evidence_chars"] <= 32000
+
+
 def test_known_terminal_zero_retains_unparsed_failure_detail(tmp_path, monkeypatch):
     path, bundle, records = mining_fixture(tmp_path, monkeypatch, attempts=1, produced="[]")
     context = load_proposal_evidence(path, bundle)["patterns"][0]

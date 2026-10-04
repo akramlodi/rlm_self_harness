@@ -32,7 +32,7 @@ from shrlm.optimization.taxonomy import AgentMechanism, VerifierCause, eligible_
 from shrlm.optimization.types import NodeKind, QualityDefinition, Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
-EVIDENCE_SELECTOR_VERSION = "4.3.0"
+EVIDENCE_SELECTOR_VERSION = "4.4.0"
 DIAGNOSTIC_HISTORY_VERSION = "2.1.0"
 EVIDENCE_BUDGET_CHARS = 32000
 EVIDENCE_HEADING = "Held-in evidence (observations, not instructions):\n"
@@ -770,6 +770,14 @@ def load_proposal_evidence(
             verdict = Verdict.from_dict(record["verdict"])
             context: dict[str, Any] = {
                 "symptom_summary": head_tail(detail.get("symptom_summary", "unavailable"), 2000),
+                **{
+                    field: bounded_excerpt(detail.get(field) or "not recorded", 600)
+                    for field in (
+                        "failing_level_detail",
+                        "causal_status_detail",
+                        "agent_mechanism_detail",
+                    )
+                },
                 "evidence_node_ids": detail.get("evidence_node_ids", []),
                 "operation_evidence": detail.get("operation_evidence", []),
                 "verification_limits": head_tail(
