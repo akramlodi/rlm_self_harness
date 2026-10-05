@@ -526,6 +526,7 @@ class TestOolongPairsVerifier:
         assert config["pass_f1_threshold"] == 1.0
         assert set(config) == {
             "environment",
+            "primary_quality",
             "pass_f1_threshold",
             "extraction_rule",
             "gold_ordering",

@@ -1,0 +1,15 @@
+--- round_06_incumbent/S6_runtime_policy
++++ r06-c01-s6/S6_runtime_policy
+@@ -1,9 +1,9 @@
+ {
+-  "enabled": false,
++  "enabled": true,
+   "max_batch_width": null,
+   "max_depth": null,
+   "max_prompt_chars": null,
+-  "max_retries": null,
+-  "retry_on_syntax_error": null,
++  "max_retries": 2,
++  "retry_on_syntax_error": true,
+   "validate_sub_output": null
+ }

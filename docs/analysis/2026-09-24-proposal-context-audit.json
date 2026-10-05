@@ -1,0 +1,2904 @@
+{
+  "source_experiment": "experiment_oolong_pairs_dsv4f_20260923_163355",
+  "mode": "offline reconstruction; no model calls, no historical reinterpretation",
+  "rounds": {
+    "2": {
+      "audit": {
+        "evidence_selector_version": "4.2.0",
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 29412,
+        "expanded_patterns": [
+          6,
+          1,
+          0
+        ],
+        "distinct_actionable_mechanisms": 2,
+        "representative_incremental_chars": {
+          "6": 3897,
+          "1": 5613,
+          "0": 10956
+        },
+        "omitted_patterns": {
+          "2": "complete core packet exceeds remaining budget",
+          "3": "complete core packet exceeds remaining budget",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "unattributed: no eligible intervention",
+          "7": "unattributed: no eligible intervention"
+        },
+        "operation_count": 9,
+        "core_operation_count": 8,
+        "optional_operation_count": 1,
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation",
+          "incomplete_coverage"
+        ],
+        "route_support": {
+          "0": {},
+          "1": {
+            "S8": [
+              "aff93744737fe4a9"
+            ]
+          },
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        },
+        "admitted_refs": {
+          "6": [
+            "5c5715b271dd962a"
+          ],
+          "1": [
+            "aff93744737fe4a9",
+            "5a2ccca687787c93"
+          ],
+          "0": [
+            "2c801a77165acd0b",
+            "30a9888dfc1cbfb4",
+            "ab0d0c42beb43362",
+            "d48eca597b83a4bb",
+            "9dadedc32c31ba97",
+            "4d7f8ef5c462c129"
+          ]
+        },
+        "choices": {
+          "0": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S2",
+              "S4",
+              "S3",
+              "S10"
+            ],
+            "admitted_refs": [
+              "2c801a77165acd0b",
+              "30a9888dfc1cbfb4",
+              "ab0d0c42beb43362",
+              "d48eca597b83a4bb",
+              "9dadedc32c31ba97",
+              "4d7f8ef5c462c129"
+            ],
+            "route_support": {},
+            "predecessors": {
+              "S4": {
+                "round": 1,
+                "subject_id": "r01-c02-s4",
+                "decision": "bundled"
+              }
+            }
+          },
+          "1": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S3",
+              "S4",
+              "S8"
+            ],
+            "admitted_refs": [
+              "aff93744737fe4a9",
+              "5a2ccca687787c93"
+            ],
+            "route_support": {
+              "S8": [
+                "aff93744737fe4a9"
+              ]
+            },
+            "predecessors": {
+              "S3": {
+                "round": 1,
+                "subject_id": "r01-c01-s3",
+                "decision": "bundled"
+              }
+            }
+          },
+          "6": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S2",
+              "S4",
+              "S3",
+              "S10"
+            ],
+            "admitted_refs": [
+              "5c5715b271dd962a"
+            ],
+            "route_support": {},
+            "predecessors": {
+              "S4": {
+                "round": 1,
+                "subject_id": "r01-c02-s4",
+                "decision": "bundled"
+              }
+            }
+          }
+        },
+        "history_withheld_patterns": [],
+        "history_chars": 6521,
+        "system_prompt_chars": 57965
+      },
+      "selectable_indices": [
+        0,
+        1,
+        6
+      ],
+      "history_header": {
+        "attempts_omitted": 0,
+        "attempts_total": 4,
+        "history_schema": "proposal-history/v3",
+        "metric_definitions": {
+          "ec3ce47fca1e492c": {
+            "aggregation": "all_attempt_mean",
+            "direction": "higher",
+            "name": "f1",
+            "precision": 3,
+            "schema": "primary-quality/v1",
+            "terminal_values": {
+              "content_filtered": 0.0,
+              "resource_terminated": 0.0,
+              "runtime_error": 0.0,
+              "wrong_format": 0.0
+            },
+            "version": "v1"
+          }
+        },
+        "omission_reason": "rendered budget; full archive and reference index retained",
+        "rounds_total": 1,
+        "status_totals": {
+          "bundled": 2,
+          "preflight_rejected": 1,
+          "rejected": 1
+        }
+      },
+      "history": {
+        "attempts": [
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with ",
+            "constituent_ids": [
+              "r01-c01-s3",
+              "r01-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "c2da31bfc9f522d3fc19c7ab3d232f10c19a13f262dd5e2b71f4afb08922f9aa",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "28 questions lost to parse error; root prints missing indices but proceeds. Undercounts cause 2 spurious pairs. Verification limits: no check on coverage completeness before pair generation.",
+            "predicted_effect": "Root will check coverage completeness before pair generation and retry failed chunks, preventing undercounts that cause spurious pairs. The verification catches the data loss that pattern 2's root detected but ignored.",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "round": 1,
+            "subject_id": "r01-c02-s4",
+            "surface": "S4"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add execution instruction to normalize each pair: sort tuple so lower ID is first, then deduplicate via set. This directly enforces the required ordering and uniqueness before answer submission.",
+            "constituent_ids": [
+              "r01-c01-s3",
+              "r01-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "93ae26833464a3da54e9a3fa5f4aa561ebe3c5ee1afecac80bf3de5c1242fd14",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Pairs violate lower-ID-first ordering and uniqueness constraints: self-pair (14630, 14630) present, many pairs have lower ID second. Verification limits: no check before submission.",
+            "predicted_effect": "Root will sort each pair to lower-ID-first and remove duplicates before submission, eliminating the ordering and self-pair violations observed in pattern 0. Correctly ordered pairs from sub-calls remain unchanged.",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "round": 1,
+            "subject_id": "r01-c01-s3",
+            "surface": "S3"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6063,
+                "n_attempts": 10,
+                "n_declared_terminal": 0,
+                "n_known_zero": 0,
+                "n_measured": 10,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 0
+              },
+              "total_cost": 0.8452981700000001
+            },
+            "batch_subject_id": null,
+            "behavioral_change": "not_assessed",
+            "constituent_ids": [
+              "r01-c01-s3",
+              "r01-c02-s4"
+            ],
+            "decision": "rejected",
+            "measured": {
+              "exact_passes": 2,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.7975,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 1.0977412500000001
+            },
+            "observed_failure": "not_assessed",
+            "predicted_effect": "not_assessed",
+            "quality_signal": "potentially_promising",
+            "reasons": [
+              "heldout pass-count delta -1 regresses beyond tau_regression=0.0",
+              "no split improves beyond tau_improvement=0.0 (heldout -1)"
+            ],
+            "round": 1,
+            "subject_id": "merged",
+            "surface": null
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "behavioral_change": "Add execution instruction to normalize each pair as (min(a,b), max(a,b)) and deduplicate via set before formatting the answer. This directly enforces the two violated constraints at the point where pairs are constructed.",
+            "decision": "preflight_rejected",
+            "measured": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Pairs violate 'lower ID first' and 'no duplicate pairs' constraints. Verification limits: no check before submission.",
+            "owner_relation": "unknown (legacy or no recorded owner)",
+            "predicted_effect": "Root will normalize and deduplicate pairs before submission, eliminating self-pairs and reversed-order pairs. The retry-on-parse-failure guidance recovers lost labels from pattern 2 as well, addressing both failure modes with one edit.",
+            "quality_signal": "not_assessed",
+            "reasons": [
+              "proposal: repair must target only an original failed pattern"
+            ],
+            "round": 1,
+            "subject_id": "pattern 0 on S3",
+            "surface": "S3"
+          }
+        ],
+        "rounds": [
+          {
+            "attempts": 4,
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6063,
+                "n_attempts": 10,
+                "n_declared_terminal": 0,
+                "n_known_zero": 0,
+                "n_measured": 10,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 0
+              },
+              "total_cost": 0.8452981700000001
+            },
+            "outcomes": [
+              {
+                "decision": "rejected",
+                "measured": {
+                  "exact_passes": 2,
+                  "first_runtime_error": null,
+                  "n_attempts": 10,
+                  "n_cost_measurements": 10,
+                  "n_runtime_errors": 0,
+                  "quality": {
+                    "definition_ref": "ec3ce47fca1e492c",
+                    "mean": 0.7975,
+                    "n_attempts": 10,
+                    "n_declared_terminal": 1,
+                    "n_known_zero": 1,
+                    "n_measured": 9,
+                    "n_unknown": 0
+                  },
+                  "terminal_failures": {
+                    "content_filtered": 0,
+                    "resource_terminated": 0,
+                    "runtime_error": 0,
+                    "wrong_format": 1
+                  },
+                  "total_cost": 1.0977412500000001
+                },
+                "quality_signal": "potentially_promising",
+                "subject_id": "merged"
+              }
+            ],
+            "promoted": false,
+            "promoted_harness_hash": null,
+            "round": 1
+          }
+        ]
+      },
+      "operations": [
+        {
+          "code": "# Check all users with human being\nprint(\"All users with 'human being' instances:\")\nfor uid, items in sorted(user_data.items()):\n    human_items = [i for i in items if i['category'] == 'human being']\n    if human_items:\n        print(f\"User {uid}: {len(human_items)} human being items\")\n        for i in human_items:\n            print(f\"  {i['date'].strftime('%b %d, %Y')} - after threshold? {i['date'] > threshold}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r",
+            18,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "results = rlm_query_batched(prompts)\nprint(f\"Got {len(results)} results\")\nfor i, r in enumerate(results):\n    print(f\"Result {i}: length={len(r)}, first 200 chars: {r[:200]}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "linked child producer",
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r",
+            5,
+            0,
+            "code"
+          ]
+        },
+        {
+          "error_observed": false,
+          "reason": "linked child prompt/return",
+          "response_structure": {
+            "item_count": 47,
+            "semantic_coverage": "not_assessed",
+            "status": "complete_json",
+            "type": "array"
+          },
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r/i4/b0/c1",
+            null,
+            null,
+            "child"
+          ]
+        },
+        {
+          "code": "# Format the answer\nanswer_lines = [f\"({p[0]}, {p[1]})\" for p in final_pairs]\nanswer_text = \"\\n\".join(answer_lines)\nprint(answer_text)\n\nanswer[\"content\"] = answer_text\nanswer[\"ready\"] = True",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t18-w10-7316cc87a69b31b7__a02",
+            "r",
+            18,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "answer[\"content\"] = \"\"\nanswer[\"ready\"] = True\nprint(\"No valid pairs found - no user has all three required categories (description and abstract concept, human being, numeric value)\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t20-w10-c0dd071439e06fa2__a01",
+            "r",
+            21,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "error_observed": false,
+          "reason": "linked child prompt/return",
+          "response_structure": {
+            "item_count": 47,
+            "semantic_coverage": "not_assessed",
+            "status": "complete_json",
+            "type": "array"
+          },
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r/i4/b0/c0",
+            null,
+            null,
+            "child"
+          ]
+        },
+        {
+          "code": "# Final verification\nthreshold = datetime(2023, 1, 6)\nqualifying_final = []\nfor uid, items in user_data.items():\n    cats = [i['category'] for i in items]\n    has_human_or_loc = 'human being' in cats or 'location' in cats\n    \n    human_items = [i for i in items if i['category'] == 'human being']\n    all_human_after = all(i['date'] > threshold for i in human_items) if human_items else True\n    \n    if has_human_or_loc and all_human_after:\n        qualifying_final.append(int(uid))\n\nqualifying_final.sort()\nprint(f\"Qualifying users: {qualifying_final}\")\nprint(f\"Count: {len(qualifying_final)}\")\n\n# Generate pairs\npairs_final = []\nfor i in range(len(qualifying_final)):\n    for j in range(i+1, len(qualifying_final)):\n        pairs_final.append((qualifying_final[i], qualifying_final[j]))\n\nprint(f\"Number of pairs: {len(pairs_final)}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r",
+            18,
+            1,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "# Generate all valid pairs\nrole_a = [72621, 75925]\nrole_b = [16357, 25308, 31029, 32716, 40446, 41079, 69046, 72621, 75925, 96597]\n\nfinal_pairs = set()\nfor a in role_a:\n    for b in role_b:\n        if a != b:\n            final_pairs.add((min(a, b), max(a, b)))\n\nfinal_pairs = sorted(final_pairs)\nprint(f\"Total pairs: {len(final_pairs)}\")\nfor p in final_pairs:\n    print(p)",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t18-w10-7316cc87a69b31b7__a02",
+            "r",
+            17,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "# Format the answer\nanswer_lines = [f\"({a}, {b})\" for a, b in pairs_final]\nanswer_str = \"\\n\".join(answer_lines)\n\n# Set the answer\nanswer[\"content\"] = answer_str\nanswer[\"ready\"] = True\nprint(f\"Answer ready with {len(pairs_final)} pairs\")\nprint(\"First 5 pairs:\")\nfor l in answer_lines[:5]:\n    print(l)\nprint(\"...\")\nprint(\"Last 5 pairs:\")\nfor l in answer_lines[-5:]:\n    print(l)",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r",
+            19,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        }
+      ],
+      "original_audit": {
+        "admitted_refs": {
+          "1": [
+            "2f52e3362f6bc323",
+            "1798b3a6aa4c29e1",
+            "d30947278db1ffe0",
+            "4644b276b7d5ba92",
+            "7aa66e2b6781f307",
+            "e2ba519a44cb015c"
+          ],
+          "6": [
+            "5c5715b271dd962a",
+            "c20526aa9039d7d1",
+            "d8806e169808c1f5"
+          ]
+        },
+        "attempt_prompt_chars": [
+          53269,
+          61330
+        ],
+        "core_operation_count": 9,
+        "distinct_actionable_mechanisms": 2,
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 25227,
+        "evidence_selector_version": "4.1.0",
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation"
+        ],
+        "expanded_patterns": [
+          6,
+          1
+        ],
+        "history_chars": 6632,
+        "omitted_patterns": {
+          "0": "complete core packet exceeds remaining budget",
+          "2": "complete core packet exceeds remaining budget",
+          "3": "complete core packet exceeds remaining budget",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "unattributed: no eligible intervention",
+          "7": "unattributed: no eligible intervention"
+        },
+        "operation_count": 9,
+        "optional_operation_count": 0,
+        "representative_incremental_chars": {
+          "1": 11246,
+          "6": 8994
+        },
+        "route_support": {
+          "0": {},
+          "1": {
+            "S8": [
+              "2f52e3362f6bc323"
+            ]
+          },
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        },
+        "system_prompt_chars": 53241
+      },
+      "consumer_operations": 3
+    },
+    "3": {
+      "audit": {
+        "evidence_selector_version": "4.2.0",
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 24846,
+        "expanded_patterns": [
+          0,
+          2,
+          1
+        ],
+        "distinct_actionable_mechanisms": 2,
+        "representative_incremental_chars": {
+          "0": 4624,
+          "2": 6153,
+          "1": 6242
+        },
+        "omitted_patterns": {
+          "3": "complete core packet exceeds remaining budget",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "complete core packet exceeds remaining budget",
+          "6": "no resolvable operation or child-call observation",
+          "7": "no resolvable operation or child-call observation",
+          "8": "unattributed: no eligible intervention",
+          "9": "unattributed: no eligible intervention",
+          "10": "unattributed: no eligible intervention"
+        },
+        "operation_count": 5,
+        "core_operation_count": 5,
+        "optional_operation_count": 0,
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation",
+          "incomplete_coverage"
+        ],
+        "route_support": {
+          "0": {},
+          "1": {},
+          "2": {
+            "S8": [
+              "be474f6062a5f8c3",
+              "b68c344482b77c03"
+            ]
+          },
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {},
+          "10": {}
+        },
+        "admitted_refs": {
+          "0": [
+            "4019382aafa924ff"
+          ],
+          "2": [
+            "be474f6062a5f8c3",
+            "b68c344482b77c03"
+          ],
+          "1": [
+            "8e52ecc7cca4ef07",
+            "2a44520c62b331a7"
+          ]
+        },
+        "choices": {
+          "0": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S2",
+              "S4",
+              "S3",
+              "S10"
+            ],
+            "admitted_refs": [
+              "4019382aafa924ff"
+            ],
+            "route_support": {},
+            "predecessors": {
+              "S4": {
+                "round": 1,
+                "subject_id": "r01-c02-s4",
+                "decision": "bundled"
+              },
+              "S10": {
+                "round": 2,
+                "subject_id": "pattern 0 on S10",
+                "decision": "preflight_rejected"
+              }
+            }
+          },
+          "1": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S2",
+              "S4",
+              "S3",
+              "S10"
+            ],
+            "admitted_refs": [
+              "8e52ecc7cca4ef07",
+              "2a44520c62b331a7"
+            ],
+            "route_support": {},
+            "predecessors": {
+              "S4": {
+                "round": 1,
+                "subject_id": "r01-c02-s4",
+                "decision": "bundled"
+              },
+              "S10": {
+                "round": 2,
+                "subject_id": "pattern 0 on S10",
+                "decision": "preflight_rejected"
+              }
+            }
+          },
+          "2": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S3",
+              "S4",
+              "S8"
+            ],
+            "admitted_refs": [
+              "be474f6062a5f8c3",
+              "b68c344482b77c03"
+            ],
+            "route_support": {
+              "S8": [
+                "be474f6062a5f8c3",
+                "b68c344482b77c03"
+              ]
+            },
+            "predecessors": {
+              "S3": {
+                "round": 2,
+                "subject_id": "r02-c02-s3",
+                "decision": "rejected"
+              }
+            }
+          }
+        },
+        "history_withheld_patterns": [],
+        "history_chars": 11027,
+        "system_prompt_chars": 57905
+      },
+      "selectable_indices": [
+        0,
+        1,
+        2
+      ],
+      "history_header": {
+        "attempts_omitted": 0,
+        "attempts_total": 6,
+        "history_schema": "proposal-history/v3",
+        "metric_definitions": {
+          "ec3ce47fca1e492c": {
+            "aggregation": "all_attempt_mean",
+            "direction": "higher",
+            "name": "f1",
+            "precision": 3,
+            "schema": "primary-quality/v1",
+            "terminal_values": {
+              "content_filtered": 0.0,
+              "resource_terminated": 0.0,
+              "runtime_error": 0.0,
+              "wrong_format": 0.0
+            },
+            "version": "v1"
+          }
+        },
+        "omission_reason": "rendered budget; full archive and reference index retained",
+        "rounds_total": 2,
+        "status_totals": {
+          "bundled": 2,
+          "preflight_rejected": 2,
+          "rejected": 2
+        }
+      },
+      "history": {
+        "attempts": [
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with ",
+            "constituent_ids": [
+              "r01-c01-s3",
+              "r01-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "c2da31bfc9f522d3fc19c7ab3d232f10c19a13f262dd5e2b71f4afb08922f9aa",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "28 questions lost to parse error; root prints missing indices but proceeds. Undercounts cause 2 spurious pairs. Verification limits: no check on coverage completeness before pair generation.",
+            "predicted_effect": "Root will check coverage completeness before pair generation and retry failed chunks, preventing undercounts that cause spurious pairs. The verification catches the data loss that pattern 2's root detected but ignored.",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "round": 1,
+            "subject_id": "r01-c02-s4",
+            "surface": "S4"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "behavioral_change": "Add a skill that instructs root to verify that each expected label category appears at least once in the classification output, and to retry with a different prompt or sub-call strategy if a label is missing. This directly addresses the dem",
+            "decision": "preflight_rejected",
+            "measured": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "Root never verified that the classification output contained all expected label categories. The 'human being' label was absent from all 188 classifications, causing root to conclude no valid pairs existed. Verification limits: no coverage c",
+            "owner_relation": "unknown (legacy or no recorded owner)",
+            "predicted_effect": "Root will verify that all expected label categories appear in the classification output before proceeding to pair generation. If 'human being' or any other label is missing, root will retry classification with adjusted prompts rather than a",
+            "quality_signal": "not_assessed",
+            "reasons": [
+              "proposal: selection evidence_refs must belong to this pattern's admitted operations"
+            ],
+            "round": 2,
+            "subject_id": "pattern 0 on S10",
+            "surface": "S10"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.712,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.7664445999999999
+            },
+            "batch_subject_id": null,
+            "behavioral_change": "Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio",
+            "constituent_ids": null,
+            "decision": "rejected",
+            "effective_edit_fingerprint": "0d519a0ae57b29c4739a9a8a09deccad1b0dd2153a0a53e4245077a70a2bcae7",
+            "measured": {
+              "exact_passes": 0,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6064,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.80794712
+            },
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.",
+            "predicted_effect": "Root will normalize and deduplicate pairs before submission, eliminating ordering violations and self-pairs. The merge step ensures all sub-call results are combined into the final answer, preventing the lossy aggregation seen in pattern 1.",
+            "quality_signal": "no_measured_improvement",
+            "reasons": [
+              "heldout pass-count delta -3 regresses beyond tau_regression=0.0",
+              "no split improves beyond tau_improvement=0.0 (heldout -3)"
+            ],
+            "round": 2,
+            "subject_id": "r02-c02-s3",
+            "surface": "S3"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add execution instruction to normalize each pair: sort tuple so lower ID is first, then deduplicate via set. This directly enforces the required ordering and uniqueness before answer submission.",
+            "constituent_ids": [
+              "r01-c01-s3",
+              "r01-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "93ae26833464a3da54e9a3fa5f4aa561ebe3c5ee1afecac80bf3de5c1242fd14",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Pairs violate lower-ID-first ordering and uniqueness constraints: self-pair (14630, 14630) present, many pairs have lower ID second. Verification limits: no check before submission.",
+            "predicted_effect": "Root will sort each pair to lower-ID-first and remove duplicates before submission, eliminating the ordering and self-pair violations observed in pattern 0. Correctly ordered pairs from sub-calls remain unchanged.",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "round": 1,
+            "subject_id": "r01-c01-s3",
+            "surface": "S3"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6063,
+                "n_attempts": 10,
+                "n_declared_terminal": 0,
+                "n_known_zero": 0,
+                "n_measured": 10,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 0
+              },
+              "total_cost": 0.8452981700000001
+            },
+            "batch_subject_id": null,
+            "behavioral_change": "not_assessed",
+            "constituent_ids": [
+              "r01-c01-s3",
+              "r01-c02-s4"
+            ],
+            "decision": "rejected",
+            "measured": {
+              "exact_passes": 2,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.7975,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 1.0977412500000001
+            },
+            "observed_failure": "not_assessed",
+            "predicted_effect": "not_assessed",
+            "quality_signal": "potentially_promising",
+            "reasons": [
+              "heldout pass-count delta -1 regresses beyond tau_regression=0.0",
+              "no split improves beyond tau_improvement=0.0 (heldout -1)"
+            ],
+            "round": 1,
+            "subject_id": "merged",
+            "surface": null
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "behavioral_change": "Add execution instruction to normalize each pair as (min(a,b), max(a,b)) and deduplicate via set before formatting the answer. This directly enforces the two violated constraints at the point where pairs are constructed.",
+            "decision": "preflight_rejected",
+            "measured": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Pairs violate 'lower ID first' and 'no duplicate pairs' constraints. Verification limits: no check before submission.",
+            "owner_relation": "unknown (legacy or no recorded owner)",
+            "predicted_effect": "Root will normalize and deduplicate pairs before submission, eliminating self-pairs and reversed-order pairs. The retry-on-parse-failure guidance recovers lost labels from pattern 2 as well, addressing both failure modes with one edit.",
+            "quality_signal": "not_assessed",
+            "reasons": [
+              "proposal: repair must target only an original failed pattern"
+            ],
+            "round": 1,
+            "subject_id": "pattern 0 on S3",
+            "surface": "S3"
+          }
+        ],
+        "rounds": [
+          {
+            "attempts": 4,
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6063,
+                "n_attempts": 10,
+                "n_declared_terminal": 0,
+                "n_known_zero": 0,
+                "n_measured": 10,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 0
+              },
+              "total_cost": 0.8452981700000001
+            },
+            "outcomes": [
+              {
+                "decision": "rejected",
+                "measured": {
+                  "exact_passes": 2,
+                  "first_runtime_error": null,
+                  "n_attempts": 10,
+                  "n_cost_measurements": 10,
+                  "n_runtime_errors": 0,
+                  "quality": {
+                    "definition_ref": "ec3ce47fca1e492c",
+                    "mean": 0.7975,
+                    "n_attempts": 10,
+                    "n_declared_terminal": 1,
+                    "n_known_zero": 1,
+                    "n_measured": 9,
+                    "n_unknown": 0
+                  },
+                  "terminal_failures": {
+                    "content_filtered": 0,
+                    "resource_terminated": 0,
+                    "runtime_error": 0,
+                    "wrong_format": 1
+                  },
+                  "total_cost": 1.0977412500000001
+                },
+                "quality_signal": "potentially_promising",
+                "subject_id": "merged"
+              }
+            ],
+            "promoted": false,
+            "promoted_harness_hash": null,
+            "round": 1
+          },
+          {
+            "attempts": 2,
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.712,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.7664445999999999
+            },
+            "outcomes": [
+              {
+                "decision": "rejected",
+                "measured": {
+                  "exact_passes": 0,
+                  "first_runtime_error": null,
+                  "n_attempts": 10,
+                  "n_cost_measurements": 10,
+                  "n_runtime_errors": 0,
+                  "quality": {
+                    "definition_ref": "ec3ce47fca1e492c",
+                    "mean": 0.6064,
+                    "n_attempts": 10,
+                    "n_declared_terminal": 1,
+                    "n_known_zero": 1,
+                    "n_measured": 9,
+                    "n_unknown": 0
+                  },
+                  "terminal_failures": {
+                    "content_filtered": 0,
+                    "resource_terminated": 0,
+                    "runtime_error": 0,
+                    "wrong_format": 1
+                  },
+                  "total_cost": 0.80794712
+                },
+                "quality_signal": "no_measured_improvement",
+                "subject_id": "r02-c02-s3"
+              }
+            ],
+            "promoted": false,
+            "promoted_harness_hash": null,
+            "round": 2
+          }
+        ]
+      },
+      "operations": [
+        {
+          "code": "answer[\"content\"] = \"\\n\".join([f\"({p[0]}, {p[1]})\" for p in pairs_final])\nanswer[\"ready\"] = True\nprint(\"Answer submitted:\")\nprint(answer[\"content\"])",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t18-w10-7316cc87a69b31b7__a02",
+            "r",
+            13,
+            1,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "total_q = sum(len(labels) for labels in user_labels.values())\nprint(f\"Total questions classified: {total_q}\")\nprint(f\"Expected: 188\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t15-w10-00f4616187f818a3__a02",
+            "r",
+            13,
+            4,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "# Compute all pairs properly\ngroup_a = sorted([int(x) for x in abbrev_and_exactly_one_human])  # [72621, 96597]\ngroup_b = sorted([int(x) for x in entity_and_numeric])  # [16357, 25308, 31029, 40446, 69046, 72621, 75925, 96597]\n\nprint(f\"Group A: {group_a}\")\nprint(f\"Group B: {group_b}\")\n\npairs_final = set()\nfor a in group_a:\n    for b in group_b:\n        if a != b:\n            pair = (min(a, b), max(a, b))\n            pairs_final.add(pair)\n\npairs_final = sorted(pairs_final)\nprint(f\"\\nTotal pairs: {len(pairs_final)}\")\nfor p in pairs_final:\n    print(f\"({p[0]}, {p[1]})\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t18-w10-7316cc87a69b31b7__a02",
+            "r",
+            13,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "answer[\"content\"] = \"(72621, 96597)\\n(75925, 96597)\"\nanswer[\"ready\"] = True\nprint(answer)",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t20-w10-c0dd071439e06fa2__a02",
+            "r",
+            15,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "# Find all users with location AND entity AND exactly one abbreviation\ngroup_b_candidates = []\nfor uid, cats in user_cat_list.items():\n    has_location = 'location' in cats\n    has_entity = 'entity' in cats\n    abbrev_count = sum(1 for c in cats if c == 'abbreviation')\n    if has_location and has_entity and abbrev_count == 1:\n        group_b_candidates.append(uid)\n        print(f\"Group B candidate: {uid}, abbrev_count={abbrev_count}, cats={cats}\")\n\nprint(f\"\\nGroup B candidates: {group_b_candidates}\")\n\n# Also check: are there any users I might have missed in Group A?\ngroup_a_candidates = []\nfor uid, cats in user_cat_list.items():\n    has_numeric = 'numeric value' in cats\n    has_human = 'human being' in cats\n    if has_numeric and has_human:\n        group_a_candidates.append(uid)\n        print(f\"Group A candidate: {uid}, cats={cats}\")\n\nprint(f\"\\nGroup A candidates: {group_a_candidates}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t20-w10-c0dd071439e06fa2__a02",
+            "r",
+            14,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        }
+      ],
+      "original_audit": {
+        "admitted_refs": {
+          "0": [
+            "7b7d7968bb4bb1dc",
+            "57d3b2130fb361f3",
+            "9cd38adfd079d098",
+            "55c72d52559895e8",
+            "0f4eee11cbeaf6ab"
+          ],
+          "4": [
+            "6c98211096f41bf5",
+            "225be23943fb363f",
+            "8898419d29d15269",
+            "679258df864dd483",
+            "e915df79a5e3dcf7",
+            "ed53e0865f384be8"
+          ]
+        },
+        "attempt_prompt_chars": [
+          58972,
+          62269
+        ],
+        "core_operation_count": 9,
+        "distinct_actionable_mechanisms": 2,
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 30930,
+        "evidence_selector_version": "4.1.0",
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation"
+        ],
+        "expanded_patterns": [
+          0,
+          4
+        ],
+        "history_chars": 6632,
+        "omitted_patterns": {
+          "1": "complete core packet exceeds remaining budget",
+          "10": "unattributed: no eligible intervention",
+          "2": "complete core packet exceeds remaining budget",
+          "3": "complete core packet exceeds remaining budget",
+          "5": "complete core packet exceeds remaining budget",
+          "6": "complete core packet exceeds remaining budget",
+          "7": "complete core packet exceeds remaining budget",
+          "8": "unattributed: no eligible intervention",
+          "9": "unattributed: no eligible intervention"
+        },
+        "operation_count": 11,
+        "optional_operation_count": 2,
+        "representative_incremental_chars": {
+          "0": 6026,
+          "4": 13857
+        },
+        "route_support": {
+          "0": {},
+          "1": {},
+          "10": {},
+          "2": {},
+          "3": {},
+          "4": {
+            "S8": [
+              "6c98211096f41bf5"
+            ]
+          },
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        },
+        "system_prompt_chars": 58944
+      },
+      "consumer_operations": 1
+    },
+    "4": {
+      "audit": {
+        "evidence_selector_version": "4.2.0",
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 31514,
+        "expanded_patterns": [
+          0,
+          2
+        ],
+        "distinct_actionable_mechanisms": 3,
+        "representative_incremental_chars": {
+          "0": 13013,
+          "2": 12004
+        },
+        "omitted_patterns": {
+          "1": "complete core packet exceeds remaining budget",
+          "3": "complete core packet exceeds remaining budget",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "unattributed: no eligible intervention",
+          "6": "unattributed: no eligible intervention",
+          "7": "no resolvable operation or child-call observation",
+          "8": "complete core packet exceeds remaining budget"
+        },
+        "operation_count": 10,
+        "core_operation_count": 10,
+        "optional_operation_count": 0,
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation"
+        ],
+        "route_support": {
+          "0": {},
+          "1": {},
+          "2": {
+            "S8": [
+              "e70c35ac14907ea8"
+            ]
+          },
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {}
+        },
+        "admitted_refs": {
+          "0": [
+            "7dd866ae85d70637",
+            "09c2825801b1653c",
+            "5f2bea52f09caaee",
+            "63d8f787f7d4755d",
+            "f6a4d165d43e6456"
+          ],
+          "2": [
+            "e70c35ac14907ea8",
+            "e3f369ed386fa256",
+            "021eef2642f136cd",
+            "1c704be451267c07",
+            "a81cb925ea3cf439"
+          ]
+        },
+        "choices": {
+          "0": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S2",
+              "S4",
+              "S3",
+              "S10"
+            ],
+            "admitted_refs": [
+              "7dd866ae85d70637",
+              "09c2825801b1653c",
+              "5f2bea52f09caaee",
+              "63d8f787f7d4755d",
+              "f6a4d165d43e6456"
+            ],
+            "route_support": {},
+            "predecessors": {
+              "S2": {
+                "round": 3,
+                "subject_id": "r03-c01-s2",
+                "decision": "bundled"
+              },
+              "S4": {
+                "round": 1,
+                "subject_id": "r01-c02-s4",
+                "decision": "bundled"
+              },
+              "S10": {
+                "round": 2,
+                "subject_id": "pattern 0 on S10",
+                "decision": "preflight_rejected"
+              }
+            }
+          },
+          "2": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S3",
+              "S4",
+              "S8"
+            ],
+            "admitted_refs": [
+              "e70c35ac14907ea8",
+              "e3f369ed386fa256",
+              "021eef2642f136cd",
+              "1c704be451267c07",
+              "a81cb925ea3cf439"
+            ],
+            "route_support": {
+              "S8": [
+                "e70c35ac14907ea8"
+              ]
+            },
+            "predecessors": {
+              "S3": {
+                "round": 2,
+                "subject_id": "r02-c02-s3",
+                "decision": "rejected"
+              },
+              "S4": {
+                "round": 3,
+                "subject_id": "r03-c02-s4",
+                "decision": "bundled"
+              }
+            }
+          }
+        },
+        "history_withheld_patterns": [],
+        "history_chars": 11755,
+        "system_prompt_chars": 65885
+      },
+      "selectable_indices": [
+        0,
+        2
+      ],
+      "history_header": {
+        "attempts_omitted": 3,
+        "attempts_total": 9,
+        "history_schema": "proposal-history/v3",
+        "metric_definitions": {
+          "ec3ce47fca1e492c": {
+            "aggregation": "all_attempt_mean",
+            "direction": "higher",
+            "name": "f1",
+            "precision": 3,
+            "schema": "primary-quality/v1",
+            "terminal_values": {
+              "content_filtered": 0.0,
+              "resource_terminated": 0.0,
+              "runtime_error": 0.0,
+              "wrong_format": 0.0
+            },
+            "version": "v1"
+          }
+        },
+        "omission_reason": "rendered budget; full archive and reference index retained",
+        "rounds_total": 3,
+        "status_totals": {
+          "bundled": 4,
+          "preflight_rejected": 2,
+          "promoted": 1,
+          "rejected": 2
+        }
+      },
+      "history": {
+        "attempts": [
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add a coverage check step to the S2 decomposition instruction: after parsing, compare the number of parsed records against the total line count of the context. If they differ, print the discrepancy and re-parse with a more inclusive pattern",
+            "constituent_ids": [
+              "r03-c01-s2",
+              "r03-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "77886e448686c931ecfd3a41bad9cd5777bbf5cfb376f9ce4bbbb967088707be",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "265 missing pairs (recall 0.466) because the root never verified that all input records were captured. The original input likely contained more records that did not start with 'Date:'.",
+            "predicted_effect": "Root will compare parsed line count against total context lines before proceeding, detecting incomplete coverage early and re-parsing with a more inclusive pattern. This prevents the silent data loss that caused 265 missing pairs in pattern",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: promoted"
+            ],
+            "round": 3,
+            "subject_id": "r03-c01-s2",
+            "surface": "S2"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with ",
+            "constituent_ids": [
+              "r01-c01-s3",
+              "r01-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "c2da31bfc9f522d3fc19c7ab3d232f10c19a13f262dd5e2b71f4afb08922f9aa",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "28 questions lost to parse error; root prints missing indices but proceeds. Undercounts cause 2 spurious pairs. Verification limits: no check on coverage completeness before pair generation.",
+            "predicted_effect": "Root will check coverage completeness before pair generation and retry failed chunks, preventing undercounts that cause spurious pairs. The verification catches the data loss that pattern 2's root detected but ignored.",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "round": 1,
+            "subject_id": "r01-c02-s4",
+            "surface": "S4"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "behavioral_change": "Add a skill that instructs root to verify that each expected label category appears at least once in the classification output, and to retry with a different prompt or sub-call strategy if a label is missing. This directly addresses the dem",
+            "decision": "preflight_rejected",
+            "measured": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "Root never verified that the classification output contained all expected label categories. The 'human being' label was absent from all 188 classifications, causing root to conclude no valid pairs existed. Verification limits: no coverage c",
+            "owner_relation": "unknown (legacy or no recorded owner)",
+            "predicted_effect": "Root will verify that all expected label categories appear in the classification output before proceeding to pair generation. If 'human being' or any other label is missing, root will retry classification with adjusted prompts rather than a",
+            "quality_signal": "not_assessed",
+            "reasons": [
+              "proposal: selection evidence_refs must belong to this pattern's admitted operations"
+            ],
+            "round": 2,
+            "subject_id": "pattern 0 on S10",
+            "surface": "S10"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.712,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.7664445999999999
+            },
+            "batch_subject_id": null,
+            "behavioral_change": "Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio",
+            "constituent_ids": null,
+            "decision": "rejected",
+            "effective_edit_fingerprint": "0d519a0ae57b29c4739a9a8a09deccad1b0dd2153a0a53e4245077a70a2bcae7",
+            "measured": {
+              "exact_passes": 0,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6064,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.80794712
+            },
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.",
+            "predicted_effect": "Root will normalize and deduplicate pairs before submission, eliminating ordering violations and self-pairs. The merge step ensures all sub-call results are combined into the final answer, preventing the lossy aggregation seen in pattern 1.",
+            "quality_signal": "no_measured_improvement",
+            "reasons": [
+              "heldout pass-count delta -3 regresses beyond tau_regression=0.0",
+              "no split improves beyond tau_improvement=0.0 (heldout -3)"
+            ],
+            "round": 2,
+            "subject_id": "r02-c02-s3",
+            "surface": "S3"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with ",
+            "constituent_ids": [
+              "r03-c01-s2",
+              "r03-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "d8e90d581951c79cf10a4b28d0ea92a014fd32f44add89220d8873fd102c3195",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "ValueError prevented classification data from being collected. Root detected 120 missing classifications but proceeded to pair generation without retrying the failed chunk. Verification limits: no coverage check before pair generation.",
+            "predicted_effect": "Root will detect the 40 missing classifications caused by the iteration error and retry the affected chunk, recovering the lost data before pair generation.",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: promoted"
+            ],
+            "round": 3,
+            "subject_id": "r03-c02-s4",
+            "surface": "S4"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "batch_subject_id": null,
+            "behavioral_change": "not_assessed",
+            "constituent_ids": [
+              "r03-c01-s2",
+              "r03-c02-s4"
+            ],
+            "decision": "promoted",
+            "measured": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6656,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.9025148599999999
+            },
+            "observed_failure": "not_assessed",
+            "predicted_effect": "not_assessed",
+            "quality_signal": "not_assessed",
+            "reasons": [],
+            "round": 3,
+            "subject_id": "merged",
+            "surface": null
+          }
+        ],
+        "rounds": [
+          {
+            "attempts": 4,
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6063,
+                "n_attempts": 10,
+                "n_declared_terminal": 0,
+                "n_known_zero": 0,
+                "n_measured": 10,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 0
+              },
+              "total_cost": 0.8452981700000001
+            },
+            "outcomes": [
+              {
+                "decision": "rejected",
+                "measured": {
+                  "exact_passes": 2,
+                  "first_runtime_error": null,
+                  "n_attempts": 10,
+                  "n_cost_measurements": 10,
+                  "n_runtime_errors": 0,
+                  "quality": {
+                    "definition_ref": "ec3ce47fca1e492c",
+                    "mean": 0.7975,
+                    "n_attempts": 10,
+                    "n_declared_terminal": 1,
+                    "n_known_zero": 1,
+                    "n_measured": 9,
+                    "n_unknown": 0
+                  },
+                  "terminal_failures": {
+                    "content_filtered": 0,
+                    "resource_terminated": 0,
+                    "runtime_error": 0,
+                    "wrong_format": 1
+                  },
+                  "total_cost": 1.0977412500000001
+                },
+                "quality_signal": "potentially_promising",
+                "subject_id": "merged"
+              }
+            ],
+            "promoted": false,
+            "promoted_harness_hash": null,
+            "round": 1
+          },
+          {
+            "attempts": 2,
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.712,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.7664445999999999
+            },
+            "outcomes": [
+              {
+                "decision": "rejected",
+                "measured": {
+                  "exact_passes": 0,
+                  "first_runtime_error": null,
+                  "n_attempts": 10,
+                  "n_cost_measurements": 10,
+                  "n_runtime_errors": 0,
+                  "quality": {
+                    "definition_ref": "ec3ce47fca1e492c",
+                    "mean": 0.6064,
+                    "n_attempts": 10,
+                    "n_declared_terminal": 1,
+                    "n_known_zero": 1,
+                    "n_measured": 9,
+                    "n_unknown": 0
+                  },
+                  "terminal_failures": {
+                    "content_filtered": 0,
+                    "resource_terminated": 0,
+                    "runtime_error": 0,
+                    "wrong_format": 1
+                  },
+                  "total_cost": 0.80794712
+                },
+                "quality_signal": "no_measured_improvement",
+                "subject_id": "r02-c02-s3"
+              }
+            ],
+            "promoted": false,
+            "promoted_harness_hash": null,
+            "round": 2
+          },
+          {
+            "attempts": 3,
+            "baseline": {
+              "exact_passes": 1,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.5256000000000001,
+                "n_attempts": 10,
+                "n_declared_terminal": 2,
+                "n_known_zero": 2,
+                "n_measured": 8,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 2
+              },
+              "total_cost": 0.6481485
+            },
+            "outcomes": [
+              {
+                "decision": "promoted",
+                "measured": {
+                  "exact_passes": 3,
+                  "first_runtime_error": null,
+                  "n_attempts": 10,
+                  "n_cost_measurements": 10,
+                  "n_runtime_errors": 0,
+                  "quality": {
+                    "definition_ref": "ec3ce47fca1e492c",
+                    "mean": 0.6656,
+                    "n_attempts": 10,
+                    "n_declared_terminal": 1,
+                    "n_known_zero": 1,
+                    "n_measured": 9,
+                    "n_unknown": 0
+                  },
+                  "terminal_failures": {
+                    "content_filtered": 0,
+                    "resource_terminated": 0,
+                    "runtime_error": 0,
+                    "wrong_format": 1
+                  },
+                  "total_cost": 0.9025148599999999
+                },
+                "quality_signal": "not_assessed",
+                "subject_id": "merged"
+              }
+            ],
+            "promoted": true,
+            "promoted_harness_hash": "44869d769d1a48e2b4209e6692c1c578b36ddb714ae109a74acb840bc0bd2df3",
+            "round": 3
+          }
+        ]
+      },
+      "operations": [
+        {
+          "code": "# Build mapping from user_id to their labels\nuser_labels = {}\nfor (uid, inst), label in zip(parsed, all_labels):\n    if uid not in user_labels:\n        user_labels[uid] = []\n    user_labels[uid].append(label)\n\n# Find users with entity or human being\ntarget_users = set()\nfor uid, labels in user_labels.items():\n    if 'entity' in labels or 'human being' in labels:\n        target_users.add(uid)\n\nprint(f\"Total unique users: {len(user_labels)}\")\nprint(f\"Users with entity or human being: {len(target_users)}\")\nprint(f\"Target users: {sorted(target_users)}\")\n\n# Generate all unique pairs (lower ID first)\nsorted_users = sorted(target_users)\npairs = []\nfor i in range(len(sorted_users)):\n    for j in range(i+1, len(sorted_users)):\n        pairs.append((sorted_users[i], sorted_users[j]))\n\nprint(f\"\\nTotal pairs: {len(pairs)}\")\nprint(\"First 10 pairs:\")\nfor p in pairs[:10]:\n    print(f\"({p[0]}, {p[1]})\")",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t02-w9-fcf921f0019d1bd5__a01",
+            "r",
+            7,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "# Let me verify the date parsing for the human being question\nfrom datetime import datetime\n\ndef parse_date(date_str):\n    return datetime.strptime(date_str, \"%b %d, %Y\")\n\n# Check user 72621's human being question date\nfor q in user_questions[72621]:\n    if q['category'] == 'human being':\n        dt = parse_date(q['date'])\n        print(f\"User 72621 human being question date: {q['date']} -> {dt}\")\n        cutoff = datetime(2023, 1, 6)\n        print(f\"After Jan 6, 2023? {dt > cutoff}\")\n\n# Also check if any other user might have a human being question I missed\nprint(\"\\nAll questions with 'human' in category:\")\nfor q in questions:\n    if q['category'] == 'human being':\n        print(f\"  User {q['user']}: {q['date']}: {q['instance'][:80]}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r",
+            13,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "# Format the answer\npair_strings = [f\"({a}, {b})\" for a, b in pairs]\nanswer_content = \"\\n\".join(pair_strings)\n\nprint(f\"Answer length: {len(answer_content)} chars\")\nprint(\"First 5 pairs:\")\nprint(\"\\n\".join(pair_strings[:5]))\nprint(\"...\")\nprint(\"Last 5 pairs:\")\nprint(\"\\n\".join(pair_strings[-5:]))\n\nanswer[\"content\"] = answer_content\nanswer[\"ready\"] = True\nprint(\"Answer ready!\")",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t02-w9-fcf921f0019d1bd5__a01",
+            "r",
+            8,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "for i, r in enumerate(results):\n    print(f\"--- Chunk {i} ---\")\n    print(r[:500])\n    print()",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r",
+            7,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "import json\n\n# Parse each result\nall_classifications = {}\nfor chunk_idx, (chunk, result) in enumerate(zip(chunks, results)):\n    try:\n        parsed = json.loads(result)\n        print(f\"Chunk {chunk_idx}: parsed {len(parsed)} items\")\n        # Map global index\n        for local_idx, category in parsed.items():\n            global_idx = chunk_idx * CHUNK + int(local_idx)\n            all_classifications[global_idx] = category\n    except json.JSONDecodeError as e:\n        print(f\"Chunk {chunk_idx} parse error: {e}\")\n        print(f\"Raw result: {result}\")\n\nprint(f\"\\nTotal classified: {len(all_classifications)}\")\nprint(f\"Expected: {len(questions)}\")\n\n# Check coverage\nif len(all_classifications) < len(questions):\n    print(\"MISSING classifications!\")\n    missing = [i for i in range(len(questions)) if i not in all_classifications]\n    print(f\"Missing indices: {missing}\")\n    for idx in missing:\n        print(f\"  {idx}: {questions[idx]}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r",
+            8,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "import json\n\nlabels = ['abbreviation', 'entity', 'human being', 'numeric value', 'location', 'description and abstract concept']\n\nprompts = []\nfor chunk_idx, chunk in enumerate(chunks):\n    prompt = f\"\"\"You have {len(chunk)} questions. For EACH question, classify it into exactly one of these categories: {json.dumps(labels)}.\n\nReturn a JSON object where keys are the 0-based index of each question in the list below, and values are the category string.\n\nQuestions:\n\"\"\"\n    for i, q in enumerate(chunk):\n        prompt += f\"{i}: User {q['user']} asked: \\\"{q['instance']}\\\"\\n\"\n    prompt += \"\\nReturn ONLY a valid JSON object mapping index to category.\"\n    prompts.append(prompt)\n\nresults = rlm_query_batched(prompts)\nprint(f\"Got {len(results)} results\")\nfor i, r in enumerate(results):\n    print(f\"Chunk {i}: {r[:200]}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r",
+            6,
+            0,
+            "code"
+          ]
+        },
+        {
+          "error_observed": false,
+          "reason": "linked child prompt/return",
+          "response_structure": {
+            "status": "not_assessed"
+          },
+          "source": [
+            "oolong-t02-w9-fcf921f0019d1bd5__a01",
+            "r/i4/b0/c0",
+            null,
+            null,
+            "child"
+          ]
+        },
+        {
+          "code": "results = llm_query_batched(prompts)\nprint(f\"Got {len(results)} results\")\nfor i, r in enumerate(results):\n    print(f\"\\nChunk {i} result (first 200 chars):\")\n    print(r[:200])",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "linked child producer",
+          "source": [
+            "oolong-t02-w9-fcf921f0019d1bd5__a01",
+            "r",
+            5,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "# Parse all labels from results\nall_labels = []\nfor r in results:\n    labels = [l.strip() for l in r.strip().split('\\n') if l.strip()]\n    all_labels.extend(labels)\n\nprint(f\"Total labels parsed: {len(all_labels)}\")\nprint(f\"Expected: {len(parsed)}\")\n\n# Check if counts match\nif len(all_labels) != len(parsed):\n    print(\"MISMATCH! Let me inspect each chunk's output more carefully\")\n    for i, r in enumerate(results):\n        labels = [l.strip() for l in r.strip().split('\\n') if l.strip()]\n        print(f\"Chunk {i}: {len(labels)} labels vs {len(chunks[i])} questions\")\n        if len(labels) != len(chunks[i]):\n            print(f\"  Labels: {labels}\")\nelse:\n    print(\"Counts match! Let me verify the labels are valid\")\n    valid_labels = {'abbreviation', 'entity', 'human being', 'numeric value', 'location', 'description and abstract concept'}\n    for i, label in enumerate(all_labels):\n        if label not in valid_labels:\n            print(f\"Invalid label at index {i}: '{label}'\")\n    print(\"All labels valid!\")\n    \n# Show distribution\nfrom collections import Counter\ndist = Counter(all_labels)\nprint(\"\\nLabel distribution:\")\nfor label, count in sorted(dist.items()):\n    print(f\"  {label}: {count}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t02-w9-fcf921f0019d1bd5__a01",
+            "r",
+            6,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "error_observed": false,
+          "reason": "linked child prompt/return",
+          "response_structure": {
+            "item_count": 50,
+            "semantic_coverage": "not_assessed",
+            "status": "complete_json",
+            "type": "object"
+          },
+          "source": [
+            "oolong-t04-w10-408a35294f798183__a01",
+            "r/i5/b0/c0",
+            null,
+            null,
+            "child"
+          ]
+        }
+      ],
+      "original_audit": {
+        "admitted_refs": {
+          "1": [
+            "97a4d564a51b6545",
+            "7b96c387c9ff1521",
+            "bad2925d2610437a",
+            "5d4f19c0ccc9ccf3",
+            "1ec636b71f000484",
+            "cd84b890de4ed6f7"
+          ]
+        },
+        "attempt_prompt_chars": [
+          49198,
+          56787
+        ],
+        "core_operation_count": 6,
+        "distinct_actionable_mechanisms": 3,
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 20633,
+        "evidence_selector_version": "4.1.0",
+        "expanded_mechanisms": [
+          "incomplete_coverage"
+        ],
+        "expanded_patterns": [
+          1
+        ],
+        "history_chars": 6647,
+        "omitted_patterns": {
+          "0": "complete core packet exceeds remaining budget",
+          "2": "complete core packet exceeds remaining budget",
+          "3": "complete core packet exceeds remaining budget",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "unattributed: no eligible intervention",
+          "6": "unattributed: no eligible intervention",
+          "7": "complete core packet exceeds remaining budget",
+          "8": "complete core packet exceeds remaining budget"
+        },
+        "operation_count": 6,
+        "optional_operation_count": 0,
+        "representative_incremental_chars": {
+          "1": 15240
+        },
+        "route_support": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {}
+        },
+        "system_prompt_chars": 49170
+      },
+      "consumer_operations": 4
+    },
+    "5": {
+      "audit": {
+        "evidence_selector_version": "4.2.0",
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 28528,
+        "expanded_patterns": [
+          4,
+          1
+        ],
+        "distinct_actionable_mechanisms": 2,
+        "representative_incremental_chars": {
+          "4": 12735,
+          "1": 5138
+        },
+        "omitted_patterns": {
+          "0": "complete core packet exceeds remaining budget",
+          "2": "complete core packet exceeds remaining budget",
+          "3": "complete core packet exceeds remaining budget",
+          "5": "no resolvable operation or child-call observation",
+          "6": "no resolvable operation or child-call observation",
+          "7": "no resolvable operation or child-call observation",
+          "8": "unattributed: no eligible intervention",
+          "9": "unattributed: no eligible intervention",
+          "10": "unattributed: no eligible intervention",
+          "11": "unattributed: no eligible intervention"
+        },
+        "operation_count": 7,
+        "core_operation_count": 5,
+        "optional_operation_count": 2,
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation"
+        ],
+        "route_support": {
+          "0": {},
+          "1": {
+            "S8": [
+              "2abbda1d3514fdd9"
+            ]
+          },
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {},
+          "10": {},
+          "11": {}
+        },
+        "admitted_refs": {
+          "4": [
+            "13a9d8ea71313f45",
+            "f8b2375614f04954",
+            "0306de2b58cbfdde",
+            "9dde0e2c6d9e843e",
+            "9f04ff9694193e18",
+            "58e7dce6f9309761"
+          ],
+          "1": [
+            "2abbda1d3514fdd9"
+          ]
+        },
+        "choices": {
+          "1": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S3",
+              "S4",
+              "S8"
+            ],
+            "admitted_refs": [
+              "2abbda1d3514fdd9"
+            ],
+            "route_support": {
+              "S8": [
+                "2abbda1d3514fdd9"
+              ]
+            },
+            "predecessors": {
+              "S3": {
+                "round": 2,
+                "subject_id": "r02-c02-s3",
+                "decision": "rejected"
+              },
+              "S4": {
+                "round": 3,
+                "subject_id": "r03-c02-s4",
+                "decision": "bundled"
+              }
+            }
+          },
+          "4": {
+            "selectable": true,
+            "eligible_surfaces": [
+              "S2",
+              "S4",
+              "S3",
+              "S10"
+            ],
+            "admitted_refs": [
+              "13a9d8ea71313f45",
+              "f8b2375614f04954",
+              "0306de2b58cbfdde",
+              "9dde0e2c6d9e843e",
+              "9f04ff9694193e18",
+              "58e7dce6f9309761"
+            ],
+            "route_support": {},
+            "predecessors": {
+              "S2": {
+                "round": 3,
+                "subject_id": "r03-c01-s2",
+                "decision": "bundled"
+              },
+              "S4": {
+                "round": 1,
+                "subject_id": "r01-c02-s4",
+                "decision": "bundled"
+              },
+              "S10": {
+                "round": 2,
+                "subject_id": "pattern 0 on S10",
+                "decision": "preflight_rejected"
+              }
+            }
+          }
+        },
+        "history_withheld_patterns": [],
+        "history_chars": 11946,
+        "system_prompt_chars": 63090
+      },
+      "selectable_indices": [
+        1,
+        4
+      ],
+      "history_header": {
+        "attempts_omitted": 6,
+        "attempts_total": 12,
+        "history_schema": "proposal-history/v3",
+        "metric_definitions": {
+          "ec3ce47fca1e492c": {
+            "aggregation": "all_attempt_mean",
+            "direction": "higher",
+            "name": "f1",
+            "precision": 3,
+            "schema": "primary-quality/v1",
+            "terminal_values": {
+              "content_filtered": 0.0,
+              "resource_terminated": 0.0,
+              "runtime_error": 0.0,
+              "wrong_format": 0.0
+            },
+            "version": "v1"
+          }
+        },
+        "omission_reason": "rendered budget; full archive and reference index retained",
+        "rounds_total": 4,
+        "status_totals": {
+          "bundled": 4,
+          "preflight_rejected": 5,
+          "promoted": 1,
+          "rejected": 2
+        }
+      },
+      "history": {
+        "attempts": [
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.712,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.7664445999999999
+            },
+            "batch_subject_id": null,
+            "behavioral_change": "Add execution instruction to merge sub-call results: normalize each pair to (min(a,b), max(a,b)), deduplicate via set, then format as newline-separated pairs. This directly addresses the missing merge logic and ordering/duplication violatio",
+            "constituent_ids": null,
+            "decision": "rejected",
+            "effective_edit_fingerprint": "0d519a0ae57b29c4739a9a8a09deccad1b0dd2153a0a53e4245077a70a2bcae7",
+            "measured": {
+              "exact_passes": 0,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6064,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.80794712
+            },
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "Root printed sub-call results but never merged them into the final pair list. Pairs were missing (73) and extra (15). Verification limits: no merge step visible before submission.",
+            "predicted_effect": "Root will normalize and deduplicate pairs before submission, eliminating ordering violations and self-pairs. The merge step ensures all sub-call results are combined into the final answer, preventing the lossy aggregation seen in pattern 1.",
+            "quality_signal": "no_measured_improvement",
+            "reasons": [
+              "heldout pass-count delta -3 regresses beyond tau_regression=0.0",
+              "no split improves beyond tau_improvement=0.0 (heldout -3)"
+            ],
+            "round": 2,
+            "subject_id": "r02-c02-s3",
+            "surface": "S3"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with ",
+            "constituent_ids": [
+              "r03-c01-s2",
+              "r03-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "d8e90d581951c79cf10a4b28d0ea92a014fd32f44add89220d8873fd102c3195",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "lossy_aggregation",
+            "observed_failure": "ValueError prevented classification data from being collected. Root detected 120 missing classifications but proceeded to pair generation without retrying the failed chunk. Verification limits: no coverage check before pair generation.",
+            "predicted_effect": "Root will detect the 40 missing classifications caused by the iteration error and retry the affected chunk, recovering the lost data before pair generation.",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: promoted"
+            ],
+            "round": 3,
+            "subject_id": "r03-c02-s4",
+            "surface": "S4"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add a coverage check step to the S2 decomposition instruction: after parsing, compare the number of parsed records against the total line count of the context. If they differ, print the discrepancy and re-parse with a more inclusive pattern",
+            "constituent_ids": [
+              "r03-c01-s2",
+              "r03-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "77886e448686c931ecfd3a41bad9cd5777bbf5cfb376f9ce4bbbb967088707be",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "265 missing pairs (recall 0.466) because the root never verified that all input records were captured. The original input likely contained more records that did not start with 'Date:'.",
+            "predicted_effect": "Root will compare parsed line count against total context lines before proceeding, detecting incomplete coverage early and re-parsing with a more inclusive pattern. This prevents the silent data loss that caused 265 missing pairs in pattern",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: promoted"
+            ],
+            "round": 3,
+            "subject_id": "r03-c01-s2",
+            "surface": "S2"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "batch_subject_id": "merged",
+            "behavioral_change": "Add verification instruction to check that the number of classified questions equals the total input count before proceeding to pair generation. If coverage is incomplete, the root must retry the failed chunk(s) rather than continuing with ",
+            "constituent_ids": [
+              "r01-c01-s3",
+              "r01-c02-s4"
+            ],
+            "decision": "bundled",
+            "effective_edit_fingerprint": "c2da31bfc9f522d3fc19c7ab3d232f10c19a13f262dd5e2b71f4afb08922f9aa",
+            "measurement": "combined outcome only; no individual score",
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "28 questions lost to parse error; root prints missing indices but proceeds. Undercounts cause 2 spurious pairs. Verification limits: no check on coverage completeness before pair generation.",
+            "predicted_effect": "Root will check coverage completeness before pair generation and retry failed chunks, preventing undercounts that cause spurious pairs. The verification catches the data loss that pattern 2's root detected but ignored.",
+            "reasons": [
+              "evaluated only as part of merged; shared decision: rejected"
+            ],
+            "round": 1,
+            "subject_id": "r01-c02-s4",
+            "surface": "S4"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "behavioral_change": "Add a skill that instructs root to verify that each expected label category appears at least once in the classification output, and to retry with a different prompt or sub-call strategy if a label is missing. This directly addresses the dem",
+            "decision": "preflight_rejected",
+            "measured": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "mechanism": "incomplete_coverage",
+            "observed_failure": "Root never verified that the classification output contained all expected label categories. The 'human being' label was absent from all 188 classifications, causing root to conclude no valid pairs existed. Verification limits: no coverage c",
+            "owner_relation": "unknown (legacy or no recorded owner)",
+            "predicted_effect": "Root will verify that all expected label categories appear in the classification output before proceeding to pair generation. If 'human being' or any other label is missing, root will retry classification with adjusted prompts rather than a",
+            "quality_signal": "not_assessed",
+            "reasons": [
+              "proposal: selection evidence_refs must belong to this pattern's admitted operations"
+            ],
+            "round": 2,
+            "subject_id": "pattern 0 on S10",
+            "surface": "S10"
+          },
+          {
+            "activation": {
+              "status": "not_assessed"
+            },
+            "baseline": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "batch_subject_id": null,
+            "behavioral_change": "not_assessed",
+            "constituent_ids": [
+              "r03-c01-s2",
+              "r03-c02-s4"
+            ],
+            "decision": "promoted",
+            "measured": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6656,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.9025148599999999
+            },
+            "observed_failure": "not_assessed",
+            "predicted_effect": "not_assessed",
+            "quality_signal": "not_assessed",
+            "reasons": [],
+            "round": 3,
+            "subject_id": "merged",
+            "surface": null
+          }
+        ],
+        "rounds": [
+          {
+            "attempts": 4,
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.6063,
+                "n_attempts": 10,
+                "n_declared_terminal": 0,
+                "n_known_zero": 0,
+                "n_measured": 10,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 0
+              },
+              "total_cost": 0.8452981700000001
+            },
+            "outcomes": [
+              {
+                "decision": "rejected",
+                "measured": {
+                  "exact_passes": 2,
+                  "first_runtime_error": null,
+                  "n_attempts": 10,
+                  "n_cost_measurements": 10,
+                  "n_runtime_errors": 0,
+                  "quality": {
+                    "definition_ref": "ec3ce47fca1e492c",
+                    "mean": 0.7975,
+                    "n_attempts": 10,
+                    "n_declared_terminal": 1,
+                    "n_known_zero": 1,
+                    "n_measured": 9,
+                    "n_unknown": 0
+                  },
+                  "terminal_failures": {
+                    "content_filtered": 0,
+                    "resource_terminated": 0,
+                    "runtime_error": 0,
+                    "wrong_format": 1
+                  },
+                  "total_cost": 1.0977412500000001
+                },
+                "quality_signal": "potentially_promising",
+                "subject_id": "merged"
+              }
+            ],
+            "promoted": false,
+            "promoted_harness_hash": null,
+            "round": 1
+          },
+          {
+            "attempts": 2,
+            "baseline": {
+              "exact_passes": 3,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.712,
+                "n_attempts": 10,
+                "n_declared_terminal": 1,
+                "n_known_zero": 1,
+                "n_measured": 9,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 1
+              },
+              "total_cost": 0.7664445999999999
+            },
+            "outcomes": [
+              {
+                "decision": "rejected",
+                "measured": {
+                  "exact_passes": 0,
+                  "first_runtime_error": null,
+                  "n_attempts": 10,
+                  "n_cost_measurements": 10,
+                  "n_runtime_errors": 0,
+                  "quality": {
+                    "definition_ref": "ec3ce47fca1e492c",
+                    "mean": 0.6064,
+                    "n_attempts": 10,
+                    "n_declared_terminal": 1,
+                    "n_known_zero": 1,
+                    "n_measured": 9,
+                    "n_unknown": 0
+                  },
+                  "terminal_failures": {
+                    "content_filtered": 0,
+                    "resource_terminated": 0,
+                    "runtime_error": 0,
+                    "wrong_format": 1
+                  },
+                  "total_cost": 0.80794712
+                },
+                "quality_signal": "no_measured_improvement",
+                "subject_id": "r02-c02-s3"
+              }
+            ],
+            "promoted": false,
+            "promoted_harness_hash": null,
+            "round": 2
+          },
+          {
+            "attempts": 3,
+            "baseline": {
+              "exact_passes": 1,
+              "first_runtime_error": null,
+              "n_attempts": 10,
+              "n_cost_measurements": 10,
+              "n_runtime_errors": 0,
+              "quality": {
+                "definition_ref": "ec3ce47fca1e492c",
+                "mean": 0.5256000000000001,
+                "n_attempts": 10,
+                "n_declared_terminal": 2,
+                "n_known_zero": 2,
+                "n_measured": 8,
+                "n_unknown": 0
+              },
+              "terminal_failures": {
+                "content_filtered": 0,
+                "resource_terminated": 0,
+                "runtime_error": 0,
+                "wrong_format": 2
+              },
+              "total_cost": 0.6481485
+            },
+            "outcomes": [
+              {
+                "decision": "promoted",
+                "measured": {
+                  "exact_passes": 3,
+                  "first_runtime_error": null,
+                  "n_attempts": 10,
+                  "n_cost_measurements": 10,
+                  "n_runtime_errors": 0,
+                  "quality": {
+                    "definition_ref": "ec3ce47fca1e492c",
+                    "mean": 0.6656,
+                    "n_attempts": 10,
+                    "n_declared_terminal": 1,
+                    "n_known_zero": 1,
+                    "n_measured": 9,
+                    "n_unknown": 0
+                  },
+                  "terminal_failures": {
+                    "content_filtered": 0,
+                    "resource_terminated": 0,
+                    "runtime_error": 0,
+                    "wrong_format": 1
+                  },
+                  "total_cost": 0.9025148599999999
+                },
+                "quality_signal": "not_assessed",
+                "subject_id": "merged"
+              }
+            ],
+            "promoted": true,
+            "promoted_harness_hash": "44869d769d1a48e2b4209e6692c1c578b36ddb714ae109a74acb840bc0bd2df3",
+            "round": 3
+          },
+          {
+            "attempts": 3,
+            "baseline": {
+              "exact_passes": null,
+              "n_attempts": null,
+              "quality": {
+                "status": "not_assessed"
+              }
+            },
+            "outcomes": [],
+            "promoted": false,
+            "promoted_harness_hash": null,
+            "round": 4
+          }
+        ]
+      },
+      "operations": [
+        {
+          "code": "answer[\"content\"] = answer_str\nanswer[\"ready\"] = True\nprint(\"Answer submitted!\")\nprint(answer[\"content\"])",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t08-w10-4f259998df92e58c__a02",
+            "r",
+            30,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "# Let me verify the remaining \"description and abstract concept\" questions\ndesc_indices = [i for i, lbl in enumerate(cleaned_labels) if lbl == 'description and abstract concept']\nprint(f\"Description questions to verify: {desc_indices}\")\nfor idx in desc_indices:\n    print(f\"  Q{idx}: user={questions[idx]['user_id']} {questions[idx]['instance'][:70]}\")\n\n# Verify each one\nverify_prompts = []\nfor idx in desc_indices:\n    p = f\"\"\"Classify this question into exactly one of these 6 categories:\n- abbreviation: asks about what letters/words stand for\n- entity: asks about a specific thing, product, organization, fictional character, animal, or named object\n- human being: asks about a specific person, group of people, or asks \"who\" about a person\n- numeric value: asks for a number, count, amount, year, etc.\n- location: asks about a place or where something is located\n- description and abstract concept: asks for a description, definition, explanation, or general concept\n\nQuestion: {questions[idx]['instance']}\n\nAnswer with just the category label.\"\"\"\n    verify_prompts.append(p)\n\nverify_results = llm_query_batched(verify_prompts)\nfor i, (idx, result) in enumerate(zip(desc_indices, verify_results)):\n    result = result.strip().lower()\n    mapped = label_map.get(result, result)\n    print(f\"Q{idx}: [{mapped}] {questions[idx]['instance'][:60]}\")\n    if mapped != 'description and abstract concept':\n        print(f\"  *** Would change to: {mapped}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t08-w10-4f259998df92e58c__a02",
+            "r",
+            28,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "code": "answer[\"content\"] = answer_content\nanswer[\"ready\"] = True\nprint(\"Answer submitted!\")\nprint(f\"Total pairs: {len(pairs)}\")",
+          "code_complete": true,
+          "error_observed": false,
+          "reason": "cited operation",
+          "source": [
+            "oolong-t15-w9-23b921f28b2e514b__a01",
+            "r",
+            14,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        },
+        {
+          "error_observed": false,
+          "reason": "linked child prompt/return",
+          "response_structure": {
+            "status": "not_assessed"
+          },
+          "source": [
+            "oolong-t08-w10-4f259998df92e58c__a02",
+            "r/i27/b0/c2",
+            null,
+            null,
+            "child"
+          ]
+        },
+        {
+          "error_observed": false,
+          "reason": "linked child prompt/return",
+          "response_structure": {
+            "status": "not_assessed"
+          },
+          "source": [
+            "oolong-t08-w10-4f259998df92e58c__a02",
+            "r/i27/b0/c0",
+            null,
+            null,
+            "child"
+          ]
+        },
+        {
+          "error_observed": false,
+          "reason": "linked child prompt/return",
+          "response_structure": {
+            "status": "not_assessed"
+          },
+          "source": [
+            "oolong-t08-w10-4f259998df92e58c__a02",
+            "r/i27/b0/c1",
+            null,
+            null,
+            "child"
+          ]
+        },
+        {
+          "code": "# Update Q0 to entity\ncleaned_labels[0] = 'entity'\n\n# Recalculate\nlabel_counts = Counter(cleaned_labels)\nprint(f\"Updated label distribution: {dict(label_counts)}\")\n\ntarget_labels = {'human being', 'description and abstract concept'}\nusers_with_target = set()\nfor i, lbl in enumerate(cleaned_labels):\n    if lbl in target_labels:\n        users_with_target.add(questions[i]['user_id'])\n\nprint(f\"Users with target: {sorted(users_with_target)}\")\nprint(f\"Count: {len(users_with_target)}\")\n\n# Show target questions\nprint(\"\\nTarget questions:\")\nfor i, lbl in enumerate(cleaned_labels):\n    if lbl in target_labels:\n        print(f\"  Q{i}: user={questions[i]['user_id']} [{lbl}] {questions[i]['instance'][:70]}\")\n\n# Regenerate pairs\ntarget_users = sorted(users_with_target)\npairs = []\nfor i in range(len(target_users)):\n    for j in range(i+1, len(target_users)):\n        pairs.append((target_users[i], target_users[j]))\n\nprint(f\"\\nTotal pairs: {len(pairs)}\")\nanswer_str = \"\\n\".join([f\"({u1}, {u2})\" for u1, u2 in pairs])\nprint(answer_str)",
+          "code_complete": true,
+          "error_observed": false,
+          "follows_error": false,
+          "reason": "computational consumer; static name relation, semantics unverified",
+          "source": [
+            "oolong-t08-w10-4f259998df92e58c__a02",
+            "r",
+            29,
+            0,
+            "code"
+          ],
+          "stdout_structure": {
+            "status": "not_assessed"
+          }
+        }
+      ],
+      "original_audit": {
+        "admitted_refs": {
+          "2": [
+            "49012594b4ec9961",
+            "00196cb712f5c1fb",
+            "8d411a6477cb4587",
+            "47d32b5eb48eee07",
+            "3ceb9effc85bb71d"
+          ],
+          "3": [
+            "42d2f79202144743",
+            "b65cd234a6a45aed",
+            "7d1ee599e2456996",
+            "9b9efa89e4cf5946",
+            "1dec0cecac515a19",
+            "309291f8ef68905d"
+          ]
+        },
+        "attempt_prompt_chars": [
+          59503,
+          64757
+        ],
+        "core_operation_count": 9,
+        "distinct_actionable_mechanisms": 3,
+        "evidence_budget_chars": 32000,
+        "evidence_chars": 30861,
+        "evidence_selector_version": "4.1.0",
+        "expanded_mechanisms": [
+          "incomplete_coverage",
+          "lossy_aggregation"
+        ],
+        "expanded_patterns": [
+          2,
+          3
+        ],
+        "history_chars": 6648,
+        "omitted_patterns": {
+          "0": "complete core packet exceeds remaining budget",
+          "1": "complete core packet exceeds remaining budget",
+          "10": "unattributed: no eligible intervention",
+          "11": "unattributed: no eligible intervention",
+          "4": "complete core packet exceeds remaining budget",
+          "5": "complete core packet exceeds remaining budget",
+          "6": "complete core packet exceeds remaining budget",
+          "7": "complete core packet exceeds remaining budget",
+          "8": "unattributed: no eligible intervention",
+          "9": "unattributed: no eligible intervention"
+        },
+        "operation_count": 11,
+        "optional_operation_count": 2,
+        "representative_incremental_chars": {
+          "2": 9376,
+          "3": 11192
+        },
+        "route_support": {
+          "0": {},
+          "1": {},
+          "10": {},
+          "11": {},
+          "2": {},
+          "3": {
+            "S8": [
+              "42d2f79202144743",
+              "309291f8ef68905d"
+            ]
+          },
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        },
+        "system_prompt_chars": 59475
+      },
+      "consumer_operations": 2
+    }
+  },
+  "source_unchanged": true,
+  "implementation_contracts": {
+    "attribution_prompt": "1.5.0",
+    "attribution_validator": "1.2.0",
+    "digest": "1.7.0",
+    "proposer_prompt": "4.2.0",
+    "proposer_validator": "4.2.0",
+    "evidence_selector": "4.2.0",
+    "diagnostic_history": "2.1.0",
+    "history_schema": "proposal-history/v3",
+    "selection_envelope": "proposal-selection/v2",
+    "literal_text": "literal-text/v1"
+  },
+  "reconstruction_base_commit": "99812551d52a7b64d45cfffadcc5f78bb6fe9f55",
+  "implementation_file_sha256": {
+    "shrlm/experiment/orchestrator.py": "78d60787c7034dd1223543bc524c4849d6ca3da0e7d623486623915338077cfe",
+    "shrlm/optimization/attribution.py": "079ca699bca0e432ff3a0882a6a559d9b4642d40db954532f976185a9fd8373b",
+    "shrlm/optimization/digest.py": "394c37609d8ff5644a5cb54a2bf00bf4016daae47c8e026e57a92dca27ae435e",
+    "shrlm/optimization/history.py": "311b6cfc0fb7fb3cc54ef6de9358d3100fa44272851bf1713d7060d83861c955",
+    "shrlm/optimization/proposal.py": "48c89d4b409b56d12f409c737fbe51c2a3e87f6f9c30482989b3cf74a7f1ac26",
+    "shrlm/optimization/proposal_evidence.py": "b77b488a2b5c55887832d46490c43050d4faf56e0f5028ee10d8a54a9d2e6543"
+  },
+  "source_unchanged_check": "SHA-256 of every source file path, size and nanosecond modification time before/after; trace readers also verify persisted content hashes. Saved artifacts were read only.",
+  "method": "Load saved mining bundles, verified held-in traces and incumbent serialization for rounds 2\u20135. Reconstruct round history from recorded validation aggregates using load_round_history. Call render_prompt under the new contracts, recording admitted operations, choices and history alongside each saved original evidence audit. No re-attribution, held-out trace reads, or model calls.",
+  "validation": {
+    "focused_tests_passed": 442,
+    "integration_tests_passed": 105,
+    "full_suite_before_corrections": {
+      "passed": 2422,
+      "failed": 14,
+      "errors": 23,
+      "skipped": 7,
+      "deselected": 21
+    },
+    "known_failures_reproduced_at_base": 10,
+    "changed_file_hooks": "passed",
+    "new_type_diagnostics": 0,
+    "review": {
+      "status": "complete",
+      "execution": "sequential main thread per AGENTS.md",
+      "independent_reviewers": 0,
+      "unresolved_findings": 0
+    },
+    "experiment_started": false
+  }
+}

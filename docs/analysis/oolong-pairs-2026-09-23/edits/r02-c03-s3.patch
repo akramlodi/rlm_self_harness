@@ -1,0 +1,4 @@
+--- round_02_incumbent/S3_execution_instruction
++++ r02-c03-s3/S3_execution_instruction
+@@ -0,0 +1 @@
++When printing the final answer, output each pair on its own line in the format (user_id_1, user_id_2) with the lower ID first. Do not include any additional text, explanations, or summary after the pair list. The last line of output must be a pair in this format. If there are no valid pairs, print exactly "No valid pairs found." as the final output.

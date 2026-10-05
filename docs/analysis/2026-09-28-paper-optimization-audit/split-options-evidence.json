@@ -1,0 +1,181 @@
+{
+  "dataset_revision": "f0d59eaf0febf130664cfceb710436c8e3216b2b",
+  "source": "Locally cached official parquet shards at the pinned Hugging Face revision; all 41 test shards and 9 validation shards inspected using metadata columns.",
+  "trec_coarse_windows": {
+    "validation/1024": [
+      0,
+      1
+    ],
+    "validation/2048": [
+      3,
+      4
+    ],
+    "validation/4096": [
+      6,
+      8
+    ],
+    "validation/8192": [
+      9,
+      10
+    ],
+    "validation/16384": [
+      12,
+      13
+    ],
+    "validation/32768": [
+      0,
+      1
+    ],
+    "validation/65536": [
+      3,
+      4
+    ],
+    "validation/131072": [
+      6,
+      8
+    ],
+    "validation/262144": [
+      9,
+      10
+    ],
+    "validation/524288": [
+      12,
+      13
+    ],
+    "validation/1048576": [
+      16,
+      17
+    ],
+    "validation/2097152": [
+      18,
+      19
+    ],
+    "validation/4194304": [
+      21,
+      22
+    ]
+  },
+  "window_overlaps": {
+    "windows": {
+      "(8192, 9)": {
+        "entries": 188,
+        "distinct_records": 188,
+        "distinct_questions": 188,
+        "users": 56
+      },
+      "(8192, 10)": {
+        "entries": 188,
+        "distinct_records": 188,
+        "distinct_questions": 188,
+        "users": 58
+      },
+      "(262144, 9)": {
+        "entries": 6374,
+        "distinct_records": 6374,
+        "distinct_questions": 3531,
+        "users": 1862
+      },
+      "(262144, 10)": {
+        "entries": 6374,
+        "distinct_records": 6374,
+        "distinct_questions": 3100,
+        "users": 1903
+      }
+    },
+    "overlaps": [
+      {
+        "a": [
+          8192,
+          9
+        ],
+        "b": [
+          8192,
+          10
+        ],
+        "shared_records": 0,
+        "shared_questions": 43,
+        "shared_users": 0
+      },
+      {
+        "a": [
+          8192,
+          9
+        ],
+        "b": [
+          262144,
+          9
+        ],
+        "shared_records": 0,
+        "shared_questions": 164,
+        "shared_users": 2
+      },
+      {
+        "a": [
+          8192,
+          9
+        ],
+        "b": [
+          262144,
+          10
+        ],
+        "shared_records": 0,
+        "shared_questions": 148,
+        "shared_users": 0
+      },
+      {
+        "a": [
+          8192,
+          10
+        ],
+        "b": [
+          262144,
+          9
+        ],
+        "shared_records": 0,
+        "shared_questions": 172,
+        "shared_users": 0
+      },
+      {
+        "a": [
+          8192,
+          10
+        ],
+        "b": [
+          262144,
+          10
+        ],
+        "shared_records": 0,
+        "shared_questions": 151,
+        "shared_users": 0
+      },
+      {
+        "a": [
+          262144,
+          9
+        ],
+        "b": [
+          262144,
+          10
+        ],
+        "shared_records": 0,
+        "shared_questions": 2530,
+        "shared_users": 35
+      }
+    ]
+  },
+  "overlap_definition": {
+    "shared_records": "Exact (user_id, date, question_text) tuples, parsed from saved prompts.",
+    "shared_questions": "Exact question_text strings, ignoring user_id and date."
+  },
+  "upstream_test_dataset_names": [
+    "metaphors",
+    "negation",
+    "formality",
+    "imdb",
+    "app_reviews",
+    "yahoo",
+    "multinli",
+    "agnews"
+  ],
+  "upstream_dataset_card": "https://huggingface.co/datasets/oolongbench/oolong-synth/blob/main/README.md"
+}

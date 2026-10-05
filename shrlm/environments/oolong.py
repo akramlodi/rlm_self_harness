@@ -66,9 +66,10 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from shrlm.environments.diagnostics import OOLONG_QUALITY
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import CallNode, NodeKind, Verdict
+from shrlm.optimization.types import CallNode, NodeKind, QualityMeasurement, Verdict
 
 SYNTH_DATASET_REPO = "oolongbench/oolong-synth"
 REAL_DATASET_REPO = "oolongbench/oolong-real"
@@ -131,7 +132,9 @@ EXTRACTION_RULE = (
     "list-as-lowercased-set"
 )
 
-_MARKER_LINE_RE = re.compile(r"^\s*(?:final|answer|label|user|date)\s*[:=]\s*(.+?)\s*$", re.IGNORECASE)
+_MARKER_LINE_RE = re.compile(
+    r"^\s*(?:final|answer|label|user|date)\s*[:=]\s*(.+?)\s*$", re.IGNORECASE
+)
 _NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 _WRAP_CHARS = "\"'`[]*{}()"
 _NONE_MARKER_RE = re.compile(r"^\s*(?:none|n/?a|no\s+\w+|empty|\[\s*\]|\(\s*\))\s*$", re.IGNORECASE)
@@ -427,6 +430,7 @@ class OolongVerifier:
         kinds = SYNTH_ANSWER_KINDS if self.task_set == "synth" else REAL_ANSWER_KINDS
         return {
             "environment": f"oolong_{self.task_set}",
+            "primary_quality": OOLONG_QUALITY.to_dict(),
             "pass_score_threshold": self.PASS_SCORE_THRESHOLD,
             "extraction_rule": EXTRACTION_RULE,
             "answer_kinds": list(kinds),
@@ -454,15 +458,22 @@ class OolongVerifier:
                 gold=gold_str,
                 produced=produced,
                 detail="final line carried an explicit empty marker",
+                quality=QualityMeasurement(OOLONG_QUALITY.identifier, 0.0),
             )
 
         result = score_oolong(parsed, gold, answer_kind)
+        quality = QualityMeasurement(OOLONG_QUALITY.identifier, round(result["score"], 3))
         produced_str = serialize_answer(parsed.value, answer_kind)
         detail = f"score={result['score']:.3f} exact={result['exact']} kind={answer_kind}"
 
         if result["exact"] or result["score"] >= self.PASS_SCORE_THRESHOLD:
             return Verdict(
-                passed=True, cause=None, gold=gold_str, produced=produced_str, detail=detail
+                passed=True,
+                cause=None,
+                gold=gold_str,
+                produced=produced_str,
+                detail=detail,
+                quality=quality,
             )
 
         if answer_kind == "list":
@@ -479,7 +490,12 @@ class OolongVerifier:
         else:
             cause = VerifierCause.WRONG_VALUE
         return Verdict(
-            passed=False, cause=cause, gold=gold_str, produced=produced_str, detail=detail
+            passed=False,
+            cause=cause,
+            gold=gold_str,
+            produced=produced_str,
+            detail=detail,
+            quality=quality,
         )
 
 
@@ -493,7 +509,9 @@ _LABELED_LINE_RE = re.compile(r"^(?P<body>.*?)\s*\|\|\s*Label:\s*(?P<label>.+?)\
 # The child-prompt asks the SubVerifier recognizes. Everything else is
 # uncheckable -> None (never False): a formatting quirk must not flip the failing
 # level to CHILD.
-_CLASSIFY_RE = re.compile(r"\b(classif|label each|assign (?:a )?label|what (?:is|are) the label)", re.IGNORECASE)
+_CLASSIFY_RE = re.compile(
+    r"\b(classif|label each|assign (?:a )?label|what (?:is|are) the label)", re.IGNORECASE
+)
 _COUNT_RE = re.compile(
     r"\bhow many\b.*\blabel(?:led|ed)?\s+['\"`]?(?P<label>[\w ]+?)['\"`]?[\s.?]|"
     r"\bcount\b.*\blabel(?:led|ed)?\s+['\"`]?(?P<label2>[\w ]+?)['\"`]?[\s.?]",
@@ -745,7 +763,9 @@ def iter_real_rows(
 # =============================================================================
 
 
-def _round_robin(items: list[dict[str, Any]], key_of: Any, rng: random.Random) -> list[dict[str, Any]]:
+def _round_robin(
+    items: list[dict[str, Any]], key_of: Any, rng: random.Random
+) -> list[dict[str, Any]]:
     """Reorder ``items`` so consecutive elements cycle through distinct ``key_of``
     values as far as the pools allow. ``items`` is shuffled first, so the result
     is deterministic for a given ``rng`` state."""

@@ -279,6 +279,7 @@ class RLMChatCompletion:
         None  # Per-call trace metrics (cost, syntax-error flag, retries, validity).
     )
     execution_failure: ExecutionFailure | None = None
+    llm_observations: list[dict[str, Any]] | None = None
 
     def to_dict(self):
         out = {
@@ -296,6 +297,8 @@ class RLMChatCompletion:
             out["trace_metrics"] = self.trace_metrics
         if self.execution_failure is not None:
             out["execution_failure"] = self.execution_failure.to_dict()
+        if self.llm_observations is not None:
+            out["llm_observations"] = self.llm_observations
         return out
 
     @classmethod
@@ -314,6 +317,7 @@ class RLMChatCompletion:
                 if data.get("execution_failure") is not None
                 else None
             ),
+            llm_observations=data.get("llm_observations"),
         )
 
 
@@ -380,6 +384,7 @@ class RLMIteration:
     trace_metrics: dict[str, Any] | None = (
         None  # Per-turn trace metrics (sub-call count, syntax error, answer/truncation events).
     )
+    llm_observations: list[dict[str, Any]] | None = None
 
     def to_dict(self):
         out = {
@@ -391,6 +396,8 @@ class RLMIteration:
         }
         if self.trace_metrics is not None:
             out["trace_metrics"] = self.trace_metrics
+        if self.llm_observations is not None:
+            out["llm_observations"] = self.llm_observations
         return out
 
 

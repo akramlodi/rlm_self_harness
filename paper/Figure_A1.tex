@@ -1,4 +1,4 @@
-% Appendix figure: exact, unabridged initial S1 REPL contract.
+% Appendix figure: exact, unabridged sparse H0 S1 template (not H0*R).
 % Figure 1 intentionally contains a display-only condensation of this prompt.
 \begin{figure}[!tbp]
     \centering
@@ -19,8 +19,11 @@
         Write code in ```repl``` blocks, one block per turn; the REPL persists across turns. The REPL is NOT a Jupyter cell - only `print(...)` output (stdout) is shown back to you between turns; a bare expression on the last line is silently discarded. REPL outputs over ~20K characters are truncated."""
     )
     \end{lstlisting}
-    \caption{The complete initial \sid{S1} REPL contract. Figure~\ref{fig:edit-surfaces}
-    uses a display-only condensation so that all ten editable harness surfaces remain
-    legible on one page; the optimization loop receives the literal prompt shown here.}
+    \caption{The complete sparse \hzero{} S1 source template, before placeholder
+    formatting. Figure~\ref{fig:edit-surfaces} uses a display-only condensation.
+    This is a reference contract, not the full initial prompt of the configured
+    \texttt{H0*R} study; its upstream-style prompt, recursive-call change, S2
+    example, and orchestrator addendum are specified in
+    Appendix~\ref{app:surfaces}.}
     \label{fig:full-repl-contract}
 \end{figure}

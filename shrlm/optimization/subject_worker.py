@@ -52,6 +52,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
 
+from rlm.core.llm_observation import ObservationPersistenceError
 from shrlm.harness_identity import harness_hash, serialize_harness
 from shrlm.optimization.candidates import CandidateRejection, materialize_harness
 from shrlm.optimization.costs import ValidationCaps, governed_limits
@@ -347,6 +348,8 @@ def run_subject_worker(request_path: str | Path) -> dict[str, Any]:
             "error": f"{type(error).__name__}: {error}",
             "traceback": traceback.format_exc(),
         }
+        if isinstance(error, ObservationPersistenceError):
+            result["error_kind"] = "observation_persistence"
     finally:
         if factory is not None:
             calls = getattr(factory, "total_calls", None)
@@ -508,6 +511,8 @@ def evaluate_subjects_in_processes(
                 error = (result or {}).get("error") or (
                     f"worker exited {process.returncode} without a result document"
                 )
+                if (result or {}).get("error_kind") == "observation_persistence":
+                    raise ObservationPersistenceError(str(error))
                 failures.append(
                     {
                         "subject_id": subject_id,

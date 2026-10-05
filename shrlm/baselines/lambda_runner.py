@@ -19,6 +19,12 @@ from typing import Any
 
 import shrlm.baselines.upstream.lambda_rlm as upstream_lambda
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import (
+    ACTIVE_RECORDER,
+    ObservationPersistenceError,
+    observation_session,
+    observe_call,
+)
 from rlm.core.types import (
     ClientBackend,
     ModelUsageSummary,
@@ -54,6 +60,7 @@ from shrlm.optimization.driver import (
     run_id_for,
     verify_trace,
 )
+from shrlm.optimization.llm_observation_store import discover_observations, observation_recorder
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict, Verifier
 
@@ -158,6 +165,7 @@ class BudgetGuardClient(BaseLM):
             timeout=delegate.timeout,
             sampling_args=delegate.sampling_args,
         )
+        self.observation_recorder = ACTIVE_RECORDER.get()
         self.delegate = delegate
         self.max_budget = None if max_budget is None else float(max_budget)
         self.spent: float | None = None
@@ -233,7 +241,8 @@ class BudgetGuardClient(BaseLM):
         self.enforce_budget()
         sequence = self.reserve_sequence()
         try:
-            response = self.delegate.completion(prompt)
+            with observe_call("lambda", self.model_name, recorder=self.observation_recorder):
+                response = self.delegate.completion(prompt)
         except Exception as error:
             self.record_subcall(
                 sequence=sequence,
@@ -255,7 +264,8 @@ class BudgetGuardClient(BaseLM):
         self.enforce_budget()
         sequence = self.reserve_sequence()
         try:
-            response = await self.delegate.acompletion(prompt)
+            with observe_call("lambda", self.model_name, recorder=self.observation_recorder):
+                response = await self.delegate.acompletion(prompt)
         except Exception as error:
             self.record_subcall(
                 sequence=sequence,
@@ -595,8 +605,12 @@ def run_lambda_round(
         guard: LambdaClientGuard | None = None
         method: PaperLambdaRLM | None = None
         usage_lower_bound = False
+        recorder = observation_recorder(
+            path / TRACES_DIR / f"{run_id}.json",
+            {"run_id": run_id, "attempt": attempt, "method": "lambda"},
+        )
         try:
-            with guarded_lambda_client(config.max_budget) as guard:
+            with observation_session(recorder), guarded_lambda_client(config.max_budget) as guard:
                 method = config.method.build(
                     backend=config.backend,
                     backend_kwargs=dict(config.backend_kwargs),
@@ -608,6 +622,9 @@ def run_lambda_round(
                     raise guard.budget_error
             verdict = config.verifier(instance, completion.response)
         except Exception as caught:
+            recorder.check()
+            if isinstance(caught, ObservationPersistenceError):
+                raise
             resource_error: Exception | None = None
             if guard is not None and guard.budget_error is not None:
                 # LMHandler serializes leaf-call exceptions into an error
@@ -640,6 +657,7 @@ def run_lambda_round(
             else:
                 raise
         attach_lambda_subcall_audit(completion, guard)
+        completion.llm_observations = list(recorder.references)
         entries.append(
             persist_run(
                 path,
@@ -680,6 +698,9 @@ def persist_interrupted_lambda_run(
                 model_input.prompt,
                 error,
                 elapsed_seconds=0.0,
+            )
+            completion.llm_observations = discover_observations(
+                path / TRACES_DIR / f"{run_id}.json"
             )
             verdict = lambda_resource_verdict(completion, error)
             return persist_run(

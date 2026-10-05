@@ -137,6 +137,179 @@ def scripted(monkeypatch: pytest.MonkeyPatch, *responses: str) -> ClientFactory:
     return patch_runner(monkeypatch, [final(response) for response in responses])
 
 
+def test_select_long_only_with_three_attempts_and_resume(tmp_path, monkeypatch):
+    config = eval_config(tmp_path, repetitions=3)
+    out = tmp_path / "exp"
+    freeze(out)
+    factory = scripted(monkeypatch, *(["RIGHT"] * 6))
+    kwargs = {
+        "test_set_ids": [SET_LONG],
+        "verifiers": {"graphwalks": GoldVerifier()},
+        "loaders": LOADERS,
+    }
+    result = run_evaluation(config, BOTH_CONDITIONS, out, **kwargs)
+    assert factory.total_calls == 6
+    assert result.summary["test_sets"] == [SET_LONG]
+    for condition in BOTH_CONDITIONS:
+        assert len(manifest_lines(out, condition, SET_LONG)) == 3
+        assert not set_round_dir(out, condition, SET_SHORT).exists()
+    summary = result.summary_path.read_bytes()
+    run_evaluation(config, BOTH_CONDITIONS, out, **kwargs)
+    assert factory.total_calls == 6
+    assert result.summary_path.read_bytes() == summary
+
+
+@pytest.mark.parametrize("sets", [[], [SET_LONG, SET_LONG], ["oolong_pairs_long"]])
+def test_invalid_test_selection_spends_nothing(tmp_path, monkeypatch, sets):
+    factory = scripted(monkeypatch, "RIGHT")
+    with pytest.raises(ValueError, match="test set"):
+        run_evaluation(
+            eval_config(tmp_path),
+            (CONDITION_B1,),
+            tmp_path / "exp",
+            test_set_ids=sets,
+            loaders=LOADERS,
+        )
+    assert factory.total_calls == 0
+
+
+def test_initial_condition_uses_exact_round_one_harness(tmp_path, monkeypatch):
+    config = eval_config(tmp_path)
+    out = tmp_path / "exp"
+    original = replace(H0, verification_instruction="Original saved instruction")
+    path = out / "opt/round_01/mining/round_01/harness.json"
+    path.parent.mkdir(parents=True)
+    write_harness_json(original, path)
+    scripted(monkeypatch, "RIGHT")
+    result = run_evaluation(
+        config,
+        ("initial",),
+        out,
+        test_set_ids=[SET_LONG],
+        verifiers={"graphwalks": GoldVerifier()},
+        loaders=LOADERS,
+    )
+    assert result.conditions[0].method_hash == harness_hash(original)
+    assert result.summary["conditions"]["initial"]["source"]["path"] == str(path.relative_to(out))
+
+
+def test_three_evaluation_workers_run_and_resume_real_child_processes(tmp_path, monkeypatch):
+    import shrlm.experiment.evaluation as evaluation_module
+    from shrlm.optimization.costs import run_governed_round
+    from tests.optimization.run_worker_support import (
+        RUN_SCRIPTED_FACTORY,
+        observed_peak_concurrency,
+        write_script,
+    )
+
+    config = eval_config(tmp_path, repetitions=3)
+    out = tmp_path / "exp"
+    witness = tmp_path / "witness"
+    script = write_script(tmp_path / "script.json", [final("RIGHT")])
+
+    def governed(round_config, breaker):
+        # Inject only the offline LM; the real scheduler, subprocesses, verifier,
+        # manifest persistence and spend breaker execute unchanged.
+        return run_governed_round(
+            replace(
+                round_config,
+                client_factory=(
+                    RUN_SCRIPTED_FACTORY,
+                    {
+                        "script_path": str(script),
+                        "witness_dir": str(witness),
+                        "hold": 1.0,
+                    },
+                ),
+            ),
+            breaker,
+        )
+
+    monkeypatch.setattr(evaluation_module, "run_governed_round", governed)
+    kwargs = {
+        "test_set_ids": [SET_LONG],
+        "verifiers": {"graphwalks": GoldVerifier()},
+        "loaders": LOADERS,
+    }
+    result = run_evaluation(config, (CONDITION_B1,), out, run_workers=3, **kwargs)
+    assert observed_peak_concurrency(witness) == 3
+    assert result.conditions[0].test_sets[SET_LONG]["pass_count"] == 3
+    entries = manifest_lines(out, CONDITION_B1, SET_LONG)
+    assert len({entry["run_id"] for entry in entries}) == 3
+    summary = result.summary_path.read_bytes()
+    run_evaluation(config, (CONDITION_B1,), out, run_workers=3, **kwargs)
+    assert result.summary_path.read_bytes() == summary
+    resumed = run_evaluation(config, (CONDITION_B1,), out, run_workers=1, **kwargs)
+    expected = json.loads(summary)
+    expected["conditions"][CONDITION_B1]["test_sets"][SET_LONG]["run_workers"] = 1
+    assert resumed.summary == expected
+    assert manifest_lines(out, CONDITION_B1, SET_LONG) == entries
+
+
+@pytest.mark.parametrize("workers", [0, -1, True, 1.5])
+def test_invalid_evaluation_worker_count(tmp_path, workers):
+    with pytest.raises(ValueError, match="run_workers"):
+        run_evaluation(
+            eval_config(tmp_path),
+            (CONDITION_B1,),
+            tmp_path / "exp",
+            run_workers=workers,
+        )
+
+
+def test_parallel_lambda_selection_refuses_before_other_conditions_spend(tmp_path, monkeypatch):
+    factory = scripted(monkeypatch, "RIGHT")
+    with pytest.raises(ValueError, match="lambda_rlm"):
+        run_evaluation(
+            eval_config(tmp_path),
+            (CONDITION_B1, CONDITION_LAMBDA_RLM),
+            tmp_path / "exp",
+            run_workers=3,
+        )
+    assert factory.total_calls == 0
+
+
+def test_evaluation_cli_dry_run_checks_frozen_inputs_without_model_calls(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from examples.run_evaluation import main
+    from shrlm.experiment.orchestrator import check_identity
+    from shrlm.experiment.splits import materialize_splits
+
+    config = eval_config(tmp_path)
+    out = tmp_path / "exp"
+    check_identity(config, out)
+    materialize_splits(config, out, loaders=LOADERS)
+    freeze(out)
+    factory = scripted(monkeypatch, "RIGHT")
+    assert (
+        main(
+            [
+                "--config",
+                str(tmp_path / "experiment.toml"),
+                "--out-dir",
+                str(out),
+                "--conditions",
+                "b1",
+                "sh_rlm",
+                "--test-sets",
+                SET_LONG,
+                "--workers",
+                "3",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    assert factory.total_calls == 0
+    assert not (out / EVAL_DIR).exists()
+    output = capsys.readouterr().out
+    assert "graphwalks_long: 1 tasks; 2 runs" in output
+    assert "3 workers" in output
+
+
 # Execution order is (condition, set): b1 long, b1 short, sh_rlm long, sh_rlm short.
 # Kept so each condition's short set still passes and b1's long set still
 # fails, matching the pass-count assertions below.

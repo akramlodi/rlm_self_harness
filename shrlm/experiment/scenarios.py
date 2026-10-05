@@ -35,12 +35,12 @@ raised type are identical to before the split.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from shrlm.experiment.config import ExperimentConfig, GpuScenario, PricingTier
 from shrlm.experiment.errors import ExperimentError
-from shrlm.experiment.splits import LENGTHS
+from shrlm.experiment.splits import LENGTHS, split_plan
 
 if TYPE_CHECKING:
     from shrlm.experiment.report import Projection, RunBucket
@@ -214,18 +214,11 @@ class Recommendation:
 
 
 def configured_environments(config: ExperimentConfig) -> tuple[str, ...]:
-    """The leaf test-environment names the config declares, in declaration order.
-
-    A leaf environment section carries a ``dataset_repo`` and produces test
-    splits (``graphwalks``, ``oolong_pairs``). The ``oolong`` section is a
-    container (``synth`` / ``real`` sub-tables) selected only when
-    ``loop.environment == "oolong_synth"`` and is skipped here: it has no test
-    bucket of its own, so the long-coverage gate must not demand one.
-    """
+    """Environments with long test instances in the active split plan."""
     return tuple(
-        field.name
-        for field in fields(config.environments)
-        if hasattr(getattr(config.environments, field.name), "dataset_repo")
+        environment
+        for environment, lengths in split_plan(config).items()
+        if lengths.get(LONG, {}).get("test", 0) > 0
     )
 
 
@@ -252,7 +245,7 @@ def validity_gates(config: ExperimentConfig, buckets: Sequence[RunBucket]) -> li
                     "gate": GATE_LONG_COVERAGE,
                     "detail": (
                         f"no measured {LONG} runs for environment {environment!r}; long "
-                        "coverage is required for every configured environment before a "
+                        "coverage is required for every configured long test split before a "
                         "recommendation can be made"
                     ),
                 }

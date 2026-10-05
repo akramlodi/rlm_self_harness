@@ -112,6 +112,7 @@ from typing import TYPE_CHECKING, Any
 
 from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import ObservationPersistenceError
 from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier
 from shrlm.environments.obliq_bench_math import ObliqBenchMathVerifier
 from shrlm.environments.oolong import (
@@ -163,6 +164,8 @@ from shrlm.optimization.driver import (
     load_manifest,
     mine_round,
 )
+from shrlm.optimization.history import prior_evaluations
+from shrlm.optimization.llm_observation_store import rebase_observations, verify_observations
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.optimization.promotion import DECISION_PROMOTED, PromotionConfig
 from shrlm.optimization.proposal import (
@@ -230,14 +233,6 @@ INITIAL_INCUMBENT = "H0"
 SPLIT_LENGTH = "short"
 ROLE_HELD_IN = "held_in"
 ROLE_HELD_OUT = "held_out"
-
-# The default source environment. The loop itself reads
-# ``resolve_env_binding(config).name`` (``config.loop.environment``); this
-# constant is the fallback the report/analysis pipeline
-# (``shrlm.experiment.report``) uses to locate the optimization split bucket,
-# and it stays "graphwalks" -- the shipped default and the environment those
-# analyses were written for.
-SPLIT_ENVIRONMENT = "graphwalks"
 
 # OOLONG-real generalization check (non-gated): its split role and metering
 # stage. Written under ``opt/round_NN/real_check/`` and, for the final
@@ -414,7 +409,9 @@ def load_round_history(
     list and contributes no synthesized records; the round still renders as
     an entry with its outcome.
     """
+    from shrlm.optimization.behavior import activation_for_surface
     from shrlm.optimization.proposal_evidence import (
+        validation_history_behavior,
         validation_history_diagnostics,
         validation_history_progress,
     )
@@ -427,12 +424,33 @@ def load_round_history(
         )
         validation_path = round_dir(round_path / VALIDATION_DIR, round_index)
         if ledger_decision.get("baseline"):
+            decision["incumbent_hash"] = ledger_decision["baseline"].get("harness_hash")
             decision["baseline_diagnostics"] = validation_history_diagnostics(
                 validation_path, ledger_decision["baseline"]
             )
         proposals_dir = round_path / PROPOSALS_DIR
+        behavior_by_subject = {
+            record["subject_id"]: validation_history_behavior(validation_path, record)
+            for record in ledger_records
+            if record.get("links")
+        }
+        owners = {
+            member: record["subject_id"]
+            for record in ledger_records
+            if record.get("links")
+            for member in ((record.get("merge") or {}).get("constituent_ids") or [])
+        }
         for record in ledger_records:
             enriched = {**record, **proposal_behavior(proposals_dir, record.get("subject_id"))}
+            subject_id = record["subject_id"]
+            if subject_id in owners:
+                enriched["batch_subject_id"] = owners[subject_id]
+            summary = behavior_by_subject.get(owners.get(subject_id, subject_id))
+            enriched["activation"] = activation_for_surface(
+                enriched.get("surface") if enriched.get("activation_applicable", True) else None,
+                summary,
+                skill_name=enriched.get("changed_skill"),
+            )
             if record.get("links"):
                 enriched["diagnostics"] = validation_history_diagnostics(validation_path, record)
             if record.get("decision") != "bundled":
@@ -444,6 +462,7 @@ def load_round_history(
     for failure in marker.get("materialization_failures", []):
         records.append(
             {
+                **failure.get("behavior", {}),
                 "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
                 "surface": failure["surface"],
                 "decision": HISTORY_NOT_MATERIALIZED,
@@ -452,11 +471,18 @@ def load_round_history(
             }
         )
     for failure in marker.get("preflight_failures", []):
+        owner = dict(failure.get("owner") or {})
+        if owner:
+            subject = f"r{round_index:02d}-c{owner['position']:02d}-{owner['surface'].lower()}"
+            if subject in marker.get("candidate_ids", []):
+                owner.update(round=round_index, subject_id=subject)
         records.append(
             {
+                **failure.get("behavior", {}),
                 "subject_id": f"pattern {failure['pattern_index']} on {failure['surface']}",
                 "surface": failure["surface"],
                 "decision": "preflight_rejected",
+                **({"owner": owner} if owner else {}),
                 "predicted_effect": failure.get("predicted_effect", ""),
                 "reasons": [f"{failure['gate']}: {failure['reason']}"],
             }
@@ -469,7 +495,7 @@ def load_round_history(
     return records, decision
 
 
-def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, str]:
+def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, Any]:
     """Load proposal rationale additively; old artifacts have no invented explanation."""
     from shrlm.optimization.candidates import BEHAVIOR_FIELDS
 
@@ -482,17 +508,33 @@ def proposal_behavior(proposals_dir: Path, candidate_id: Any) -> dict[str, str]:
         return {}
     if not isinstance(payload, dict) or payload.get("format") != PROPOSAL_FORMAT:
         return {}
-    return {
+    result = {
         name: payload[name]
         for name in ("predicted_effect", *BEHAVIOR_FIELDS)
         if isinstance(payload.get(name), str) and payload[name].strip()
     }
+    from shrlm.optimization.history import surface_fingerprint
+
+    surface = payload.get("surface")
+    serialization = (payload.get("harness") or {}).get("harness")
+    result.update(
+        incumbent_hash=payload.get("base_harness_hash"),
+        mechanism=(payload.get("target_signature") or {}).get("agent_mechanism"),
+        revision=payload.get("revision"),
+    )
+    if serialization and surface:
+        result["effective_edit_fingerprint"] = surface_fingerprint(serialization, surface)
+    result["activation_applicable"] = payload.get("activation_applicable", surface != "S6")
+    result["changed_skill"] = payload.get("changed_skill")
+    result["revision_unchanged"] = payload.get("revision_unchanged")
+    return result
 
 
 def _load_marker(path: Path, expected_format: str) -> dict[str, Any]:
     payload = json.loads(path.read_text())
     if payload.get("format") != expected_format:
         raise ExperimentPersistenceError(f"{path} is not a {expected_format} document")
+    verify_observations(payload, path.parent)
     return payload
 
 
@@ -1011,6 +1053,9 @@ class _Experiment:
         marker_path = mining_round_path / EVIDENCE_MARKER_FILENAME
         if marker_path.exists():
             _load_marker(marker_path, EVIDENCE_MARKER_FORMAT)
+            verify_observations(
+                read_jsonl(mining_round_path / ATTRIBUTIONS_FILENAME), mining_round_path
+            )
             return json.loads(bundle_path.read_text())
         cache_path = _operational_path(self.out_dir, self.config.operational.attribution_cache_path)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1144,6 +1189,7 @@ class _Experiment:
                     "skipped_patterns": [],
                     "n_materialization_failures": 0,
                     "materialization_failures": [],
+                    "attempts": [attempt.to_dict() for attempt in exc.attempts],
                     "stage_failure": {
                         "kind": kind,
                         "error": str(exc),
@@ -1171,6 +1217,7 @@ class _Experiment:
             payload["preflight_failures"] = result.preflight_failures
             payload["evidence_audit"] = result.evidence_audit
             payload["attempts"] = [attempt.to_dict() for attempt in result.attempts]
+        payload = rebase_observations(payload, round_path / WORK_DIR, round_path)
         _persist_once(
             marker_path,
             payload,
@@ -1214,6 +1261,7 @@ class _Experiment:
                     proposals_dir,
                     eval_config,
                     self.pconfig,
+                    prior_evaluations=prior_evaluations(self.prior_history),
                     loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
                     preflight_profile=_load_marker(
                         round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT
@@ -1288,8 +1336,18 @@ class _Experiment:
             try:
                 harnessed = build_round_rlm(round_config)
                 for instance in instances:
+                    trace_path = check_dir / "runs" / f"check-{len(rows) + 1}.json"
                     outcome = execute_run(
-                        harnessed, instance, model_name=model_name, verifier=verifier
+                        harnessed,
+                        instance,
+                        model_name=model_name,
+                        verifier=verifier,
+                        trace_path=trace_path,
+                        observation_owner={"stage": STAGE_REAL_CHECK},
+                    )
+                    trace_path.parent.mkdir(parents=True, exist_ok=True)
+                    trace_path.write_text(
+                        json.dumps(outcome.completion.to_dict(), sort_keys=True) + "\n"
                     )
                     summary = outcome.completion.usage_summary
                     cost = summary.total_cost
@@ -1313,6 +1371,8 @@ class _Experiment:
                             "cost_usd": cost,
                         }
                     )
+            except ObservationPersistenceError:
+                raise
             except Exception as error:  # noqa: BLE001 -- must never break the round
                 sys.stderr.write(
                     f"OOLONG-real check failed for {tag}: {type(error).__name__}: {error}\n"
@@ -1686,7 +1746,10 @@ def run_experiment(
         verifier_factory=verifier_factory,
         client_factory=client_factory,
     )
-    return experiment.run()
+    try:
+        return experiment.run()
+    except ObservationPersistenceError as error:
+        raise ExperimentPersistenceError(str(error)) from error
 
 
 __all__ = [

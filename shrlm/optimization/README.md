@@ -4,6 +4,10 @@ Fork research code, kept out of the vendored `rlm/` package tree. Everything her
 `docs/Self Harnessing RLMs.md`; where the code and that document disagree, the document is the
 specification.
 
+## Saved provider reasoning
+
+New runs and meta-model attempts keep provider-returned reasoning in separate, hash-verified observation files. This does not change model prompts, mining evidence, cache keys, or promotion decisions. See [the output guide](../../docs/experiment-reasoning.md) for exact paths, failed-call records, and legacy/cache behavior.
+
 ## The loop this belongs to
 
 A fixed-weight model improves its own *harness* — the scaffolding around the model — instead of its
@@ -14,7 +18,7 @@ three stages (§3.3 of the proposal):
 |---|---|---|
 | **1. Weakness Mining** | Run the current harness on short held-in instances. Record verifier outcomes and recursive traces. Score each sub-call with the environment's synthesized sub-verifier. Convert failures to structured records and cluster them by signature → an **evidence bundle** `B_t`. | **implemented** (`shrlm/optimization/`) |
 | **2. Harness Proposal** | Give the model the mined patterns, behaviors to preserve, and prior edit history; get back several minimal candidate edits, each targeting one pattern on one declared surface. | not implemented |
-| **3. Proposal Validation** | Compose all admitted edits before evaluation. Compare the batch against the incumbent on held-out instances only; promote the whole batch only if held-out accuracy improves and cost/sub-calls meet the configured bands. | `validation.py`, `subject_worker.py`, `run_worker.py` |
+| **3. Proposal Validation** | Compose all admitted edits before evaluation. Compare the batch against the incumbent on held-out instances only; promote the whole batch when the exact-pass delta meets the configured improvement margin and cost/sub-calls meet their bands. At zero margin, equal exact passes qualify. | `validation.py`, `subject_worker.py`, `run_worker.py` |
 
 The ten editable surfaces declared by the harness (`shrlm/rlm_harness.py`, `SURFACES`) are
 enumerated in code as `EditableSurface` ([taxonomy.py:51](optimization/taxonomy.py#L51)), keyed by
@@ -27,8 +31,9 @@ S8 entry) that returns a body on demand. `SURFACE_REACH`
 ([taxonomy.py:118](optimization/taxonomy.py#L118)) annotates each surface as root-only or
 child-reachable: S1–S5 travel with the system prompt, which child RLMs inherit, S8 propagates
 via `sub_repl_helpers`, and S10 is child-reachable on both legs (the index travels with the
-prompt and the loader is installed in the child REPL too), while the S6/S7/S9 seams apply at
-the root only (residual finding C7).
+prompt and the loader is installed in the child REPL too). S6 local policy
+enforcement and S7/S9 hooks apply at the root; S6's `max_depth` is inherited
+through child RLM construction despite that broad reach label.
 The evaluator, external tools, and the three §3.1 invariants are off-limits.
 
 ## Why the package is laid out this way
@@ -57,7 +62,8 @@ could fix it, [:339](optimization/taxonomy.py#L339); every one of the ten surfac
 S10 through `unconsulted_procedure`, defined against the digest's `available_skills` /
 `loaded_skills` lines and claimed only when neither the S6 budget-exhaustion nor the S3
 depth-degradation mechanism independently explains the terminal failure), `SURFACE_REACH`, and
-`CAUSAL_WEIGHT`. `TAXONOMY_VERSION` is `3.0.0` since S10 was declared (2.0.0 before); it stamps
+`CAUSAL_WEIGHT`. `TAXONOMY_VERSION` is `3.3.0`; shared capability descriptions and
+evidence-supported S8/S5 alternatives supplement the primary-surface table. It stamps
 every bundle, and the mechanism-frequency diff refuses to compare bundles written under a
 different version unless explicitly told to.
 
@@ -117,15 +123,13 @@ surfaces. With a `SubVerifier` this is a checkable fact; without one it is a mod
 ([test_grounding.py](../tests/optimization/test_grounding.py)).
 
 ### `digest.py` — bounded, deterministic trace view
-An RLM trace can exceed a context window — that is the premise of the paradigm — so the attributor
-cannot see the raw trajectory. Summarizing it with a model would insert a second uncontrolled
-sampling step upstream of every mined pattern, so the compression is **entirely mechanical**:
-header + root skeleton (50% of budget) + sub-call table + focused excerpts (50%), with the wide-tree
-case degrading to a per-depth aggregate above 40 sub-calls.
 
-Truncation is always announced in the text, and `TraceDigest.coverage` records how much survived —
-the truncation policy is a hidden hyperparameter of every attribution and belongs in the results.
-`test_digest.py` asserts a digest never leaks REPL locals.
+The digest packs complete operations with bounded outputs under its character cap.
+Actual stderr errors and relevant consumers precede repeated child-call and retry
+noise. Known client retry notices are summarized with counts and locations; they
+are not themselves an unresolved execution error. Structural JSON summaries come
+from bounded complete replies, never truncated previews, and do not verify labels
+or input coverage. Truncation and missing relationships remain explicit.
 
 ### `attribution.py` — LLM labeling, validated
 The model supplies **two of the four** signature components: `causal_status` and `agent_mechanism`.
@@ -224,14 +228,17 @@ parent, so a rejected candidate never gets a child. The combined candidate uses 
 worker path as the baseline. Tests script the children through the request's test-only `client_factory` seam
 (`tests/optimization/subject_worker_support.py`).
 
-The DeepSeekV4Flash OOLONG-pairs profile uses `v = 1`, `n_in = 10` for mining only,
+The DeepSeekV4Flash OOLONG-pairs profile uses `v = 1`, `n_in = 20` for mining only,
 and `n_ho = 10` for validation only. Other profiles retain their configured repetition counts.
 A full nonempty optimization round projects `m*n_in + 2*v*n_ho` runs regardless of `k`;
 `report.p_merge` is a legacy input and does not affect this estimate. Empty rounds require
 no validation calls. Final evaluation repetitions are separate.
 
 New summaries, promotion records, and decisions use v2 formats with protocol
-`heldout-batch/v1`. A multi-edit batch records each constituent as `bundled` with no rule,
+`heldout-batch/v2`. This protocol accepts exact-pass deltas equal to `tau_improvement`,
+including ties at the default zero margin; regressions and resource-band violations
+still reject. It changes the experiment identity, preventing old strict-gate runs
+from resuming under the inclusive rule. A multi-edit batch records each constituent as `bundled` with no rule,
 band, or evaluation links, and a `batch_subject_id` pointing to `merged`. Only that shared
 subject receives a measured verdict. A rejected or over-budget batch promotes nothing.
 Analysis leaves missing held-in validation accuracy blank and counts bundled participation
@@ -372,3 +379,25 @@ Backend initialization, unhandled provider/transport errors, verifier defects,
 persistence errors, cancellation, and host resource failures retain fatal
 handling (or existing worker failure handling). Containment applies to one
 completion, not to the experiment orchestration loop.
+
+### Proposal evidence, choices, and history
+
+`proposal_evidence.py` selects complete cited/producer/consumer chains, with up to
+six snippets and a 32,000-character total evidence cap. It expands distinct
+actionable mechanisms before optional sibling context. `proposal.py` uses the
+same admitted choices for generation, admission and repair; inventory-only
+patterns cannot propose, and zero choices makes zero proposer calls.
+
+`history.py` packs recent outcomes, the incumbent promotion and required
+predecessor identities under 12,000 characters. It prefers measured/bundled
+predecessors to refused rewrites, while exact fingerprints retain priority.
+Qualified dense-quality gains remain alongside contrary exact-match outcomes
+using verifier-owned definitions. Batch effects are not individual edit credit.
+Unknown activation remains unassessed. Prompts ask for the latest unresolved
+state and a minimal behavioral distinction; these checks do not prove causality.
+
+Current contracts: attribution prompt 1.5.0, digest 1.7.0, proposer prompt and
+validator 4.2.0, evidence selector 4.2.0, diagnostic history 2.1.0, and history
+projection `proposal-history/v3`. Saved experiments are not rewritten; mismatched
+unfinished contracts refuse paid replay. See the
+[proposal interface](../docs/harness-proposal-interface.md) for the live contract.

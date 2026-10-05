@@ -1,40 +1,23 @@
 """Script 2: incumbent quality over rounds -- feeds Graph 2 (quality over time).
 
 ``incumbent_quality_over_rounds`` walks every round's ``promotions.jsonl``
-(via ``shrlm.experiment.rounds``, the shared discovery module) and tracks one
-running "current incumbent" state -- held-in and held-out pass counts and run
-counts -- that only moves on a ``promoted`` decision. Every round still emits
-exactly one row, so the series is a clean step function even through rounds
-that promoted nothing.
-
-Seeding the baseline
-    The state starts from the first round that actually scored a candidate:
-    every scored row's ``rule.<split>.baseline_pass_count`` is the same
-    incumbent-before-this-round figure (all candidates in a round are scored
-    against the same evaluated baseline), so any one of them seeds it. In the
-    ordinary case that is round 1, where baseline == H0, matching the
-    proposal's framing; a round 1 that happened to be loader-rejection-only
-    (no candidate survived the loader, so nothing was ever scored) is handled
-    by carrying the seed forward to the first round that does score
-    something, rather than crashing -- that round's row (and any before it)
-    reports null pass rates with an annotation explaining why.
+(via ``shrlm.experiment.rounds``, the shared discovery module) and reports
+that round's measurement of the harness retained after the decision. A
+promotion uses the winning candidate's score; a rejection uses the freshly
+measured baseline score. No score is carried forward from an earlier round.
 
 Non-promoting rounds
-    A round that promotes nothing leaves the incumbent state untouched. When
-    the reason is structural -- a loader-gate rejection, or an evaluation
-    that never finished scoring because it went over budget (``rule`` is
-    null on that row) -- the row's ``annotation`` names every such candidate
-    and its reason, for plotting as a marker. An ordinary scored-but-rejected
-    candidate (failed the promotion rule or band; ``rule`` is populated)
-    contributes no annotation, per the spec this script implements: it is
-    the expected, unremarkable outcome of a round that did not improve on
-    the incumbent, not a structural anomaly worth flagging.
+    Scored rejections refresh the baseline measurement without marking an
+    incumbent change. A ledgered round with no scored comparison reports
+    null rates and an annotation instead of reusing a previous score.
+    Structural rejections are annotated; bundled constituents are not, since
+    their lack of individual scores is expected under combined validation.
 
 Completeness beside the series
     Each round row carries ``round_complete`` (the loop's own round marker,
     present and recording this round) and ``runs_complete`` (whether the
     round's mining stage persisted every run it planned), both read off the
-    shared discovery rather than re-derived here. A step in this series taken
+    shared discovery rather than re-derived here. A measurement in this series
     from a round the loop never finished is still worth plotting, but only
     while it is visibly partial -- and ``runs_complete`` reads ``unknown``,
     never ``false``, when the experiment's configuration cannot be resolved to
@@ -82,7 +65,7 @@ from shrlm.experiment.rounds import (
     iter_promotion_rounds,
     resolve_surface,
 )
-from shrlm.optimization.promotion import DECISION_PROMOTED
+from shrlm.optimization.promotion import DECISION_BUNDLED, DECISION_PROMOTED
 
 INCUMBENT_QUALITY_FILENAME = "incumbent_quality.csv"
 INCUMBENT_QUALITY_CANDIDATES_FILENAME = "incumbent_quality_candidates.csv"
@@ -117,7 +100,7 @@ SPLIT_HELDOUT = "heldout"
 
 @dataclass(frozen=True)
 class _IncumbentState:
-    """The running incumbent's pass counts on both splits."""
+    """One validation comparison's pass counts on both splits."""
 
     heldin_pass_count: int
     heldin_n_runs: int
@@ -206,7 +189,8 @@ def _structural_rejection_annotation(records: list[dict]) -> str | None:
     parts = [
         f"{record['subject_id']}: {'; '.join(record.get('reasons', ())) or record['decision']}"
         for record in records
-        if record["decision"] != DECISION_PROMOTED and record.get("rule") is None
+        if record["decision"] not in (DECISION_PROMOTED, DECISION_BUNDLED)
+        and record.get("rule") is None
     ]
     return "; ".join(parts) if parts else None
 
@@ -221,7 +205,6 @@ def incumbent_quality_over_rounds(
     """
     inventory = inventory if inventory is not None else discover_rounds(out_dir)
     rows: list[IncumbentQualityRow] = []
-    state: _IncumbentState | None = None
     # The same inventory the ledger iteration below walks, kept by round index
     # so every emitted row carries that round's completeness (R2).
     discovered: dict[int, RoundRecord] = inventory.rounds_by_index()
@@ -231,24 +214,20 @@ def incumbent_quality_over_rounds(
         round_complete = discovery is not None and discovery.round_complete
         runs_complete = None if discovery is None else discovery.mining_runs.runs_complete
         scored = [record for record in records if record.get("rule") is not None]
-        if state is None:
-            if not scored:
-                rows.append(
-                    IncumbentQualityRow(
-                        round_index=round_index,
-                        heldin_pass_rate=None,
-                        heldout_pass_rate=None,
-                        incumbent_changed=False,
-                        annotation=(
-                            "no candidate was scored this round (loader-rejection-only or "
-                            "over-budget); the H0 baseline has not been observed yet"
-                        ),
-                        round_complete=round_complete,
-                        runs_complete=runs_complete,
-                    )
+        if not scored:
+            rows.append(
+                IncumbentQualityRow(
+                    round_index=round_index,
+                    heldin_pass_rate=None,
+                    heldout_pass_rate=None,
+                    incumbent_changed=False,
+                    annotation=_structural_rejection_annotation(records)
+                    or "no scored validation comparison this round",
+                    round_complete=round_complete,
+                    runs_complete=runs_complete,
                 )
-                continue
-            state = _IncumbentState.from_rule(scored[0]["rule"], key="baseline")
+            )
+            continue
 
         promoted_record = next(
             (record for record in records if record["decision"] == DECISION_PROMOTED), None
@@ -258,6 +237,7 @@ def incumbent_quality_over_rounds(
             incumbent_changed = True
             annotation = None
         else:
+            state = _IncumbentState.from_rule(scored[0]["rule"], key="baseline")
             incumbent_changed = False
             annotation = _structural_rejection_annotation(records)
 

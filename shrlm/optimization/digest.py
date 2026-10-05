@@ -15,9 +15,13 @@ material survived, because the truncation policy is a hidden hyperparameter of
 every attribution and belongs in the results.
 """
 
+import ast
 import hashlib
+import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import CallNode, NodeKind, TreeStats, Verdict, iter_nodes
@@ -34,7 +38,7 @@ from shrlm.optimization.walker import iter_skill_loads
 # the trace's run-start record names a skill index (a loader was installed,
 # i.e. S10 was non-empty). A trace without one -- every pre-S10 trace, and
 # every trace under an empty S10 -- renders byte-identically to 1.1.0.
-DIGEST_VERSION = "1.4.0"
+DIGEST_VERSION = "1.8.0"
 
 DEFAULT_CHAR_BUDGET = 12000
 DEFAULT_FOCUS_K = 4
@@ -43,16 +47,138 @@ DEFAULT_FOCUS_K = 4
 # aggregate, so a wide decomposition cannot crowd out the focused excerpts.
 DEFAULT_CHILD_TABLE_THRESHOLD = 40
 
-# Fractions of the budget. The header is exempt: it is small, bounded, and
-# carries the verifier outcome the rest of the digest is evidence for. The
-# sub-call table is exempt too -- it is bounded by construction at
-# child_table_threshold rows of two PREVIEW_CHARS previews each.
-ROOT_SKELETON_SHARE = 0.50
-EXCERPT_SHARE = 0.50
-
 PREVIEW_CHARS = 200
 QUESTION_CHARS = 600
 ANSWER_CHARS = 600
+
+RETRY_NOTICE = re.compile(
+    r"(?:Content filter blocked the response|"
+    r"(?:Transient API error|Empty completion content|Deficient completion response) "
+    r"\([^\n]*\)); retrying \(\d+/\d+\)\.\.\."
+)
+
+
+def split_retry_notices(stderr: str) -> tuple[str, int]:
+    """Recognize only complete notice lines emitted by our client; keep other errors."""
+    lines = stderr.splitlines(keepends=True)
+    notices = [line for line in lines if RETRY_NOTICE.fullmatch(line.strip())]
+    return "".join(line for line in lines if not RETRY_NOTICE.fullmatch(line.strip())), len(notices)
+
+
+def payload_structure(value: str) -> dict[str, Any]:
+    """Describe a bounded complete JSON payload, never infer task coverage."""
+    unknown = {"status": "not_assessed"}
+    if len(value) > 100_000:
+        return unknown
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("duplicate keys")
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(value)
+
+    try:
+        parsed = json.loads(value, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    except (ValueError, RecursionError):
+        return unknown
+    if not isinstance(parsed, (dict, list)):
+        return unknown
+    return {
+        "status": "complete_json",
+        "type": "object" if isinstance(parsed, dict) else "array",
+        "item_count": len(parsed),
+        "semantic_coverage": "not_assessed",
+    }
+
+
+def code_names(code: str) -> tuple[set[str], set[str], bool] | None:
+    """Bounded static names and computation flag; no alias or semantic inference."""
+    if len(code) > 100_000:
+        return None
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, RecursionError):
+        return None
+    reads, writes = set(), set()
+    computational = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            (writes if isinstance(node.ctx, ast.Store) else reads).add(node.id)
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
+            computational = True
+        # Method calls can mutate their receiver. This is only a selection hint.
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            computational = True
+            if isinstance(node.func.value, ast.Name):
+                writes.add(node.func.value.id)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id
+            not in {
+                "print",
+                "len",
+                "str",
+                "repr",
+                "type",
+                "list",
+                "dict",
+                "set",
+                "sorted",
+            }
+        ):
+            computational = True
+    return reads, writes, computational
+
+
+def following_operations(codes: Sequence[str], position: int) -> tuple[list[tuple[int, str]], str]:
+    """Select two computational hops and their immediate chronological follow-up."""
+    origin = code_names(codes[position])
+    names = set(origin[1]) if origin else set()
+    selected = []
+    scanned = (
+        (i, code_names(codes[i])) for i in range(position + 1, min(len(codes), position + 129))
+    )
+    for i, flow in scanned:
+        if flow is not None and flow[2] and names.intersection(flow[0] | flow[1]):
+            selected.append(
+                (i, "computational consumer; static name relation, semantics unverified")
+            )
+            names |= flow[1]
+            if len(selected) == 2:
+                break
+    last = selected[-1][0] if selected else position
+    status = (
+        "static name relation only" if selected else "unestablished: no related later operation"
+    )
+    for index in range(last + 1, min(len(codes), last + 3)):
+        selected.append((index, "nearby follow-up; relevance and recovery not established"))
+    return selected, status
+
+
+def preceding_operations(codes: Sequence[str], position: int) -> list[int]:
+    """Nearest direct name definitions, bounded to this node; no dependency traversal."""
+    origin = code_names(codes[position])
+    if origin is None:
+        return []
+    unresolved = set(origin[0])
+    selected = []
+    for index in range(position - 1, max(-1, position - 129), -1):
+        flow = code_names(codes[index])
+        if flow is not None and unresolved & flow[1]:
+            selected.append(index)
+            unresolved -= flow[1]
+            if not unresolved:
+                break
+    return sorted(selected)
+
+
+def iteration_prose(response: str) -> str:
+    """Ordinary response text only; code is shown separately as complete operations."""
+    return re.sub(r"```[^\n]*\n.*?(?:```|\Z)", "", response, flags=re.DOTALL).strip()
 
 
 @dataclass(frozen=True)
@@ -196,42 +322,6 @@ def render_header(
     return "\n".join(lines)
 
 
-def render_root_skeleton(root: CallNode, budget: int) -> tuple[str, int]:
-    """
-    Render what the root actually did, turn by turn.
-
-    The code is carried close to verbatim because in this paradigm the code
-    *is* the decomposition: it is the artifact that determines which sub-calls
-    were made over which slices. stderr is never truncated -- tracebacks are
-    short and are the highest-signal content in the trace.
-    """
-    if not root.iterations:
-        return "## Root iterations\n(none)", 0
-
-    per_iteration = max(budget // max(len(root.iterations), 1), 200)
-    available = 0
-    lines = ["## Root iterations"]
-
-    for iteration in root.iterations:
-        lines.append(f"### iteration {iteration.index}")
-        if iteration.terminated_by_fallback:
-            lines.append("(no code executed; answer synthesized by the fallback)")
-        for block_index, block in enumerate(iteration.code_blocks):
-            available += len(block.code) + len(block.stdout) + len(block.stderr)
-            lines.append(f"code[{block_index}]:")
-            lines.append(head_tail(block.code, per_iteration // 2))
-            if block.stdout:
-                lines.append(f"stdout[{block_index}]:")
-                lines.append(head_tail(block.stdout, per_iteration // 2))
-            if block.stderr:
-                lines.append(f"stderr[{block_index}]:")
-                lines.append(block.stderr)
-        if iteration.final_answer is not None:
-            lines.append(f"final_answer_set: {head_tail(iteration.final_answer, ANSWER_CHARS)}")
-
-    return "\n".join(lines), available
-
-
 def render_child_table(root: CallNode, cfg: DigestConfig) -> tuple[str, int, bool]:
     """One row per sub-call, or a per-depth aggregate when there are too many.
 
@@ -279,7 +369,8 @@ def render_child_table(root: CallNode, cfg: DigestConfig) -> tuple[str, int, boo
         response_preview = head_tail(node.response, PREVIEW_CHARS).replace("\n", " ")
         lines.append(
             f"{node.node_id} | {node.depth} | {node.kind.value} | {node.prompt_chars} | "
-            f"{verdict} | {prompt_preview} -> {response_preview}"
+            f"{verdict} | {prompt_preview} -> {response_preview} "
+            f"structure={json.dumps(payload_structure(node.response), sort_keys=True)}"
         )
     return "\n".join(lines), available, False
 
@@ -317,27 +408,6 @@ def select_focus_nodes(root: CallNode, focus_k: int) -> list[CallNode]:
     return selected
 
 
-def render_excerpts(root: CallNode, cfg: DigestConfig, budget: int) -> tuple[str, int]:
-    nodes = select_focus_nodes(root, cfg.focus_k)
-    if not nodes:
-        return "## Focused sub-call excerpts\n(none)", 0
-
-    per_node = max(budget // len(nodes), 200)
-    available = sum(node.prompt_chars + node.response_chars for node in nodes)
-
-    lines = ["## Focused sub-call excerpts"]
-    for node in nodes:
-        verdict = "n/a" if node.sub_verdict is None else str(node.sub_verdict)
-        lines.append(
-            f"### {node.node_id} (depth {node.depth}, {node.kind.value}, sub_verdict={verdict})"
-        )
-        lines.append("prompt:")
-        lines.append(head_tail(flatten_prompt(node.prompt), per_node // 2))
-        lines.append("response:")
-        lines.append(head_tail(node.response, per_node // 2))
-    return "\n".join(lines), available
-
-
 def build_digest(
     instance_id: str,
     question: str,
@@ -367,20 +437,215 @@ def build_digest(
         skill_lines=render_skill_lines(root.skill_index, list(iter_skill_loads(root))),
         verifier_environment=verifier_environment,
     )
-    skeleton, skeleton_available = render_root_skeleton(
-        root, int(cfg.char_budget * ROOT_SKELETON_SHARE)
+    if cfg.char_budget < 128:
+        raise ValueError("digest char_budget must be at least 128")
+    nodes = list(iter_nodes(root))
+    focus = select_focus_nodes(root, cfg.focus_k)
+    focus_ids = {node.node_id for node in focus}
+    blocks = [
+        (node, iteration, index, block)
+        for node in nodes
+        for iteration in node.iterations
+        for index, block in enumerate(iteration.code_blocks)
+    ]
+    root_prose = {
+        iteration.index: iteration_prose(iteration.response) for iteration in root.iterations
+    }
+    chars_available = (
+        sum(len(b.code) + len(b.stdout) + len(b.stderr) for _, _, _, b in blocks)
+        + sum(n.prompt_chars + n.response_chars for n in nodes[1:])
+        + sum(map(len, root_prose.values()))
     )
-    table, table_available, aggregated = render_child_table(root, cfg)
-    excerpts, _excerpt_available = render_excerpts(root, cfg, int(cfg.char_budget * EXCERPT_SHARE))
+    chars_kept = 0
+    # Admit complete operations by structural priority before filling spare
+    # space with omission coordinates. A wide prefix must not evict a late fault.
+    skeleton: dict[int, str] = {}
+    complete_positions: set[int] = set()
+    fallback_lines = [
+        f"{node.node_id} iteration {iteration.index}: no code executed; answer synthesized by the fallback"
+        for node in nodes
+        for iteration in node.iterations
+        if iteration.terminated_by_fallback
+    ]
+    sections = [
+        header,
+        "",
+        "## Sub-calls\n(table omitted: budget)",
+        "## Focused sub-call excerpts\n(none)",
+    ]
 
-    text = "\n\n".join([header, skeleton, table, excerpts])
+    def render_operations() -> None:
+        missing = len(blocks) - len(skeleton)
+        rows = []
+        seen_prose = set()
+        for position in sorted(skeleton):
+            node, iteration, _, _ = blocks[position]
+            if (
+                position in complete_positions
+                and node is root
+                and iteration.index not in seen_prose
+                and root_prose[iteration.index]
+            ):
+                rows.append(
+                    f"r iteration {iteration.index} interpretation, not verified:\n"
+                    + head_tail(root_prose[iteration.index], 400)
+                )
+                seen_prose.add(iteration.index)
+            rows.append(skeleton[position])
+        if missing:
+            rows.append(f"[{missing} additional operation coordinates omitted: budget]")
+        sections[1] = "## Root iterations / operation skeleton\n" + (
+            "\n".join([*rows, *fallback_lines]) or "(none)"
+        )
 
-    # Coverage is measured over the trace material the digest draws on -- root
-    # code and output, plus sub-call prompts and responses -- not over the
-    # header, which is a summary rather than an excerpt. Excerpted nodes also
-    # appear in the table, so their budget is counted once.
-    chars_available = skeleton_available + table_available
-    chars_kept = min(len(text), chars_available) if chars_available else 0
+    def size() -> int:
+        return len("\n\n".join(sections))
+
+    render_operations()
+    if size() > cfg.char_budget:
+        # Extremely small budgets still identify the omission explicitly.
+        fallback_lines = []
+        render_operations()
+        reserve = size() - len(header)
+        if reserve + 40 > cfg.char_budget:
+            sections[2:] = ["", ""]
+            reserve = size() - len(header)
+        available = max(0, cfg.char_budget - reserve - 40)
+        sections[0] = header[:available] + "\n...[header chars omitted]..."
+
+    residuals = {
+        position: split_retry_notices(block.stderr)
+        for position, (_, _, _, block) in enumerate(blocks)
+    }
+    notices = [
+        (f"{node.node_id}/i{iteration.index}/b{index}", residuals[position][1])
+        for position, (node, iteration, index, _) in enumerate(blocks)
+        if residuals[position][1]
+    ]
+    if notices:
+        summary = (
+            "\nClient retry notices (recovery not established): "
+            + json.dumps(notices[:16])
+            + (f"; {len(notices) - 16} further locations" if len(notices) > 16 else "")
+        )
+        if size() + len(summary) <= cfg.char_budget:
+            sections[0] += summary
+    consumers = set()
+    for node in nodes:
+        local = [(i, block) for i, (owner, _, _, block) in enumerate(blocks) if owner is node]
+        codes = [block.code for _, block in local]
+        for position, (global_index, block) in enumerate(local):
+            if block.calls or residuals[global_index][0].strip():
+                chain, _ = following_operations(codes, position)
+                consumers.update(local[index][0] for index, _ in chain)
+                consumers.update(local[index][0] for index in preceding_operations(codes, position))
+    ranked = sorted(
+        enumerate(blocks),
+        key=lambda pair: (
+            0
+            if residuals[pair[0]][0].strip()
+            or any(c.kind is NodeKind.ERRORED for c in pair[1][3].calls)
+            else 1
+            if pair[0] in consumers
+            else 2
+            if any(c.node_id in focus_ids for c in pair[1][3].calls)
+            else 3,
+            pair[1][0].node_id != root.node_id,
+            -pair[1][1].index,
+            pair[0],
+        ),
+    )
+    payload_kept: dict[str, int] = {}
+    for position, (node, iteration, index, block) in ranked:
+        complete_positions.add(position)
+        skeleton[position] = (
+            f"{node.node_id} iteration {iteration.index} code[{index}] (complete):\n{block.code}"
+        )
+        observed = {}
+        for stream, value in (("stdout", block.stdout), ("stderr", residuals[position][0])):
+            if not value:
+                continue
+            label = f"{node.node_id} iteration {iteration.index} {stream}[{index}]:\n"
+            structure = payload_structure(value)
+            if structure["status"] != "not_assessed":
+                label += f"structure={json.dumps(structure, sort_keys=True)}\n"
+            limit = max(0, 500 - len(label))
+            excerpt = value
+            kept = len(value)
+            if len(value) > limit:
+                marker = "\n...[output truncated]...\n"
+                kept = max(0, limit - len(marker))
+                head = kept * 2 // 3
+                excerpt = value[:head] + marker + (value[-(kept - head) :] if kept > head else "")
+            skeleton[position] += "\n" + label + excerpt
+            observed[label] = kept
+        render_operations()
+        if size() <= cfg.char_budget:
+            chars_kept += len(block.code)
+            payload_kept.update(observed)
+        else:
+            del skeleton[position]
+            complete_positions.remove(position)
+            render_operations()
+    for position, (node, iteration, index, block) in enumerate(blocks):
+        if position in skeleton:
+            continue
+        skeleton[position] = (
+            f"{node.node_id} iteration {iteration.index} code[{index}] omitted ({len(block.code)} chars)"
+        )
+        render_operations()
+        if size() > cfg.char_budget:
+            del skeleton[position]
+            render_operations()
+
+    # Payloads are bounded separately and never count marker/header bytes as
+    # surviving trace content. Each source is counted at most once.
+    payloads = [
+        (f"{node.node_id} {label}", value)
+        for node in focus
+        for label, value in (("prompt", flatten_prompt(node.prompt)), ("response", node.response))
+    ]
+    excerpt_lines = []
+    for offset, (label, value) in enumerate(payloads):
+        remaining = cfg.char_budget - size()
+        structure = (
+            "\nstructure=" + json.dumps(payload_structure(value), sort_keys=True)
+            if label.endswith("response")
+            else ""
+        )
+        allowance = max(
+            0, remaining // max(1, len(payloads) - offset) - len(label) - len(structure) - 50
+        )
+        if allowance <= 0:
+            continue
+        excerpt = head_tail(value, allowance)
+        excerpt_lines.append(f"{label}:{structure}\n{excerpt}")
+        sections[3] = "## Focused sub-call excerpts\n" + "\n".join(excerpt_lines)
+        payload_kept[label] = min(len(value), allowance)
+
+    table, _, aggregated = render_child_table(root, cfg)
+    if size() - len(sections[2]) + len(table) <= cfg.char_budget:
+        sections[2] = table
+        if not aggregated:
+            for node in nodes[1:]:
+                for label, length in (
+                    ("prompt", node.prompt_chars),
+                    ("response", node.response_chars),
+                ):
+                    key = f"{node.node_id} {label}"
+                    payload_kept[key] = max(payload_kept.get(key, 0), min(length, PREVIEW_CHARS))
+    else:
+        aggregated = bool(nodes[1:])
+    text = "\n\n".join(sections)
+    chars_kept += sum(payload_kept.values())
+    chars_kept += sum(
+        min(len(root_prose[index]), 400)
+        for index in {
+            blocks[position][1].index
+            for position in complete_positions
+            if blocks[position][0] is root
+        }
+    )
 
     return TraceDigest(
         text=text,

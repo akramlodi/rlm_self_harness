@@ -72,6 +72,24 @@ A script that consumes a completed run directory and emits every table and figur
 
 ## OOLONG-Pairs feedback used by optimization
 
+New verifier configs publish `primary_quality` using `primary-quality/v1`:
+metric name/version, direction (`higher` or `lower`), aggregation
+(`all_attempt_mean`), precision, and declared terminal-cause values. Verdicts
+optionally carry a matching structured measurement. Missing measurements remain
+unknown unless a declared terminal value applies; there is no universal zero or
+range assumption. Unsupported optional metrics are unassessed; malformed metadata
+and conflicting identifiers are contract errors. Existing verifiers preserve
+three-decimal measurements. A strict environment adapter reads known legacy detail
+formats, including both `oolong_synth` and `oolong_real`, without rewriting them.
+
+Validation summary v3 includes `behavior-observations/v1`, computed during the
+existing hash-verified trace aggregation pass. It counts root syntax retries,
+root answer redirects, and named skill loads across canonical call edges. History
+reads summaries only. Positive events are `observed`; complete zero telemetry is
+`not_observed`; missing telemetry or an absent detector is `not_assessed`.
+These events do not establish instruction compliance, correct transformations,
+or causal effectiveness. Completed summary v1/v2 artifacts remain readable.
+
 Attribution digests and held-in proposal evidence expose the recorded precision,
 recall, F1, and missing/extra counts. These are diagnostics at the verifier's
 saved three-decimal precision; exact set equality still determines success.
@@ -100,7 +118,8 @@ sealed, so the diagnosis excerpts can be verified.
 
 `Verdict.detail` is verifier-authored evidence; `AttributionDetail` is the model's
 diagnosis. Bounded verifier detail is available in held-in diagnosis even when no
-numeric adapter exists. Held-out history accepts only strict known verifier formats:
+numeric adapter exists. Held-out history consumes structured verifier metrics;
+the read-only legacy adapter accepts only strict known verifier formats:
 OOLONG Pairs and GraphWalks use F1; OOLONG uses `score`. All three declare higher as
 better and use an all-attempt mean. OOLONG's exact verifier-authored explicit-empty-marker
 failure also contributes zero. Unknown legacy measurements remain unavailable; arbitrary

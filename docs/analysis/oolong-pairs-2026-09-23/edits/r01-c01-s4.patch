@@ -1,0 +1,4 @@
+--- round_01_incumbent/S4_verification_instruction
++++ r01-c01-s4/S4_verification_instruction
+@@ -0,0 +1 @@
++After merging all child results into a single user-to-labels mapping, verify that every user from the parsed data is represented. Count distinct users in the parsed data and distinct keys in the merged mapping. If the counts differ, print the missing user IDs, identify which chunk(s) should have covered them, fix the prompt (e.g., ensure the child returns results keyed by user ID, not by line index), and re-run those chunks. Do not proceed to pair generation until every parsed user has at least one label entry.

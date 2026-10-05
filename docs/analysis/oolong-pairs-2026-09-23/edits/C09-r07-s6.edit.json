@@ -1,0 +1,12 @@
+{
+  "kind": "policy",
+  "runtime_policy": {
+    "enabled": true,
+    "max_batch_width": null,
+    "max_depth": null,
+    "max_prompt_chars": null,
+    "max_retries": 1,
+    "retry_on_syntax_error": false,
+    "validate_sub_output": null
+  }
+}

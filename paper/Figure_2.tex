@@ -1,0 +1,262 @@
+% Figure 2: one Self-Harness optimization round as a loop, with pictogram panels.
+% Relies on the palette (editgreen, editfill, fixgrey, fixfill, envtint, subtint,
+% inkcol), card macros (\cardhd, \cardsb), and the penbadge/lockbadge pics defined
+% in the preamble of proposal.tex.
+\definecolor{rejred}{HTML}{B3363D}
+\definecolor{minehd}{HTML}{2B5FAD}
+\definecolor{valhd}{HTML}{B26A05}
+%
+% ---- glyph library (figure-local) -------------------------------------------
+% Nested tikzpictures inherit nothing from the outer picture; glyphrow restores
+% fonts, colors, and arrow tips for the in-box panels.
+\tikzset{
+  % sharp corners: the enclosing stage/harnessbox node's rounded corners=7pt
+  % stays in force inside the node text's nested tikzpicture and would turn
+  % every cornered path (checkmarks, cells) into a smooth swoosh.
+  glyphrow/.style={font=\sffamily\scriptsize, line width=0.6pt, inkcol,
+    sharp corners, >={Stealth[round,length=3pt]}, every node/.style={text=inkcol,
+    inner sep=1pt, align=center}, baseline=(current bounding box.center)},
+  % task card: a mining-data task instance (plain document)
+  taskcard/.pic={
+    \draw[rounded corners=1.5pt, fill=white, draw=black!40] (-0.42,-0.5) rectangle (0.42,0.5);
+    \foreach \y in {0.3,0.1,-0.1,-0.3}{
+      \draw[line width=0.5pt, black!40] (-0.26,\y) -- (0.28,\y);}
+  },
+  % Execution call tree; uniform nodes carry no semantic correctness labels.
+  calltree/.pic={
+    % edges first, dots after, so the dots sit on top
+    \draw[black!55] (0,0.55) -- (-0.45,0.0);
+    \draw[black!55] (0,0.55) -- (0,0.0);
+    \draw[black!55] (0,0.55) -- (0.45,0.0);
+    \draw[black!55] (0.45,0.0) -- (0.27,-0.48);
+    \draw[black!55] (0.45,0.0) -- (0.63,-0.48);
+    \fill[inkcol] (0,0.55) circle (0.07);
+    \fill[inkcol] (-0.45,0.0) circle (0.07);
+    \fill[inkcol] (0,0.0) circle (0.07);
+    \fill[inkcol] (0.45,0.0) circle (0.07);
+    \fill[inkcol] (0.27,-0.48) circle (0.07);
+    \fill[inkcol] (0.63,-0.48) circle (0.07);
+  },
+  % two failure clusters grouped by signature
+  clusterpair/.pic={
+    \fill[rejred] (-0.38,0.1) circle (0.07);
+    \fill[rejred] (-0.52,-0.12) circle (0.07);
+    \fill[rejred] (-0.24,-0.14) circle (0.07);
+    \draw[rejred, dashed, line width=0.5pt] (-0.38,-0.04) ellipse (0.3 and 0.3);
+    \fill[valhd] (0.38,0.12) circle (0.07);
+    \fill[valhd] (0.24,-0.12) circle (0.07);
+    \fill[valhd] (0.52,-0.1) circle (0.07);
+    \draw[valhd, dashed, line width=0.5pt] (0.38,-0.02) ellipse (0.3 and 0.3);
+  },
+  % the fixed model acting as proposer; the H_t subtitle (a node placed in the
+  % panel, not here — nodes inside pics can drift off the pic's paths) marks
+  % the current harness it edits
+  proposercard/.pic={
+    \draw[rounded corners=2pt, fill=white, draw=black!40] (-0.45,-0.68) rectangle (0.45,0.55);
+    \fill[inkcol] (0,0.22) circle (0.11);
+    \fill[inkcol] (-0.2,-0.18) arc (180:0:0.2) -- cycle;
+    \path (0.45,0.55) pic[scale=1.3] {lockbadge};
+  },
+  % candidate-edit mark: same size as the acceptreject accept mark, which
+  % renders cleanly at figure scale (the tiny penbadge strokes do not)
+  checkbadge/.pic={
+    \fill[editgreen] (0,0) circle (0.16);
+    \draw[white, line width=1.1pt, line cap=round] (-0.08,0) -- (-0.02,-0.08) -- (0.1,0.1);
+  },
+  % Incumbent and combined candidate on the same held-out validation tasks.
+  splitcheck/.pic={
+    \draw[rounded corners=1.5pt, fill=white, draw=black!40] (-0.45,0.06) rectangle (0.45,0.62);
+    \draw[line width=0.5pt, black!40] (-0.3,0.44) -- (0.18,0.44);
+    \draw[line width=0.5pt, black!40] (-0.3,0.24) -- (0.28,0.24);
+    \draw[editgreen, line width=0.8pt, line cap=round] (0.2,0.4) -- (0.27,0.33) -- (0.4,0.5);
+    \draw[rounded corners=1.5pt, fill=white, draw=black!50] (-0.45,-0.62) rectangle (0.45,-0.06);
+    \draw[line width=0.5pt, black!40] (-0.3,-0.24) -- (0.18,-0.24);
+    \draw[line width=0.5pt, black!40] (-0.3,-0.44) -- (0.28,-0.44);
+    \draw[editgreen, line width=0.8pt, line cap=round] (0.2,-0.28) -- (0.27,-0.35) -- (0.4,-0.18);
+  },
+  % Verifier-pass counts and configured resource bands.
+  bandgauge/.pic={
+    \draw[black!45, line width=1.1pt] (-0.45,0) arc (180:0:0.45);
+    \draw[editgreen, line width=2pt] (-0.32,0.32) arc (135:45:0.45);
+    \draw[inkcol, line width=0.8pt] (0,0) -- (75:0.34);
+    \fill[inkcol] (0,0) circle (0.05);
+    \draw[black!45, line width=0.6pt] (-0.45,0) -- (0.45,0);
+  },
+  % promotion decision marks
+  acceptreject/.pic={
+    \fill[editgreen] (0,0.24) circle (0.16);
+    \draw[white, line width=1.1pt, line cap=round] (-0.08,0.24) -- (-0.02,0.16) -- (0.1,0.34);
+    \fill[rejred] (0,-0.24) circle (0.16);
+    \draw[white, line width=1.1pt, line cap=round] (-0.08,-0.16) -- (0.08,-0.32);
+    \draw[white, line width=1.1pt, line cap=round] (-0.08,-0.32) -- (0.08,-0.16);
+  },
+  % Surface-grid cells (S1-S9, reading order). Each cell is ONE node whose own
+  % border is the cell frame and whose text is the label — separate \draw
+  % rectangles + \node labels drift apart in this document (path-vs-node offset
+  % triggered by earlier nested pictures), and a single node cannot misalign
+  % with itself.
+  cellnode/.style={rounded corners=1pt, inner sep=0pt, minimum width=0.38cm,
+    minimum height=0.38cm, font=\sffamily\tiny, align=center},
+  cellplain/.style={cellnode, fill=white, draw=fixgrey, line width=0.5pt, text=black!50},
+  celledited/.style={cellnode, fill=editgreen!22, draw=editgreen, line width=0.9pt, text=editgreen},
+  cellnew/.style={cellnode, fill=editgreen, draw=editgreen, line width=0.9pt, text=white},
+}
+%
+\begin{figure}[tbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\sffamily\small, line width=0.7pt, inkcol,
+  >={Stealth[round,length=5pt]},
+  every node/.style={text=inkcol},
+  stage/.style={rounded corners=7pt, draw=black!30, line width=1pt, align=center,
+    inner sep=8pt, text width=64mm,
+    drop shadow={shadow xshift=0.4pt, shadow yshift=-0.7pt, opacity=0.22, fill=black!60}},
+  harnessbox/.style={rounded corners=7pt, draw=black!30, line width=1pt, align=center,
+    inner sep=8pt, text width=48mm,
+    drop shadow={shadow xshift=0.4pt, shadow yshift=-0.7pt, opacity=0.22, fill=black!60}},
+  flow/.style={->, black!55, line width=1.4pt},
+  flowlab/.style={font=\sffamily\scriptsize\itshape, text=black!55},
+]
+
+% ================= middle column: the three stages =================
+\node[stage, fill=envtint] (mine)
+  {{\cardhd\color{minehd} Weakness Mining}\\[4pt]
+   \begin{tikzpicture}[glyphrow]
+     \pic at (0,0) {taskcard};
+     \node at (0,-0.95) {run $\mathrm{H}_t$\\ mining data};
+     \draw[->, black!55] (0.6,0) -- (1.0,0);
+     \pic at (1.7,0) {calltree};
+     \node at (1.7,-0.95) {trace-based\\ diagnosis};
+     \draw[->, black!55] (2.45,0) -- (2.85,0);
+     \pic at (3.65,0) {clusterpair};
+     \node at (3.65,-0.95) {cluster\\ by $\phi$};
+   \end{tikzpicture}};
+
+\node[stage, fill=editfill, below=10mm of mine] (prop)
+  {{\cardhd\color{editgreen} Harness Proposal}\\[4pt]
+   \begin{tikzpicture}[glyphrow]
+     % stacked proposer inputs, each with its own arrow into the proposer card;
+     % arrows are anchored on the text nodes so they land at the right height
+     % (the two-line item's arrow starts at its vertical center)
+     \node[anchor=east, align=right, font=\sffamily\tiny] (inp1) at (0.35,0.52) {operation evidence};
+     \node[anchor=east, align=right, font=\sffamily\tiny] (inp2) at (0.35,0.1) {surface\\ capabilities};
+     \node[anchor=east, align=right, font=\sffamily\tiny] (inp3) at (0.35,-0.32) {prior edits};
+     \foreach \n in {inp1,inp2,inp3}{
+       \draw[->, black!55] ([xshift=2pt]\n.east) -- ([xshift=17pt]\n.east);}
+     \pic at (1.55,0.1) {proposercard};
+     \node[font=\tiny, text=black!55] at (1.55,-0.27) {$\mathrm{H}_t$};
+     \node at (1.55,-0.8) {proposer\\(fixed model)};
+     % same S1-S9 grid as the harness boxes; its middle row sits at the proposer
+     % card's vertical center (0.035), and the arrow is anchored on the middle-
+     % row cell so all three land on one line
+     \foreach \j [count=\r from 0] in {2,1,0}{
+       \foreach \i in {0,1,2}{
+         \pgfmathtruncatemacro{\slab}{\r*3+\i+1}
+         \ifnum\slab=4 \tikzset{c/.style=celledited}\else
+         \ifnum\slab=8 \tikzset{c/.style=celledited}\else
+           \tikzset{c/.style=cellplain}\fi\fi
+         \node[c] (propcell\slab) at ({3.1+\i*0.46},{\j*0.46-0.15}) {S\slab};}}
+     \draw[->, black!55] ([xshift=-20pt]propcell4.west) -- ([xshift=-9pt]propcell4.west);
+     \path (propcell4.north east) pic {checkbadge};
+     \node[cellplain] (propcell10) at ({3.1+1*0.46},{-1*0.46-0.15}) {S10};
+     \node at (3.56,-1.05) {at most one edit\\ per surface};
+   \end{tikzpicture}};
+
+\node[stage, fill=subtint, below=10mm of prop] (val)
+  {{\cardhd\color{valhd} Proposal Validation}\\[4pt]
+   \begin{tikzpicture}[glyphrow]
+     \pic at (0,0) {splitcheck};
+     \node at (0,-1.05) {paired runs\\ held-out only};
+     \draw[->, black!55] (0.65,0) -- (1.05,0);
+     \pic at (1.8,-0.15) {bandgauge};
+     \node at (1.8,-1.05) {pass counts +\\ resource bands};
+     \draw[->, black!55] (2.55,0) -- (2.95,0);
+     \pic at (3.5,0) {acceptreject};
+     \node at (3.5,-1.05) {promote /\\ reject batch};
+   \end{tikzpicture}};
+
+% ================= side columns: current and updated harness =================
+\node[harnessbox, fill=fixfill, left=8mm of prop] (cur)
+  {{\cardhd Current RLM Harness $\mathrm{H}_t$~\tikz[baseline=-2pt, scale=0.8,
+     sharp corners]{% sharp corners: the box node's rounded corners=7pt leaks
+     % into this inline picture and would distort the small glyph paths
+     \fill[inkcol] (0,0.22) circle (0.11);
+     \fill[inkcol] (-0.2,-0.18) arc (180:0:0.2) -- cycle;}}\\[4pt]
+   \begin{tikzpicture}[glyphrow]
+     % all placement via node anchors: raw-coordinate paths drift relative to
+     % nodes in this document, but paths anchored on node coordinates land true
+     \node[rounded corners=2pt, draw=fixgrey, dashed, line width=0.7pt, fill=white,
+       minimum width=1.06cm, minimum height=1.0cm, align=center] (mc) at (0,0) {fixed\\ model};
+     \path (mc.north east) pic[scale=1.3] {lockbadge};
+     \foreach \j [count=\r from 0] in {2,1,0}{
+       \foreach \i in {0,1,2}{
+         \pgfmathtruncatemacro{\slab}{\r*3+\i+1}
+         \ifnum\slab=2 \tikzset{c/.style=celledited}\else
+         \ifnum\slab=6 \tikzset{c/.style=celledited}\else
+           \tikzset{c/.style=cellplain}\fi\fi
+         \node[c] (curcell\slab) at ({1.62+\i*0.46},{\j*0.46-0.46}) {S\slab};}}
+     % + drawn as path strokes anchored on node coordinates (a text node here
+     % drifts off the true midpoint)
+     \coordinate (plusmid) at ($(mc.east)!0.5!(curcell4.west)$);
+     \draw[black!55, line width=1.1pt, line cap=round]
+       ($(plusmid)+(-0.12,0)$) -- ($(plusmid)+(0.12,0)$);
+     \draw[black!55, line width=1.1pt, line cap=round]
+       ($(plusmid)+(0,-0.12)$) -- ($(plusmid)+(0,0.12)$);
+     \node[cellplain] (curcell10) at ({1.62+1*0.46},{-1*0.46-0.46}) {S10};
+     \node[anchor=north] (eslab) at ([yshift=-4.5pt]curcell10.south) {Editable Surfaces};
+     \node[anchor=north, font=\sffamily\tiny, text=black!55] at ([yshift=-1pt]eslab.south) {green: prev. edited};
+   \end{tikzpicture}};
+
+\node[harnessbox, fill=editfill, right=8mm of prop] (new)
+  {{\cardhd Updated RLM Harness $\mathrm{H}_{t+1}$~\tikz[baseline=-2pt, scale=0.8,
+     sharp corners]{% sharp corners: see the current-harness title note
+     \fill[inkcol] (0,0.22) circle (0.11);
+     \fill[inkcol] (-0.2,-0.18) arc (180:0:0.2) -- cycle;}}\\[4pt]
+   \begin{tikzpicture}[glyphrow]
+     \node[rounded corners=2pt, draw=fixgrey, dashed, line width=0.7pt, fill=white,
+       minimum width=1.06cm, minimum height=1.0cm, align=center] (mcn) at (0,0) {fixed\\ model};
+     \path (mcn.north east) pic[scale=1.3] {lockbadge};
+     \foreach \j [count=\r from 0] in {2,1,0}{
+       \foreach \i in {0,1,2}{
+         \pgfmathtruncatemacro{\slab}{\r*3+\i+1}
+         \ifnum\slab=2 \tikzset{c/.style=celledited}\else
+         \ifnum\slab=4 \tikzset{c/.style=cellnew}\else
+         \ifnum\slab=8 \tikzset{c/.style=cellnew}\else
+         \ifnum\slab=6 \tikzset{c/.style=celledited}\else
+           \tikzset{c/.style=cellplain}\fi\fi\fi\fi
+         \node[c] (newcell\slab) at ({1.62+\i*0.46},{\j*0.46-0.46}) {S\slab};}}
+     \coordinate (plusmidn) at ($(mcn.east)!0.5!(newcell4.west)$);
+     \draw[black!55, line width=1.1pt, line cap=round]
+       ($(plusmidn)+(-0.12,0)$) -- ($(plusmidn)+(0.12,0)$);
+     \draw[black!55, line width=1.1pt, line cap=round]
+       ($(plusmidn)+(0,-0.12)$) -- ($(plusmidn)+(0,0.12)$);
+     \node[cellplain] (newcell10) at ({1.62+1*0.46},{-1*0.46-0.46}) {S10};
+   \end{tikzpicture}\\[4pt]
+   {\cardsb joint update at \sid{S4} and \sid{S8}}};
+
+% ================= loop arrows =================
+% current harness up into weakness mining
+\draw[flow] (cur.north) |- node[flowlab, pos=0.72, above]{run on tasks} (mine.west);
+% mining -> proposal -> validation
+\draw[flow] (mine.south) -- node[flowlab, right=1mm]{failure patterns} (prop.north);
+\draw[flow] (prop.south) -- node[flowlab, right=1mm, align=left]{admit + compose\\ one candidate} (val.north);
+% all rejected: back to the same harness
+\draw[flow, rejred] (val.west) -| node[flowlab, text=rejred, pos=0.28, below]{no promotion --- keep $\mathrm{H}_t$} (cur.south);
+% Promotion adopts the already composed and measured candidate.
+\draw[flow, editgreen] (val.east) -| node[flowlab, text=editgreen, pos=0.28, below]{promote measured batch} (new.south);
+% updated harness starts the next round
+\draw[flow, dashed] (new.north) -- ++(0,12.5mm) node[flowlab, above=0.5mm, align=center]{next round\\ ($\mathrm{H}_{t+1}$ becomes current)};
+
+\end{tikzpicture}}
+\caption{One \sh{} round. Final-answer outcomes and selected execution operations
+support model-inferred diagnoses. The proposer selects interventions and supplies
+edits on distinct surfaces. Admitted edits are composed \emph{before} comparing
+one candidate with a fresh incumbent on the same held-out validation tasks.
+The current gate permits ties in verifier-pass count within resource bands;
+the whole batch is promoted or rejected. Validation summaries inform later
+history, but validation traces are not mined. An empty or skipped batch schedules
+no validation. Side grids illustrate prior edits and two jointly promoted edits;
+they are not individual efficacy measurements. Weights and evaluator stay fixed.}
+\label{fig:sh-loop}
+\end{figure}

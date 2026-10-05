@@ -10,6 +10,7 @@ import openai
 from dotenv import load_dotenv
 
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import capture_response
 from rlm.core.types import ModelUsageSummary, UsageSummary
 from rlm.utils.exceptions import TokenLimitExceededError
 
@@ -297,6 +298,13 @@ class OpenAIClient(BaseLM):
                 )
                 time.sleep(_rate_limit_backoff_seconds(rate_limit_attempt))
                 continue
+            capture_response(
+                response,
+                provider=type(self).__name__,
+                model=model,
+                account_usage=lambda response=response: self._track_cost(response, model),
+                extra_reasoning=lambda response=response: self.observation_reasoning(response),
+            )
             deficiency = _response_deficiency(response)
             if deficiency is None:
                 empty_reason = self._empty_content_retry_reason(response)
@@ -394,6 +402,13 @@ class OpenAIClient(BaseLM):
                 )
                 await asyncio.sleep(_rate_limit_backoff_seconds(rate_limit_attempt))
                 continue
+            capture_response(
+                response,
+                provider=type(self).__name__,
+                model=model,
+                account_usage=lambda response=response: self._track_cost(response, model),
+                extra_reasoning=lambda response=response: self.observation_reasoning(response),
+            )
             deficiency = _response_deficiency(response)
             if deficiency is None:
                 empty_reason = self._empty_content_retry_reason(response)
@@ -439,6 +454,10 @@ class OpenAIClient(BaseLM):
         ``AzureFoundryClient``); everything else returns the text unchanged.
         """
         return content
+
+    def observation_reasoning(self, response: Any) -> dict[str, Any]:
+        """Additional reasoning recognized by a provider's content protocol."""
+        return {}
 
     def _empty_content_retry_reason(self, response: Any) -> str | None:
         """Why this 200 response should be retried for an empty body, or None.

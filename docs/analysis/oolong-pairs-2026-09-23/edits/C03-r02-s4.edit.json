@@ -1,0 +1,4 @@
+{
+  "kind": "text",
+  "new_text": "After merging results from all child calls, verify that every item from the original data is represented in the merged result. For user-pair tasks: check that the set of users with labels equals the set of all users in the parsed data. If there is a mismatch, print the missing user IDs, identify which chunk(s) should have covered them, and re-run those chunks with corrected prompts. Do not proceed to compute the final answer until coverage is complete."
+}

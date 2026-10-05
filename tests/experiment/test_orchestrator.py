@@ -99,7 +99,7 @@ from shrlm.optimization.promotion import DECISION_PROMOTED, MERGED_SUBJECT_ID
 from shrlm.optimization.proposal import _import_candidate_function
 from shrlm.optimization.validation import SPLIT_HELDOUT, load_promotion_ledger
 from shrlm.rlm_harness import H0, H0_STAR
-from tests.mock_lm import MockLM
+from tests.mock_lm import MockLM as BaseMockLM
 from tests.optimization.run_worker_support import (
     RUN_SCRIPTED_FACTORY,
     observed_peak_concurrency,
@@ -344,28 +344,64 @@ LOADERS: dict[str, LoaderFn] = {
 }
 
 
-def attribution(mechanism: str) -> str:
-    """A canned attributor response (ungrounded variant: failing_level required)."""
-    return (
-        "```json\n"
-        + json.dumps(
-            {
-                "causal_status": "causal",
-                "agent_mechanism": mechanism,
-                "failing_level": "root",
-                "evidence_node_ids": ["r"],
-                "symptom_summary": "the model answered without verifying",
-                "operation_evidence": [
-                    {"node_id": "r", "observation": "The root submitted the produced answer."}
-                ],
-                "verification_limits": "Intermediate results were not semantically verified.",
-            }
+def reference_batch(response, prompt):
+    """Scripted proposer copies actual host-owned operation refs from its prompt."""
+    from shrlm.optimization.proposal_evidence import EVIDENCE_HEADING
+
+    if not isinstance(prompt, list) or EVIDENCE_HEADING not in prompt[0]["content"]:
+        return response
+    try:
+        batch = json.loads(response)
+    except ValueError:
+        return response
+    if not isinstance(batch, dict) or batch.get("format") != "proposal-selection/v2":
+        return response
+    section, _ = json.JSONDecoder().raw_decode(prompt[0]["content"].split(EVIDENCE_HEADING, 1)[1])
+    inventory = {row["index"]: row for row in section["inventory"]}
+    for selection in batch["selections"]:
+        selection["evidence_refs"] = inventory.get(selection["pattern_index"], {}).get(
+            "admitted_refs", []
         )
-        + "\n```"
-    )
+    return json.dumps(batch)
 
 
-def proposer_batch(*edits: tuple[int, str], surfaces: tuple[str, ...] = ("S4",)) -> str:
+class MockLM(BaseMockLM):
+    def completion(self, prompt):
+        return reference_batch(super().completion(prompt), prompt)
+
+
+def attribution(mechanism: str) -> str:
+    """A canned live response for orchestration tests, not a semantic judge."""
+    payload: dict[str, Any] = {
+        "causal_status": "causal",
+        "agent_mechanism": mechanism,
+        "failing_level": "root",
+        "evidence_node_ids": ["r"],
+        "symptom_summary": "the model answered without verifying",
+        "operation_evidence": [
+            {
+                "node_id": "r",
+                "iteration_index": 1,
+                "code_block_index": 0,
+                "observation": "The root submitted the produced answer.",
+            }
+        ],
+        "verification_limits": "Intermediate results were not semantically verified.",
+    }
+    if mechanism == "incomplete_coverage":
+        payload["operation_evidence"][0].update(iteration_index=1, code_block_index=0)
+        payload["coverage_basis"] = {
+            "status": "observed_loss",
+            "input_scope": "The original context supplied to the scripted root run.",
+            "loss_observation": "r iteration 1 code[0] only assigns the answer; none of the original context is processed.",
+            "counterevidence": "No later input processing occurs in this one-operation fixture.",
+        }
+    return "```json\n" + json.dumps(payload) + "\n```"
+
+
+def proposer_batch(
+    *edits: tuple[int, str], surfaces: tuple[str, ...] = ("S4",), revision: bool = False
+) -> str:
     """A canned proposer response: one full-replacement text edit per pattern."""
     items = [
         {
@@ -377,6 +413,13 @@ def proposer_batch(*edits: tuple[int, str], surfaces: tuple[str, ...] = ("S4",))
             "observed_failure": "Does not cross-check the computed result.",
             "behavioral_change": "Recompute the result before submitting.",
             "regression_risks": ["one extra turn per run"],
+            "revision": {
+                "round": 1,
+                "subject_id": "r01-c01-s4",
+                "explanation": "Recompute with an independent method at the unresolved comparison operation.",
+            }
+            if revision
+            else None,
         }
         for index, new_text in edits
     ]
@@ -386,22 +429,23 @@ def proposer_batch(*edits: tuple[int, str], surfaces: tuple[str, ...] = ("S4",))
 def selected_batch(items: list[dict]) -> str:
     return json.dumps(
         {
-            "format": "proposal-selection/v1",
+            "format": "proposal-selection/v2",
             "selections": [
                 {
                     "pattern_index": item["pattern_index"],
                     "surface": item["surface"],
                     "reason": "The cited operation lacks this check.",
+                    "evidence_refs": [],
                 }
                 for item in items
             ],
-            "candidates": items,
+            "candidates": [{"revision": None, **item} for item in items],
         }
     )
 
 
 TEXT_ROUND_1 = "Verify every claim against the stored evidence before answering. [r1]"
-TEXT_ROUND_2 = "Verify every claim against the stored evidence before answering. [r2]"
+TEXT_ROUND_2 = "Recompute the result with an independent method before submitting. [r2]"
 MERGE_TEXT = "Cover every input chunk and verify before answering. [merge]"
 
 # Script arithmetic at the template's scale (n_in=2, n_ho=2, m=1, v=1):
@@ -478,7 +522,7 @@ class TestFullExperiment:
         proposer = MockLM(
             responses=[
                 proposer_batch((0, TEXT_ROUND_1)),
-                proposer_batch((0, TEXT_ROUND_2)),
+                proposer_batch((0, TEXT_ROUND_2), revision=True),
             ]
         )
         return run(config, out, attributor, proposer), factory
@@ -571,17 +615,17 @@ class TestPatience:
         factory = patch_runner(
             monkeypatch,
             MINING_FAIL
-            + SUBJECT_FAIL
-            + SUBJECT_FAIL  # round 1: candidate no better
+            + SUBJECT_PASS
+            + SUBJECT_FAIL  # round 1: candidate regresses
             + MINING_FAIL_V2
-            + SUBJECT_FAIL
+            + SUBJECT_PASS
             + SUBJECT_FAIL,  # round 2: same
         )
         attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
         proposer = MockLM(
             responses=[
                 proposer_batch((0, TEXT_ROUND_1)),
-                proposer_batch((0, TEXT_ROUND_2)),
+                proposer_batch((0, TEXT_ROUND_2), revision=True),
             ]
         )
         result = run(config, out, attributor, proposer)
@@ -600,7 +644,7 @@ class TestInitialHarness:
         config = make_config(tmp_path, t=2, patience=1, initial_harness="H0*")
         assert config.loop.initial_harness == "H0*"
         out = tmp_path / "exp"
-        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_FAIL)
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_PASS + SUBJECT_FAIL)
         attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
         result = run(config, out, attributor, proposer)
@@ -1408,7 +1452,10 @@ def complete_two_promoted_rounds(config, out: Path, monkeypatch) -> Any:
     )
     attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
     proposer = MockLM(
-        responses=[proposer_batch((0, TEXT_ROUND_1)), proposer_batch((0, TEXT_ROUND_2))]
+        responses=[
+            proposer_batch((0, TEXT_ROUND_1)),
+            proposer_batch((0, TEXT_ROUND_2), revision=True),
+        ]
     )
     return run(config, out, attributor, proposer)
 
@@ -1694,7 +1741,10 @@ class TestCrossRoundHistory:
         )
         attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
         proposer = MockLM(
-            responses=[proposer_batch((0, TEXT_ROUND_1)), proposer_batch((0, TEXT_ROUND_2))]
+            responses=[
+                proposer_batch((0, TEXT_ROUND_1)),
+                proposer_batch((0, TEXT_ROUND_2), revision=True),
+            ]
         )
         result = run(config, out, attributor, proposer)
 
@@ -1816,6 +1866,32 @@ class TestRoundHistoryLoader:
         assert records == []
         assert (decision["round"], decision["promoted"]) == (4, False)
 
+    def test_collision_owner_resolves_only_to_a_persisted_candidate(self, tmp_path):
+        for saved in (False, True):
+            round_path = tmp_path / str(saved)
+            owner = {"position": 1, "pattern_index": 0, "surface": "S4"}
+            self.write_round(
+                round_path,
+                2,
+                proposals={"r02-c01-s4": {"surface": "S4"}} if saved else None,
+                marker_extra={
+                    "preflight_failures": [
+                        {
+                            "pattern_index": 1,
+                            "surface": "S4",
+                            "gate": "occupancy",
+                            "reason": "already occupied",
+                            "owner": owner,
+                        }
+                    ]
+                },
+            )
+            records, _ = orchestrator_module.load_round_history(round_path, 2, has_ledger=False)
+            observed = records[0]["owner"]
+            assert observed == (
+                {**owner, "round": 2, "subject_id": "r02-c01-s4"} if saved else owner
+            )
+
     def test_ledger_records_and_marker_failures_merge_for_a_partial_batch(self, tmp_path):
         round_path = experiment_round_dir(tmp_path, 2)
         failure = {
@@ -1823,6 +1899,12 @@ class TestRoundHistoryLoader:
             "surface": "S6",
             "reason": "declared surface S6 but the materialized harness changes no surface",
             "predicted_effect": "fewer wasted iterations",
+            "behavior": {
+                "mechanism": "iteration_budget_exhaustion",
+                "behavioral_change": "Retry the same prompt after a syntax error.",
+                "incumbent_hash": "saved-incumbent",
+                "revision": None,
+            },
         }
         self.write_round(
             round_path,
@@ -1857,6 +1939,9 @@ class TestRoundHistoryLoader:
         assert refused["surface"] == "S6"
         assert refused["reasons"] == [failure["reason"]]
         assert refused["predicted_effect"] == "fewer wasted iterations"
+        assert refused["mechanism"] == "iteration_budget_exhaustion"
+        assert refused["behavioral_change"] == failure["behavior"]["behavioral_change"]
+        assert "effective_edit_fingerprint" not in refused
 
 
 # ---------------------------------------------------------------------------
@@ -1879,7 +1964,11 @@ CLOCK_KEYS = frozenset(
 def scrub_clock(payload: Any) -> Any:
     """A JSON payload with every clock-derived value removed, recursively."""
     if isinstance(payload, dict):
-        return {key: scrub_clock(value) for key, value in payload.items() if key not in CLOCK_KEYS}
+        return {
+            key: scrub_clock(value)
+            for key, value in payload.items()
+            if key not in CLOCK_KEYS | {"llm_observations", "observations"}
+        }
     if isinstance(payload, list):
         return [scrub_clock(item) for item in payload]
     return payload
@@ -1904,12 +1993,23 @@ def persisted_tree(out: Path) -> dict[str, Any]:
         rel = path.relative_to(out).as_posix()
         if rel.startswith(f"{ANALYSIS_DIR}/") or "__pycache__" in rel:
             continue
+        if "/llm_calls/" in rel or ".llm_calls/" in rel:
+            continue  # Unique call IDs are observational; integrity is tested separately.
         if f"/{TRACES_DIR}/" in rel:
             tree[rel] = "<trace>"
         elif rel.endswith(".jsonl"):
             tree[rel] = [
                 scrub_clock(json.loads(line)) for line in path.read_text().splitlines() if line
             ]
+        elif rel.endswith("/proposal_result.json"):
+            from shrlm.harness_identity import canonical_json
+            from shrlm.optimization.proposal import prompt_sha256
+
+            payload = json.loads(path.read_text())
+            assert payload["sha256"] == prompt_sha256(canonical_json(payload["result"]))
+            tree[rel] = scrub_clock(
+                {key: value for key, value in payload.items() if key != "sha256"}
+            )
         elif rel.endswith(".json"):
             tree[rel] = scrub_clock(json.loads(path.read_text()))
         else:
@@ -2186,7 +2286,7 @@ class TestPostRoundAnalysisOnResume:
 
         patch_runner(monkeypatch, MINING_FAIL_V2 + SUBJECT_FAIL + SUBJECT_PASS)
         resumed_attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
-        resumed_proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_2))])
+        resumed_proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_2), revision=True)])
         result = run(config, out, resumed_attributor, resumed_proposer)
 
         assert [outcome.promoted for outcome in result.rounds] == [True, True]
@@ -2242,6 +2342,9 @@ class _FakeCompletion:
         self.response = response
         self.usage_summary = _FakeUsageSummary()
 
+    def to_dict(self) -> dict[str, Any]:
+        return {"response": self.response}
+
 
 class _FakeOutcome:
     def __init__(self, completion: _FakeCompletion, verdict: Any) -> None:
@@ -2251,7 +2354,13 @@ class _FakeOutcome:
 
 
 def _fake_real_execute_run(
-    harnessed: Any, instance: dict[str, Any], *, model_name: str, verifier: Any = None
+    harnessed: Any,
+    instance: dict[str, Any],
+    *,
+    model_name: str,
+    verifier: Any = None,
+    trace_path: Path | None = None,
+    observation_owner: dict[str, Any] | None = None,
 ) -> _FakeOutcome:
     response = "FINAL: 2"  # matches the fake loader's answer_raw "[2]"
     completion = _FakeCompletion(response)
@@ -2559,7 +2668,7 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
                     "regression_risks": ["branch error"],
                 }
             )
-            return selected_batch(items)
+            return reference_batch(selected_batch(items), prompt)
 
     proposer = RepairProposer()
     factory = patch_runner(
@@ -2589,7 +2698,7 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
     assert not (validation / "r01-c01-s2").exists()
     history_prompt = proposer.prompts[2][0]["content"]
     assert "the model answered without verifying" in history_prompt
-    assert "mean_f1_all_attempts" in history_prompt and "n_runtime_errors" in history_prompt
+    assert "definition_ref" in history_prompt and "n_unknown" in history_prompt
     assert "AnswerDecision.accept() missing" in history_prompt
     assert "Preserve record identity and coverage" in history_prompt
     assert "Preserve valid answers" in history_prompt

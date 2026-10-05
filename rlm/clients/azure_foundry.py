@@ -442,6 +442,20 @@ class AzureFoundryClient(OpenAIClient):
             return f"stripped-empty finish_reason={getattr(choice, 'finish_reason', None)!r}"
         return None
 
+    def observation_reasoning(self, response: Any) -> dict[str, Any]:
+        choices = getattr(response, "choices", None)
+        content = (
+            getattr(getattr(choices[0], "message", None), "content", None) if choices else None
+        )
+        if not isinstance(content, str):
+            return {}
+        blocks = [
+            {"type": "text", "channel": match.group("name").strip(), "text": match.group("body")}
+            for match in _HARMONY_CHANNEL_RE.finditer(content)
+            if match.group("name").strip() in ("analysis", "commentary")
+        ]
+        return {"inline_blocks": blocks} if blocks else {}
+
     def _normalize_content(self, content: str) -> str:
         """Kimi tool-call translation first, then harmony marker stripping, so
         a ``final`` channel wrapping a leaked tool call still yields the fenced

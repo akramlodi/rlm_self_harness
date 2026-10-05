@@ -103,6 +103,7 @@ class TestVerdict:
 def test_legacy_attribution_detail_and_operation_round_trip():
     legacy = AttributionDetail("missing result", ["r"])
     assert "operation_evidence" not in legacy.to_dict()
+    assert "coverage_basis" not in legacy.to_dict()
     assert AttributionDetail(**legacy.to_dict()) == legacy
     legacy.operation_evidence = [OperationEvidence("r", "Merge discarded a return.", 2, 0)]
     legacy.verification_limits = "Labels were not verified."

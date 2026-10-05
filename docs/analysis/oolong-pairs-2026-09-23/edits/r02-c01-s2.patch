@@ -1,0 +1,13 @@
+--- round_02_incumbent/S2_decomposition_instruction
++++ r02-c01-s2/S2_decomposition_instruction
+@@ -43,3 +43,10 @@
+ Then decide the answer from `totals` in Python and print it before setting
+ `answer["ready"] = True`. If a child's result does not parse, print it, fix the
+ prompt, and re-run that chunk - do not fall back to counting by eye.
++
++**Coverage check after merging**: After merging results from all chunks, verify
++that every input item is represented. For example, if the input is a list of
++records keyed by user ID, check that the number of distinct users in the merged
++result equals the number of distinct users in the original data. If there is a
++mismatch, print the missing IDs, identify which chunks should have covered them,
++and re-run those chunks with corrected prompts before proceeding.

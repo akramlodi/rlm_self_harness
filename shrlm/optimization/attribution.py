@@ -14,16 +14,17 @@ validates is recorded as unattributed rather than coerced to OTHER.
 
 import hashlib
 import json
-import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from rlm.clients.base_lm import BaseLM
+from rlm.core.llm_observation import ObservationPersistenceError, observation_refs, observe_call
 from rlm.utils.exceptions import TokenLimitExceededError
 from shrlm.optimization.digest import TraceDigest
 from shrlm.optimization.grounding import GroundingResult
+from shrlm.optimization.response_cache import ResponseCache
 from shrlm.optimization.taxonomy import (
     TAXONOMY_VERSION,
     AgentMechanism,
@@ -41,13 +42,13 @@ from shrlm.optimization.types import (
     iter_nodes,
 )
 
-PROMPT_VERSION = "1.3.0"
+PROMPT_VERSION = "1.6.0"
 
 # Version of the validation logic in this module (validate, parse_enum,
 # extract_json_block). The validator's rejection text seeds re-asks, so a
 # change to it changes what later attempts are asked -- folding this into
 # config_sha256 keeps a validator change from replaying stale cached responses.
-VALIDATOR_VERSION = "1.1.0"
+VALIDATOR_VERSION = "1.2.0"
 
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_TRANSPORT_RETRIES = 3
@@ -80,7 +81,13 @@ def truncate_for_prompt(text: str, limit: int = PROMPT_RENDER_MAX_CHARS) -> str:
 # allowlist of retryable exception names would be brittle; this small denylist
 # of definitely-deterministic types is the safer cut: everything else is
 # treated as plausibly transient and retried.
-NON_TRANSPORT_ERRORS = (TypeError, AttributeError, KeyError, ValueError)
+NON_TRANSPORT_ERRORS = (
+    TypeError,
+    AttributeError,
+    KeyError,
+    ValueError,
+    ObservationPersistenceError,
+)
 
 
 def _is_content_filter_error(exc: Exception) -> bool:
@@ -116,36 +123,38 @@ Choose exactly one value from each vocabulary below. Use the literal string \
 value. If nothing fits, choose the "other"/"unattributed" member and explain \
 in the corresponding detail field -- do not stretch a member that does not fit.
 
-Separate these possibilities: records skipped, labels wrong or uncertain, and \
-predicate/aggregation wrong. Missing output elements alone do not prove missing \
-input coverage. Cite the operation that supports the mechanism: a skipped input \
-slice, parsing loss, ID coverage check, merge, or predicate. State the covered \
-universe (original input versus parsed records). Complete IDs and valid JSON do \
-not establish correct labels. Do not assert child correctness unless a check \
-actually verifies that claim; failing-level grounding alone is not such a check.
-Use other for a semantic mechanism outside the vocabulary. If the relevant \
-operation is not visible, state the limitation and use correlated or unattributed \
-rather than asserting a causal mechanism. Evidence citations resolve locations; \
-they do not independently prove causality.
+In operation_evidence, describe the visible action and result before assigning a
+cause. In symptom_summary, describe what remains wrong after visible later checks
+or corrections. In verification_limits, state what is unverified or contradicted
+by that later evidence. Missing context does not establish that an action never
+occurred. Set causal_status from the support these observations provide; use
+correlated or unattributed when they do not establish the cause. Citations locate
+evidence; they do not prove causality, and failing-level grounding does not verify
+intermediate correctness. A failed outcome alone does not identify which
+intermediate operation was wrong. Complete containers do not establish correct
+values. Use other for a supported mechanism outside the vocabulary.
+
+For incomplete_coverage, also supply coverage_basis with exactly four fields:
+status (observed_loss, not_established, or contradicted), input_scope,
+loss_observation, and counterevidence. Each explanatory string is at most 500
+characters. Identify the original input universe; coverage of an already filtered
+subset does not establish original-input coverage. observed_loss needs a concrete
+missing input unit/range or a shortfall against the SAME input scope, citing the
+operation_evidence locations. Missing answer elements and an absent coverage
+check are not loss observations. Describe visible completed processing or recovery
+in counterevidence, or say that none is visible. For not_established or contradicted,
+leave loss_observation empty and explain the uncertainty/counterevidence. These
+honest assessments are accepted as unestablished hypotheses, without a re-ask.
+Complete input coverage does not establish correct classifications or predicates.
+Omit coverage_basis for other mechanisms.
 
 {taxonomy}
 {failing_level}
 
-Respond with a single fenced JSON block and nothing else:
-
-```json
-{{
-  "causal_status": "<value>",
-  "agent_mechanism": "<value>",
-  "causal_status_detail": "<free text, required only for unattributed>",
-  "agent_mechanism_detail": "<free text, required only for other>",{failing_level_field}
-  "evidence_node_ids": ["<node_id from the sub-call table>"],
-  "operation_evidence": [{{"node_id": "r", "iteration_index": 1, \
-"code_block_index": 0, "observation": "<observed operation, at most 500 characters>"}}],
-  "verification_limits": "<what remains unverified, at most 500 characters>",
-  "symptom_summary": "<one sentence describing the observed behavior>"
-}}
-```
+Respond with one fenced JSON block. The following independent examples illustrate
+observed loss, uncertainty, and a noncoverage diagnosis for hypothetical traces.
+Use only coordinates and observations from the actual run; do not copy example facts.
+{response_examples}
 
 {evidence_instruction}
 Supply at most four operation_evidence entries. Coordinates are the displayed \
@@ -155,7 +164,59 @@ An empty operation_evidence list requires explicit verification_limits and \
 correlated/unattributed causal status. Never invent observations or coordinates.
 """
 
-FAILING_LEVEL_FIELD = '\n  "failing_level": "<value>",'
+
+def response_examples(grounded: bool) -> str:
+    common = {
+        "evidence_node_ids": [],
+        "verification_limits": "Intermediate classifications were not independently verified.",
+        **({} if grounded else {"failing_level": "undetermined"}),
+    }
+    observed = {
+        **common,
+        "causal_status": "causal",
+        "agent_mechanism": "incomplete_coverage",
+        "operation_evidence": [
+            {
+                "node_id": "r",
+                "iteration_index": 1,
+                "code_block_index": 0,
+                "observation": "range(9) processes only nine of ten original pages.",
+            }
+        ],
+        "symptom_summary": "The loop skips the last original page.",
+        "coverage_basis": {
+            "status": "observed_loss",
+            "input_scope": "Original pages 0 through 9",
+            "loss_observation": "r iteration 1 code[0] omits page 9.",
+            "counterevidence": "No later processing of page 9 is visible.",
+        },
+    }
+    uncertain = {
+        **common,
+        "causal_status": "unattributed",
+        "agent_mechanism": "incomplete_coverage",
+        "operation_evidence": [],
+        "symptom_summary": "The answer is incomplete; the input processing is not visible.",
+        "coverage_basis": {
+            "status": "not_established",
+            "input_scope": "The original set of pages is unverified.",
+            "loss_observation": "",
+            "counterevidence": "No visible operation establishes skipped input; answer errors alone do not.",
+        },
+    }
+    other = {
+        **common,
+        "causal_status": "unattributed",
+        "agent_mechanism": "other",
+        "causal_status_detail": "The latest available state does not establish the cause.",
+        "agent_mechanism_detail": "Wrong-but-valid classifications remain possible.",
+        "operation_evidence": [],
+        "symptom_summary": "A wrong result remains despite reported coverage checks.",
+    }
+    return "\n\n".join(
+        "```json\n" + json.dumps(row, indent=2) + "\n```" for row in (observed, uncertain, other)
+    )
+
 
 # The evidence-citation demand depends on what the digest could show. A
 # per-call sub-call table names every node id, so citations from it are
@@ -250,15 +311,20 @@ class AttributionAttempt:
     raw_response: str
     accepted: bool
     violation: str = ""
+    llm_observations: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "attempt": self.attempt,
             "cached": self.cached,
             "raw_response": self.raw_response,
             "accepted": self.accepted,
             "violation": self.violation,
         }
+
+        if self.llm_observations is not None:
+            result["llm_observations"] = self.llm_observations
+        return result
 
 
 @dataclass
@@ -299,38 +365,8 @@ class AttributorConfig:
             )
 
 
-@dataclass
-class AttributionCache:
-    """
-    Persistent map from (prompt, digest, config) to the raw model response.
-
-    Temperature zero against a hosted API is not determinism. This is what
-    actually makes a mining round reproducible: a re-run with unchanged inputs
-    replays byte-identical responses and costs nothing.
-    """
-
-    path: str | None = None
-    entries: dict[str, str] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.path and os.path.exists(self.path):
-            with open(self.path) as handle:
-                for line in handle:
-                    line = line.strip()
-                    if line:
-                        entry = json.loads(line)
-                        self.entries[entry["key"]] = entry["response"]
-
-    def get(self, key: str) -> str | None:
-        return self.entries.get(key)
-
-    def put(self, key: str, response: str) -> None:
-        self.entries[key] = response
-        if self.path:
-            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-            with open(self.path, "a") as handle:
-                json.dump({"key": key, "response": response}, handle)
-                handle.write("\n")
+class AttributionCache(ResponseCache):
+    """Persistent text and observation cache; existing response keys stay unchanged."""
 
 
 def extract_json_block(text: str) -> dict[str, Any]:
@@ -407,7 +443,7 @@ class LLMAttributor:
         return ATTRIBUTOR_SYSTEM_PROMPT.format(
             taxonomy=render_taxonomy_block(),
             failing_level="" if grounded else "\n" + render_failing_level_block(),
-            failing_level_field="" if grounded else FAILING_LEVEL_FIELD,
+            response_examples=response_examples(grounded),
             evidence_instruction=(
                 EVIDENCE_INSTRUCTION_NO_SUBCALLS
                 if no_subcalls
@@ -513,6 +549,37 @@ class LLMAttributor:
         agent_mechanism = parse_enum(
             payload.get("agent_mechanism"), AgentMechanism, "agent_mechanism"
         )
+        coverage_basis = None
+        if agent_mechanism is AgentMechanism.INCOMPLETE_COVERAGE:
+            basis = payload.get("coverage_basis")
+            if not isinstance(basis, dict) or set(basis) != {
+                "status",
+                "input_scope",
+                "loss_observation",
+                "counterevidence",
+            }:
+                raise AttributionRejection("incomplete_coverage requires a complete coverage_basis")
+            if basis["status"] not in ("observed_loss", "not_established", "contradicted"):
+                raise AttributionRejection("coverage_basis status is not recognized")
+            for key in ("input_scope", "loss_observation", "counterevidence"):
+                if not isinstance(basis[key], str) or len(basis[key]) > 500:
+                    raise AttributionRejection(
+                        f"coverage_basis {key} must be a string of at most 500 characters"
+                    )
+            if not basis["input_scope"].strip() or not basis["counterevidence"].strip():
+                raise AttributionRejection(
+                    "coverage_basis requires input_scope and counterevidence"
+                )
+            if bool(basis["loss_observation"].strip()) != (basis["status"] == "observed_loss"):
+                raise AttributionRejection(
+                    "coverage_basis requires a loss observation only for observed_loss"
+                )
+            coverage_basis = dict(basis)
+            if basis["status"] != "observed_loss":
+                causal_status = CausalStatus.UNATTRIBUTED
+                agent_mechanism = AgentMechanism.OTHER
+        elif payload.get("coverage_basis") is not None:
+            raise AttributionRejection("coverage_basis is only valid for incomplete_coverage")
 
         failing_level = None
         if not grounding.grounded:
@@ -593,7 +660,33 @@ class LLMAttributor:
             agent_mechanism_detail=str(payload.get("agent_mechanism_detail", "")),
             operation_evidence=checked_operations,
             verification_limits=limits,
+            coverage_basis=coverage_basis,
         )
+        if coverage_basis is not None:
+            if coverage_basis["status"] == "observed_loss":
+                if not any(
+                    entry.iteration_index is not None or entry.node_id != root.node_id
+                    for entry in checked_operations
+                ):
+                    raise AttributionRejection(
+                        "observed_loss requires a resolvable operation or child-call citation"
+                    )
+            else:
+                detail.agent_mechanism_detail = (
+                    "Unestablished incomplete_coverage hypothesis: "
+                    + detail.symptom_summary
+                    + (
+                        "; " + detail.agent_mechanism_detail
+                        if detail.agent_mechanism_detail
+                        else ""
+                    )
+                )
+                detail.causal_status_detail = (
+                    "Input loss "
+                    + coverage_basis["status"]
+                    + ": "
+                    + coverage_basis["counterevidence"]
+                )
         return causal_status, agent_mechanism, failing_level, detail
 
     def attribute(
@@ -633,15 +726,42 @@ class LLMAttributor:
             key = self.cache_key(digest, grounding.grounded, attempt)
             response = self.cache.get(key)
             cached = response is not None
-            if response is None:
-                response = self._completion_with_retry(
-                    [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    attempts,
-                )
-                self.cache.put(key, response)
+            observed = None
+            try:
+                with observe_call(
+                    "attribution" if attempt == 0 else "attribution_repair",
+                    self.lm.model_name,
+                    attempt=attempt + 1,
+                    digest_sha256=digest.sha256,
+                ) as observed:
+                    if cached:
+                        if observed:
+                            observed.replay(self.cache.get_observations(key))
+                    else:
+                        response = self._completion_with_retry(
+                            [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": user},
+                            ],
+                            attempts,
+                        )
+            except (
+                AttributionTransportError,
+                AttributionContentFiltered,
+                AttributionBudgetExhausted,
+            ) as error:
+                if observed:
+                    error.attempts = [
+                        *attempts,
+                        AttributionAttempt(
+                            attempt + 1, cached, "", False, str(error), observation_refs(observed)
+                        ),
+                    ]
+                raise
+            assert response is not None
+            if not cached:
+                self.cache.put(key, response, observations=observed.responses if observed else None)
+            refs = observation_refs(observed)
 
             try:
                 payload = extract_json_block(response)
@@ -655,13 +775,18 @@ class LLMAttributor:
                         raw_response=response,
                         accepted=False,
                         violation=rejection,
+                        llm_observations=refs,
                     )
                 )
                 continue
 
             attempts.append(
                 AttributionAttempt(
-                    attempt=attempt + 1, cached=cached, raw_response=response, accepted=True
+                    attempt=attempt + 1,
+                    cached=cached,
+                    raw_response=response,
+                    accepted=True,
+                    llm_observations=refs,
                 )
             )
             failing_level = grounding.failing_level if grounding.grounded else level

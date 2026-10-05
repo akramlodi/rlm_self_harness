@@ -58,6 +58,7 @@ from shrlm.experiment.report import (
     build_report,
     optimization_manifests,
     render_markdown,
+    run_buckets,
     run_counts,
     stage_run_counts,
     write_report,
@@ -641,6 +642,65 @@ def test_batch_projection_is_independent_of_k_and_legacy_merge_probability(confi
         config, loop=replace(config.loop, k=1), report=replace(config.report, p_merge=0)
     )
     assert run_counts(changed) == run_counts(config)
+
+
+@pytest.mark.parametrize("environment", ["graphwalks", "oolong_pairs", "oolong_synth"])
+def test_optimization_environment_comes_from_config(config, experiment, environment):
+    shutil.rmtree(experiment / "eval")
+    config = replace(
+        config,
+        loop=replace(config.loop, environment=environment),
+        splits=replace(config.splits, n_in=2, n_ho=2, test_short=2, test_long=2),
+    )
+    manifest = optimization_manifests(experiment)[0]
+    entries = [json.loads(line) for line in manifest.read_text().splitlines()]
+    entries[0]["usage_lower_bound"] = True
+    manifest.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+
+    (bucket,) = run_buckets(experiment, config=config)
+    assert bucket.environment == environment
+    assert bucket.n_runs == 4
+    report = build_report(config, experiment)
+    assert report.buckets == [bucket]
+    optimization = next(leg for leg in report.point.legs if leg.name == "optimization")
+    assert optimization.basis == f"{environment}/short (4 run(s))"
+    assert not any("falls back" in warning for warning in report.warnings)
+    assert any(
+        f"lower-bound usage in {environment}/short" in warning for warning in report.warnings
+    )
+    if environment != "graphwalks":
+        assert not any(
+            "graphwalks" in gate["detail"] for gate in report.recommendation.failing_gates
+        )
+    if environment == "oolong_synth":
+        assert report.run_counts.eval_long_runs == 0
+        assert report.recommendation.failing_gates == []
+
+
+def test_configured_optimization_bucket_preserves_evaluation_environments(config, experiment):
+    config = replace(
+        config,
+        loop=replace(config.loop, environment="oolong_pairs"),
+        splits=replace(config.splits, n_in=2, n_ho=2, test_short=2, test_long=2),
+    )
+    report = build_report(config, experiment)
+    buckets = {(bucket.environment, bucket.length): bucket for bucket in report.buckets}
+
+    assert buckets[("oolong_pairs", "short")].sources == {"optimization": 4, "eval": 4}
+    assert buckets[("graphwalks", "short")].sources == {"eval": 4}
+    assert buckets[("graphwalks", "long")].n_runs == 6
+    assert buckets[("oolong_pairs", "long")].n_runs == 6
+    optimization = next(leg for leg in report.point.legs if leg.name == "optimization")
+    assert optimization.basis == "oolong_pairs/short (8 run(s))"
+
+
+def test_check_only_splits_do_not_inflate_evaluation_counts(config):
+    config = replace(config, loop=replace(config.loop, environment="oolong_synth"))
+    with_checks = replace(
+        config, operational=replace(config.operational, real_check_every_n_rounds=1)
+    )
+    assert run_counts(with_checks) == run_counts(config)
+    assert run_counts(with_checks).eval_long_runs == 0
 
 
 def test_deepseek_profile_has_twenty_validation_runs_per_full_round():

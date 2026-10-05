@@ -12,6 +12,38 @@ from tests.optimization.test_validation import ClientFactory, final
 from tests.optimization.test_validation_e2e import edited, make_config, write_candidate
 
 
+@pytest.mark.parametrize("merged", [False, True])
+def test_rejected_evaluated_harness_is_not_repeated(tmp_path, monkeypatch, merged):
+    from shrlm.harness_identity import harness_hash
+    from shrlm.optimization.candidates import load_candidates
+    from shrlm.optimization.promotion import plan_batch
+
+    proposals = tmp_path / "proposals"
+    write_candidate(proposals, edited("a", "execution_instruction", "a"), "S3", "a")
+    if merged:
+        write_candidate(proposals, edited("b", "decomposition_instruction", "b"), "S2", "b")
+    admitted, _ = load_candidates(proposals, H0)
+    fingerprint = plan_batch(H0, admitted).harness_hash
+    prior = [
+        {
+            "round": 1,
+            "subject_id": "old",
+            "incumbent_hash": harness_hash(H0),
+            "harness_hash": fingerprint,
+        }
+    ]
+    idle = ClientFactory([])
+    monkeypatch.setattr(rlm_module, "get_client", idle)
+    result = validate_round(H0, proposals, make_config(tmp_path), prior_evaluations=prior)
+    assert result.evaluation is None
+    assert idle.total_calls == 0
+    assert all(r["upstream"]["gate"] == "duplicate_evaluation" for r in result.ledger.records)
+    assert all(r["rule"] is None for r in result.ledger.records)
+    replay = validate_round(H0, proposals, make_config(tmp_path), prior_evaluations=prior)
+    assert replay.ledger.records == result.ledger.records
+    assert idle.total_calls == 0
+
+
 def test_batch_runs_only_baseline_and_combined_candidate(tmp_path, monkeypatch):
     proposals = tmp_path / "proposals"
     write_candidate(proposals, edited("a", "decomposition_instruction", "a"), "S2", "a")
@@ -35,6 +67,39 @@ def test_batch_runs_only_baseline_and_combined_candidate(tmp_path, monkeypatch):
     replay = validate_round(H0, proposals, make_config(tmp_path))
     assert idle.total_calls == 0
     assert replay.ledger.records == result.ledger.records
+
+
+@pytest.mark.parametrize("valid_sibling", [False, True])
+def test_duplicate_guard_uses_admitted_batch_not_requested_members(
+    tmp_path, monkeypatch, valid_sibling
+):
+    from shrlm.harness_identity import harness_hash
+
+    proposals = tmp_path / "proposals"
+    candidate = edited("a", "execution_instruction", "a")
+    write_candidate(proposals, candidate, "S3", "a")
+    # An unchanged sibling is refused locally; a valid sibling changes the
+    # evaluated subject and must not inherit the standalone rejection.
+    sibling = edited("b", "decomposition_instruction", "b") if valid_sibling else H0
+    write_candidate(proposals, sibling, "S2", "b")
+    prior = [
+        {
+            "round": 1,
+            "subject_id": "prior-a",
+            "incumbent_hash": harness_hash(H0),
+            "harness_hash": harness_hash(candidate),
+        }
+    ]
+    factory = ClientFactory([final("WRONG")] * 2 + [final("RIGHT")] * 2 if valid_sibling else [])
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    result = validate_round(H0, proposals, make_config(tmp_path), prior_evaluations=prior)
+    if valid_sibling:
+        assert result.promoted and factory.total_calls == 4
+        assert result.plan.constituent_ids == ("a", "b")
+    else:
+        assert result.evaluation is None and factory.total_calls == 0
+        gates = {record["upstream"]["gate"] for record in result.ledger.records}
+        assert "duplicate_evaluation" in gates and len(gates) == 2
 
 
 @pytest.mark.parametrize("workers", [1, 2])

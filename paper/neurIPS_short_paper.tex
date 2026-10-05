@@ -1,0 +1,245 @@
+\documentclass{article}
+
+% Anonymous workshop style supported by the repository template.
+% natbib is loaded by the style file; options must be passed ahead of it.
+\PassOptionsToPackage{numbers,sort&compress}{natbib}
+\usepackage[dblblindworkshop]{neurips_2026}
+% \workshoptitle{...} % surfaces in the footer only once the [final] option is added
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+
+% Math & symbols
+\usepackage{amsmath,amssymb}
+
+% Graphics, tables, code
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{listings}
+\usepackage{xcolor}
+
+% Diagrams
+\usepackage{tikz}
+\usetikzlibrary{positioning,fit,backgrounds,arrows.meta,calc,shadows}
+
+% Links (loaded after the style file; cleveref must come last)
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+% Personal comment commands removed for double-blind submission (do not
+% reintroduce named-author comments in the submitted version).
+% TODO: delete before submission
+\newcommand{\SC}[1]{\textcolor{violet}{Simon: #1}}
+\newcommand{\JB}[1]{\textcolor{teal}{Jaloliddin: #1}}
+
+% Convenience macros (mirrors main.tex)
+\usepackage{xspace}
+\newcommand{\rlm}{\textsc{RLM}\xspace}
+\newcommand{\rlms}{\textsc{RLM}s\xspace}
+\newcommand{\sh}{\textsc{Self-Harness}\xspace}
+\newcommand{\sid}[1]{\textbf{\texttt{#1}}}
+
+% ---- styling for the RLM edit-space figure (fig:surfaces) ----
+\definecolor{editgreen}{HTML}{2E7D5B}
+\definecolor{editfill}{HTML}{E7F5EE}
+\definecolor{fixgrey}{HTML}{8A8F98}
+\definecolor{fixfill}{HTML}{F1F2F4}
+\definecolor{envtint}{HTML}{EAF1FB}
+\definecolor{subtint}{HTML}{FCF1E7}
+\definecolor{inkcol}{HTML}{2B2F36}
+\newcommand{\cardhd}{\bfseries}
+\newcommand{\cardsb}{\normalfont\scriptsize\color{black!62}}
+\tikzset{
+  penbadge/.pic={
+    \fill[editgreen] (0,0) circle (0.095);
+    \draw[white, line width=0.55pt, line cap=round] (-0.045,-0.045) -- (0.03,0.03);
+    \fill[white] (-0.052,-0.052) circle (0.017);
+  },
+  lockbadge/.pic={
+    \fill[fixgrey] (0,0) circle (0.095);
+    \draw[white, line width=0.6pt] (-0.032,0.006) arc (180:0:0.032);
+    \fill[white, rounded corners=0.2pt] (-0.05,-0.05) rectangle (0.05,0.014);
+  },
+}
+
+% Sparse reference baselines; the configured study starts from H0*R.
+\newcommand{\hzero}{\ensuremath{\mathrm{H}_{0}}\xspace}
+\newcommand{\hzerostar}{\ensuremath{\mathrm{H}_{0}^{*}}\xspace}
+% Figure_1.tex is a tall float; let it take more of a text page so it lands near
+% the discussion instead of being deferred to a page of its own.
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.85}
+
+% ---- code-listing style for the initial-harness figure (Figure_1.tex) ----
+\definecolor{lstbg}{HTML}{FAFAFB}
+\definecolor{lstframe}{HTML}{D5D8DD}
+\definecolor{lstkw}{HTML}{1052B8}
+\definecolor{lststr}{HTML}{B25A05}
+\definecolor{lstnum}{HTML}{9AA0A8}
+\definecolor{lstcom}{HTML}{6B7280}
+\lstdefinestyle{harness}{
+  language=Python,
+  basicstyle=\ttfamily\scriptsize\linespread{0.88}\selectfont,
+  keywordstyle=\color{lstkw},
+  stringstyle=\color{lststr},
+  commentstyle=\color{lstcom},
+  deletekeywords={None,True,False},
+  emph={str,list,dict,int,tuple},
+  emphstyle=\color{lstkw},
+  numbers=left,
+  numberstyle=\ttfamily\tiny\color{lstnum},
+  numbersep=6pt,
+  backgroundcolor=\color{lstbg},
+  frame=single,
+  rulecolor=\color{lstframe},
+  framesep=3pt,
+  breaklines=true,
+  breakindent=14pt,
+  breakautoindent=false,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  xleftmargin=15pt,
+  xrightmargin=1pt,
+  aboveskip=1pt,
+  belowskip=1pt,
+}
+
+\title{Self-Harnessing Recursive Language Models}
+% \author{%
+%   William Stanford \\
+%     Affiliation  \\
+%     Address \\
+%     \texttt{email} \\
+%     \And
+%     Jaloliddin Boymakhammadov \\
+%     Affiliation \\
+%     Address \\
+%     \texttt{email} \\
+%     \AND
+%     Eliaz Calvar \\
+%     Affiliation \\
+%     Address \\
+%     \texttt{email} \\
+%     \And
+%     Mohammed Akram \\
+%     Affiliation \\
+%     Address \\
+%     \texttt{email} \\
+%     \And
+%     Simon Coumes \\
+%     Affiliation \\
+%     Address \\
+%     \texttt{email} \\
+% }
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Recursive language models (\rlms) use a persistent execution environment and
+recursive model calls to work over inputs larger than a single model context.
+Their performance depends on the surrounding harness. We adapt
+\sh{}~\citep{zhang2026selfharness} to this setting: a fixed model diagnoses failed
+executions, proposes bounded edits to declared harness surfaces, and compares
+one combined candidate with the incumbent on validation tasks. The current gate
+allows ties in verifier-pass count within configured resource bands. We describe
+the implemented loop and a forthcoming OOLONG-Pairs study comparing the saved
+initial and final harnesses on held-out task instances and larger record
+collections. Results and cross-environment transfer evaluation remain forthcoming.
+\end{abstract}
+
+\section{Introduction}
+Frontier language models are bounded by a fixed context window, and quality degrades on
+inputs longer than what the model was effectively trained and evaluated on, well before the
+window limit is reached, a failure mode termed \emph{context rot}~\citep{hong2025contextrot}.
+An input is called \emph{in-distribution} when its length and structure resemble what the model reliably handles, and \emph{out-of-distribution} otherwise, where behavior degrades unpredictably. Recursive language models (\rlms) scale inference-time compute instead of the
+context window~\citep{snell2024scaling}: a model decomposes its own context and invokes fresh
+copies of itself on the pieces~\citep{zhang2025rlm}, turning a long out-of-distribution input
+into sub-calls that are individually shorter~\citep{zhang2026harness}; shortening addresses
+the length dimension of the mismatch, though it does not by itself guarantee a sub-call's
+content is otherwise in-distribution.
+Performance therefore depends on the harness governing recursion, not just the model.
+Policies collapse into a single sub-call~\citep{zhang2026harness},
+deeper recursion degrades accuracy while inflating cost~\citep{wang2026overthink}, and recursion
+halts by heuristic rather than evidence~\citep{guha2026termination}, failures that implicate
+the harness.
+
+These three approaches are mainly used today.
+Fine-tuning the model to work within the
+harness~\citep{zhang2026harness,yang2026recursive} ties any gain to a specific checkpoint.
+Hand-engineering the harness~\citep{alizadeh2026srlm,roy2026ycombinator,lumer2026rah} requires
+frequent expert work that a new model family can outpace.
+A third, \emph{meta-agent} approach edits the scaffold directly by inspecting an agent's own trajectories, as in \sh{}~\citep{zhang2026selfharness}, which mines execution traces for recurring failures, proposes minimal edits, and promotes only non-regressive ones. We adapt \sh{} to \rlms below. \rlms are a natural but untested setting for this third approach: final answers can be checked by an environment verifier, while execution traces support model-inferred diagnoses of recursive behavior.
+Prime Agent's Continual Harness lets an RLM accumulate deployment state (history, memory, skills, subagent specs) around a fixed control loop, rather than editing the loop's decision logic directly~\citep{karten2026primeagent}.
+Agentic Harness Engineering is the closest
+instantiation of the propose-evidence-promote pattern we adapt to RLMs, showing a frozen
+evolved harness transfers across benchmarks and model families for coding
+agents~\citep{lin2026agenticharness}. Neither has been tested where recursion depth and
+sub-call decomposition are themselves modifiable by the meta agent.
+We ask: \emph{can a language model
+identify recurring failures in its own recursive behavior, convert them into targeted harness
+edits, and build a harness that keeps performing when applied to inputs longer than those it was optimized on?}
+
+\section{Our Contributions}
+
+\begin{enumerate}
+\setlength{\itemsep}{1pt}
+\setlength{\topsep}{2pt}
+\setlength{\parskip}{0pt}
+\item \textbf{A fixed-model optimization loop for recursive harnesses.}
+Ten declared surfaces are edited using trace-based diagnoses, capability-aware
+proposal admission, and joint held-out validation, without weight updates or a
+stronger external proposer.
+\item \textbf{A reproducible evaluation protocol.}
+A saved initial-versus-final harness comparison separates automated changes from
+hand-authored initialization and measures held-out task performance at short and
+long context lengths. The implementation and protocol are specified below;
+experimental efficacy is not yet established.
+\end{enumerate}
+
+\input{optimization_method.tex}
+\input{Figure_2.tex}
+\input{experiment_protocol.tex}
+
+\section{Limitations and Future Work}
+\label{sec:limitations}
+
+Diagnoses and behavioral predictions are model judgments constrained by observed
+operations, not causal proofs. Joint promotion measures a batch, and an
+exact-pass tie can promote despite a decrease in an optional dense metric.
+Validation is reused adaptively, and the short roles share record collections.
+The study starts from hand-authored H0*R guidance and uses only two contexts per
+length. These choices define the scope of the evaluation; stronger claims about
+individual edits or unseen source data would need additional evidence.
+
+All optimization stages and evaluation infrastructure are implemented. The next
+step is to freeze the study configuration, run optimization, and evaluate the
+saved initial and final harnesses under the declared protocol. Completed results,
+resource totals, and any uncertainty analysis will be reported with their actual
+coverage. Cross-environment transfer, weight training, and optional ablations
+remain separate future studies (Appendix~\ref{app:extensions}).
+
+\paragraph{Broader impacts.}
+Harness optimization could reduce manual engineering and improve the use of
+fixed models, but a benchmark pass does not measure safe deployment or resistance
+to misuse. Automatically edited instructions may change behavior outside the
+benchmark; the optional safety analysis in Appendix~\ref{app:alignment} is not
+part of the current promotion gate. This study uses public benchmark data and
+no human-subject experiment or deployed decision system.
+
+\clearpage
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+\clearpage
+\appendix
+\input{optimization_appendix.tex}
+\clearpage
+\input{checklist.tex}
+\end{document}

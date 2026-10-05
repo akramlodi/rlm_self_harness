@@ -1,0 +1,57 @@
+% Shared main-text method for both active manuscripts.
+\section{Preliminaries and Self-Harness Optimization}
+\label{sec:method}
+
+An \rlm{} drives a persistent Python REPL to inspect an input, issue model calls,
+and assemble an answer~\citep{zhang2025rlm}. The input is initially stored in
+\texttt{context}; code can expose selected content through printed output. The
+ordinary submission path sets \texttt{answer["content"]} and
+\texttt{answer["ready"]}. Model weights, experiment-owned resource caps, and
+the environment verifier remain fixed during optimization.
+
+Following \citet{zhang2026selfharness}, we expose ten editable harness surfaces:
+five instruction fields, runtime policy, execution-output formatting, REPL
+helpers, answer middleware, and a skill library. Each surface corresponds to a
+declared field or group of fields. Human-authored capability descriptions and
+mechanism-to-surface routes constrain the search. The current study starts from
+\texttt{H0*R}, which already contains hand-authored recursion and decomposition
+guidance; the sparse \hzero{} is a reference baseline. Appendix~\ref{app:surfaces}
+specifies the actual inputs, scope, and invocation conditions of each surface.
+
+\subsection{Self-Harness Optimization}
+\label{sec:sho}
+
+The same fixed model executes tasks, diagnoses failures, and proposes edits.
+Each round has three stages (Figure~\ref{fig:sh-loop}).
+
+\paragraph{Weakness mining.}
+The incumbent runs on mining tasks. The environment verifier evaluates final
+answers, and an attributor uses selected execution-trace operations to infer
+failure mechanisms with explicit uncertainty. Diagnoses use a predefined
+vocabulary and are clustered by their recorded failure signature. Cited
+operations support an interpretation; they do not independently establish its
+causal correctness.
+
+\paragraph{Harness proposal.}
+The proposer receives compact operation-level evidence, the incumbent surfaces,
+runtime capabilities, and bounded history of attempted edits and outcomes. It
+selects an intervention before writing its replacement text and must explain
+what the incumbent does, what observed behavior remains wrong, and what changes
+at the relevant operation. At most one admitted edit may occupy a surface or
+target a pattern in a round. The edit ceiling permits fewer edits or abstention.
+Host materialization and preflight reject malformed or structurally invalid
+changes before task evaluation.
+
+\paragraph{Joint validation and promotion.}
+All admitted edits are composed into one candidate, which is compared with a
+freshly evaluated incumbent on the same validation tasks. Validation tasks are
+excluded from mining but reused for adaptive selection; aggregate outcomes
+inform later proposal history. In the current configuration, promotion requires
+at least as many environment-verifier passes as the incumbent and compliance
+with the configured resource bands. Optional verifier-defined dense metrics
+inform diagnosis and history, but are not promotion conditions. The combined
+candidate is the measured unit; its outcome does not identify each edit's
+individual contribution. Optimization stops at the round ceiling or after the
+configured number of rounds without promotion, then freezes the final incumbent
+for separate evaluation. Appendices~\ref{app:mining}--\ref{app:measurement}
+give the implementation contracts and measurement definitions.

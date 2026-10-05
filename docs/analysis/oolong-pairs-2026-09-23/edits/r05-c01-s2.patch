@@ -1,0 +1,12 @@
+--- round_05_incumbent/S2_decomposition_instruction
++++ r05-c01-s2/S2_decomposition_instruction
+@@ -47,3 +47,9 @@
+ Then decide the answer from `totals` in Python and print it before setting
+ `answer["ready"] = True`. If a child's result does not parse, print it, fix the
+ prompt, and re-run that chunk - do not fall back to counting by eye.
++
++IMPORTANT: When instructing children to classify items, explicitly tell them to
++return a complete mapping for ALL items in their chunk, not just those that
++match a certain criterion. Children may return results keyed by line index
++instead of user ID; verify the key format before merging. If a child's result
++uses line indices, re-run with a corrected prompt specifying the correct key.

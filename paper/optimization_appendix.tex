@@ -1,0 +1,510 @@
+% Shared implementation appendix. Both active papers include this file in full.
+\section{Runtime and Initial Harness}
+\label{app:surfaces}
+
+The implementation described here is the repository at revision
+\texttt{070d1a8493d7}, with the OOLONG-Pairs configuration inspected on
+September 28, 2026. These are implementation specifications for the forthcoming
+study, not experimental results. The study's eventual launch revision, frozen
+configuration, split manifest, and initial/final harness hashes must accompany
+its results.
+
+\paragraph{Initialization.}
+\hzero{} supplies a minimal REPL contract and generic instruction strings, a
+disabled runtime policy, the default metadata formatter, empty helper and skill
+libraries, and accepting answer middleware. \hzerostar{} replaces S1 with the
+upstream-style system prompt, leaves S2--S5 empty, and enables the orchestrator
+addendum. \texttt{H0*R}, the configured initial harness, additionally replaces
+S1's recursive-call description and supplies a hand-authored S2 example. That
+example distinguishes a bare completion from a child with its own REPL, splits
+line-oriented input into batches of 300, requests label counts, merges counts in
+Python, and retries a chunk after a parse failure. It was informed by development
+observations; gains over \hzero{} alone would conflate this initialization with
+automated editing. The \texttt{initial} evaluation condition loads the exact
+saved round-one harness rather than substituting a reference from today's
+registry. Figure~\ref{fig:edit-surfaces} and Figure~\ref{fig:full-repl-contract}
+show the sparse reference, not the complete \texttt{H0*R} prompt.
+At this revision the registry \texttt{H0*R} serialization hash is
+\path{0ca3510ded8a0ce5095c2e3338c4d8606fbc819650c20b65079b405ae1ecac2b}.
+The study's saved initial artifact, including its rendered prompt and runtime
+settings, is the authoritative comparator.
+
+\paragraph{Execution contract.}
+S1--S5 are concatenated into one system prompt; a clause referring to early turns
+is guidance, not a separately timed host hook. Recursive \texttt{rlm\_query}
+children below the depth limit receive their own REPL and the shared prompt.
+Bare \texttt{llm\_query} calls and leaves at the recursion limit are completions,
+without that REPL. Printed code output joins accumulated message history;
+input-as-variable does not prevent code from printing input records. The normal
+answer path uses the REPL answer dictionary, while iteration exhaustion can
+invoke the runtime's final-answer fallback. Admission checks preserve specified
+interfaces and caps, not a formal proof of arbitrary generated code's behavior.
+
+\begin{table}[htbp]
+\centering\small
+\renewcommand{\arraystretch}{1.12}
+\begin{tabularx}{\linewidth}{@{}p{0.19\linewidth}X@{}}
+\toprule
+Surface & Editable payload, visible information, and execution scope \\
+\midrule
+S1: REPL contract & Full text replacement describing the environment/API; shared root/recursive-child prompt. \\
+S2: Decomposition & Full text replacement guiding input inspection and decomposition; shared prompt, scoped to the current subtask. \\
+S3: Execution & Full text replacement guiding parsing, calls, aggregation, and task predicates; shared prompt. \\
+S4: Verification & Full text replacement guiding checks before submission; shared prompt, with no independent semantic oracle. \\
+S5: Recovery & Full text replacement guiding actions after visible errors; cannot extend a terminated run or add host retries. \\
+S6: Runtime policy & Dictionary with enabled flag, prompt/batch caps, depth, syntax-retry/count, and output-validation settings. Enforcement is root local except inherited depth. Width/length caps refuse work; syntax retry repeats the same prompt. \\
+S7: Metadata & Root formatter function receiving bounded stdout and redacted variable types/lengths; preserves its declared output bound. It cannot inspect hidden variable values or the full call history. \\
+S8: REPL helpers & One named function added/replaced in one root or child helper dictionary. Helpers execute only when called; the proposer must identify a caller and input/output contract. \\
+S9: Answer middleware & Root function receiving answer text and redacted inventory; may accept transformed text or redirect with a nudge. It cannot inspect hidden records or classifications. \\
+S10: Skills & One named text procedure added, replaced, or removed. A shared name/description index advertises it; its body matters only when loaded or forwarded. \\
+\bottomrule
+\end{tabularx}
+\caption{Ten surfaces and their actual capabilities. Provider/model selection,
+decoding/reasoning settings, verifiers, and experiment-owned caps are outside the
+edit space. S8 spans two fields; a surface is not necessarily one builder.}
+\label{tab:surfaces}
+\end{table}
+
+\paragraph{Skills and token accounting.}
+The S10 index enters the system prompt after S5. For a nonempty library the
+runner installs \texttt{load\_skill(name)} in root and recursive-child REPLs.
+The host merges a single-entry edit with the incumbent library, including
+explicit removal. Limits are eight entries, 40 characters per name, 200 per
+description, 4,000 per body, and 16,000 total. A loaded body stored only in a
+variable need not be model visible. If printed or forwarded it incurs input
+tokens, potentially on later turns while it remains in history. Neither loading
+a body nor advertising it proves that its procedure was followed.
+
+\input{Figure_1.tex}
+\input{Figure_A1.tex}
+
+\section{Mining, Diagnosis, and Evidence Selection}
+\label{app:mining}
+
+Final-answer verification supplies pass/fail and an outcome category. Eligible
+failed runs are sent to a fixed-model attributor; passing runs and configured
+environment-owned exclusions are not sent through failure attribution. Excluded,
+unattributed, and rejected records remain visible in accounting. Each diagnosis
+records an inferred mechanism, location and causal status, supporting operation
+references, and uncertainty. Structural absence of recursion can be observed
+directly; semantic correctness and root-versus-child causality are not implied
+by final-answer scoring.
+
+The attributor must distinguish skipped records, wrong or uncertain labels, and
+incorrect aggregation or predicates. Missing answer elements alone do not prove
+input loss. It must account for observed checks and repairs, and distinguish
+missing evidence from evidence that an action was omitted. For
+\texttt{incomplete\_coverage}, a structured basis records status, input scope,
+loss observation, and counterevidence. Statuses \texttt{not\_established} and
+\texttt{contradicted} normalize to \texttt{OTHER}/\texttt{UNATTRIBUTED}, rather
+than authorizing a coverage edit. Host acceptance verifies schema, vocabulary,
+field bounds, and resolvable references, not the truth of a causal explanation.
+Attribution response attempts default to three; transport retries are separate.
+
+\paragraph{Clustering and routing.}
+Records cluster by exact agreement on
+\[
+\phi(r)=(\text{outcome cause},\ \text{recorded failing level},\
+         \text{causal status},\ \text{mechanism}).
+\]
+The signature mixes observed outcomes with model-inferred fields; it is not a
+verified causal label. Patterns rank first by distinct-instance support, then
+actionability, then a deterministic signature tie-break. Attempt support is
+recorded separately. Minimum support two is a flag, not automatic deletion.
+Three representatives and a fixed actionability heuristic guide reading order:
+weights are 0.4 causal status, 0.3 grounding availability, 0.2 known mechanism,
+and 0.1 normalized-description homogeneity. The last term uses distinct text
+strings, not semantic embeddings; the score is not a calibrated success
+probability.
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}Xl@{}}
+\toprule
+Mechanism & Eligible surfaces (primary first) \\
+\midrule
+REPL contract misuse & S1, S9, S10, S4 \\
+Whole-input subcall collapse & S2, S3, S10, S6 \\
+Incomplete coverage & S2, S4, S3, S10 \\
+Redundant decomposition & S2, S3, S10 \\
+Misaligned unit & S2, S10 \\
+Depth degradation & S3, S6, S2 \\
+Insufficient recursion & S3, S2, S6 \\
+Bare completion substituted for recursion & S3, S1, S10 \\
+Premature termination & S4, S9, S3 \\
+Skipped verification & S4, S9, S10 \\
+Swallowed subcall error & S5, S3, S6 \\
+Iteration budget exhaustion & S6, S3, S1, S10, S5$^{\dagger}$ \\
+Unparsed child output & S7, S3, S5, S8$^{\dagger}$ \\
+REPL execution fault & S8, S10, S3, S1, S5$^{\dagger}$ \\
+Lossy aggregation & S3, S4, S8$^{\dagger}$ \\
+Unconsulted procedure & S10, S3, S2 \\
+Other & S1--S10 \\
+\bottomrule
+\end{tabularx}
+\caption{Human-defined, many-to-many routing (taxonomy 3.3.0).
+An \texttt{UNATTRIBUTED} diagnosis has no eligible route, including when its
+mechanism is Other. $\dagger$ denotes additional operation-evidence requirements.}
+\label{tab:routes}
+\end{table}
+
+Conditional S8 eligibility requires a complete cited operation; unparsed child
+output additionally requires child-response evidence. Conditional S5 eligibility
+requires an observed error and a subsequent complete operation. These are
+structural opportunities to intervene, not proof of successful recovery or an
+effective proposed fix. Aggregation errors route to S3/S4 or supported S8;
+S9 remains limited to answer-visible properties.
+
+\paragraph{Bounded evidence.}
+The attribution digest defaults to 12,000 characters. Proposal evidence defaults
+to 32,000 characters, separately from the 12,000-character history budget.
+These are component budgets, not a total prompt cap. A compact pattern inventory
+is supplemented by up to $\min(k,4)$ expanded patterns, preferring distinct
+actionable mechanisms before additional signatures/context. Inventory-only
+patterns do not authorize proposals. Evidence follows cited child calls and
+relevant parsing, merging, or filtering operations, with nearby input definitions,
+consumers, and corrections. Whole code operations are retained where they fit;
+required operations that cannot fit are omitted with scope markers rather than
+presented as complete fragments. Outputs and prose may be shortened. A passing
+contrast sharing operation names can be included when available. This improves
+context for comparison but guarantees neither full causal context nor balanced
+surface coverage.
+
+\section{Proposal, Materialization, and History}
+\label{app:proposal}
+
+One response under \texttt{proposal-selection/v2} selects evidence-supported
+pattern/surface interventions before supplying replacement payloads; these are
+not separate selection and generation calls. The first admitted candidate owns
+its surface and pattern. Rejected entries do not reserve a surface. At most
+$k$ edits are admitted, with fewer or zero allowed. Three short explanation
+fields identify incumbent behavior, unresolved observed failure, and the change
+at a specific operation, input, or trigger. Guidance asks whether the same
+demonstrated failure could persist if the edit were followed perfectly. Repeating
+an existing instruction more emphatically, moving it to another surface, or
+repairing an already-recovered fault is insufficient without a substantive
+behavioral difference. Replacing a misleading example can be the smallest
+effective change.
+
+The general prompt asks which information must survive each operation and which
+task conditions must the final computation enforce. It does not prescribe an
+OOLONG-specific record-ID algorithm. Environment-provided API and answer
+contracts remain authoritative. These instructions guide model judgment; they
+are not deterministic tests of semantic novelty or correctness.
+
+\paragraph{Repair and preflight.}
+Response/schema attempts are bounded (default maximum eight), distinct from
+task validations. When failed-member repair is invoked there is one repair
+response, restricted to failed original patterns. It may select another eligible
+unoccupied surface or withdraw an edit while retaining valid siblings unchanged;
+it may not invent new patterns. Collision repair must choose a contender or
+withdraw it, still enforcing one admitted edit per surface.
+
+For text under \texttt{literal-text/v1}, the model supplies literal instructions;
+the host encodes formatting braces exactly once and restores the designated
+custom-tools placeholder. S1--S5 replace full text, S6 replaces a policy
+dictionary, S7/S9 supply functions with required interfaces, S8 edits one named
+helper in one dictionary, and S10 edits one named library entry. Preflight checks
+serialization and base hashes, an actual single-surface change, reserved
+interfaces, caps, formatting, and selected smoke/answer fixtures. Environment
+answer fixtures are synthetic contract examples, not validation tasks. Literal
+no-op rejection does not detect every behaviorally redundant instruction.
+Saved artifacts distinguish literal proposal text, encoded source/template, and
+runtime rendering.
+
+\paragraph{History and qualified progress.}
+The archive retains attempts, admission/rejection reasons, batch membership,
+measured outcomes, and revision links. The bounded prompt summary prioritizes
+recent rounds, the incumbent's promotion, relevant measured predecessors, and an
+older promising direction when it fits. Revisiting an intervention requires a
+resolvable predecessor reference and a stated substantive change to the operation
+or joint hypothesis. Validation contributes aggregate scores, costs, sanitized
+failure summaries, and observed activation; its raw traces and gold/answer dumps
+are not forwarded to the proposer.
+
+A rejected measured candidate can be marked potentially promising when a
+comparable verifier-defined dense metric improves in its declared direction.
+Definitions specify identity/version, direction, aggregation, precision, and
+terminal-outcome values. Comparison also requires compatible verifier/protocol/
+repetition settings and matching instance-attempt sets. Missing, unsupported, or
+incomparable metrics remain \texttt{not\_assessed}. The label is qualified
+evidence, not promotion or statistical significance; a simultaneous exact-pass
+regression remains recorded. An identical rejected batch already measured under
+the same incumbent can be skipped before new validation.
+
+\paragraph{Observed behavior.}
+Instrumentation reports root S6 syntax retries and S9 redirects, and S10 loads
+across the traced call tree, with observation coverage. Missing coverage is
+unassessed. The intended-behavior field remains \texttt{not\_assessed}: activation
+does not establish compliance or task correctness. There is no general semantic
+compliance detector for S1--S5, S7, or S8.
+
+\section{Joint Validation and Stopping}
+\label{app:validation}
+\label{app:algorithm}
+
+Let $H$ be the incumbent, $C$ the composition of all admitted edits, and
+$P(X)$ the number of final-answer verifier passes from harness $X$ on the same
+$n_{\mathrm{ho}}v$ validation attempts. A singleton is the combined candidate;
+an empty or skipped batch schedules no validation. Only $H$ and $C$ are scored;
+constituents of a multi-edit batch have membership records without individual
+scores. The implemented pass-count conditions are
+\begin{equation}
+\Delta=P(C)-P(H),\qquad
+\Delta\geq-\tau_{\mathrm{reg}},\qquad
+\Delta\geq\tau_{\mathrm{imp}}.
+\label{eq:promotion}
+\end{equation}
+For each configured resource metric $q$, its mean must lie within the inclusive
+baseline-relative band, $a_q\bar q(H)\leq\bar q(C)\leq b_q\bar q(H)$, with
+unbounded endpoints permitted. Current thresholds are both zero; mean cost must
+be between zero and three times incumbent cost, and subcall count is unconstrained.
+Thus an exact-pass tie, including zero versus zero, can promote even if F1 falls.
+This is the intended aggregate verifier-pass/resource rule, not a guarantee of
+per-task improvement or secondary-metric non-regression.
+
+\begin{quote}\small
+\textbf{Inputs:} configured initial harness $H$, mining tasks $M$, validation
+tasks $V$, repetitions $m,v$, edit ceiling $k$, round ceiling $T$, patience $p$,
+and promotion settings. Initialize history and no-promotion counter $z=0$.
+Repeat steps 1--4 for at most $T$ rounds; step 5 follows loop termination.
+\begin{enumerate}
+\item Execute or resume $H$ on $M$ with $m$ attempts;
+record final outcomes, traces, and available observations.
+\item Diagnose eligible failures, cluster records, and select bounded evidence
+and history. Propose, admit, and if needed repair up to $k$ edits on distinct
+patterns and surfaces.
+\item Set promoted to false. If an evaluable, nonduplicate batch exists, compose
+$C$ and freshly evaluate or resume $H,C$ on $V$ with $v$ attempts. An unscorable
+baseline follows the experiment error path. For a complete comparable candidate,
+apply Equation~\ref{eq:promotion} and resource bands; if accepted set $H=C$ and
+promoted to true.
+\item Persist the batch outcome and constituent membership, or the reason no
+comparison occurred; update history. Set $z=0$ on promotion, otherwise $z=z+1$.
+Stop when $z\geq p$.
+\item Freeze the last incumbent; run separately specified final-evaluation
+conditions. Do not retrospectively select a harness using test scores or F1.
+\end{enumerate}
+\end{quote}
+
+\paragraph{Failures, denominators, and resume.}
+Candidate-owned execution errors can become failed attempts without terminating
+the whole experiment. Configuration/operational/provider errors, cancellation,
+memory or I/O failures, and observation-persistence failures may still propagate.
+Complete comparisons require matching planned attempts; a partial baseline cannot
+anchor promotion. The final-evaluation driver can retain completed sibling
+results while reporting an incomplete or over-budget condition.
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}p{0.27\linewidth}X@{}}
+\toprule
+Recorded status & Treatment \\
+\midrule
+Completed correct/incorrect & Enters attempt denominator; only a verifier pass counts as success. \\
+Completed execution/resource/format/filter failure & Enters denominator as a failure; dense terminal values follow the verifier definition. Partial usage/trace coverage remains labeled. \\
+Missing/canceled attempt & Report separately, not as a fabricated measured zero. Incomplete validation cannot silently become a complete comparison. \\
+Unscorable baseline & Persist evidence and stop/raise through the experiment error path; this is not a candidate rejection. \\
+Resumed/cached completion & Reuse only with matching identity/contracts; not a new independent attempt or new spend. \\
+\bottomrule
+\end{tabularx}
+\caption{Outcome accounting for optimization and final evaluation.}
+\end{table}
+
+\section{Experimental Protocol and Provenance}
+\label{app:protocol}
+
+\paragraph{Pinned data and scoring.}
+The profile is \path{configs/experiment_oolong_pairs_DeepSeekV4Flash.toml}.
+The dataset is \texttt{oolongbench/oolong-synth}, upstream validation partition,
+\texttt{trec\_coarse}, revision
+\path{f0d59eaf0febf130664cfceb710436c8e3216b2b}. The loader selects the first
+two distinct windows per configured length, with a 50,000-row scan ceiling,
+then pairs each with task IDs 1--20 and shuffles the instances with seed zero.
+The seed controls task partitioning, not per-attempt model randomness. Labels
+are removed from model-visible records; gold user-pair sets are computed from
+the labeled records and task predicates.
+
+The scorer extracts integer pairs and compares sets. Global pair order and
+duplicate pairs do not affect set equality, but order within a pair is preserved:
+the lower user ID must come first. A bracketed list or newline-separated pairs
+are accepted. The explicit empty marker is ``No valid pairs found.''; literal
+\texttt{[]} is not an empty answer. No parseable pair or marker is a format
+failure. A correctly empty prediction against an empty gold set passes and has
+precision/recall/F1 equal to one. These extraction and empty-set distinctions
+are adaptations of the example scorer, not an unmodified upstream verifier.
+
+\paragraph{Task separation and shared records.}
+The two short windows contain 188 records each; the two long windows contain
+6,374 each. Short instances are partitioned 20/10/10, while all 40 long
+instances are reserved for separate evaluation. The current split remains
+unchanged. Table~\ref{tab:context-overlap} makes its unit explicit.
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Short context (input-prefix hash) & Mining & Validation & Short test \\
+\midrule
+Window 9 (\texttt{5f067945b676}) & 10 & 6 & 4 \\
+Window 10 (\texttt{e939371361d4}) & 10 & 4 & 6 \\
+\bottomrule
+\end{tabular}
+\caption{Task counts per shared short record collection at partition seed zero.
+Hashes exclude the task question. Distinct task instances do not imply distinct
+underlying record collections.}
+\label{tab:context-overlap}
+\end{table}
+
+Different predicates over the same window ask different aggregation questions
+over identical records. Between the two short windows, no complete
+\texttt{(user\_id, date, question\_text)} record is identical, but 43 question
+texts recur with different users/dates. The long windows also have no identical
+complete-record overlap with the short windows, while sharing question texts.
+Short-test results support the held-out-task-instance interpretation; long
+evaluation assesses larger record collections. Neither establishes wholly
+unseen-source-text generalization. A stronger source-separated design is needed
+only if that becomes a central claim. This overlap is not evidence of answer
+memorization.
+
+The nominal upstream lengths differ by $32\times$, but stripping labels and
+adding task text changes actual prompt lengths. Evaluation will report
+reconstructed prompt character counts and, when measured, token counts with
+the tokenizer identified, separately from nominal window labels. Multiple
+predicates per window and three requests per task do not increase the number of
+independent contexts. Any future interval or paired test must specify its unit,
+attempt aggregation, missingness, and the two-context limitation; no implemented
+bootstrap or significance analysis is claimed here.
+
+\paragraph{Model, caps, and concurrency.}
+All three optimization roles use Azure Foundry \texttt{DeepSeek-V4-Flash},
+temperature 0, top-$p$ 0.95, and an output-token cap of 8,192. The provider's
+default reasoning mode is enabled, without guaranteeing returned reasoning.
+Per-run limits are 30 iterations, depth three, 3,600 seconds, and a \$2 usage
+budget. Each validation subject, including the incumbent, has a \$100 cumulative
+budget. There are three mining run workers. Validation allows five subject
+workers but has only two measured subjects, with one run worker per subject;
+recursive calls can add provider concurrency. Final evaluation has a separate
+run-worker option and uses three attempts per task per condition. Record the
+chosen worker count in the evaluation manifest; it does not change repetition
+counts.
+
+The main comparison explicitly selects \texttt{initial} and \texttt{sh\_rlm}.
+The default reference grid is \texttt{b1}, \texttt{h0\_star},
+\texttt{lambda\_rlm}, \texttt{sh\_rlm}. The latter's typed baseline is identified
+by its method kind, reconstruction version, upstream revision, and source hash;
+it is not an unmodified released OOLONG-Pairs implementation. Model/deployment,
+rendered prompts, source/configuration snapshots, split IDs/hashes, exact edit
+payloads, harness lineage, and analysis versions belong in the study artifacts.
+Freezing these before a run does not by itself constitute preregistration.
+Previously inspected development/test material must retain its exposure history
+if later used to support a result.
+
+\section{Measurement, Cost, and Saved Observations}
+\label{app:measurement}
+\label{sec:cost}
+
+\paragraph{Quality and surface activity.}
+Exact pass is set equality, not rounded F1 equal to one. OOLONG-Pairs stores
+per-attempt precision, recall, and F1 to three decimals; reported mean F1 averages
+recorded attempt values, including verifier-declared zeros for completed runtime,
+resource, format, and content-filter failures. It is macro averaging across
+attempts, not pooled pair-level micro-F1. Missing/extra counts are reported only
+where available, with coverage, rather than filling absent diagnostics with zero.
+Other environments supply their own metric definitions or remain unassessed.
+
+Surface activity distinguishes submitted, admitted, evaluated, and promoted
+edits. Constituents inherit promotion membership from a promoted batch without
+individual efficacy estimates. Per-round quality plots use the freshly measured
+candidate on promotion and freshly measured incumbent otherwise; a round without
+a measurement is missing, not a zero or a carried-forward score. Environment
+labels come from the configuration. Trace summaries can report depth, call
+counts, and the implemented whole-input-subcall proxy: maximum descendant prompt
+characters divided by root prompt characters exceeds 0.8. Its denominator is
+walkable runs, passing and failing, with unwalkable runs separate; it is neither
+a token ratio nor proof of meaningless decomposition.
+
+\paragraph{Cost.}
+An ordinary completed round with an evaluable batch schedules
+\begin{equation}
+N_{\mathrm{round}}=m n_{\mathrm{in}}+2v n_{\mathrm{ho}}.
+\label{eq:round-cost}
+\end{equation}
+The current profile gives $40+20=60$ task attempts, independent of how many
+edits the batch contains, or 180 over three such rounds. No evaluable batch
+means no new validation leg. With 10 short and 40 long tasks, final evaluation
+requires $3(10+40)J=150J$ attempts for $J$ conditions: 300 for initial versus
+final, 600 for the default four-condition grid, or 750 for all five. These are
+scheduling counts, not measured results or provider-call counts. Root attempts
+may issue many recursive/model requests. Attribution, proposal, repairs, and
+operational retries also consume resources.
+
+Configured accounting rates are \$0.19 per million input tokens and \$0.51 per
+million output tokens, as recorded for this study; they are not a current market
+quote. Actual usage and its coverage will be reported separately from scheduling
+projections. Task usage is not added again to a stage total
+that already includes it. Breaker reservations are not billed spend; interrupted
+or unreported requests can leave a lower bound, and the per-run budget is not a
+guarantee of complete invoice accounting.
+
+\paragraph{Provider-returned observations.}
+Instrumented execution, mining, validation, final evaluation, attribution,
+proposal/repair, recursive calls, compaction, and fallback paths save returned
+response/reasoning observations separately from executable code and final
+answers. References carry call IDs, paths, and hashes. Run traces point to
+\path{<run_id>.llm_calls/<call_id>/}; attribution and proposal artifacts point to
+their stage-specific \path{llm_calls/} directories. Started, response, and finished
+events distinguish failed or interrupted calls. Cache hits retain source
+provenance and do not add spend.
+
+Availability is explicit: \texttt{returned}, \texttt{opaque\_only},
+\texttt{not\_returned}, \texttt{unsupported\_client},
+\texttt{legacy\_unavailable}, or \texttt{no\_response}. Returned content can be
+text or a summary; this is not guaranteed access to full private reasoning.
+Unknown reasoning-token counts stay unknown and are not added to reported output
+usage again. Legacy traces cannot be backfilled with unreturned reasoning.
+Observation artifacts are not automatically fed into attribution digests,
+proposal evidence, or history. Ordinary assistant prose in a digest is a
+different source. Observation persistence errors remain visible failures.
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}Xl@{}}
+\toprule
+Contract & Version \\
+\midrule
+Taxonomy / capabilities & 3.3.0 / \texttt{surface-capabilities/v1} \\
+Attribution prompt / validator / digest & 1.6.0 / 1.2.0 / 1.8.0 \\
+Proposal prompt / validator & 4.3.0 / 4.2.0 \\
+Proposal response / text & \texttt{proposal-selection/v2} / \texttt{literal-text/v1} \\
+Evidence selector / diagnostic history & 4.3.0 / 2.1.0 \\
+Compact history & \texttt{proposal-history/v3} \\
+Validation / summary & \texttt{heldout-batch/v2} / \texttt{shrlm-validation-summary/v3} \\
+Behavior / provider observations & \texttt{behavior-observations/v1} / \texttt{rlm-llm-observation/v1} \\
+\bottomrule
+\end{tabularx}
+\caption{Contracts at the documented revision; archive the versions actually
+used by the forthcoming run with its results.}
+\end{table}
+
+\section{Optional Follow-up Studies}
+\label{app:extensions}
+\label{app:finetune}
+\label{app:alignment}
+
+Cross-environment transfer would require a separately specified target protocol
+and completed evaluation. A weight-training comparison would require an available
+trainable checkpoint, justified backbone matching, and measured compute; no
+fine-tuning condition or hardware allocation is claimed for this hosted study.
+Joint batch outcomes suffice for the present design. An optional future
+leave-one-surface-out study would revert a final surface to its starting value
+and rerun the same evaluation; it would measure that final-state counterfactual,
+not the marginal contribution of every historical edit overwritten along the way.
+No such ablation has been completed here.
+
+An optional safety probe could compare frozen harness states for changes in
+refusal and harmful-answer behavior, motivated by work on
+misevolution~\citep{shao2025misevolution}. The task gate does not measure these
+outcomes, so improved benchmark behavior would not establish safe deployment.
+Any probe would need its own data, scoring, and budget. Textual reasoning
+instructions are editable; provider reasoning settings are experiment owned.

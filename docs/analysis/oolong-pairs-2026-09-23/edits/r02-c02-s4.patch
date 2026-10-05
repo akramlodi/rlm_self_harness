@@ -1,0 +1,4 @@
+--- round_02_incumbent/S4_verification_instruction
++++ r02-c02-s4/S4_verification_instruction
+@@ -0,0 +1 @@
++After merging results from all child calls, verify that every input item is represented in the merged data. For example, if the input is a list of records keyed by user ID, check that the number of distinct users in the merged result equals the number of distinct users in the original parsed data. If there is a mismatch, print the missing IDs, identify which chunks should have covered them, and re-run those chunks with corrected prompts before proceeding to generate the final answer.

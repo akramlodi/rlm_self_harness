@@ -1,4 +1,4 @@
-% Figure 1: the initial harness H0 and its ten editable surfaces.
+% Figure 1: the sparse reference harness H0 and its ten editable surfaces.
 % Body only; the `harness' listing style, its colours, and \hzero live in the
 % preamble of proposal.tex, matching how Figure_2.tex relies on the tikz styling
 % defined there.
@@ -71,23 +71,14 @@
     def build_skills() -> list[SkillEntry]:                              # S10
         return []
     \end{lstlisting}
-    \caption{Initial harness \hzero{}, the starting point for \sh{}: ten declared
-    surfaces, one builder function each, keyed to phases of the \rlm{} turn loop.
-    Eight of the ten return nothing, a disabled policy, or a single generic line, so
-    the orchestration strategy a tuned harness carries must be recovered by the
-    optimization loop from its own execution traces. The \sid{S1} contract is
-    condensed here only to keep the complete interface visible on one page;
-    \cref{fig:full-repl-contract} reproduces the exact initial prompt. \sid{S10} is the skill library:
-    named procedures, each a \texttt{name}, a one-line \texttt{description} of when to
-    consult it, and a \texttt{body} of ordered steps. Only the name/description index
-    enters the system prompt, after \sid{S5}; a body is returned verbatim by
-    \texttt{load\_skill(name)}, which the runner installs in the root and child REPLs
-    when the list is non-empty, so a procedure costs tokens only on the turn that loads
-    it. At most eight entries; \hzero{} carries none. \sid{S6}, \sid{S7} and \sid{S9}
-    required a runtime injection point in the reference implementation of
-    \citet{zhang2025rlm}; \sid{S10} adds one hook to record skill loads in the trace;
-    the rest use its existing prompt and tool configuration. A proposal modifies
-    exactly one surface.}
+    \caption{Sparse reference harness \hzero{} and its ten editable surfaces,
+    each a declared field or group of fields (S8 has two builders). The configured
+    study starts from \texttt{H0*R}, described in Appendix~\ref{app:surfaces}.
+    S1 is condensed for display; Figure~\ref{fig:full-repl-contract} gives the
+    full \hzero{} S1 template. S10 advertises a name/description index and loads
+    bodies on demand; token cost depends on exposure in conversation history or
+    forwarding to children. Each admitted edit changes one surface, and a round
+    may compose several edits on distinct surfaces into one measured candidate.}
     \label{fig:edit-surfaces}
-    \end{figure}
+\end{figure}
     

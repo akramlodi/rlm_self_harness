@@ -1,0 +1,111 @@
+{
+  "evidence_selector_version": "4.1.0",
+  "evidence_budget_chars": 32000,
+  "evidence_chars": 31115,
+  "expanded_patterns": [
+    2,
+    3,
+    1
+  ],
+  "distinct_actionable_mechanisms": 3,
+  "representative_incremental_chars": {
+    "2": 3566,
+    "3": 15195,
+    "1": 3785
+  },
+  "omitted_patterns": {
+    "0": "complete core packet exceeds remaining budget",
+    "4": "complete core packet exceeds remaining budget",
+    "5": "complete core packet exceeds remaining budget",
+    "6": "complete core packet exceeds remaining budget",
+    "7": "unattributed: no eligible intervention"
+  },
+  "operation_count": 11,
+  "core_operation_count": 8,
+  "optional_operation_count": 3,
+  "expanded_mechanisms": [
+    "incomplete_coverage",
+    "misaligned_unit",
+    "incomplete_coverage"
+  ],
+  "route_support": {
+    "0": {},
+    "1": {},
+    "2": {},
+    "3": {},
+    "4": {},
+    "5": {},
+    "6": {},
+    "7": {}
+  },
+  "admitted_refs": {
+    "2": [
+      "bcea9a62d56c3fbf",
+      "fbe9ffd57841de18",
+      "f98e25381bcea787"
+    ],
+    "3": [
+      "0e2bfcc6750026b6",
+      "b55640531d03e0ea",
+      "f211064dd0115c01",
+      "43bb36c400b2765c",
+      "83915b81ccfba128",
+      "f10adad2587c80c1"
+    ],
+    "1": [
+      "9b80de2dd7e1b9d7",
+      "4e0e2dcf4f02ca84"
+    ]
+  },
+  "history_chars": 60,
+  "system_prompt_chars": 50504,
+  "digest_reconstructions": [
+    {
+      "run_id": "oolong-t11-w9-b4cbd11dd9c162ad__a01",
+      "digest_chars": 11995,
+      "stdout_lines": [
+        "r iteration 10 stdout[0]:",
+        "r/i3/b0/c0 iteration 5 stdout[0]:",
+        "r/i3/b0/c0 iteration 6 stdout[0]:",
+        "r/i3/b0/c0 iteration 8 stdout[0]:",
+        "r/i3/b0/c1 iteration 4 stdout[0]:",
+        "r/i3/b0/c1 iteration 9 stdout[0]:",
+        "r/i3/b0/c2 iteration 7 stdout[1]:"
+      ]
+    },
+    {
+      "run_id": "oolong-t20-w10-c0dd071439e06fa2__a01",
+      "digest_chars": 11974,
+      "stdout_lines": [
+        "r iteration 4 stdout[1]:",
+        "r iteration 7 stdout[0]:",
+        "r iteration 7 stdout[1]:",
+        "r iteration 7 stdout[2]:",
+        "r iteration 8 stdout[0]:",
+        "r iteration 9 stdout[0]:",
+        "r iteration 9 stdout[1]:",
+        "r/i3/b1/c2 iteration 3 stdout[0]:",
+        "r/i3/b1/c3 iteration 4 stdout[0]:",
+        "r/i3/b1/c3 iteration 7 stdout[0]:"
+      ]
+    }
+  ],
+  "source_experiment": "experiment_oolong_pairs_dsv4f_20260923_123738",
+  "source_commit": "0298b1ec74e24309e58c53075988f64642a5b34a",
+  "method": "Read-only reconstruction from saved held-in round 1 artifacts; no model calls, no diagnosis re-attribution, no held-out trace reads.",
+  "previous_expanded_patterns": [
+    7,
+    0,
+    1,
+    2
+  ],
+  "previous_actionable_mechanisms": [
+    "incomplete_coverage"
+  ],
+  "limitations": [
+    "Historical coverage claims remain unassessed, not retrospectively established or normalized.",
+    "Misaligned-unit and coverage core packets fit; aggregation does not fit alongside them under the unchanged support ordering and cap.",
+    "Neither reconstructed long digest includes the early 188-record count operations. Whole selected operations retain their bounded outputs; selection does not guarantee all useful counterevidence fits.",
+    "No new promotion or performance measurements were collected."
+  ]
+}

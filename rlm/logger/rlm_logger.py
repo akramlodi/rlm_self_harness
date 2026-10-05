@@ -10,6 +10,7 @@ import os
 import uuid
 from datetime import datetime
 
+from rlm.core.llm_observation import ObservationRecorder
 from rlm.core.types import RLMIteration, RLMMetadata
 
 
@@ -37,6 +38,7 @@ class RLMLogger:
         self._iterations: list[dict] = []
         self._iteration_count = 0
         self._metadata_logged = False
+        self.observation_recorder: ObservationRecorder | None = None
 
     def log_metadata(self, metadata: RLMMetadata) -> None:
         """Capture run metadata (and optionally write to file)."""
@@ -76,6 +78,7 @@ class RLMLogger:
         """Reset iterations for the next completion (trajectory is per completion)."""
         self._iterations = []
         self._iteration_count = 0
+        self.observation_recorder = None
 
     def get_trajectory(self) -> dict | None:
         """Return captured run_metadata + iterations for the current completion, or None if no metadata yet."""
@@ -84,6 +87,11 @@ class RLMLogger:
         return {
             "run_metadata": self._run_metadata,
             "iterations": list(self._iterations),
+            **(
+                {"llm_observations": list(self.observation_recorder.references)}
+                if self.observation_recorder
+                else {}
+            ),
         }
 
     @property

@@ -1,0 +1,11 @@
+--- round_08_incumbent/S3_execution_instruction
++++ r08-c03-s3/S3_execution_instruction
+@@ -0,0 +1,8 @@
++When you have computed the final set of qualifying pairs, output them in the canonical format: one pair per line as (user_id_1, user_id_2), with lower user ID first. Do not add any extra text, separators, or formatting after the pair list. If no pairs qualify, output exactly: No valid pairs found.
++
++Example of correct output:
++(10149, 13574)
++(10149, 14630)
++(13574, 14630)
++
++Do not use commas, spaces, or brackets as separators between pairs. Each pair must be on its own line with parentheses and a comma between the two IDs.

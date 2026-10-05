@@ -64,6 +64,7 @@ from shrlm.optimization.candidates import SURFACE_SERIALIZATION_KEYS
 from shrlm.optimization.driver import HARNESS_FILE
 from shrlm.optimization.promotion import (
     DECISION_ACCEPTED,
+    DECISION_BUNDLED,
     DECISION_PROMOTED,
     DECISION_REJECTED,
     MERGED_SUBJECT_ID,
@@ -549,6 +550,48 @@ class TestPromotedCrediting:
     def test_a_promoted_decision_is_credited(self) -> None:
         record = ledger_record("r01-c01-s2", decision=DECISION_PROMOTED, surface="S2")
         assert _is_promoted(record) is True
+
+    @pytest.mark.parametrize("batch_decision", [DECISION_PROMOTED, DECISION_REJECTED, None])
+    def test_bundled_surfaces_follow_their_batch_decision(
+        self, experiment: Path, snapshot: Snapshot, batch_decision: str | None
+    ) -> None:
+        members = ["s2-edit", "s4-edit"]
+        records = []
+        for candidate_id, surface in [("s2-edit", None), ("s4-edit", "S4"), ("unused", "S3")]:
+            record = ledger_record(
+                candidate_id, decision=DECISION_BUNDLED, surface=surface, role=ROLE_CONSTITUENT
+            )
+            record["batch_subject_id"] = MERGED_SUBJECT_ID
+            records.append(record)
+        if batch_decision is not None:
+            batch = ledger_record(MERGED_SUBJECT_ID, decision=batch_decision, role=ROLE_MERGED)
+            batch["merge"]["constituent_ids"] = members
+            records.append(batch)
+        write_round(experiment, 1, records, proposals={"s2-edit": "S2"})
+
+        rows = written_activity(snapshot, experiment)
+        expected = int(batch_decision == DECISION_PROMOTED)
+        for surface in ["S2", "S4"]:
+            assert cell(rows, 1, surface)["attempted_count"] == "1"
+            assert cell(rows, 1, surface)["bundled_count"] == "1"
+            assert cell(rows, 1, surface)["promoted_count"] == str(expected)
+            assert cell(rows, 1, surface)["cumulative_surfaces_promoted"] == str(2 * expected)
+        assert cell(rows, 1, "S2")["surface_source"] == SURFACE_SOURCE_BACKFILLED
+        assert cell(rows, 1, "S3")["promoted_count"] == "0"
+        assert cell(rows, 1, MERGED_CATEGORY)["promoted_count"] == str(expected)
+
+    @pytest.mark.parametrize("batch_subject_id", [None, "another-batch"])
+    def test_bundled_edit_must_link_to_the_promoted_batch(
+        self, experiment: Path, snapshot: Snapshot, batch_subject_id: str | None
+    ) -> None:
+        member = ledger_record("a", decision=DECISION_BUNDLED, surface="S2", role=ROLE_CONSTITUENT)
+        member["batch_subject_id"] = batch_subject_id
+        batch = ledger_record(MERGED_SUBJECT_ID, decision=DECISION_PROMOTED, role=ROLE_MERGED)
+        batch["merge"]["constituent_ids"] = ["a"]
+        write_round(experiment, 1, [member, batch])
+
+        rows = written_activity(snapshot, experiment)
+        assert cell(rows, 1, "S2")["promoted_count"] == "0"
 
     def test_an_accepted_merge_constituent_is_credited(self) -> None:
         record = ledger_record(

@@ -1,0 +1,64 @@
+% Shared main-text experimental protocol; results are prospective.
+\section{Experiments}
+\label{sec:setup}
+
+The forthcoming study uses the current OOLONG-Pairs profile. Runner, attributor,
+and proposer use the same frozen \textbf{DeepSeek-V4-Flash} deployment and
+decoding settings. Mining, proposal, validation, checkpointing, and final
+evaluation are implemented; results for this study remain forthcoming.
+
+\paragraph{Data and splits.}
+\label{sec:envs-and-splits}
+OOLONG-Pairs is reconstructed from the \texttt{trec\_coarse} portion of
+OOLONG-synth~\citep{bertsch2025oolong}, using twenty predicates over each record
+collection and a deterministic scorer for sets of \emph{user-ID pairs}.
+Table~\ref{tab:study-settings} gives the configured allocation. Mining,
+validation, and short test contain disjoint task instances on shared
+short-context records. Short-test results therefore measure performance on
+held-out task instances. The separate long evaluation assesses performance on
+larger record collections, without claiming entirely unseen underlying question
+texts. The current split is retained. Appendix~\ref{app:protocol} specifies the
+dataset pin, reconstruction, and overlap.
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Role & Tasks & Attempts/task & Use \\
+\midrule
+Short mining & 20 & 2 & Failure evidence \\
+Short validation & 10 & 1 per harness & Joint promotion decision \\
+Short test & 10 & 3 per condition & Held-out task instances \\
+Long test & 40 & 3 per condition & Larger record collections \\
+\bottomrule
+\end{tabular}
+\caption{Configured study. At most four admitted edits per round, three
+optimization rounds, and patience three. Upstream short/long window labels are
+8,192/262,144 tokens; these are not
+measured lengths of the reconstructed prompts.}
+\label{tab:study-settings}
+\end{table}
+
+\paragraph{Comparison and metrics.}
+\label{sec:baselines}
+The primary comparison is the exact saved starting harness \texttt{H0*R}
+(evaluation condition \texttt{initial}) against the frozen edited harness
+(\texttt{sh\_rlm}), on matching short and long task sets. Reference conditions
+are the sparse \hzero{} (\texttt{b1}), the upstream-style \hzerostar{}
+(\texttt{h0\_star}), and a pinned \emph{paper reconstruction} of
+$\lambda$-RLM~\citep{roy2026ycombinator}. The evaluation condition list must be
+selected explicitly: the runner's default reference grid omits \texttt{initial}.
+Exact pair-set equality defines a pass. We additionally report recorded
+pair-level precision, recall, F1, and available missing/extra-pair counts,
+together with usage, cost, runtime, and completion coverage. These supplementary
+metrics do not alter the promotion gate. Final evaluation uses three attempts
+per task; individual model attempts have no controlled random seed.
+
+\paragraph{Interpretation and planned extensions.}
+Results will compare matching tasks with completed, failed, and missing attempt
+counts reported separately. Repeated attempts and predicates sharing a context
+are not independent corpus samples. A promotion under one-attempt validation
+is a selection decision, not a significance test. Cross-environment evaluation
+and weight-training comparisons remain future work: this profile materializes
+only OOLONG-Pairs short and long splits. No completed transfer result or
+long-context performance gain is claimed here.

@@ -1,0 +1,45 @@
+{
+  "run_id": "paper-optimizer-audit-20260928-153327",
+  "branch": "main",
+  "head_sha": "070d1a8493d79999ce4a5b01b19a2d0dc85b7637",
+  "verdict": "Not ready",
+  "verdict_scope": "Scientific accuracy of current LaTeX descriptions, not deployment readiness",
+  "completed_at": "2026-09-28T21:08:01.635021+00:00",
+  "mode": "report-only",
+  "execution": "sequential in main agent per repository AGENTS.md",
+  "independent_review": false,
+  "cross_model_review": "not run",
+  "findings": {
+    "P1": 11,
+    "P2": 18,
+    "total": 29
+  },
+  "papers_reviewed": 9,
+  "experiment_directories_reviewed": 10,
+  "applied_fixes": 0,
+  "durable_report": "docs/analysis/2026-09-28-paper-optimization-accuracy-audit.md",
+  "evidence_directory": "docs/analysis/2026-09-28-paper-optimization-audit",
+  "validation": [
+    "Source and development-history inspection",
+    "Saved manifests, decisions, config snapshots, and recorded-F1 recomputation",
+    "Cross-split corpus hashing",
+    "Synthetic partial-grounding check",
+    "LaTeX static include/reference checks",
+    "Three attempted LaTeX builds; all stopped with disclosed errors",
+    "Evidence collector execution and focused Ruff checks",
+    "All reviewed LaTeX hashes unchanged"
+  ],
+  "limitations": [
+    "No independent model reviewer/validator",
+    "No paid experiment replay",
+    "No external literature/provider/venue verification",
+    "No completed PDF visual/bibliography validation"
+  ],
+  "last_amended_at": "2026-09-28T21:51:02.908087+00:00",
+  "author_clarifications": {
+    "paper_scope": "Current implementation and upcoming experiments; historical launches are supporting audit evidence only unless reported.",
+    "child_verifier_text": "Remove from paper method, figures, algorithms, metrics, and ablations. Retain final-answer verification and model-inferred trace diagnosis. No code integration removal requested.",
+    "promotion": "Keep joint batch promotion and the inclusive environment-verifier pass-count gate. Dense metrics are optional diagnostics, not promotion requirements.",
+    "shared_contexts": "Keep the current 20/10/10 short split: task instances are disjoint while short-context records are shared. Describe short-test results as performance on held-out task instances and the separate long evaluation as performance on larger record collections, without claiming entirely unseen underlying question texts. This is a description and interpretation requirement, not a split-redesign requirement. A stronger split becomes necessary only if unseen-source-data generalization becomes a central claim; the earlier context-separated recommendation is superseded for the forthcoming study."
+  }
+}
