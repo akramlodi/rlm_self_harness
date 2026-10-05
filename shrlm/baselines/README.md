@@ -162,14 +162,19 @@ uv run python examples/obliq_bench_math_smoke.py --live \
     --out-dir ./experiment_obliq_math_lambda_obliq_sanity
 ```
 
-`lambda_rlm_obliq` splits only at bracketed document boundaries, ranks each
-batch, preserves exact IDs through reduction, and persists its own distinct
-method identity. Its development profile uses at most 64 documents and 25,000
-document characters per batch, with three attempts to repair a malformed
-batch response. These parameters apply only to `lambda_rlm_obliq`; the pinned
-generic `lambda_rlm`, H0/H0*, and OOLONG-Pairs methods are unchanged. Use a
-new output directory; an existing `lambda_rlm` round cannot be resumed as the
-adapted method. Likewise, do not resume a 128-document
+`lambda_rlm_obliq` splits only at bracketed document boundaries and persists
+its own distinct method identity. Version 2 exposes only batch-local integer
+indices to the model and maps them to exact document IDs on the host. It
+deterministically removes impossible or duplicate indices while recording the
+normalization, and an exhausted malformed batch contributes no candidates
+instead of invalidating all other batches. Its audit records retried, degraded,
+and normalized batches plus whether the final response is scoreable. Its
+development profile uses at most 64 documents and 25,000 document characters
+per batch, with three attempts to repair an unparseable batch response. These
+parameters apply only to `lambda_rlm_obliq`; the pinned generic `lambda_rlm`,
+H0/H0*, and OOLONG-Pairs methods are unchanged. Use a new output directory; an
+existing version 1 or generic `lambda_rlm` round cannot be resumed as version 2.
+Likewise, do not resume a 128-document
 `lambda_rlm_obliq` round with this 64-document profile because its persisted
 method identity is different.
 

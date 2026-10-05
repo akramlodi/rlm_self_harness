@@ -3,7 +3,7 @@
 The pinned upstream λ-RLM implements a generic QA map/reduce pipeline.  That
 pipeline may compress away document identifiers, which makes it a poor fit for
 OBLIQ's ranked-retrieval contract.  This module keeps the λ-RLM decomposition
-shape but makes document IDs the conserved intermediate representation:
+shape but makes document IDs the conserved host-side representation:
 
 ``document batches -> local rankings -> candidate union -> global reductions``.
 
@@ -23,16 +23,17 @@ import shrlm.baselines.upstream.lambda_rlm as upstream_lambda
 from rlm.clients.base_lm import BaseLM
 from rlm.core.types import RLMChatCompletion
 from shrlm.baselines.paper_lambda_rlm import PaperLambdaRLM
-from shrlm.environments.obliq_bench_math import RANK_K, extract_ranked_ids
+from shrlm.environments.obliq_bench_math import RANK_K
 
-OBLIQ_LAMBDA_VERSION = "1"
-OBLIQ_LAMBDA_AUDIT_FORMAT = "shrlm-obliq-lambda-audit/v1"
+OBLIQ_LAMBDA_VERSION = "2"
+OBLIQ_LAMBDA_AUDIT_FORMAT = "shrlm-obliq-lambda-audit/v2"
 DEFAULT_OBLIQ_MAX_BATCH_DOCUMENTS = 64
 DEFAULT_OBLIQ_MAX_BATCH_CHARS = 25_000
 DEFAULT_OBLIQ_MAX_ATTEMPTS = 3
 DOCUMENT_HEADER_RE = re.compile(r"(?m)^\[([^\]\n]+)\]\n")
 CORPUS_MARKER = "CANDIDATE CORPUS:\n"
 FINAL_REMINDER_MARKER = "\n\nFINAL OUTPUT REMINDER:"
+RANKED_INDICES_RE = re.compile(r"RANKED_INDICES:\s*(\[[^\n]*\])\s*")
 
 
 @dataclass(frozen=True)
@@ -49,10 +50,6 @@ class ObliqRankingBatch:
 
     documents: tuple[ObliqDocument, ...]
 
-    @property
-    def ids(self) -> frozenset[str]:
-        return frozenset(document.doc_id for document in self.documents)
-
 
 @dataclass(frozen=True)
 class ObliqRankingAttempt:
@@ -61,6 +58,8 @@ class ObliqRankingAttempt:
     attempt: int
     response: str
     rejection: str | None
+    selected_indices: tuple[int, ...]
+    dropped_values: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -71,36 +70,9 @@ class ObliqRankingBatchAudit:
     batch_index: int
     document_ids: tuple[str, ...]
     attempts: tuple[ObliqRankingAttempt, ...]
+    selected_indices: tuple[int, ...]
     selected_ids: tuple[str, ...]
-
-
-class ObliqRankingRejectedError(ValueError):
-    """Raised after a ranking batch repeatedly violates its output contract."""
-
-    def __init__(
-        self,
-        *,
-        stage: str,
-        batch_index: int,
-        attempts: Sequence[ObliqRankingAttempt],
-        rejection: str,
-    ) -> None:
-        super().__init__(
-            f"OBLIQ ranking {stage} batch {batch_index + 1} still rejected after "
-            f"{len(attempts)} attempts: {rejection}"
-        )
-        self.stage = stage
-        self.batch_index = batch_index
-        self.attempts = tuple(attempts)
-        self.rejection = rejection
-
-    def audit_dict(self) -> dict[str, Any]:
-        return {
-            "stage": self.stage,
-            "batch_index": self.batch_index,
-            "attempts": [asdict(attempt) for attempt in self.attempts],
-            "rejection": self.rejection,
-        }
+    degraded: bool
 
 
 def parse_obliq_documents(prompt: str) -> list[ObliqDocument]:
@@ -178,40 +150,65 @@ def ranking_prompt(
     *,
     stage: str,
 ) -> str:
-    """Build a strict ID-preserving local or reduction ranking request."""
+    """Build a strict batch-local ranking request."""
     if stage not in {"map", "reduce"}:
         raise ValueError(f"unknown OBLIQ ranking stage {stage!r}")
     candidates = "\n\n".join(
-        f"[{document.doc_id}]\n{document.text}" for document in batch.documents
+        f"[{index}]\n{document.text}" for index, document in enumerate(batch.documents)
     )
     return (
         f"OBLIQ_LAMBDA_{stage.upper()}\n"
         "This is closed-corpus ranking. Compare the source problem with every candidate "
         "below. Select candidates that use the same underlying proof technique or aha "
-        "insight, not merely the same topic. Return at most 10 exact bracketed IDs, "
-        "best first. "
-        "Do not invent IDs or return explanations. Your entire response must be "
-        'one line: RANKED: ["id_a", "id_b"] or RANKED: [].\n\n'
+        "insight, not merely the same topic. Return at most 10 candidate indices, "
+        "best first. Indices are local to this request and must be integers shown in "
+        "brackets below. Do not return document names, unseen indices, or explanations. "
+        "Your entire response must be one line of valid JSON syntax: "
+        "RANKED_INDICES: [7, 2, 19] or RANKED_INDICES: [].\n\n"
         f"SOURCE QUERY:\n{query}\n\nCANDIDATES:\n{candidates}"
     )
 
 
-def validate_ranking_response(
+def project_ranking_response(
     response: str,
-    allowed_ids: frozenset[str],
-) -> tuple[str, ...]:
-    """Parse a ranking and reject malformed, unknown, or duplicate identifiers."""
-    parsed = extract_ranked_ids(response)
-    if parsed is None:
-        raise ValueError("response has no parseable RANKED list")
-    if len(parsed) > RANK_K:
-        raise ValueError(f"response contains {len(parsed)} IDs; at most {RANK_K} are allowed")
-    if len(set(parsed)) != len(parsed):
-        raise ValueError("response contains duplicate IDs")
-    unknown = [doc_id for doc_id in parsed if doc_id not in allowed_ids]
-    if unknown:
-        raise ValueError(f"response contains IDs outside this batch: {unknown}")
-    return tuple(parsed)
+    batch_size: int,
+) -> tuple[tuple[int, ...], tuple[str, ...]]:
+    """Project a parseable model ranking onto valid batch-local indices.
+
+    Removing impossible values, duplicates, and values beyond ``RANK_K`` is a
+    deterministic typed composition step.  Every removal is returned for the
+    audit rather than silently changing the model output.
+    """
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    match = RANKED_INDICES_RE.fullmatch(response.strip())
+    if match is None:
+        raise ValueError("response is not one RANKED_INDICES JSON list")
+    try:
+        parsed = json.loads(match.group(1))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"RANKED_INDICES is not valid JSON: {error.msg}") from error
+    if not isinstance(parsed, list):
+        raise ValueError("RANKED_INDICES must contain a JSON list")
+
+    selected: list[int] = []
+    dropped: list[str] = []
+    seen: set[int] = set()
+    for value in parsed:
+        if not isinstance(value, int) or isinstance(value, bool):
+            dropped.append(repr(value))
+        elif not 0 <= value < batch_size:
+            dropped.append(str(value))
+        elif value in seen:
+            dropped.append(str(value))
+        elif len(selected) >= RANK_K:
+            dropped.append(str(value))
+        else:
+            selected.append(value)
+            seen.add(value)
+    if parsed and not selected:
+        raise ValueError("response contains no valid indices from this batch")
+    return tuple(selected), tuple(dropped)
 
 
 class ObliqLambdaRLM(PaperLambdaRLM):
@@ -279,6 +276,11 @@ class ObliqLambdaRLM(PaperLambdaRLM):
             candidates = reduced
 
         response = "RANKED: " + json.dumps([document.doc_id for document in candidates])
+        retried_batches = sum(len(audit.attempts) > 1 for audit in all_audits)
+        degraded_batches = sum(audit.degraded for audit in all_audits)
+        normalized_attempts = sum(
+            bool(attempt.dropped_values) for audit in all_audits for attempt in audit.attempts
+        )
         return RLMChatCompletion(
             root_model=self.backend_kwargs.get("model_name", "unknown"),
             prompt=prompt,
@@ -293,6 +295,10 @@ class ObliqLambdaRLM(PaperLambdaRLM):
                     "map_batches": len(map_batches),
                     "reduction_rounds": reduction_rounds,
                     "final_candidates": len(candidates),
+                    "scoreable": bool(candidates),
+                    "retried_batches": retried_batches,
+                    "degraded_batches": degraded_batches,
+                    "normalized_attempts": normalized_attempts,
                     "batches": [asdict(audit) for audit in all_audits],
                 }
             },
@@ -336,29 +342,49 @@ class ObliqLambdaRLM(PaperLambdaRLM):
                         if not rejection
                         else (
                             f"{base_prompt}\n\nYour previous response was rejected: {rejection}. "
-                            "Respond again using the required one-line format."
+                            f"Valid indices are 0 through {len(batch.documents) - 1}. "
+                            "Respond again using the required one-line JSON format."
                         )
                     )
                     response = await client.acompletion(request)
                     try:
-                        selected_ids = validate_ranking_response(response, batch.ids)
+                        selected_indices, dropped_values = project_ranking_response(
+                            response,
+                            len(batch.documents),
+                        )
                     except ValueError as error:
                         rejection = str(error)
-                        attempts.append(ObliqRankingAttempt(attempt, response, rejection))
+                        attempts.append(ObliqRankingAttempt(attempt, response, rejection, (), ()))
                         continue
-                    attempts.append(ObliqRankingAttempt(attempt, response, None))
+                    selected_ids = tuple(
+                        batch.documents[index].doc_id for index in selected_indices
+                    )
+                    attempts.append(
+                        ObliqRankingAttempt(
+                            attempt,
+                            response,
+                            None,
+                            selected_indices,
+                            dropped_values,
+                        )
+                    )
                     return ObliqRankingBatchAudit(
                         stage=stage,
                         batch_index=batch_index,
                         document_ids=tuple(document.doc_id for document in batch.documents),
                         attempts=tuple(attempts),
+                        selected_indices=selected_indices,
                         selected_ids=selected_ids,
+                        degraded=False,
                     )
-            raise ObliqRankingRejectedError(
+            return ObliqRankingBatchAudit(
                 stage=stage,
                 batch_index=batch_index,
-                attempts=attempts,
-                rejection=rejection,
+                document_ids=tuple(document.doc_id for document in batch.documents),
+                attempts=tuple(attempts),
+                selected_indices=(),
+                selected_ids=(),
+                degraded=True,
             )
 
         return list(
@@ -375,9 +401,8 @@ __all__ = [
     "ObliqDocument",
     "ObliqLambdaRLM",
     "ObliqRankingBatch",
-    "ObliqRankingRejectedError",
     "build_obliq_batches",
     "parse_obliq_documents",
     "ranking_prompt",
-    "validate_ranking_response",
+    "project_ranking_response",
 ]

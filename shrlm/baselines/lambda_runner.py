@@ -33,7 +33,6 @@ from shrlm.baselines.lambda_rlm import (
     lambda_method_envelope,
     write_lambda_method_json,
 )
-from shrlm.baselines.obliq_lambda_rlm import ObliqRankingRejectedError
 from shrlm.baselines.paper_lambda_rlm import ClassificationRejectedError, PaperLambdaRLM
 from shrlm.optimization.bundle import FILESYSTEM_SAFE_ID_PATTERN, round_dir
 from shrlm.optimization.costs import (
@@ -554,47 +553,6 @@ def lambda_format_verdict(
     )
 
 
-def obliq_lambda_format_completion(
-    config: LambdaRoundConfig,
-    prompt: str,
-    error: ObliqRankingRejectedError,
-    elapsed_seconds: float,
-    guard: LambdaClientGuard,
-) -> RLMChatCompletion:
-    """Preserve an exhausted OBLIQ batch repair as an auditable failed run."""
-    usage_summary = guard.usage_summary
-    assert usage_summary is not None
-    return RLMChatCompletion(
-        root_model=str(config.backend_kwargs.get("model_name", "unknown")),
-        prompt=prompt,
-        response="",
-        usage_summary=usage_summary,
-        execution_time=elapsed_seconds,
-        metadata={"obliq_ranking_failure": error.audit_dict()},
-        error=f"{type(error).__name__}: {error}",
-    )
-
-
-def obliq_lambda_format_verdict(
-    verifier: Verifier,
-    instance: dict[str, Any],
-    error: ObliqRankingRejectedError,
-) -> Verdict:
-    """Build a schema-correct wrong-format verdict for a rejected batch."""
-    base = verifier(instance, "")
-    if base.cause is not VerifierCause.WRONG_FORMAT:
-        raise RuntimeError(
-            "the verifier did not classify an empty OBLIQ response as wrong_format"
-        )
-    return Verdict(
-        passed=False,
-        cause=VerifierCause.WRONG_FORMAT,
-        gold=base.gold,
-        produced=base.produced,
-        detail=f"{base.detail}; {type(error).__name__}: {error}",
-    )
-
-
 def run_lambda_round(
     config: LambdaRoundConfig,
     *,
@@ -679,16 +637,6 @@ def run_lambda_round(
                     method,
                 )
                 verdict = lambda_format_verdict(config.verifier, instance, caught)
-            elif isinstance(caught, ObliqRankingRejectedError):
-                assert guard is not None
-                completion = obliq_lambda_format_completion(
-                    config,
-                    model_input.prompt,
-                    caught,
-                    time.perf_counter() - run_started,
-                    guard,
-                )
-                verdict = obliq_lambda_format_verdict(config.verifier, instance, caught)
             else:
                 raise
         attach_lambda_subcall_audit(completion, guard)
