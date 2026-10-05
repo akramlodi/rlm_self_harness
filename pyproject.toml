@@ -67,7 +67,20 @@ test = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = ["shrlm/baselines/upstream/lambda_rlm.py"]
+extend-exclude = [
+    "shrlm/baselines/upstream/lambda_rlm.py",
+    # Frozen, content-addressed self-harnessing round artifacts (proposal
+    # candidates, validation run/subject modules, promoted work) under any
+    # experiment's opt/ tree. These are byte-exact records of code that
+    # already executed to produce recorded results; reformatting them in
+    # place corrupts their role as historical evidence even though no logic
+    # changes, so ruff must never touch them.
+    "surfaces.py",
+    "run_module_*.py",
+    "subject_module_*.py",
+    "_candidate_*.py",
+    "_promoted_*.py",
+]
 force-exclude = true
 
 [tool.ruff.lint]
