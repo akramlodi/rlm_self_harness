@@ -128,11 +128,11 @@ from shrlm.optimization.bundle import (
     RECORDS_FILENAME,
     round_dir,
 )
-from shrlm.optimization.candidates import SURFACE_SERIALIZATION_KEYS
+from shrlm.optimization.candidates import SUPPORTED_PROPOSAL_FORMATS, SURFACE_SERIALIZATION_KEYS
 from shrlm.optimization.costs import OUTCOME_COMPLETED
 from shrlm.optimization.driver import HARNESS_FILE, INSTANCES_FILE, MANIFEST_FILE, load_manifest
 from shrlm.optimization.promotion import MERGED_SUBJECT_ID
-from shrlm.optimization.proposal import PROPOSAL_FILENAME, PROPOSAL_FORMAT
+from shrlm.optimization.proposal import PROPOSAL_FILENAME
 from shrlm.optimization.validation import (
     EVAL_ROUND_INDEX,
     PROMOTIONS_FILENAME,
@@ -445,7 +445,7 @@ class ExperimentInventory:
 # ---------------------------------------------------------------------------
 
 
-def _read_marker(path: Path, expected_format: str) -> dict[str, Any] | None:
+def _read_marker(path: Path, expected_format: str | tuple[str, ...]) -> dict[str, Any] | None:
     """A stage marker's payload, or ``None`` when absent or not that format.
 
     Discovery describes a directory; it never raises over one. A marker that
@@ -459,7 +459,8 @@ def _read_marker(path: Path, expected_format: str) -> dict[str, Any] | None:
         payload = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
-    if not isinstance(payload, dict) or payload.get("format") != expected_format:
+    formats = (expected_format,) if isinstance(expected_format, str) else expected_format
+    if not isinstance(payload, dict) or payload.get("format") not in formats:
         return None
     return payload
 
@@ -854,7 +855,9 @@ def _proposal_surface(proposals_dir: Path, candidate_id: str) -> str | None:
     """
     if not candidate_id:
         return None
-    payload = _read_marker(proposals_dir / candidate_id / PROPOSAL_FILENAME, PROPOSAL_FORMAT)
+    payload = _read_marker(
+        proposals_dir / candidate_id / PROPOSAL_FILENAME, SUPPORTED_PROPOSAL_FORMATS
+    )
     if payload is None:
         return None
     surface = payload.get("surface")

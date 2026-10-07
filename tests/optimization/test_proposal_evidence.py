@@ -82,6 +82,104 @@ def test_core_packets_precede_optional_context_and_repeat_support():
     assert audit["route_support"]["1"]["S8"]
 
 
+def test_same_instance_passing_contrast_precedes_optional_operations():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    operation = {
+        "node_id": "r",
+        "iteration_index": 1,
+        "code_block_index": 0,
+        "code": "result = combine(inputs)",
+        "code_complete": True,
+        "reason": "cited operation",
+    }
+    failed = {
+        "instance_id": "target",
+        "run_id": "failure",
+        "trace": {
+            "snippets": [
+                operation,
+                {
+                    **operation,
+                    "iteration_index": 2,
+                    "code": "extra = '" + "x" * 1400 + "'",
+                    "reason": "following consumer context",
+                },
+            ]
+        },
+    }
+    unrelated = {"instance_id": "other", "run_id": "other-pass", "trace": {"snippets": [operation]}}
+    passed = {**unrelated, "instance_id": "target", "run_id": "same-instance-pass"}
+    inventory = [{"index": 0, "signature": {"agent_mechanism": "lossy_aggregation"}}]
+    text, audit = pack_evidence(
+        inventory, {"patterns": {0: failed}, "passing": [unrelated, passed]}, k=1, budget=2600
+    )
+    section = json.loads(text.split("\n", 1)[1])
+    assert section["passing"][0]["run_id"] == "same-instance-pass"
+    assert not any("extra =" in op["code"] for op in section["operations"].values())
+    assert audit["evidence_chars"] <= 2600
+
+
+def test_recovered_evidence_cannot_occupy_actionable_slots():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    def context(name, resolution, padding=""):
+        return {
+            "run_id": name,
+            "resolution": resolution,
+            "symptom_summary": padding,
+            "trace": {
+                "snippets": [
+                    {
+                        "node_id": "r",
+                        "iteration_index": 1,
+                        "code_block_index": 0,
+                        "code": "result = combine(inputs)",
+                        "code_complete": True,
+                    }
+                ]
+            },
+        }
+
+    recovered = context("repaired", "recovered")
+    unknown = context("uncertain", "unknown")
+    unresolved = context("unresolved", "unresolved", "details " * 70)
+    inventory = [
+        {"index": i, "signature": {"agent_mechanism": "other"}, "instance_support": 20 - i}
+        for i in range(2)
+    ]
+    evidence = {
+        "patterns": {0: recovered, 1: unknown},
+        "alternatives": {0: [recovered], 1: [unknown, unresolved, recovered]},
+    }
+    text, audit = pack_evidence(inventory, evidence, k=1)
+    section = json.loads(text.split("\n", 1)[1])
+    assert audit["expanded_patterns"] == [1]
+    assert section["expanded"]["1"]["run_id"] == "unresolved"
+    assert not section["inventory"][0]["selectable"]
+    assert section["inventory"][1]["resolution_counts"] == {
+        "unknown": 1,
+        "unresolved": 1,
+        "recovered": 1,
+    }
+    assert "recovered" in audit["omitted_patterns"]["0"]
+
+
+@pytest.mark.parametrize("resolution", [None, "unknown"])
+def test_unassessed_resolution_preserves_existing_evidence_eligibility(resolution):
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    context = {
+        "resolution": resolution,
+        "trace": {"snippets": [{"node_id": "r", "code": "result = combine(inputs)"}]},
+    }
+    text, audit = pack_evidence(
+        [{"index": 0, "signature": {"agent_mechanism": "other"}}], {"patterns": {0: context}}, k=1
+    )
+    assert audit["expanded_patterns"] == [0]
+    assert ("not_assessed" if resolution is None else "unknown") in text
+
+
 @pytest.mark.parametrize("mechanism", ["iteration_budget_exhaustion", "repl_execution_fault"])
 def test_recovery_route_requires_admitted_error_and_subsequent_complete_operation(mechanism):
     from shrlm.optimization.proposal_evidence import pack_evidence
@@ -710,6 +808,50 @@ def test_trace_integrity_failure_is_not_an_optional_evidence_fallback(tmp_path, 
     (path / records[0]["trace_path"]).write_text("{}")
     with pytest.raises(RoundPersistenceError, match="sha|hash"):
         load_proposal_evidence(path, bundle)
+
+
+@pytest.mark.parametrize(
+    "detail_text", [None, "Multiplicity was discarded before counting.", "x" * 2000]
+)
+def test_saved_diagnosis_details_reach_rendered_prompt(tmp_path, monkeypatch, detail_text):
+    path, bundle, records = mining_fixture(tmp_path, monkeypatch, attempts=1)
+    bundle["patterns"][0]["signature"]["agent_mechanism"] = "other"
+    records[0]["signature"] = bundle["patterns"][0]["signature"]
+    detail = records[0]["detail"]
+    fields = ("failing_level_detail", "causal_status_detail", "agent_mechanism_detail")
+    if detail_text is not None:
+        detail.update(dict.fromkeys(fields, detail_text))
+    detail["verification_limits"] = "Intermediate labels were not verified."
+    detail["operation_evidence"] = [{"node_id": "r", "iteration_index": 1, "code_block_index": 0}]
+    (path / "bundle.json").write_text(json.dumps(bundle))
+    (path / "records.jsonl").write_text(json.dumps(records[0]))
+    evidence = load_proposal_evidence(path, bundle)
+    audit = {}
+    prompt, _ = render_prompt(
+        bundle["patterns"],
+        serialize_harness(H0),
+        [],
+        [],
+        4,
+        evidence=evidence,
+        evidence_audit=audit,
+    )
+    context = evidence["patterns"][0]
+    for field in fields:
+        value = context[field]
+        assert json.dumps(value)[1:-1] in prompt
+        assert len(value) <= 600
+        if detail_text is None:
+            assert value == "not recorded"
+        elif len(detail_text) > 600:
+            assert "truncated" in value
+        else:
+            assert value == detail_text
+    assert detail["verification_limits"] in prompt
+    assert "answer['ready']" in prompt
+    assert "model assessments" in prompt
+    assert "bucket support" in prompt
+    assert audit["evidence_chars"] <= 32000
 
 
 def test_known_terminal_zero_retains_unparsed_failure_detail(tmp_path, monkeypatch):

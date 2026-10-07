@@ -8,7 +8,7 @@ rounds' promotion ledgers, a fixed proposer model is shown the mined failure
 patterns and asked to propose up to K candidate edits, each targeting exactly
 one pattern on exactly one eligible surface from
 ``shrlm.optimization.taxonomy.MECHANISM_SURFACES``. The model declares unique
-selections before their matching replacements. Every candidate is written as a ``shrlm-proposal/v1``
+selections before their matching replacements. Every candidate is written as a ``shrlm-proposal/v2``
 ``proposal.json`` (``docs/harness-proposal-interface.md``), ready for
 ``shrlm.optimization.candidates.load_candidates``.
 
@@ -79,8 +79,10 @@ from shrlm.optimization.candidates import (
     BEHAVIOR_FIELDS,
     CANDIDATE_MODULE_PREAMBLE,
     DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
+    PROPOSAL_FORMAT,
     SURFACE_SERIALIZATION_KEYS,
     CandidateRejection,
+    activation_pair_surface_violation,
     behavioral_difference_violation,
     changed_surfaces,
     import_surface_module,
@@ -132,9 +134,8 @@ from shrlm.rlm_harness import (
 )
 from shrlm.runner import declared_metadata_bound
 
-PROPOSAL_FORMAT = "shrlm-proposal/v1"
 TEXT_CONTRACT = "literal-text/v1"
-RESPONSE_FORMAT_VERSION = "proposal-selection/v2"
+RESPONSE_FORMAT_VERSION = "proposal-selection/v3"
 # ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
 # declaration site) and re-exported here for the proposal writer.
 PROPOSAL_FILENAME = "proposal.json"
@@ -156,7 +157,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "4.3.0"
+PROMPT_VERSION = "5.0.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -172,7 +173,7 @@ PROMPT_VERSION = "4.3.0"
 # materialization returns an empty result instead of raising. The 2026-09-10
 # OOLONG-Pairs run lost rounds 4-6 to a proposer that re-emitted the incumbent's
 # own S9 three rounds in a row; under 1.4.0 that was counted, never re-asked.
-VALIDATOR_VERSION = "4.2.0"
+VALIDATOR_VERSION = "5.0.0"
 
 DEFAULT_K = 4
 # Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
@@ -334,6 +335,8 @@ class CandidateSpec:
     text_contract: str = ""
     revision: dict[str, Any] | None = None
     revision_unchanged: bool | None = None
+    activation_pair: str | None = None
+    partner_candidate_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -606,8 +609,8 @@ candidate limit is a maximum, not a quota. When patterns compete for a surface, 
 choose the best-supported minimal edit. Do not move an edit to a weaker surface \
 just to fill the batch. If only one surface warrants a change, propose one edit; \
 if none does, return empty selections and candidates lists.
-Select in priority order, removing each chosen surface and pattern from further \
-consideration. The host retains the first candidate in candidate order that \
+Select in priority order, reserving each chosen surface. Reserve a pattern for \
+one singleton or one complete activation pair. The host retains the first candidate in candidate order that \
 passes all local gates for a surface and pattern; later contenders cannot replace \
 that owner. Invalid candidates do not reserve a surface.
 
@@ -663,6 +666,13 @@ same no-harm bar as any other.
 """
 
 TASK_REASONING_GUIDANCE = """Task-derived reasoning (use only considerations supported by held-in evidence):
+Diagnosis details are model assessments, not verified facts. Read their operation
+evidence and verification limits. For broad 'other' clusters, bucket support does
+not establish that every member shares the representative's precise mechanism.
+Resolution describes the cited defect, not the whole outcome. Recovered operations
+are contrast only. Unknown or not_assessed means uncertainty, not an unresolved
+cause. Bucket totals include all resolutions; use resolution_counts to distinguish
+them. Any residual cost/failure must have its own cited unresolved consequence.
 Which information must survive each step, and which task conditions must the final
 computation enforce? Consider counts, dates, identity, ordering, provenance, units,
 and asymmetric roles only when the task needs them. A set discards multiplicity
@@ -691,11 +701,15 @@ Candidate quality rules:
 - Promotion evaluates one combined candidate on held-out runs only, requiring \
 an exact-pass gain at least the configured minimum and the configured cost band. \
 Equality meets the threshold; with a zero minimum, tied exact passes qualify. \
-Dense-quality metrics are diagnostic and do not change this gate. For each \
-candidate, predicted_effect must also state which currently-passing behaviors the \
-edit deliberately leaves untouched and why the edit cannot plausibly harm them. An \
-edit whose upside on the failing pattern is bought with plausible harm to passing \
-runs will be rejected in validation; no-harm comes first.
+Dense-quality metrics are diagnostic and do not change this gate.
+- State predicted_effect as a task condition, the changed operation, and expected
+benefit. In regression_risks describe relevant already-working behavior, why it
+should remain intact, and uncertainty or added work. These are predictions, not
+tested protections; aggregate validation cannot guarantee every behavior is preserved.
+Generalize across held-in cases: use conditions such as whether a predicate counts
+occurrences, not particular names, record IDs, or saved answers. Evidence references
+are provenance, not constants to put in the replacement. If no relevant passing
+contrast is available, say that protection is unassessed.
 - Prefer edits that guide behavior toward recovery over hard accept/reject rules. \
 Any edit that can veto or discard an output must state the path by which a correct \
 output still gets through; a rule with no escape path usually trades one failure \
@@ -778,15 +792,15 @@ with similar skills in the index and never loaded correctly.
 """
 
 RESPONSE_FORMAT = """\
-Respond with one fenced JSON object using format proposal-selection/v2. Write
-selections first: choose at most %(k)s interventions, one per surface and pattern,
+Respond with one fenced JSON object using format proposal-selection/v3. Write
+selections first: choose at most %(k)s edits, one per surface,
 ranked by evidence for the unresolved operation. Then write exactly one matching
 candidate per selection. No extra model call is needed. To withdraw all, return
 empty selections and candidates lists. Example shape:
 
 ```json
 {
-  "format": "proposal-selection/v2",
+  "format": "proposal-selection/v3",
   "selections": [{"pattern_index": 0, "surface": "S3", "reason": "<capability, unresolved operation and intended caller/recovery point>", "evidence_refs": ["<copy this pattern\'s admitted operation_ref>"]}],
   "candidates": [{
     "pattern_index": 0,
@@ -796,12 +810,21 @@ empty selections and candidates lists. Example shape:
     "observed_failure": "<unresolved operation and verification limits in held-in evidence>",
     "behavioral_change": "<precise changed action and why it addresses the demonstrated cause>",
     "edit": "<one edit object in the surface's format above>",
-    "predicted_effect": "<predicted behavior>",
-    "regression_risks": ["<what it might break>"]
+    "predicted_effect": "<task condition -> changed operation -> expected benefit>",
+    "regression_risks": ["<protected behavior pattern, why preserved, uncertainty or cost>"]
   }]
 }
 ```
 Selection reasons and each explanation field must contain 1-600 characters.
+Normally choose one edit per pattern. The sole exception is an activation pair:
+exactly one S8/S10 capability plus one S2/S3 caller for the same evidenced pattern.
+Both must be eligible. Set the same activation_pair identifier on both selections
+and both candidates; use null or omit it for singletons. A pair consumes two slots.
+Select the joint intervention before writing replacements, and reserve both surfaces.
+Explain why existing discovery/instructions do not suffice, which named capability
+the caller invokes, and its input/output contract. Do not pair a skill removal.
+Do not add a second intervention for that pattern or reuse either surface. If one
+member fails checks, repair or withdraw both together; unrelated valid edits stay.
 Each selection's evidence_refs lists 1-12 admitted operation_ref IDs from
 its own selectable pattern. Copy identities from the evidence inventory; inventory-only
 rows cannot authorize edits, even on an otherwise eligible surface. Each surface's
@@ -1177,6 +1200,11 @@ def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> Candid
         raise ProposalRejection(
             f"pattern_index {index}: regression_risks must be a list of strings"
         )
+    pair = item.get("activation_pair")
+    if pair is not None and (
+        not isinstance(pair, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", pair)
+    ):
+        raise ProposalRejection("activation_pair must be null or a 1-64 character identifier")
     violation = behavioral_difference_violation(item, required=True)
     if violation:
         raise ProposalRejection(f"pattern_index {index}: {violation}")
@@ -1205,6 +1233,7 @@ def validate_candidate_spec(item: Any, patterns: list[dict[str, Any]]) -> Candid
         **{name: item[name] for name in BEHAVIOR_FIELDS},
         text_contract=TEXT_CONTRACT,
         revision=revision,
+        activation_pair=pair,
     )
 
 
@@ -1369,9 +1398,20 @@ def proposal_history_fields(
     """Preserve known intent on refused attempts without inventing an effective edit."""
     return {
         **{name: getattr(spec, name) for name in BEHAVIOR_FIELDS},
+        "regression_risks": list(spec.regression_risks),
         "mechanism": spec.pattern["signature"]["agent_mechanism"],
         "incumbent_hash": hash_of_serialization(incumbent_serialization),
         "revision": spec.revision,
+        **(
+            {
+                "activation_pair": {
+                    "id": spec.activation_pair,
+                    "partner_candidate_id": spec.partner_candidate_id,
+                }
+            }
+            if spec.activation_pair
+            else {}
+        ),
         **(
             {"effective_edit_fingerprint": surface_fingerprint(serialization, spec.surface)}
             if serialization is not None
@@ -1389,7 +1429,7 @@ def write_proposal(
     model_name: str,
     prompt_sha: str,
 ) -> Path:
-    """Write one ``shrlm-proposal/v1`` proposal.json (docs/harness-proposal-interface.md).
+    """Write one ``shrlm-proposal/v2`` proposal.json (docs/harness-proposal-interface.md).
 
     Non-clobbering: an existing file is left alone if byte-identical
     (canonical JSON), and raises if it differs -- the same guard
@@ -1412,6 +1452,16 @@ def write_proposal(
         "predicted_effect": spec.predicted_effect,
         **{name: getattr(spec, name) for name in BEHAVIOR_FIELDS if getattr(spec, name)},
         "regression_risks": list(spec.regression_risks),
+        **(
+            {
+                "activation_pair": {
+                    "id": spec.activation_pair,
+                    "partner_candidate_id": spec.partner_candidate_id,
+                }
+            }
+            if spec.activation_pair
+            else {}
+        ),
         "revision": spec.revision,
         "revision_unchanged": spec.revision_unchanged,
         "effective_edit_fingerprint": surface_fingerprint(serialization, spec.surface),
@@ -1581,11 +1631,18 @@ def publish_proposal_result(
     )
 
 
+def repair_slot(index: int, surface: str | None, pair: Any) -> tuple[int, str | None, str]:
+    """Keep capability/caller repair slots distinct while allowing retargeting."""
+    if isinstance(pair, str) and pair:
+        return index, pair, "capability" if surface in {"S8", "S10"} else "caller"
+    return index, None, "single"
+
+
 def validate_batch_members(
     items: list[Any],
     patterns: list[dict[str, Any]],
     incumbent: Harness,
-    failed_slots: dict[int, int] | None,
+    failed_slots: dict[tuple[int, str | None, str], int] | None,
     failed_sources: list[Any],
     selections: list[Any],
 ) -> tuple[list[tuple[int, CandidateSpec]], list[dict[str, Any]]]:
@@ -1604,8 +1661,10 @@ def validate_batch_members(
     for position, (item, (index, surface)) in enumerate(
         zip(items, identities, strict=True), start=1
     ):
+        pair = item.get("activation_pair") if isinstance(item, dict) else None
+        key = repair_slot(index, surface, pair)
         if failed_slots is not None:
-            position = failed_slots.get(index, position)
+            position = failed_slots.get(key, position)
         try:
             duplicates = duplicate_json_keys(item)
             if duplicates:
@@ -1621,6 +1680,8 @@ def validate_batch_members(
             if len(matching) != 1:
                 raise ProposalRejection("candidate must match exactly one selection")
             selection = matching[0]
+            if selection.get("activation_pair") != pair:
+                raise ProposalRejection("selection and candidate activation_pair must match")
             if duplicate_json_keys(selection):
                 raise ProposalRejection("duplicate JSON keys in selection")
             reason = selection.get("reason")
@@ -1660,15 +1721,33 @@ def validate_batch_members(
                 raise ProposalRejection("selection has no matching candidate replacement")
             if "revision" not in item or "evidence_refs" not in selection:
                 raise ProposalRejection(
-                    "proposal-selection/v2 requires candidate revision and selection evidence_refs"
+                    "proposal-selection/v3 requires candidate revision and selection evidence_refs"
                 )
-            if failed_slots is not None and index not in failed_slots:
-                raise ProposalRejection("repair must target only an original failed pattern")
+            if failed_slots is not None and key not in failed_slots:
+                raise ProposalRejection(
+                    "repair must target only an original failed pattern and pair role"
+                )
             spec = validate_candidate_spec(item, patterns)
+            if pair:
+                members = [
+                    source
+                    for source in items
+                    if isinstance(source, dict) and source.get("activation_pair") == pair
+                ]
+                violation = activation_pair_surface_violation(
+                    [member.get("surface") for member in members]
+                )
+                if violation or any(member.get("pattern_index") != index for member in members):
+                    raise ProposalRejection(
+                        violation or "activation pair members must target the same pattern"
+                    )
+                if spec.surface == "S10" and not spec.edit.get("body"):
+                    raise ProposalRejection("activation pair cannot remove its capability")
             for original in failed_sources:
                 old_surface = original.get("surface")
                 if (
                     original["pattern_index"] == index
+                    and repair_slot(index, old_surface, original.get("activation_pair")) == key
                     and old_surface != surface
                     and original.get("behavioral_change") == spec.behavioral_change
                 ):
@@ -1681,6 +1760,7 @@ def validate_batch_members(
                 {
                     "pattern_index": index,
                     "surface": surface,
+                    "activation_pair": pair if isinstance(pair, str) else None,
                     "position": position,
                     "gate": "proposal",
                     "reason": str(exc),
@@ -1701,7 +1781,26 @@ def validate_batch_members(
                     },
                 }
             )
-    return slots, failures
+    failed_pairs = {
+        failure["activation_pair"] for failure in failures if failure["activation_pair"]
+    }
+    for position, spec in slots:
+        if spec.activation_pair in failed_pairs:
+            failures.append(
+                {
+                    "pattern_index": spec.pattern_index,
+                    "surface": spec.surface,
+                    "activation_pair": spec.activation_pair,
+                    "position": position,
+                    "gate": "activation_pair",
+                    "reason": "activation pair partner failed proposal checks",
+                    "predicted_effect": spec.predicted_effect,
+                    "behavior": proposal_history_fields(spec, serialize_harness(incumbent)),
+                }
+            )
+    return [
+        (position, spec) for position, spec in slots if spec.activation_pair not in failed_pairs
+    ], failures
 
 
 def persist_proposal_failure(
@@ -1867,7 +1966,7 @@ def propose_round(
     materialized: list[tuple[int, CandidateSpec, dict[str, Any]]] = []
     materialization_failures: list[MaterializationFailureRecord] = []
     preflight_failures: list[dict[str, Any]] = []
-    failed_slots: dict[int, int] = {}
+    failed_slots: dict[tuple[int, str | None, str], int] = {}
     failed_sources: list[Any] = []
     repairing = False
     for attempt in range(config.max_attempts if addressable else 0):
@@ -1887,7 +1986,9 @@ def propose_round(
             ]
             user = (
                 "One repair response only. Return replacements only for the failed original "
-                "patterns; omit a failed member to withdraw it. You may choose another eligible, "
+                "patterns; omit a failed singleton to withdraw it. Repair or withdraw BOTH activation "
+                "pair members with the original pair id; never downgrade a pair to a singleton. "
+                "You may choose another eligible, "
                 "unoccupied surface for that same pattern. Explain the revised behavioral change "
                 "when retargeting: compare with all shown incumbent surfaces and prior attempts, "
                 "and identify the changed operation, input, or invocation condition. Moving the "
@@ -1905,12 +2006,15 @@ def propose_round(
                             for s in _pattern_surfaces(patterns[index])
                             if s not in {r["surface"] for r in retained}
                         ]
-                        for index in failed_slots
+                        for index in sorted({key[0] for key in failed_slots})
                     }
                 )
                 + "\nCopyable failed-pattern choices (use only free surfaces): "
                 + canonical_json(
-                    {str(index): evidence_audit["choices"][str(index)] for index in failed_slots}
+                    {
+                        str(index): evidence_audit["choices"][str(index)]
+                        for index in sorted({key[0] for key in failed_slots})
+                    }
                 )
                 + "\nRetained: "
                 + canonical_json(retained)
@@ -2010,6 +2114,7 @@ def propose_round(
                     {
                         "pattern_index": selection.get("pattern_index"),
                         "surface": selection.get("surface"),
+                        "activation_pair": selection.get("activation_pair"),
                     }
                     if isinstance(selection, dict)
                     else selection
@@ -2034,159 +2139,225 @@ def propose_round(
         new_materialization_failures = []
         new_preflight_failures = local_failures
         new_failed_slots = {
-            failure["pattern_index"]: failure["position"]
+            repair_slot(
+                failure["pattern_index"], failure["surface"], failure.get("activation_pair")
+            ): failure["position"]
             for failure in reversed(local_failures)
             if failure["pattern_index"] in {index for index, _ in addressable}
         }
+        groups: dict[tuple[str, str | int], list[tuple[int, CandidateSpec]]] = {}
         for position, spec in slots:
-            identity = {
-                "position": position,
-                "pattern_index": spec.pattern_index,
-                "surface": spec.surface,
-            }
-            owner = next(
-                (
-                    {
-                        "position": pos,
-                        "pattern_index": other.pattern_index,
-                        "surface": other.surface,
-                    }
-                    for pos, other, _ in materialized
-                    if other.surface == spec.surface or other.pattern_index == spec.pattern_index
-                ),
-                None,
+            group_key = (
+                ("pair", spec.activation_pair) if spec.activation_pair else ("single", position)
             )
-            if owner is not None:
-                admissions.append({**identity, "status": "occupied", "owner": owner})
-                new_preflight_failures.append(
-                    {
-                        **identity,
-                        "gate": "occupancy",
-                        "reason": f"surface {spec.surface} or pattern {spec.pattern_index} is occupied by {owner}",
-                        "owner": owner,
-                        "predicted_effect": spec.predicted_effect,
-                        "behavior": proposal_history_fields(spec, incumbent_serialization),
-                    }
-                )
-                new_failed_slots.setdefault(spec.pattern_index, position)
-                continue
-            stage = workdir / f"attempt_{attempt + 1:02d}"
-            try:
-                _, serialization = build_candidate(incumbent, incumbent_serialization, spec, stage)
-            except MaterializationFailure as exc:
-                new_materialization_failures.append(
-                    MaterializationFailureRecord(
-                        spec.pattern_index,
-                        spec.surface,
-                        exc.reason,
-                        spec.predicted_effect,
-                        proposal_history_fields(spec, incumbent_serialization),
+            groups.setdefault(group_key, []).append((position, spec))
+        for group in groups.values():
+            before_group = len(materialized)
+            for position, spec in group:
+                if spec.activation_pair:
+                    partner_position, partner = next(
+                        (pos, peer) for pos, peer in group if pos != position
                     )
-                )
-                new_failed_slots.setdefault(spec.pattern_index, position)
-                continue
-            violation = revision_violation(
-                spec.revision,
-                surface=spec.surface,
-                mechanism=spec.pattern["signature"]["agent_mechanism"],
-                fingerprint=surface_fingerprint(serialization, spec.surface),
-                attempts=attempt_index,
-            )
-            if violation:
-                new_preflight_failures.append(
-                    {
-                        "pattern_index": spec.pattern_index,
-                        "surface": spec.surface,
-                        "position": position,
-                        "gate": "revision",
-                        "reason": violation,
-                        "required_predecessor": {
-                            key: value
-                            for key, value in (
-                                select_predecessor(
-                                    surface=spec.surface,
-                                    mechanism=spec.pattern["signature"]["agent_mechanism"],
-                                    fingerprint=surface_fingerprint(serialization, spec.surface),
-                                    attempts=attempt_index,
-                                )
-                                or {}
-                            ).items()
-                            if key in {"round", "subject_id", "decision"}
-                        },
-                        "predicted_effect": spec.predicted_effect,
-                        "behavior": proposal_history_fields(
-                            spec, incumbent_serialization, serialization
+                    spec = replace(
+                        spec,
+                        partner_candidate_id=_candidate_id(
+                            round_index, partner_position, partner.surface
                         ),
-                    }
+                    )
+                identity = {
+                    "position": position,
+                    "pattern_index": spec.pattern_index,
+                    "surface": spec.surface,
+                }
+                owner = next(
+                    (
+                        {
+                            "position": pos,
+                            "pattern_index": other.pattern_index,
+                            "surface": other.surface,
+                        }
+                        for pos, other, _ in materialized
+                        if other.surface == spec.surface
+                        or (
+                            other.pattern_index == spec.pattern_index
+                            and (
+                                not spec.activation_pair
+                                or other.activation_pair != spec.activation_pair
+                            )
+                        )
+                    ),
+                    None,
                 )
-                new_failed_slots.setdefault(spec.pattern_index, position)
-                continue
-            if spec.revision is not None:
-                predecessor = next(
-                    record
-                    for record in attempt_index
-                    if record["round"] == spec.revision["round"]
-                    and record.get("subject_id") == spec.revision["subject_id"]
+                if owner is not None:
+                    admissions.append({**identity, "status": "occupied", "owner": owner})
+                    new_preflight_failures.append(
+                        {
+                            **identity,
+                            "gate": "occupancy",
+                            "reason": f"surface {spec.surface} or pattern {spec.pattern_index} is occupied by {owner}",
+                            "owner": owner,
+                            "predicted_effect": spec.predicted_effect,
+                            "behavior": proposal_history_fields(spec, incumbent_serialization),
+                        }
+                    )
+                    new_failed_slots.setdefault(
+                        repair_slot(spec.pattern_index, spec.surface, spec.activation_pair),
+                        position,
+                    )
+                    continue
+                stage = workdir / f"attempt_{attempt + 1:02d}"
+                try:
+                    _, serialization = build_candidate(
+                        incumbent, incumbent_serialization, spec, stage
+                    )
+                except MaterializationFailure as exc:
+                    new_materialization_failures.append(
+                        MaterializationFailureRecord(
+                            spec.pattern_index,
+                            spec.surface,
+                            exc.reason,
+                            spec.predicted_effect,
+                            proposal_history_fields(spec, incumbent_serialization),
+                        )
+                    )
+                    new_failed_slots.setdefault(
+                        repair_slot(spec.pattern_index, spec.surface, spec.activation_pair),
+                        position,
+                    )
+                    continue
+                violation = revision_violation(
+                    spec.revision,
+                    surface=spec.surface,
+                    mechanism=spec.pattern["signature"]["agent_mechanism"],
+                    fingerprint=surface_fingerprint(serialization, spec.surface),
+                    attempts=attempt_index,
                 )
-                previous_fingerprint = predecessor.get("effective_edit_fingerprint")
-                spec = replace(
+                if violation:
+                    new_preflight_failures.append(
+                        {
+                            "pattern_index": spec.pattern_index,
+                            "surface": spec.surface,
+                            "position": position,
+                            "gate": "revision",
+                            "reason": violation,
+                            "required_predecessor": {
+                                key: value
+                                for key, value in (
+                                    select_predecessor(
+                                        surface=spec.surface,
+                                        mechanism=spec.pattern["signature"]["agent_mechanism"],
+                                        fingerprint=surface_fingerprint(
+                                            serialization, spec.surface
+                                        ),
+                                        attempts=attempt_index,
+                                    )
+                                    or {}
+                                ).items()
+                                if key in {"round", "subject_id", "decision"}
+                            },
+                            "predicted_effect": spec.predicted_effect,
+                            "behavior": proposal_history_fields(
+                                spec, incumbent_serialization, serialization
+                            ),
+                        }
+                    )
+                    new_failed_slots.setdefault(
+                        repair_slot(spec.pattern_index, spec.surface, spec.activation_pair),
+                        position,
+                    )
+                    continue
+                if spec.revision is not None:
+                    predecessor = next(
+                        record
+                        for record in attempt_index
+                        if record["round"] == spec.revision["round"]
+                        and record.get("subject_id") == spec.revision["subject_id"]
+                    )
+                    previous_fingerprint = predecessor.get("effective_edit_fingerprint")
+                    spec = replace(
+                        spec,
+                        revision_unchanged=(
+                            previous_fingerprint == surface_fingerprint(serialization, spec.surface)
+                        )
+                        if previous_fingerprint
+                        else None,
+                    )
+                path = write_proposal(
+                    stage / "proposals",
+                    _candidate_id(round_index, position, spec.surface),
+                    incumbent_serialization,
                     spec,
-                    revision_unchanged=(
-                        previous_fingerprint == surface_fingerprint(serialization, spec.surface)
+                    serialization,
+                    lm.model_name,
+                    system_sha,
+                )
+                checked = load_candidate(
+                    path,
+                    incumbent,
+                    caps=caps,
+                    timeout_seconds=loader_timeout_seconds,
+                    incumbent_serialization=incumbent_serialization,
+                    preflight_profile=profile,
+                )
+                if isinstance(checked, CandidateRejection):
+                    new_preflight_failures.append(
+                        {
+                            "pattern_index": spec.pattern_index,
+                            "surface": spec.surface,
+                            "position": position,
+                            "gate": checked.gate,
+                            "reason": checked.reason,
+                            "predicted_effect": spec.predicted_effect,
+                            "behavior": proposal_history_fields(
+                                spec, incumbent_serialization, serialization
+                            ),
+                        }
                     )
-                    if previous_fingerprint
-                    else None,
-                )
-            path = write_proposal(
-                stage / "proposals",
-                _candidate_id(round_index, position, spec.surface),
-                incumbent_serialization,
-                spec,
-                serialization,
-                lm.model_name,
-                system_sha,
-            )
-            checked = load_candidate(
-                path,
-                incumbent,
-                caps=caps,
-                timeout_seconds=loader_timeout_seconds,
-                incumbent_serialization=incumbent_serialization,
-                preflight_profile=profile,
-            )
-            if isinstance(checked, CandidateRejection):
-                new_preflight_failures.append(
-                    {
-                        "pattern_index": spec.pattern_index,
-                        "surface": spec.surface,
-                        "position": position,
-                        "gate": checked.gate,
-                        "reason": checked.reason,
-                        "predicted_effect": spec.predicted_effect,
-                        "behavior": proposal_history_fields(
-                            spec, incumbent_serialization, serialization
-                        ),
-                    }
-                )
-                new_failed_slots.setdefault(spec.pattern_index, position)
-            else:
-                materialized.append((position, spec, serialization))
-                admissions.append({**identity, "status": "admitted"})
+                    new_failed_slots.setdefault(
+                        repair_slot(spec.pattern_index, spec.surface, spec.activation_pair),
+                        position,
+                    )
+                else:
+                    materialized.append((position, spec, serialization))
+                    admissions.append({**identity, "status": "admitted"})
+            if group[0][1].activation_pair and len(materialized) - before_group != len(group):
+                del materialized[before_group:]
+                positions = {position for position, _ in group}
+                for admission in admissions:
+                    if admission["position"] in positions and admission["status"] == "admitted":
+                        admission["status"] = "pair_withdrawn"
+                for position, spec in group:
+                    new_failed_slots[
+                        repair_slot(spec.pattern_index, spec.surface, spec.activation_pair)
+                    ] = position
+                    new_preflight_failures.append(
+                        {
+                            "pattern_index": spec.pattern_index,
+                            "surface": spec.surface,
+                            "position": position,
+                            "activation_pair": spec.activation_pair,
+                            "gate": "activation_pair",
+                            "reason": "activation pair partner failed local checks; both withdrawn",
+                            "predicted_effect": spec.predicted_effect,
+                            "behavior": proposal_history_fields(spec, incumbent_serialization),
+                        }
+                    )
         # A valid repair replaces the failed slots (omission explicitly withdraws them).
         materialization_failures = new_materialization_failures
         preflight_failures = new_preflight_failures
         owned_patterns = {spec.pattern_index for _, spec, _ in materialized}
         failed_slots = {
-            index: position
-            for index, position in new_failed_slots.items()
-            if index not in owned_patterns
+            key: position
+            for key, position in new_failed_slots.items()
+            if key[0] not in owned_patterns
         }
         failed_sources = [
             item
             for item in raw_items
             if isinstance(item, dict)
             and type(item.get("pattern_index")) is int
-            and item["pattern_index"] in failed_slots
+            and repair_slot(item["pattern_index"], item.get("surface"), item.get("activation_pair"))
+            in failed_slots
         ]
         reasons = [
             f"pattern {r.pattern_index} {r.surface}: {r.reason} (already unchanged or unmaterializable)"
@@ -2216,7 +2387,9 @@ def propose_round(
             raise error
 
     all_indices = {index for index, _ in addressable}
-    proposed_indices = {spec.pattern_index for _, spec, _ in materialized} | set(failed_slots)
+    proposed_indices = {spec.pattern_index for _, spec, _ in materialized} | {
+        key[0] for key in failed_slots
+    }
     state = {
         "survivors": [
             {

@@ -62,6 +62,19 @@ def canned_attribution(evidence: list[str] | None = None) -> str:
     return "```json\n" + json.dumps(payload) + "\n```"
 
 
+@pytest.mark.parametrize("resolution", ["unresolved", "recovered", "unknown"])
+def test_resolution_assessment_is_saved_without_changing_signature(resolution):
+    payload = json.loads(canned_attribution().split("```json\n")[1].split("\n```")[0])
+    payload["resolution"] = resolution
+    root, _ = walk(as_completion(shallow_run()))
+    causal, mechanism, _, detail = LLMAttributor(MockLM()).validate(payload, root, UNGROUNDED)
+    assert detail.to_dict()["resolution"] == resolution
+    assert causal.value == "causal" and mechanism.value == "lossy_aggregation"
+    payload["resolution"] = "definitely correct"
+    with pytest.raises(AttributionRejection, match="resolution"):
+        LLMAttributor(MockLM()).validate(payload, root, UNGROUNDED)
+
+
 OFF_VOCABULARY = (
     "```json\n"
     + json.dumps(

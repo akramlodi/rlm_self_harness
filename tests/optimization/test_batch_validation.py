@@ -12,6 +12,42 @@ from tests.optimization.test_validation import ClientFactory, final
 from tests.optimization.test_validation_e2e import edited, make_config, write_candidate
 
 
+@pytest.mark.parametrize("missing_partner", [False, True])
+def test_activation_pair_uses_existing_batch_gate(tmp_path, monkeypatch, missing_partner):
+    from shrlm.optimization.proposal import propose_round
+    from tests.mock_lm import MockLM
+    from tests.optimization.test_proposal import (
+        activation_pair_items,
+        canned_batch,
+        make_pattern,
+        synthetic_evidence,
+    )
+
+    patterns = [make_pattern("other")]
+    proposals = tmp_path / "proposals"
+    result = propose_round(
+        {"patterns": patterns},
+        H0,
+        MockLM(responses=[canned_batch(*activation_pair_items())]),
+        proposals,
+        workdir=tmp_path / "proposal-work",
+        evidence=synthetic_evidence(patterns),
+    )
+    if missing_partner:
+        result.written[0].path.unlink()
+    factory = ClientFactory([] if missing_partner else [final("WRONG")] * 2 + [final("RIGHT")] * 2)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    validation = validate_round(H0, proposals, make_config(tmp_path))
+    if missing_partner:
+        assert factory.total_calls == 0
+        assert validation.evaluation is None
+    else:
+        assert factory.total_calls == 4
+        assert validation.promoted
+        assert set(validation.plan.constituent_ids) == {p.candidate_id for p in result.written}
+        assert not list(validation.round_path.glob("*/heldin"))
+
+
 @pytest.mark.parametrize("merged", [False, True])
 def test_rejected_evaluated_harness_is_not_repeated(tmp_path, monkeypatch, merged):
     from shrlm.harness_identity import harness_hash

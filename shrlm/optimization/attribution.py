@@ -42,13 +42,13 @@ from shrlm.optimization.types import (
     iter_nodes,
 )
 
-PROMPT_VERSION = "1.6.0"
+PROMPT_VERSION = "1.7.0"
 
 # Version of the validation logic in this module (validate, parse_enum,
 # extract_json_block). The validator's rejection text seeds re-asks, so a
 # change to it changes what later attempts are asked -- folding this into
 # config_sha256 keeps a validator change from replaying stale cached responses.
-VALIDATOR_VERSION = "1.2.0"
+VALIDATOR_VERSION = "1.3.0"
 
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_TRANSPORT_RETRIES = 3
@@ -134,6 +134,14 @@ intermediate correctness. A failed outcome alone does not identify which
 intermediate operation was wrong. Complete containers do not establish correct
 values. Use other for a supported mechanism outside the vocabulary.
 
+Set resolution to unresolved, recovered, or unknown for the specific cited defect,
+not for the whole task. Cite the error and visible later repair/check in existing
+operation_evidence. Use unknown when the trace cannot establish resolution; do
+not infer unresolved from a wrong final answer. A recovered operation is contrast,
+not a new repair target. If recovery still consumes a limiting budget, diagnose
+and cite that separate unresolved consequence rather than relabeling the repaired
+error. Explain uncertainty in verification_limits and the existing detail fields.
+
 For incomplete_coverage, also supply coverage_basis with exactly four fields:
 status (observed_loss, not_established, or contradicted), input_scope,
 loss_observation, and counterevidence. Each explanatory string is at most 500
@@ -167,12 +175,14 @@ correlated/unattributed causal status. Never invent observations or coordinates.
 
 def response_examples(grounded: bool) -> str:
     common = {
+        "resolution": "unknown",
         "evidence_node_ids": [],
         "verification_limits": "Intermediate classifications were not independently verified.",
         **({} if grounded else {"failing_level": "undetermined"}),
     }
     observed = {
         **common,
+        "resolution": "unresolved",
         "causal_status": "causal",
         "agent_mechanism": "incomplete_coverage",
         "operation_evidence": [
@@ -549,6 +559,9 @@ class LLMAttributor:
         agent_mechanism = parse_enum(
             payload.get("agent_mechanism"), AgentMechanism, "agent_mechanism"
         )
+        resolution = payload.get("resolution", "unknown")
+        if resolution not in ("unresolved", "recovered", "unknown"):
+            raise AttributionRejection("resolution must be unresolved, recovered, or unknown")
         coverage_basis = None
         if agent_mechanism is AgentMechanism.INCOMPLETE_COVERAGE:
             basis = payload.get("coverage_basis")
@@ -661,6 +674,7 @@ class LLMAttributor:
             operation_evidence=checked_operations,
             verification_limits=limits,
             coverage_basis=coverage_basis,
+            resolution=resolution,
         )
         if coverage_basis is not None:
             if coverage_basis["status"] == "observed_loss":

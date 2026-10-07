@@ -9,7 +9,7 @@ from shrlm.harness_identity import canonical_json_sha256
 from shrlm.optimization.candidates import SURFACE_SERIALIZATION_KEYS
 
 HISTORY_BUDGET_CHARS = 12000
-HISTORY_SCHEMA = "proposal-history/v3"
+HISTORY_SCHEMA = "proposal-history/v4"
 
 
 def surface_fingerprint(serialization: dict[str, Any], surface: str) -> str:
@@ -168,11 +168,15 @@ def compact_history(
                 "effective_edit_fingerprint",
                 "owner",
                 "batch_subject_id",
+                "activation_pair",
             )
             if key in record
         }
         result["behavioral_change"] = str(record.get("behavioral_change", "not_assessed"))[:240]
         result["predicted_effect"] = str(record.get("predicted_effect", "not_assessed"))[:240]
+        result["regression_risks"] = [
+            str(risk)[:240] for risk in record.get("regression_risks", [])[:3]
+        ]
         if record.get("merge"):
             result["constituent_ids"] = record["merge"].get("constituent_ids", [])
         result["observed_failure"] = str(record.get("observed_failure", "not_assessed"))[:240]

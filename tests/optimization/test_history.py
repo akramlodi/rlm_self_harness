@@ -7,6 +7,34 @@ from shrlm.optimization.history import HISTORY_BUDGET_CHARS, prior_evaluations, 
 from shrlm.optimization.proposal import _render_history_block
 
 
+def test_pattern_protection_and_pair_intent_survive_history(tmp_path):
+    from shrlm.experiment.orchestrator import proposal_behavior
+
+    candidate = tmp_path / "edit"
+    candidate.mkdir()
+    risk = "Preserve aggregation when duplicates are irrelevant; not yet tested."
+    pair = {"id": "aggregate", "partner_candidate_id": "caller"}
+    (candidate / "proposal.json").write_text(
+        json.dumps(
+            {
+                "format": "shrlm-proposal/v2",
+                "surface": "S8",
+                "activation_pair": pair,
+                "predicted_effect": "Retain multiplicity when a predicate counts occurrences.",
+                "regression_risks": [risk],
+            }
+        )
+    )
+    behavior = proposal_behavior(tmp_path, "edit")
+    assert behavior["regression_risks"] == [risk]
+    history = [([{**behavior, "subject_id": "edit", "decision": "bundled"}], {"round": 1})]
+    rendered = _render_history_block(history)
+    assert risk in rendered
+    assert "caller" in rendered
+    assert "Retain multiplicity" in rendered
+    assert "not_assessed" in rendered
+
+
 def test_history_budget_keeps_qualified_gains_and_all_attempt_index():
     history = []
     for index in range(200):
