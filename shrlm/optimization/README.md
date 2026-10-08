@@ -234,11 +234,13 @@ A full nonempty optimization round projects `m*n_in + 2*v*n_ho` runs regardless 
 `report.p_merge` is a legacy input and does not affect this estimate. Empty rounds require
 no validation calls. Final evaluation repetitions are separate.
 
-New summaries, promotion records, and decisions use v2 formats with protocol
-`heldout-batch/v2`. This protocol accepts exact-pass deltas equal to `tau_improvement`,
-including ties at the default zero margin; regressions and resource-band violations
-still reject. It changes the experiment identity, preventing old strict-gate runs
-from resuming under the inclusive rule. A multi-edit batch records each constituent as `bundled` with no rule,
+New validation summaries use v4; promotion records and decisions retain their
+existing formats under protocol `heldout-batch/v3`. The gate can use exact-pass
+count or verifier-owned primary quality. Primary-quality mode compares macro-F1
+across context lengths and rejects a candidate when any length regresses beyond
+`tau_regression`. Metric deltas equal to `tau_improvement` pass; resource-band
+violations still reject. The protocol changes the experiment identity, preventing
+older evidence from resuming under the new rule. A multi-edit batch records each constituent as `bundled` with no rule,
 band, or evaluation links, and a `batch_subject_id` pointing to `merged`. Only that shared
 subject receives a measured verdict. A rejected or over-budget batch promotes nothing.
 Analysis leaves missing held-in validation accuracy blank and counts bundled participation
