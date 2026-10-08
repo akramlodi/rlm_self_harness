@@ -1,0 +1,219 @@
+# =============================================================================
+# configs/experiment_obliq_bench_math_DeepSeekV4Flash.toml -- backend, pricing,
+# split, and loop plumbing for OBLIQ-Bench Math.
+#
+# Cloned from configs/experiment_oolong_pairs_DeepSeekV4Flash.toml. This file
+# is now wired into the real self-harness loop (mining -> attribution ->
+# proposal -> validation -> promotion) via shrlm.experiment.config's optional
+# EnvironmentsConfig.obliq_bench_math field (an optional field, so no other
+# config file in the repo needs a matching table -- see
+# shrlm.experiment.config.check_keys' `optional=` mechanism). It is also still
+# read by examples/obliq_bench_math_smoke.py, which only harvests
+# round_config_kwargs() (backend, backend_kwargs, caps) and never touches
+# [splits]/[loop]/[environments.*] -- unaffected by anything below. See
+# shrlm/environments/obliq_bench_math.py for the dataset loader/verifier and
+# shrlm/baselines/README.md for standalone smoke-script run instructions.
+#
+# Run (real mining round):
+#   uv run python examples/run_experiment.py \
+#       --config configs/experiment_obliq_bench_math_DeepSeekV4Flash.toml --out-dir ./experiment_obliq_bench_math_dsv4f
+#
+# Load with load_config(profile="full", path=".../experiment_obliq_bench_math_DeepSeekV4Flash.toml").
+# =============================================================================
+
+[decoding]
+temperature = 0
+top_p = 0.95
+max_output_tokens = 8192
+
+[splits]
+# Only 151 OBLIQ-Bench Math queries exist total. Single-pool shape (like
+# oolong_synth): held_in + held_out + test_short = 50 of 151, leaving 101
+# unused. test_long is INERT for this environment (split_plan() never reads
+# it for loop.environment == "obliq_bench_math") -- present because
+# SplitsConfig is a shared, mandatory dataclass, not because it does anything
+# here.
+n_in = 15
+n_ho = 15
+test_short = 20
+test_long = 1
+seed = 0
+
+[loop]
+m = 2
+v = 1
+k = 4
+t = 15
+patience = 3
+environment = "obliq_bench_math"
+# H0*, not the registry default: mining should start from the harness we
+# already have direct, repeated evidence is failing in one specific, fixable
+# way (burns its 30-iteration budget on correct reasoning, never reaches the
+# line that submits an answer -- ORCHESTRATOR_ADDENDUM's "plan carefully,
+# verify before submitting" guidance pushes it past the point H0 would
+# commit). Starting here puts that exact failure pattern in front of mining
+# and the proposer directly.
+initial_harness = "H0*"
+
+[promotion]
+tau_regression = 0.0
+tau_improvement = 0.0
+cost_band = [0.0, 3]
+
+# -----------------------------------------------------------------------------
+# Inert-but-mandatory below (graphwalks/oolong_pairs/oolong): schema fields
+# other environments own; loop.environment = "obliq_bench_math" never reads
+# them. Copied verbatim from experiment_oolong_pairs_DeepSeekV4Flash.toml. The
+# real, live table is [environments.obliq_bench_math] further down.
+# -----------------------------------------------------------------------------
+
+[environments.graphwalks]
+dataset_repo = "openai/graphwalks"
+dataset_file_short = "graphwalks_128k_and_shorter.parquet"
+dataset_file_long = "graphwalks_256k_to_1mil.parquet"
+dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead"
+max_chars = 128000
+min_chars = 0
+problem_types = ["bfs", "parents"]
+
+[environments.oolong_pairs]
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192
+context_length_long = 262144
+max_scan = 50000
+n_short = 40
+n_long = 40
+
+[environments.oolong]
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+subsets = []
+task_groups = ["counting", "user", "timeline"]
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd"
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb"
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
+
+# The real, live table: this is what makes obliq_bench_math a genuine 4th
+# environment rather than inert boilerplate. Read by
+# load_obliq_bench_math_from_config() (shrlm/environments/obliq_bench_math.py).
+[environments.obliq_bench_math]
+# Pinned via `HfApi().dataset_info("dianetc/OBLIQ-Bench").sha`, 2026-09-30.
+# Dataset's own last commit was 2026-05-09; re-pin if the dataset is updated.
+dataset_revision = "4ebee29f68ceeb62ca00bd73d5478acdd3cd7764"
+# Cost-control ceiling, not a difficulty split (see ObliqBenchMathConfig's
+# docstring) -- the setting already validated to behave well and stay
+# affordable across this session's smoke testing. Full corpus remains a
+# separate, manual smoke-script check on whatever harness eventually gets
+# promoted, not something mining runs against directly.
+candidate_pool_size = 200
+
+# -----------------------------------------------------------------------------
+# Live sections: these are what the smoke script actually reads.
+# -----------------------------------------------------------------------------
+
+[caps]
+attempts = 1
+max_iterations = 30
+max_depth = 3
+# Raised from the oolong_pairs template's 2.0/3600.0: the OBLIQ-Bench Math
+# corpus is ~277k tokens per instance (full pool), comparable to that
+# config's own 262k long-pool tier, which its own comments flag as the
+# expensive one ($59.54 observed on one under-capped baseline run).
+max_budget = 2.0 # USD per run
+max_timeout = 3600.0 # seconds per run
+candidate_budget = 100.0 # USD; inert (no validation stage in the smoke script)
+
+[backends.runner]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
+
+[backends.attributor]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
+
+[backends.proposer]
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
+
+[backends.openrouter]
+provider_order = []
+allow_fallbacks = true
+
+[backends.azure_foundry]
+# Do NOT set this to false against Azure: see the oolong_pairs template for
+# the verified 400 unrecognized_request_argument failure mode.
+thinking = true
+
+[pricing.promo]
+input_per_million = 0.19
+output_per_million = 0.51
+
+[pricing.list_price]
+input_per_million = 0.19
+output_per_million = 0.51
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true
+sensitivity_range = [1.99, 3.49]
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2400.0
+long = 700.0
+
+[report]
+p_merge = 0.5
+eval_conditions = 3
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution_obliq_bench_math.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_obliq_bench_math.jsonl"
+eval_repetitions = 3
+validation_workers = 5
+validation_run_workers = 1
+mining_run_workers = 5
+real_check_every_n_rounds = 0
+
+[smoke.splits]
+n_in = 3
+n_ho = 3
+test_short = 4
+test_long = 2
+
+[smoke.loop]
+m = 1
+v = 1
+k = 2
+t = 1
+
+[smoke.caps]
+max_budget = 0.5
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+real_check_every_n_rounds = 0
+
+[smoke.environments.obliq_bench_math]
+candidate_pool_size = 20

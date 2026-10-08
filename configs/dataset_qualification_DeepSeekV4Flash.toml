@@ -1,0 +1,46 @@
+# Fixed, preregistered dataset-qualification screen. This is intentionally
+# separate from ExperimentConfig: it compares environments and fixed baselines;
+# it does not mine, propose, promote, or optimize a harness.
+
+[study]
+experiment_config = "configs/experiment_obliq_bench_math_DeepSeekV4Flash.qualification-frozen.toml"
+methods = ["H0", "H0*", "lambda_rlm"]
+attempts = 2
+seed = 0
+max_budget = 0.25
+max_timeout = 3600.0
+
+[obliq_math]
+enabled = true
+# Fixed before the study. These span the gold-set sizes used by the earlier
+# 200-candidate pilot; candidate_pool_size=0 means the complete 3,507-doc pool.
+query_ids = [
+  "q00201",
+  "q00076",
+  "q00096",
+  "q00408",
+  "q02550",
+  "q00355",
+  "q00999",
+  "q00211",
+  "q00239",
+  "q00077",
+]
+candidate_pool_size = 0
+
+[oolong_pairs]
+enabled = true
+n = 10
+task_ids = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
+context_length = "long"
+
+[thresholds]
+# Every method must usually produce a score; infrastructure/format censoring
+# above 10% makes a dataset unreliable for comparing harness quality.
+min_metric_coverage = 0.90
+max_technical_failure_rate = 0.10
+# A useful screen must separate at least two fixed methods, while avoiding a
+# universal floor or ceiling on the best method.
+min_method_score_spread = 0.05
+min_best_method_score = 0.10
+max_best_method_score = 0.90

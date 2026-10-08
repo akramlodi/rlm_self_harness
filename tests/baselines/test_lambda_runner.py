@@ -11,6 +11,7 @@ from rlm.core.types import RLMChatCompletion
 from rlm.utils.exceptions import BudgetExceededError
 from shrlm.baselines.lambda_rlm import LambdaBaselineConfig, lambda_method_envelope
 from shrlm.baselines.lambda_runner import (
+    LAMBDA_SUBCALL_AUDIT_FORMAT,
     BudgetGuardClient,
     LambdaRoundConfig,
     run_lambda_round,
@@ -111,6 +112,31 @@ def test_persists_and_resumes_without_repeating_paid_runs(
     assert run_lambda_round(config) == resumed_entries
     assert no_op_factory.total_calls == 0
     assert load_manifest(tmp_path, 1) == resumed_entries
+
+
+def test_persists_non_pairwise_subcall_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config(tmp_path, instances=[make_config(tmp_path).instances[0]])
+    factory = ClientFactory(["2", "RIGHT"], cost_per_call=0.001)
+    monkeypatch.setattr(upstream_lambda, "get_client", factory)
+
+    entry = run_lambda_round(config)[0]
+    trace = json.loads((round_dir(tmp_path, 1) / entry["trace_path"]).read_text())
+
+    audit = trace["metadata"]["lambda_subcall_audit"]
+    assert audit["format"] == LAMBDA_SUBCALL_AUDIT_FORMAT
+    assert audit["calls_observed"] == 2
+    assert audit["phase_counts"] == {"leaf_qa": 1, "task_detection": 1}
+    assert audit["filter_decisions"] == {}
+    assert [call["sequence"] for call in audit["calls"]] == [1, 2]
+    assert audit["calls"][0]["prompt_chars"] > 0
+    assert audit["calls"][0]["prompt_preview"].startswith("Based on the metadata")
+    assert audit["calls"][0]["response"] == "2"
+    assert audit["calls"][0]["usage_after"]["total_cost"] == pytest.approx(0.001)
+    assert audit["calls"][1]["response"] == "RIGHT"
+    assert audit["calls"][1]["usage_after"]["total_cost"] == pytest.approx(0.002)
 
 
 def test_rejects_method_or_instance_drift_on_resume(tmp_path: Path) -> None:
@@ -342,6 +368,23 @@ def test_budget_guard_delegates_usage_and_allows_unpriced_clients() -> None:
     assert client.spent is None
     assert client.get_usage_summary() == delegate.get_usage_summary()
     assert client.get_last_usage() == delegate.get_last_usage()
+
+
+def test_budget_guard_audits_relevance_filter_decisions() -> None:
+    client = BudgetGuardClient(MockLM(responses=["YES", "No"]), max_budget=None)
+    prompt = (
+        "Question: target\n\n"
+        "Does this excerpt contain information relevant to answering the question?\n"
+        "Reply YES or NO only.\n\nExcerpt:\ntext"
+    )
+
+    assert client.completion(prompt) == "YES"
+    assert client.completion(prompt) == "No"
+
+    audit = client.subcall_audit_dict()
+    assert audit["phase_counts"] == {"relevance_filter": 2}
+    assert audit["filter_decisions"] == {"no": 1, "yes": 1}
+    assert [call["filter_decision"] for call in audit["calls"]] == ["yes", "no"]
 
 
 @pytest.mark.parametrize("value", [0, -0.1, True])

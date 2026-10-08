@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from rlm.core.types import ClientBackend
+from shrlm.baselines.obliq_lambda_rlm import (
+    DEFAULT_OBLIQ_MAX_ATTEMPTS,
+    DEFAULT_OBLIQ_MAX_BATCH_CHARS,
+    DEFAULT_OBLIQ_MAX_BATCH_DOCUMENTS,
+    OBLIQ_LAMBDA_VERSION,
+    ObliqLambdaRLM,
+)
 from shrlm.baselines.paper_lambda_rlm import (
     PAPER_RECONSTRUCTION_VERSION,
     PaperLambdaRLM,
@@ -19,6 +26,8 @@ LAMBDA_RLM_SOURCE_SHA256 = "3f0e0521f92e1e124e76aa4f717a7bf29c95386ff42b3faf6057
 LAMBDA_RLM_METHOD_FORMAT = "shrlm-method/v2"
 LAMBDA_RLM_METHOD_KIND = "lambda_rlm_paper_reconstruction"
 LAMBDA_RLM_DISPLAY_NAME = "λ-RLM (paper reconstruction)"
+OBLIQ_LAMBDA_RLM_METHOD_KIND = "lambda_rlm_obliq_adaptation"
+OBLIQ_LAMBDA_RLM_DISPLAY_NAME = "λ-RLM (OBLIQ document-ranking adaptation)"
 
 
 @dataclass(frozen=True)
@@ -72,8 +81,66 @@ class LambdaBaselineConfig:
         )
 
 
+@dataclass(frozen=True)
+class ObliqLambdaBaselineConfig(LambdaBaselineConfig):
+    """Parameters for the separately identified OBLIQ ranking adaptation."""
+
+    obliq_max_batch_documents: int = DEFAULT_OBLIQ_MAX_BATCH_DOCUMENTS
+    obliq_max_batch_chars: int = DEFAULT_OBLIQ_MAX_BATCH_CHARS
+    obliq_max_concurrency: int = 8
+    obliq_max_attempts: int = DEFAULT_OBLIQ_MAX_ATTEMPTS
+
+    def build(
+        self,
+        *,
+        backend: ClientBackend,
+        backend_kwargs: dict[str, Any],
+        query: str,
+        task_id: int | None = None,
+    ) -> ObliqLambdaRLM:
+        if not query.strip():
+            raise ValueError("OBLIQ λ-RLM requires a non-empty query")
+        if task_id is not None:
+            raise ValueError("OBLIQ λ-RLM does not accept an OOLONG-Pairs task_id")
+        return ObliqLambdaRLM(
+            backend=backend,
+            backend_kwargs=dict(backend_kwargs),
+            environment="local",
+            context_window_chars=self.context_window_chars,
+            accuracy_target=self.accuracy_target,
+            a_leaf=self.a_leaf,
+            a_compose=self.a_compose,
+            query=query,
+            task_id=None,
+            pairwise_max_batch_records=self.pairwise_max_batch_records,
+            pairwise_max_batch_chars=self.pairwise_max_batch_chars,
+            pairwise_max_concurrency=self.pairwise_max_concurrency,
+            pairwise_max_attempts=self.pairwise_max_attempts,
+            obliq_max_batch_documents=self.obliq_max_batch_documents,
+            obliq_max_batch_chars=self.obliq_max_batch_chars,
+            obliq_max_concurrency=self.obliq_max_concurrency,
+            obliq_max_attempts=self.obliq_max_attempts,
+        )
+
+
 def serialize_lambda_method(config: LambdaBaselineConfig) -> dict[str, Any]:
     """Serialize everything that changes the fixed λ-RLM inference method."""
+    if isinstance(config, ObliqLambdaBaselineConfig):
+        return {
+            "kind": OBLIQ_LAMBDA_RLM_METHOD_KIND,
+            "display_name": OBLIQ_LAMBDA_RLM_DISPLAY_NAME,
+            "upstream": {
+                "repository": LAMBDA_RLM_UPSTREAM_REPOSITORY,
+                "revision": LAMBDA_RLM_UPSTREAM_REVISION,
+                "source_sha256": LAMBDA_RLM_SOURCE_SHA256,
+            },
+            "adaptation": {
+                "version": OBLIQ_LAMBDA_VERSION,
+                "scope": "OBLIQ document-boundary map-rank-reduce",
+            },
+            "runtime": {"environment": "local"},
+            "configuration": asdict(config),
+        }
     return {
         "kind": LAMBDA_RLM_METHOD_KIND,
         "display_name": LAMBDA_RLM_DISPLAY_NAME,
@@ -106,12 +173,13 @@ def lambda_method_hash(config: LambdaBaselineConfig) -> str:
 
 def lambda_method_envelope(config: LambdaBaselineConfig) -> dict[str, Any]:
     """Build the complete persisted identity envelope for one λ-RLM method."""
+    serialization = serialize_lambda_method(config)
     return {
         "format": LAMBDA_RLM_METHOD_FORMAT,
-        "kind": LAMBDA_RLM_METHOD_KIND,
-        "display_name": LAMBDA_RLM_DISPLAY_NAME,
+        "kind": serialization["kind"],
+        "display_name": serialization["display_name"],
         "hash": lambda_method_hash(config),
-        "method": serialize_lambda_method(config),
+        "method": serialization,
     }
 
 
@@ -156,9 +224,12 @@ __all__ = [
     "LAMBDA_RLM_SOURCE_SHA256",
     "LAMBDA_RLM_UPSTREAM_REPOSITORY",
     "LAMBDA_RLM_UPSTREAM_REVISION",
+    "OBLIQ_LAMBDA_RLM_DISPLAY_NAME",
+    "OBLIQ_LAMBDA_RLM_METHOD_KIND",
     "PAPER_RECONSTRUCTION_VERSION",
     "LambdaBaselineConfig",
     "LambdaInput",
+    "ObliqLambdaBaselineConfig",
     "lambda_method_envelope",
     "lambda_method_hash",
     "lambda_input",

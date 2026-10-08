@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from shrlm.environments.graphwalks import load_graphwalks
+from shrlm.environments.obliq_bench_math import load_obliq_bench_math_from_config
 from shrlm.environments.oolong import (
     load_oolong_real_from_config,
     load_oolong_synth_from_config,
@@ -123,11 +124,23 @@ def load_oolong_real_split(
     return load_oolong_real_from_config(config, n=limit, seed=seed)
 
 
+def load_obliq_bench_math_split(
+    config: ExperimentConfig, length: str, limit: int, seed: int
+) -> list[dict[str, Any]]:
+    """OBLIQ-Bench Math loader wiring. Only the ``short`` length is used: like
+    oolong_synth, held_in / held_out / test is one seeded query-id pool over
+    the dataset's 151 queries -- there is no context-length axis to split on."""
+    if length != "short":
+        raise ValueError(f"obliq_bench_math has only a 'short' pool; got length {length!r}")
+    return load_obliq_bench_math_from_config(config, n=limit, seed=seed)
+
+
 DEFAULT_LOADERS: dict[str, LoaderFn] = {
     "graphwalks": load_graphwalks_split,
     "oolong_pairs": load_oolong_pairs_split,
     "oolong_synth": load_oolong_synth_split,
     "oolong_real": load_oolong_real_split,
+    "obliq_bench_math": load_obliq_bench_math_split,
 }
 
 
@@ -144,7 +157,9 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
     and keeps its long pool test-only; ``"oolong_synth"`` materializes the
     OOLONG-synth pool and -- when
     ``operational.real_check_every_n_rounds > 0`` -- the OOLONG-real check set,
-    and nothing else. ``materialize_splits`` skips any registered loader absent
+    and nothing else; ``"obliq_bench_math"`` materializes one seeded query-id
+    pool (no length axis, same single-pool shape as ``oolong_synth``) and
+    nothing else. ``materialize_splits`` skips any registered loader absent
     from the plan, so an OOLONG run never touches the GraphWalks dataset.
     """
     splits = config.splits
@@ -203,6 +218,16 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 },
                 "long": {"test": splits.test_long},
             }
+        }
+    if config.loop.environment == "obliq_bench_math":
+        return {
+            "obliq_bench_math": {
+                "short": {
+                    "held_in": splits.n_in,
+                    "held_out": splits.n_ho,
+                    "test": splits.test_short,
+                },
+            },
         }
     raise ValueError(f"unsupported loop.environment {config.loop.environment!r} in split_plan")
 

@@ -114,6 +114,7 @@ from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
 from rlm.core.llm_observation import ObservationPersistenceError
 from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier
+from shrlm.environments.obliq_bench_math import ObliqBenchMathVerifier
 from shrlm.environments.oolong import (
     OolongSubVerifier,
     OolongVerifier,
@@ -252,6 +253,9 @@ STAGE_REAL_CHECK = "real_check"
 GRAPHWALKS_VERIFIER_FACTORY = "shrlm.environments.graphwalks:GraphWalksVerifier"
 OOLONG_PAIRS_VERIFIER_FACTORY = "shrlm.environments.oolong_pairs:OolongPairsVerifier"
 OOLONG_SYNTH_VERIFIER_FACTORY = "shrlm.environments.oolong:make_synth_verifier"
+OBLIQ_BENCH_MATH_VERIFIER_FACTORY = (
+    "shrlm.environments.obliq_bench_math:make_obliq_bench_math_verifier"
+)
 
 
 @dataclass(frozen=True)
@@ -301,6 +305,14 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
             verifier=OolongPairsVerifier(),
             sub_verifier=None,
             verifier_factory=OOLONG_PAIRS_VERIFIER_FACTORY,
+        )
+    if environment == "obliq_bench_math":
+        return EnvBinding(
+            name="obliq_bench_math",
+            length=SPLIT_LENGTH,
+            verifier=ObliqBenchMathVerifier(),
+            sub_verifier=None,
+            verifier_factory=OBLIQ_BENCH_MATH_VERIFIER_FACTORY,
         )
     raise ValueError(f"resolve_env_binding: unsupported loop.environment {environment!r}")
 
@@ -802,6 +814,8 @@ class _Experiment:
             return OOLONG_PAIRS_VERIFIER_FACTORY
         if isinstance(self.verifier, OolongVerifier) and self.verifier.task_set == "synth":
             return OOLONG_SYNTH_VERIFIER_FACTORY
+        if type(self.verifier) is ObliqBenchMathVerifier:
+            return OBLIQ_BENCH_MATH_VERIFIER_FACTORY
         raise ValueError(
             f"operational.validation_workers={self.config.operational.validation_workers} "
             "evaluates validation subjects in child processes, which rebuild the verifier "

@@ -1,9 +1,11 @@
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from examples.lambda_rlm_oolong_pairs_long_smoke import (
     B1_CONDITION,
+    DEFAULT_CONFIG,
     H0_STAR_CONDITION,
     LAMBDA_CONDITION,
     comparison_payload,
@@ -13,6 +15,7 @@ from examples.lambda_rlm_oolong_pairs_long_smoke import (
     summarize_entries,
     worst_case_spend,
 )
+from shrlm.experiment.config import CONFIG_PATH
 
 
 def entry(
@@ -39,6 +42,14 @@ def entry(
             "detail": f"precision={f1:.3f} recall={f1:.3f} f1={f1:.3f} missing=1 extra=1",
         },
     }
+
+
+def test_config_flag_defaults_to_shared_experiment_config() -> None:
+    assert DEFAULT_CONFIG == CONFIG_PATH
+    assert parse_args([]).config == CONFIG_PATH
+    assert parse_args(["--config", "configs/experiment_ox.toml"]).config == Path(
+        "configs/experiment_ox.toml"
+    )
 
 
 def test_compare_flag_preserves_lambda_only_default() -> None:
