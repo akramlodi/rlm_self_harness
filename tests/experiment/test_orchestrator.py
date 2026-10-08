@@ -61,6 +61,8 @@ from shrlm.experiment.orchestrator import (
     PROPOSALS_MARKER_FILENAME,
     PROPOSALS_MARKER_FORMAT,
     REAL_CHECK_DIR,
+    ROLE_HELD_IN,
+    ROLE_HELD_OUT,
     ROUND_MARKER_FILENAME,
     ROUND_MARKER_FORMAT,
     STOP_MAX_ROUNDS,
@@ -80,6 +82,7 @@ from shrlm.experiment.splits import (
     MANIFEST_FILE,
     SPLITS_DIR,
     LoaderFn,
+    materialize_splits,
     sha256_text,
     split_file_name,
 )
@@ -2370,7 +2373,7 @@ def _fake_real_execute_run(
 class TestOolongEnvironment:
     def test_resolve_env_binding_selects_oolong(self, tmp_path):
         binding = resolve_env_binding(_oolong_config(tmp_path))
-        assert (binding.name, binding.length) == ("oolong_synth", "short")
+        assert (binding.name, binding.lengths) == ("oolong_synth", ("short",))
         assert isinstance(binding.verifier, OolongVerifier) and binding.verifier.task_set == "synth"
         assert isinstance(binding.sub_verifier, OolongSubVerifier)
         assert binding.verifier_factory == OOLONG_SYNTH_VERIFIER_FACTORY
@@ -2381,10 +2384,53 @@ class TestOolongEnvironment:
 
         binding = resolve_env_binding(config)
 
-        assert (binding.name, binding.length) == ("oolong_pairs", "short")
+        assert (binding.name, binding.lengths) == ("oolong_pairs", ("short", "mid16k", "mid32k"))
         assert isinstance(binding.verifier, OolongPairsVerifier)
         assert binding.sub_verifier is None
         assert binding.verifier_factory == OOLONG_PAIRS_VERIFIER_FACTORY
+
+    def test_oolong_pairs_held_in_and_held_out_concatenate_across_bound_lengths(self, tmp_path):
+        config = make_config(tmp_path)
+        config = replace(
+            config,
+            loop=replace(config.loop, environment="oolong_pairs"),
+            splits=replace(config.splits, n_in=2, n_ho=2, test_short=1, test_long=1),
+            environments=replace(
+                config.environments,
+                oolong_pairs=replace(config.environments.oolong_pairs, n_short=5, n_long=5),
+            ),
+        )
+        binding = resolve_env_binding(config)
+        assert binding.lengths == ("short", "mid16k", "mid32k")
+
+        def pair_loader(config, length, limit, seed):
+            return [{"id": f"pairs-{length}-{i}", "gold_pairs": []} for i in range(limit)]
+
+        splits_dir = materialize_splits(
+            config, tmp_path / "exp", loaders={"oolong_pairs": pair_loader}
+        )
+
+        heldin = [
+            instance
+            for length in binding.lengths
+            for instance in orchestrator_module._read_split(
+                splits_dir, binding.name, length, ROLE_HELD_IN
+            )
+        ]
+        heldout = [
+            instance
+            for length in binding.lengths
+            for instance in orchestrator_module._read_split(
+                splits_dir, binding.name, length, ROLE_HELD_OUT
+            )
+        ]
+
+        # n_in=2 and n_ho=2 at each of the three bound lengths: the combined
+        # mining/validation pool is the concatenation, not any single length.
+        assert len(heldin) == 2 * 3
+        assert len(heldout) == 2 * 3
+        assert {str(i["id"]).split("-")[1] for i in heldin} == {"short", "mid16k", "mid32k"}
+        assert {str(i["id"]).split("-")[1] for i in heldout} == {"short", "mid16k", "mid32k"}
 
     def test_parallel_oolong_pairs_validation_resolves_the_default_factory(self, tmp_path):
         config = load_config(
@@ -2477,7 +2523,7 @@ class TestObliqBenchMathEnvironment:
 
         binding = resolve_env_binding(config)
 
-        assert (binding.name, binding.length) == ("obliq_bench_math", "short")
+        assert (binding.name, binding.lengths) == ("obliq_bench_math", ("short",))
         assert isinstance(binding.verifier, ObliqBenchMathVerifier)
         assert binding.sub_verifier is None
         assert binding.verifier_factory == OBLIQ_BENCH_MATH_VERIFIER_FACTORY
@@ -2673,21 +2719,21 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
     proposer = RepairProposer()
     factory = patch_runner(
         monkeypatch,
-        [final("[(11, 22)]")] * 4
-        + [final("[(11, 22), (11, 33), (22, 33)]")] * 2
-        + [final("[(11, 22)]")] * 2,
+        [final("[(11, 22)]")] * 12
+        + [final("[(11, 22), (11, 33), (22, 33)]")] * 6
+        + [final("[(11, 22)]")] * 6,
     )
     result = run_experiment(
         config,
         out,
         attributor_lm=MockLM(
-            responses=[attribution("incomplete_coverage"), attribution("premature_termination")] * 2
+            responses=[attribution("incomplete_coverage"), attribution("premature_termination")] * 20
         ),
         proposer_lm=proposer,
         loaders={**LOADERS, "oolong_pairs": pair_loader},
     )
     assert len(result.rounds) == 2
-    assert factory.total_calls == 8  # mining + baseline + one combined batch + next mining
+    assert factory.total_calls == 24  # (mining + baseline + one combined batch + next mining) x 3 lengths
     marker = json.loads((experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text())
     assert marker["preflight_profile"] == "oolong-pairs/v1"
     assert len(marker["candidate_ids"]) == 2

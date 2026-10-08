@@ -404,9 +404,12 @@ class TestOolongPairsEnvironment:
             splits=replace(config.splits, n_in=15, n_ho=15, test_short=10, test_long=40),
         )
 
+        optimization_roles = {"held_in": 15, "held_out": 15, "test": 10}
         assert split_plan(pairs_config) == {
             "oolong_pairs": {
-                "short": {"held_in": 15, "held_out": 15, "test": 10},
+                "short": optimization_roles,
+                "mid16k": optimization_roles,
+                "mid32k": optimization_roles,
                 "long": {"test": 40},
             }
         }
@@ -418,7 +421,7 @@ class TestOolongPairsEnvironment:
             splits=replace(config.splits, n_in=15, n_ho=15, test_short=11, test_long=41),
         )
 
-        with pytest.raises(ValueError, match=r"short roles require 41.*pool to 40"):
+        with pytest.raises(ValueError, match=r"optimization roles require 41.*pool.*to 40"):
             split_plan(short_overflow)
 
         long_overflow = replace(
@@ -442,9 +445,15 @@ class TestOolongPairsEnvironment:
         )
 
         expected_counts = {
-            "oolong_pairs_short_held_in.jsonl": config.splits.n_in,
-            "oolong_pairs_short_held_out.jsonl": config.splits.n_ho,
-            "oolong_pairs_short_test.jsonl": config.splits.test_short,
+            f"oolong_pairs_{length}_held_in.jsonl": config.splits.n_in
+            for length in ("short", "mid16k", "mid32k")
+        } | {
+            f"oolong_pairs_{length}_held_out.jsonl": config.splits.n_ho
+            for length in ("short", "mid16k", "mid32k")
+        } | {
+            f"oolong_pairs_{length}_test.jsonl": config.splits.test_short
+            for length in ("short", "mid16k", "mid32k")
+        } | {
             "oolong_pairs_long_test.jsonl": config.splits.test_long,
         }
         manifest = json.loads((splits_dir / MANIFEST_FILE).read_text())
