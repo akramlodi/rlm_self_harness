@@ -209,12 +209,18 @@ class PromotionSettings:
 
     ``promotion_config`` turns these into a real ``PromotionConfig``; a
     ``sub_call_band`` of None means the paper's unconstrained rule.
+    ``tau_regression`` may be a single number, or a ``[promotion.tau_regression]``
+    sub-table keyed by context length (e.g. ``8192 = 0.31``) for the
+    ``primary_quality`` metric's per-length noise margins -- see
+    ``shrlm.optimization.promotion.PromotionConfig`` for why a single margin
+    does not fit every context length.
     """
 
-    tau_regression: float
+    tau_regression: float | dict[str, float]
     tau_improvement: float
     cost_band: tuple[float, float]
     sub_call_band: tuple[float, float] | None = None
+    metric: str = "pass_count"
 
     def __post_init__(self) -> None:
         for name in ("cost_band", "sub_call_band"):
@@ -251,7 +257,19 @@ class GraphWalksConfig:
 
 @dataclass(frozen=True)
 class OolongPairsConfig:
-    """Pair-task environment: tasks, context lengths, and pool-size ceilings."""
+    """Pair-task environment: tasks, context lengths, and pool-size ceilings.
+
+    ``context_length_short``/``_mid16k``/``_mid32k`` are the three lengths
+    ``split_plan`` gives held_in/held_out/test roles when ``loop.environment
+    == "oolong_pairs"`` -- a blended-scale mining/validation pool rather than
+    optimizing against one fixed length and only ever *evaluating*
+    generalization elsewhere. ``context_length_long`` stays the separate,
+    test-only length (262144): never mined or validated against, only
+    reserved for final-harness evaluation, same as before this field pair
+    existed. The pool ceiling (``n_short``) applies identically at all three
+    optimization lengths -- confirmed live: every pinned length has exactly
+    the same 2-windows x 20-task_ids = 40-instance pool.
+    """
 
     dataset_repo: str
     subset: str
@@ -262,6 +280,8 @@ class OolongPairsConfig:
     max_scan: int
     n_short: int
     n_long: int
+    context_length_mid16k: int = 16384
+    context_length_mid32k: int = 32768
 
 
 @dataclass(frozen=True)
@@ -977,6 +997,7 @@ def promotion_config(config: ExperimentConfig) -> PromotionConfig:
     kwargs: dict[str, Any] = {
         "tau_regression": settings.tau_regression,
         "tau_improvement": settings.tau_improvement,
+        "metric": settings.metric,
         "cost_band": Band(lower=settings.cost_band[0], upper=settings.cost_band[1]),
     }
     if settings.sub_call_band is not None:

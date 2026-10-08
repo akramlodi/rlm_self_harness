@@ -43,6 +43,10 @@ PLAN_MERGE = "merge"
 # ``BASELINE_ID`` -- never a legal candidate id, so directories cannot collide).
 MERGED_SUBJECT_ID = "merged"
 
+METRIC_PASS_COUNT = "pass_count"
+METRIC_PRIMARY_QUALITY = "primary_quality"
+PROMOTION_METRICS = (METRIC_PASS_COUNT, METRIC_PRIMARY_QUALITY)
+
 # The two band-checked metrics: the recorded name (the overall per-run mean
 # on held-out instances), the summary's per-split total it is computed from, and
 # the ``PromotionConfig`` field naming its band.
@@ -106,24 +110,84 @@ class Band:
         return math.isinf(self.upper) or candidate_mean <= self.upper * baseline_mean
 
 
+def _is_nonneg_number(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int | float) and value >= 0
+
+
+def _regression_threshold(
+    tau_regression: float | Mapping[str, float], length: str | None = None
+) -> float:
+    """Resolve the regression margin for one check: a single scalar, or one
+    entry of a per-context-length mapping.
+
+    ``length=None`` is the pass-count check, which has no length axis; a
+    mapping there is a configuration error, not a candidate rejection, since
+    the rule cannot be evaluated at all without knowing which entry to use.
+    """
+    if isinstance(tau_regression, Mapping):
+        if length is None:
+            raise ValueError(
+                "tau_regression is a per-context-length mapping, but this check has no "
+                "context length to look it up by; pass-count promotion needs a single scalar"
+            )
+        if length not in tau_regression:
+            raise ValueError(
+                f"tau_regression has no entry for context_len={length!r}; configured "
+                f"lengths are {sorted(tau_regression)}"
+            )
+        return float(tau_regression[length])
+    return float(tau_regression)
+
+
 @dataclass(frozen=True)
 class PromotionConfig:
     """Promotion thresholds and resource multiplier bands.
 
     The held-out delta must meet ``tau_improvement`` and must not fall below
     ``-tau_regression``. Bands use held-out means only. Every decision records
-    these round-level parameters, including unscored constituent records."""
+    these round-level parameters, including unscored constituent records.
 
-    tau_regression: float = 0.0
+    ``tau_regression`` may be a single scalar (applied uniformly) or a mapping
+    of context length (as the string key ``primary_quality.by_context_length``
+    uses) to its own margin -- noise is not uniform across context lengths
+    (observed pairwise macro-F1 deltas on a frozen harness: ~0.54 at 8k,
+    ~0.02 at 16k, ~0.17 at 32k), so one global margin is either too loose
+    where the harness is quiet or too tight where it is noisy. Only the
+    ``primary_quality`` metric's per-length check can use a mapping; the
+    pass-count check has no length axis and requires a scalar.
+    """
+
+    tau_regression: float | dict[str, float] = 0.0
     tau_improvement: float = 0.0
+    metric: str = METRIC_PASS_COUNT
     cost_band: Band = field(default_factory=Band)
     sub_call_band: Band = field(default_factory=Band)
 
     def __post_init__(self) -> None:
-        for name in ("tau_regression", "tau_improvement"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
-                raise ValueError(f"{name} must be a number >= 0, got {value!r}")
+        if self.metric not in PROMOTION_METRICS:
+            raise ValueError(f"metric must be one of {PROMOTION_METRICS}, got {self.metric!r}")
+        if not _is_nonneg_number(self.tau_improvement):
+            raise ValueError(
+                f"tau_improvement must be a number >= 0, got {self.tau_improvement!r}"
+            )
+        if isinstance(self.tau_regression, Mapping):
+            if not self.tau_regression:
+                raise ValueError("tau_regression mapping must not be empty")
+            for length, value in self.tau_regression.items():
+                if not isinstance(length, str):
+                    raise ValueError(
+                        f"tau_regression mapping keys must be context-length strings, "
+                        f"got {length!r}"
+                    )
+                if not _is_nonneg_number(value):
+                    raise ValueError(
+                        f"tau_regression[{length!r}] must be a number >= 0, got {value!r}"
+                    )
+        elif not _is_nonneg_number(self.tau_regression):
+            raise ValueError(
+                "tau_regression must be a number >= 0, or a mapping of context length to "
+                f"such a number, got {self.tau_regression!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -146,7 +210,7 @@ class CandidateDecision:
     subject_id: str
     decision: str
     reasons: tuple[str, ...]
-    tau_regression: float
+    tau_regression: float | dict[str, float]
     tau_improvement: float
     harness_hash: str | None = None
     rule: dict[str, Any] | None = None
@@ -158,11 +222,11 @@ class CandidateDecision:
     def accepted(self) -> bool:
         return self.decision == DECISION_ACCEPTED
 
-    def delta(self, split_id: str) -> int:
-        """The pass-count delta on one split; only scored decisions have one."""
+    def delta(self, split_id: str) -> float:
+        """The configured metric delta on one split; only scored decisions have one."""
         if self.rule is None:
             raise ValueError(f"decision for {self.subject_id!r} was never scored; it has no deltas")
-        return int(self.rule[split_id]["delta"])
+        return float(self.rule[split_id]["delta"])
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -292,27 +356,77 @@ def score_candidate(
 
     reasons: list[str] = []
     rule: dict[str, Any] = {}
-    deltas: dict[str, int] = {}
+    deltas: dict[str, float] = {}
     for split_id in (SPLIT_HELDOUT,):
         base_split = baseline_summary["splits"][split_id]
         cand_split = candidate_summary["splits"][split_id]
-        delta = int(cand_split["pass_count"]) - int(base_split["pass_count"])
+        if config.metric == METRIC_PASS_COUNT:
+            baseline_value = float(base_split["pass_count"])
+            candidate_value = float(cand_split["pass_count"])
+            metric_rule: dict[str, Any] = {
+                "n_runs": base_split["n_runs"],
+                "baseline_pass_count": base_split["pass_count"],
+                "candidate_pass_count": cand_split["pass_count"],
+            }
+        else:
+            base_quality = base_split.get("primary_quality")
+            cand_quality = cand_split.get("primary_quality")
+            if base_quality is None or cand_quality is None:
+                raise ValueError("primary-quality promotion requires quality aggregates")
+            if base_quality["definition"] != cand_quality["definition"]:
+                raise ValueError("baseline and candidate primary-quality definitions differ")
+            base_strata = base_quality["by_context_length"]
+            cand_strata = cand_quality["by_context_length"]
+            if set(base_strata) != set(cand_strata) or not base_strata:
+                raise ValueError(
+                    "primary-quality promotion requires the same non-empty context-length strata"
+                )
+            stratum_deltas: dict[str, dict[str, Any]] = {}
+            for length in base_strata:
+                base_item = base_strata[length]
+                cand_item = cand_strata[length]
+                if base_item["n_runs"] != cand_item["n_runs"]:
+                    raise ValueError(
+                        f"context length {length} n_runs differ between baseline and candidate"
+                    )
+                stratum_delta = float(cand_item["mean"]) - float(base_item["mean"])
+                stratum_deltas[length] = {
+                    "n_runs": base_item["n_runs"],
+                    "baseline": base_item["mean"],
+                    "candidate": cand_item["mean"],
+                    "delta": stratum_delta,
+                }
+                length_tau_regression = _regression_threshold(config.tau_regression, length)
+                if stratum_delta < -length_tau_regression:
+                    reasons.append(
+                        f"{split_id} context_len={length} primary-quality delta "
+                        f"{stratum_delta:+.6f} regresses beyond "
+                        f"tau_regression={length_tau_regression}"
+                    )
+            baseline_value = float(base_quality["macro_by_context_length"])
+            candidate_value = float(cand_quality["macro_by_context_length"])
+            metric_rule = {
+                "n_runs": base_quality["n_runs"],
+                "definition": base_quality["definition"],
+                "baseline_macro_by_context_length": baseline_value,
+                "candidate_macro_by_context_length": candidate_value,
+                "by_context_length": stratum_deltas,
+            }
+        delta = candidate_value - baseline_value
         deltas[split_id] = delta
-        rule[split_id] = {
-            "n_runs": base_split["n_runs"],
-            "baseline_pass_count": base_split["pass_count"],
-            "candidate_pass_count": cand_split["pass_count"],
-            "delta": delta,
-        }
-        if delta < -config.tau_regression:
-            reasons.append(
-                f"{split_id} pass-count delta {delta} regresses beyond "
-                f"tau_regression={config.tau_regression}"
-            )
-    if max(deltas.values()) < config.tau_improvement:
+        rule[split_id] = {"metric": config.metric, **metric_rule, "delta": delta}
+        if config.metric == METRIC_PASS_COUNT:
+            pass_count_tau_regression = _regression_threshold(config.tau_regression)
+            if delta < -pass_count_tau_regression:
+                reasons.append(
+                    f"{split_id} pass-count delta {delta} regresses beyond "
+                    f"tau_regression={pass_count_tau_regression}"
+                )
+    if deltas[SPLIT_HELDOUT] < config.tau_improvement:
         reasons.append(
-            f"heldout pass-count delta is below tau_improvement={config.tau_improvement} "
-            f"(heldout {deltas[SPLIT_HELDOUT]:+d})"
+            f"heldout {config.metric} delta is below "
+            f"tau_improvement={config.tau_improvement} "
+            f"(heldout {deltas[SPLIT_HELDOUT]:+.6f})"
         )
 
     band: dict[str, Any] = {}
@@ -511,6 +625,8 @@ __all__ = [
     "DECISION_PROMOTED",
     "DECISION_REJECTED",
     "MERGED_SUBJECT_ID",
+    "METRIC_PASS_COUNT",
+    "METRIC_PRIMARY_QUALITY",
     "PLAN_MERGE",
     "PLAN_NONE",
     "PLAN_SINGLE",

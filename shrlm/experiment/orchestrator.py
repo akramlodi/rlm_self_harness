@@ -133,7 +133,12 @@ from shrlm.experiment.config import (
     validation_caps,
 )
 from shrlm.experiment.errors import ExperimentError
-from shrlm.experiment.splits import LoaderFn, materialize_splits, split_file_name
+from shrlm.experiment.splits import (
+    OOLONG_PAIRS_OPTIMIZATION_LENGTHS,
+    LoaderFn,
+    materialize_splits,
+    split_file_name,
+)
 from shrlm.experiment.usage import (
     STAGE_USAGE_FILE,
     StageMeter,
@@ -262,14 +267,21 @@ OBLIQ_BENCH_MATH_VERIFIER_FACTORY = (
 class EnvBinding:
     """Which environment the optimization loop mines and validates this run.
 
-    ``name`` / ``length`` locate the held-in/held-out/test split files;
+    ``name`` / ``lengths`` locate the held-in/held-out/test split files;
     ``verifier`` / ``sub_verifier`` are the defaults ``run_experiment`` installs
     when the caller passes neither; ``verifier_factory`` is the dotted path a
     parallel validation stage rebuilds the verifier from in its child processes.
+
+    ``lengths`` is a tuple, not a single length: every environment except
+    ``oolong_pairs`` binds one ("short"), unchanged from before this field was
+    pluralized. ``oolong_pairs`` binds three (the blended optimization
+    lengths) -- held_in/held_out are each the concatenation of that role's
+    instances across all bound lengths, combined into one mining/validation
+    pool rather than one fixed length with the others evaluation-only.
     """
 
     name: str
-    length: str
+    lengths: tuple[str, ...]
     verifier: Verifier
     sub_verifier: SubVerifier | None
     verifier_factory: str
@@ -285,7 +297,7 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
     if environment == "graphwalks":
         return EnvBinding(
             name="graphwalks",
-            length=SPLIT_LENGTH,
+            lengths=(SPLIT_LENGTH,),
             verifier=GraphWalksVerifier(),
             sub_verifier=GraphWalksSubVerifier(),
             verifier_factory=GRAPHWALKS_VERIFIER_FACTORY,
@@ -293,7 +305,7 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
     if environment == "oolong_synth":
         return EnvBinding(
             name="oolong_synth",
-            length=SPLIT_LENGTH,
+            lengths=(SPLIT_LENGTH,),
             verifier=OolongVerifier(task_set="synth"),
             sub_verifier=OolongSubVerifier(),
             verifier_factory=OOLONG_SYNTH_VERIFIER_FACTORY,
@@ -301,7 +313,7 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
     if environment == "oolong_pairs":
         return EnvBinding(
             name="oolong_pairs",
-            length=SPLIT_LENGTH,
+            lengths=OOLONG_PAIRS_OPTIMIZATION_LENGTHS,
             verifier=OolongPairsVerifier(),
             sub_verifier=None,
             verifier_factory=OOLONG_PAIRS_VERIFIER_FACTORY,
@@ -309,7 +321,7 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
     if environment == "obliq_bench_math":
         return EnvBinding(
             name="obliq_bench_math",
-            length=SPLIT_LENGTH,
+            lengths=(SPLIT_LENGTH,),
             verifier=ObliqBenchMathVerifier(),
             sub_verifier=None,
             verifier_factory=OBLIQ_BENCH_MATH_VERIFIER_FACTORY,
@@ -848,8 +860,16 @@ class _Experiment:
         splits_dir = materialize_splits(self.config, self.out_dir, loaders=self.loaders)
         self.splits_dir = splits_dir
         self.splits = ValidationSplits(
-            heldin=_read_split(splits_dir, self.binding.name, self.binding.length, ROLE_HELD_IN),
-            heldout=_read_split(splits_dir, self.binding.name, self.binding.length, ROLE_HELD_OUT),
+            heldin=[
+                instance
+                for length in self.binding.lengths
+                for instance in _read_split(splits_dir, self.binding.name, length, ROLE_HELD_IN)
+            ],
+            heldout=[
+                instance
+                for length in self.binding.lengths
+                for instance in _read_split(splits_dir, self.binding.name, length, ROLE_HELD_OUT)
+            ],
         )
 
         incumbent: Harness = HARNESSES[self.config.loop.initial_harness]
@@ -1087,9 +1107,13 @@ class _Experiment:
                 mining_parent,
                 round_index,
                 miner,
-                split_id=split_file_name(
-                    self.binding.name, self.binding.length, ROLE_HELD_IN
-                ).removesuffix(".jsonl"),
+                # An opaque bundle label (``mine_round``'s docstring: "the
+                # evaluation split identifier recorded in the bundle"), never
+                # parsed back apart -- a single length joins to the same
+                # string ``split_file_name`` would have produced; several
+                # bound lengths (the blended oolong_pairs case) join with "+"
+                # so the bundle records that mining spanned more than one.
+                split_id=f"{self.binding.name}_{'+'.join(self.binding.lengths)}_{ROLE_HELD_IN}",
                 created_at=_interrupted_bundle_created_at(bundle_path),
             )
             if result.errors:

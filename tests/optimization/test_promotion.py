@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from shrlm.environments.diagnostics import SET_QUALITY
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.candidates import (
     GATE_SCHEMA,
@@ -27,6 +28,7 @@ from shrlm.optimization.promotion import (
     DECISION_OVER_BUDGET,
     DECISION_PROMOTED,
     DECISION_REJECTED,
+    METRIC_PRIMARY_QUALITY,
     PLAN_MERGE,
     PLAN_NONE,
     PLAN_SINGLE,
@@ -92,7 +94,7 @@ def make_summary(
 ) -> dict[str, Any]:
     return {
         "format": "shrlm-validation-summary/v2",
-        "validation_protocol": "heldout-batch/v2",
+        "validation_protocol": "heldout-batch/v3",
         "subject_id": subject_id,
         "harness_hash": f"hash-{subject_id}",
         "repetitions": 2,
@@ -106,6 +108,30 @@ def make_summary(
 
 
 BASELINE = make_summary(BASELINE_ID, 2, 2)
+
+
+def with_quality(
+    summary: dict[str, Any],
+    by_length: dict[str, float],
+) -> dict[str, Any]:
+    result = dict(summary)
+    splits = dict(summary["splits"])
+    heldout = dict(splits[SPLIT_HELDOUT])
+    n_per_length = heldout["n_runs"] // len(by_length)
+    heldout["primary_quality"] = {
+        "definition": SET_QUALITY.to_dict(),
+        "n_runs": heldout["n_runs"],
+        "total": sum(by_length.values()) * n_per_length,
+        "mean": sum(by_length.values()) / len(by_length),
+        "macro_by_context_length": sum(by_length.values()) / len(by_length),
+        "by_context_length": {
+            length: {"n_runs": n_per_length, "total": value * n_per_length, "mean": value}
+            for length, value in by_length.items()
+        },
+    }
+    splits[SPLIT_HELDOUT] = heldout
+    result["splits"] = splits
+    return result
 
 
 def fake_evaluation(summary: dict[str, Any]) -> SubjectEvaluation:
@@ -259,6 +285,104 @@ class TestNoiseMargins:
             PromotionConfig(tau_regression=-0.5)
         with pytest.raises(ValueError, match="tau_improvement"):
             PromotionConfig(tau_improvement=-1)
+
+    def test_per_length_tau_regression_mapping_is_accepted(self):
+        config = PromotionConfig(tau_regression={"8192": 0.5, "32768": 0.1})
+        assert config.tau_regression == {"8192": 0.5, "32768": 0.1}
+
+    def test_empty_tau_regression_mapping_is_rejected(self):
+        with pytest.raises(ValueError, match="tau_regression mapping must not be empty"):
+            PromotionConfig(tau_regression={})
+
+    def test_negative_value_in_tau_regression_mapping_is_rejected(self):
+        with pytest.raises(ValueError, match="tau_regression\\['32768'\\]"):
+            PromotionConfig(tau_regression={"8192": 0.5, "32768": -0.1})
+
+
+class TestPrimaryQualityRule:
+    def test_macro_f1_improvement_with_no_length_regression_accepts(self):
+        baseline = with_quality(BASELINE, {"8192": 0.50, "32768": 0.40})
+        candidate = with_quality(
+            make_summary("cand-a", 2, 2), {"8192": 0.55, "32768": 0.45}
+        )
+        decision = score_candidate(
+            baseline,
+            candidate,
+            PromotionConfig(metric=METRIC_PRIMARY_QUALITY, tau_improvement=0.04),
+        )
+        assert decision.accepted
+        assert decision.delta(SPLIT_HELDOUT) == pytest.approx(0.05)
+
+    def test_macro_gain_cannot_hide_a_per_length_regression(self):
+        baseline = with_quality(BASELINE, {"8192": 0.50, "32768": 0.50})
+        candidate = with_quality(
+            make_summary("cand-a", 2, 2), {"8192": 0.80, "32768": 0.40}
+        )
+        decision = score_candidate(
+            baseline,
+            candidate,
+            PromotionConfig(
+                metric=METRIC_PRIMARY_QUALITY,
+                tau_improvement=0.05,
+                tau_regression=0.05,
+            ),
+        )
+        assert decision.decision == DECISION_REJECTED
+        assert any("context_len=32768" in reason for reason in decision.reasons)
+
+    def test_quality_gate_refuses_unmatched_context_lengths(self):
+        baseline = with_quality(BASELINE, {"8192": 0.50, "32768": 0.50})
+        candidate = with_quality(make_summary("cand-a", 2, 2), {"8192": 0.60})
+        with pytest.raises(ValueError, match="same non-empty context-length strata"):
+            score_candidate(
+                baseline,
+                candidate,
+                PromotionConfig(metric=METRIC_PRIMARY_QUALITY),
+            )
+
+    def test_per_length_tau_regression_catches_a_regression_a_uniform_margin_would_miss(self):
+        # 32768 regresses by 0.08: tolerable under a loose uniform margin (0.5,
+        # calibrated from a noisier length), but a real regression once judged
+        # against 32768's own, much tighter observed noise floor (0.05).
+        baseline = with_quality(BASELINE, {"8192": 0.50, "32768": 0.50})
+        candidate = with_quality(make_summary("cand-a", 2, 2), {"8192": 0.70, "32768": 0.42})
+        loose_uniform = PromotionConfig(
+            metric=METRIC_PRIMARY_QUALITY, tau_improvement=0.05, tau_regression=0.5
+        )
+        assert score_candidate(baseline, candidate, loose_uniform).accepted
+
+        per_length = PromotionConfig(
+            metric=METRIC_PRIMARY_QUALITY,
+            tau_improvement=0.05,
+            tau_regression={"8192": 0.5, "32768": 0.05},
+        )
+        decision = score_candidate(baseline, candidate, per_length)
+        assert decision.decision == DECISION_REJECTED
+        assert any("context_len=32768" in reason for reason in decision.reasons)
+
+    def test_per_length_tau_regression_allows_a_regression_within_its_own_margin(self):
+        baseline = with_quality(BASELINE, {"8192": 0.50, "32768": 0.50})
+        candidate = with_quality(make_summary("cand-a", 2, 2), {"8192": 0.70, "32768": 0.46})
+        config = PromotionConfig(
+            metric=METRIC_PRIMARY_QUALITY,
+            tau_improvement=0.05,
+            tau_regression={"8192": 0.5, "32768": 0.05},
+        )
+        assert score_candidate(baseline, candidate, config).accepted
+
+    def test_per_length_tau_regression_missing_a_measured_length_raises(self):
+        baseline = with_quality(BASELINE, {"8192": 0.50, "32768": 0.50})
+        candidate = with_quality(make_summary("cand-a", 2, 2), {"8192": 0.60, "32768": 0.60})
+        config = PromotionConfig(
+            metric=METRIC_PRIMARY_QUALITY, tau_regression={"8192": 0.5}
+        )
+        with pytest.raises(ValueError, match="no entry for context_len='32768'"):
+            score_candidate(baseline, candidate, config)
+
+    def test_pass_count_metric_with_a_mapping_tau_regression_raises(self):
+        config = PromotionConfig(tau_regression={"8192": 0.5})
+        with pytest.raises(ValueError, match="pass-count promotion needs a single scalar"):
+            score(2, 2, config)
 
 
 # ---------------------------------------------------------------------------

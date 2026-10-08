@@ -57,6 +57,20 @@ MANIFEST_FILE = "manifest.json"
 
 LENGTHS: tuple[str, ...] = ("short", "long")
 
+# OOLONG-Pairs' three blended optimization lengths (held_in/held_out/test),
+# in mining/validation order; "long" is the separate, test-only length and is
+# never part of this tuple -- see ``split_plan``'s oolong_pairs branch.
+OOLONG_PAIRS_OPTIMIZATION_LENGTHS: tuple[str, ...] = ("short", "mid16k", "mid32k")
+
+# OOLONG-Pairs' full length vocabulary for ``load_oolong_pairs_split``'s
+# validity check: the three blended optimization lengths plus the separate
+# test-only "long". Deliberately NOT the shared ``LENGTHS`` -- that constant
+# is also the fixed short/long reporting-bucket vocabulary every other
+# environment's cost/scenario reporting (``report.py``, ``scenarios.py``,
+# ``evaluation.py``) assumes is exactly two long, so widening it here would
+# have silently broken those unrelated environments' reporting.
+OOLONG_PAIRS_LENGTHS: tuple[str, ...] = (*OOLONG_PAIRS_OPTIMIZATION_LENGTHS, "long")
+
 # loader(config, length, limit, seed) -> exactly ``limit`` instance dicts.
 LoaderFn = Callable[[ExperimentConfig, str, int, int], list[dict[str, Any]]]
 
@@ -95,11 +109,24 @@ def load_graphwalks_split(
 def load_oolong_pairs_split(
     config: ExperimentConfig, length: str, limit: int, seed: int
 ) -> list[dict[str, Any]]:
-    """The OOLONG-Pairs loader wiring: config -> ``load_oolong_pairs`` arguments."""
+    """The OOLONG-Pairs loader wiring: config -> ``load_oolong_pairs`` arguments.
+
+    Four named lengths, not two: ``short``/``mid16k``/``mid32k`` are the
+    blended optimization lengths (8192/16384/32768 at the shipped config),
+    ``long`` is the separate 262144-token length reserved for final
+    evaluation only.
+    """
     env = config.environments.oolong_pairs
-    if length not in LENGTHS:
-        raise ValueError(f"unknown split length {length!r}; expected one of {LENGTHS}")
-    context_length = env.context_length_short if length == "short" else env.context_length_long
+    if length not in OOLONG_PAIRS_LENGTHS:
+        raise ValueError(
+            f"unknown split length {length!r}; expected one of {OOLONG_PAIRS_LENGTHS}"
+        )
+    context_length = {
+        "short": env.context_length_short,
+        "mid16k": env.context_length_mid16k,
+        "mid32k": env.context_length_mid32k,
+        "long": env.context_length_long,
+    }[length]
     return load_oolong_pairs_from_config(env, n=limit, seed=seed, context_lengths=(context_length,))
 
 
@@ -196,12 +223,19 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
         return plan
     if config.loop.environment == "oolong_pairs":
         oolong_pairs = config.environments.oolong_pairs
-        short_total = splits.n_in + splits.n_ho + splits.test_short
-        if short_total > oolong_pairs.n_short:
+        # Blended mining/validation: the same n_in/n_ho/test_short roles at
+        # each of the three optimization lengths (8192/16384/32768 at the
+        # shipped config), not one fixed length -- held_in and held_out for
+        # mining/promotion draw from all three, combined. ``long`` (262144)
+        # stays the separate, test-only length: never mined or validated,
+        # only reserved for final-harness evaluation.
+        optimization_total = splits.n_in + splits.n_ho + splits.test_short
+        if optimization_total > oolong_pairs.n_short:
             raise ValueError(
-                "oolong_pairs short roles require "
-                f"{short_total} instances, but environments.oolong_pairs.n_short "
-                f"limits the pinned pool to {oolong_pairs.n_short}"
+                "oolong_pairs optimization roles require "
+                f"{optimization_total} instances at each blended length, but "
+                "environments.oolong_pairs.n_short limits the pinned pool "
+                f"(at every length) to {oolong_pairs.n_short}"
             )
         if splits.test_long > oolong_pairs.n_long:
             raise ValueError(
@@ -209,12 +243,16 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 f"{splits.test_long} instances, but environments.oolong_pairs.n_long "
                 f"limits the pinned pool to {oolong_pairs.n_long}"
             )
+        optimization_roles = {
+            "held_in": splits.n_in,
+            "held_out": splits.n_ho,
+            "test": splits.test_short,
+        }
         return {
             "oolong_pairs": {
-                "short": {
-                    "held_in": splits.n_in,
-                    "held_out": splits.n_ho,
-                    "test": splits.test_short,
+                **{
+                    length: dict(optimization_roles)
+                    for length in OOLONG_PAIRS_OPTIMIZATION_LENGTHS
                 },
                 "long": {"test": splits.test_long},
             }

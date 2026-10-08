@@ -78,10 +78,10 @@ SPLIT_HELDOUT = "heldout"
 EVAL_ROUND_INDEX = 0
 
 SUMMARY_FILENAME = "summary.json"
-# v2 admits equality at the exact-pass improvement threshold. Keep old
-# experiments from silently resuming under a different promotion rule.
-VALIDATION_PROTOCOL = "heldout-batch/v2"
-SUMMARY_FORMAT = "shrlm-validation-summary/v3"
+# v3 can aggregate verifier-owned quality and stratify it by context length.
+# Keep old experiments from silently resuming under a different promotion rule.
+VALIDATION_PROTOCOL = "heldout-batch/v3"
+SUMMARY_FORMAT = "shrlm-validation-summary/v4"
 
 # The promotion ledger (U5): one JSONL record per candidate (and per merged
 # harness) under the round directory, plus the round's decision summary.
@@ -254,7 +254,10 @@ class RoundEvaluation:
 # ---------------------------------------------------------------------------
 
 
-def split_aggregate(split_path: Path | str) -> dict[str, Any]:
+def split_aggregate(
+    split_path: Path | str,
+    primary_quality: QualityDefinition | None = None,
+) -> dict[str, Any]:
     """Recompute one split's aggregate from its persisted round alone.
 
     Pass counts and costs come straight from the manifest lines; sub-call
@@ -294,7 +297,7 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
     n_runs = len(entries)
     pass_count = sum(1 for entry in entries if entry["passed"])
     total_cost = float(sum(entry["cost"] for entry in entries if entry.get("cost") is not None))
-    return {
+    aggregate = {
         "harness_hash": str(envelope["hash"]),
         "behavior": summarize_behavior(observed_runs),
         # The accounting rules these figures were produced under, read from the
@@ -322,6 +325,54 @@ def split_aggregate(split_path: Path | str) -> dict[str, Any]:
         "total_skill_loads": total_skill_loads,
         "mean_skill_loads": total_skill_loads / n_runs if n_runs else None,
     }
+    if primary_quality is not None:
+        quality_values: list[float] = []
+        by_context_length: dict[str, list[float]] = {}
+        for entry, (instance, _completion) in zip(entries, runs, strict=True):
+            verdict = entry["verdict"]
+            measurement = verdict.get("quality")
+            if measurement is not None:
+                if measurement.get("definition_id") != primary_quality.identifier:
+                    raise ValueError(
+                        "persisted quality definition does not match the verifier contract: "
+                        f"{measurement.get('definition_id')!r} != "
+                        f"{primary_quality.identifier!r}"
+                    )
+                value = float(measurement["value"])
+            else:
+                cause = entry.get("cause")
+                if cause not in primary_quality.terminal_values:
+                    raise ValueError(
+                        f"run {entry.get('run_id')!r} has no {primary_quality.identifier} "
+                        f"measurement and cause {cause!r} has no registered terminal value"
+                    )
+                value = float(primary_quality.terminal_values[cause])
+            quality_values.append(value)
+            if "context_len" in instance:
+                by_context_length.setdefault(str(instance["context_len"]), []).append(value)
+
+        quality_by_context_length = {
+            length: {
+                "n_runs": len(values),
+                "total": sum(values),
+                "mean": sum(values) / len(values),
+            }
+            for length, values in sorted(by_context_length.items(), key=lambda item: int(item[0]))
+        }
+        aggregate["primary_quality"] = {
+            "definition": primary_quality.to_dict(),
+            "n_runs": len(quality_values),
+            "total": sum(quality_values),
+            "mean": sum(quality_values) / len(quality_values) if quality_values else None,
+            "macro_by_context_length": (
+                sum(item["mean"] for item in quality_by_context_length.values())
+                / len(quality_by_context_length)
+                if quality_by_context_length
+                else None
+            ),
+            "by_context_length": quality_by_context_length,
+        }
+    return aggregate
 
 
 def load_summary(subject_path: Path | str) -> dict[str, Any]:
@@ -330,6 +381,7 @@ def load_summary(subject_path: Path | str) -> dict[str, Any]:
     payload = json.loads(path.read_text())
     if payload.get("format") not in (
         SUMMARY_FORMAT,
+        "shrlm-validation-summary/v3",
         "shrlm-validation-summary/v2",
         "shrlm-validation-summary/v1",
     ):
@@ -421,6 +473,15 @@ def evaluate_subject(
 
     subject_path = subject_dir(config.out_dir, config.round_index, subject_id)
     check_subject_contract(subject_id, harness, config)
+    verifier_config_method = getattr(config.verifier, "config", None)
+    verifier_config = (
+        dict(verifier_config_method()) if callable(verifier_config_method) else {}
+    )
+    primary_quality = (
+        QualityDefinition.from_dict(verifier_config["primary_quality"])
+        if "primary_quality" in verifier_config
+        else None
+    )
     split_summaries: dict[str, dict[str, Any]] = {}
     for split_id, instances in config.splits.evaluation_items():
         split_path = split_dir(config.out_dir, config.round_index, subject_id, split_id)
@@ -443,7 +504,7 @@ def evaluate_subject(
             "n_instances": len(instances),
             "outcome": result.outcome,
             "skipped_run_ids": list(result.skipped_run_ids),
-            **split_aggregate(split_path),
+            **split_aggregate(split_path, primary_quality),
         }
 
     # The split aggregate carries the hash its persisted harness.json
