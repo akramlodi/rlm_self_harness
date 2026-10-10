@@ -12,6 +12,101 @@ from tests.optimization.test_validation import ClientFactory, final
 from tests.optimization.test_validation_e2e import edited, make_config, write_candidate
 
 
+def pair_round_config(tmp_path):
+    from shrlm.environments.oolong_pairs import OolongPairsVerifier
+
+    config = make_config(tmp_path, verifier=OolongPairsVerifier())
+    instances = [
+        {
+            "id": f"pair-{i}",
+            "prompt": "Find pairs",
+            "context_len": 8192,
+            "gold_pairs": [(11, 22), (11, 33)],
+        }
+        for i in range(2)
+    ]
+    return replace(config, splits=replace(config.splits, heldout=instances))
+
+
+@pytest.mark.parametrize("metric", ["primary_quality", "pass_count"])
+def test_interrupted_quality_round_seals_metric_before_replay(tmp_path, monkeypatch, metric):
+    import shrlm.optimization.validation as validation
+    from shrlm.optimization.promotion import PromotionConfig
+
+    proposals = tmp_path / "proposals"
+    write_candidate(proposals, edited("a", "execution_instruction", "a"), "S3", "a")
+    config = pair_round_config(tmp_path)
+    promotion = PromotionConfig(metric="primary_quality", tau_improvement=0.1)
+    factory = ClientFactory([final("WRONG")] * 2 + [final("[(11, 22)]")] * 2)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    writer = validation.write_promotion_ledger
+
+    def crash_before_ledger(*args, **kwargs):
+        raise RuntimeError("crash before ledger")
+
+    monkeypatch.setattr(validation, "write_promotion_ledger", crash_before_ledger)
+    with pytest.raises(RuntimeError, match="crash before ledger"):
+        validate_round(H0, proposals, config, promotion)
+    assert factory.total_calls == 4
+    round_path = validation.round_dir(config.out_dir, config.round_index)
+    before = {p: p.read_bytes() for p in round_path.rglob("*") if p.is_file()}
+    monkeypatch.setattr(validation, "write_promotion_ledger", writer)
+    idle = ClientFactory([])
+    monkeypatch.setattr(rlm_module, "get_client", idle)
+    if metric == "pass_count":
+        with pytest.raises(ValueError, match="different validation contract"):
+            validate_round(H0, proposals, config, replace(promotion, metric=metric))
+        assert before == {p: p.read_bytes() for p in round_path.rglob("*") if p.is_file()}
+    else:
+        assert validate_round(H0, proposals, config, promotion).promoted
+    assert idle.total_calls == 0
+
+
+@pytest.mark.parametrize("metric", ["primary_quality", "pass_count"])
+def test_missing_promotion_metric_refuses_resume_without_rewriting(tmp_path, monkeypatch, metric):
+    from shrlm.optimization.promotion import PromotionConfig
+
+    proposals = tmp_path / "proposals"
+    write_candidate(proposals, edited("a", "execution_instruction", "a"), "S3", "a")
+    config = pair_round_config(tmp_path)
+    promotion = PromotionConfig(metric=metric)
+    factory = ClientFactory([final("WRONG")] * 2 + [final("[(11, 22)]")] * 2)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    result = validate_round(H0, proposals, config, promotion)
+    contract_path = result.round_path / "validation.json"
+    contract = json.loads(contract_path.read_text())
+    contract["promotion"].pop("metric", None)
+    contract_path.write_text(json.dumps(contract, sort_keys=True, indent=2) + "\n")
+    before = {p: p.read_bytes() for p in result.round_path.rglob("*") if p.is_file()}
+    idle = ClientFactory([])
+    monkeypatch.setattr(rlm_module, "get_client", idle)
+    with pytest.raises(ValueError, match="different validation contract; use a fresh directory"):
+        validate_round(H0, proposals, config, promotion)
+    assert idle.total_calls == 0
+    assert before == {p: p.read_bytes() for p in result.round_path.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("metric", ["primary_quality", "pass_count"])
+def test_explicit_metric_contract_replays_without_writes(tmp_path, monkeypatch, metric):
+    from shrlm.optimization.promotion import PromotionConfig
+
+    proposals = tmp_path / "proposals"
+    write_candidate(proposals, edited("a", "execution_instruction", "a"), "S3", "a")
+    config = pair_round_config(tmp_path)
+    promotion = PromotionConfig(metric=metric)
+    factory = ClientFactory([final("WRONG")] * 2 + [final("[(11, 22)]")] * 2)
+    monkeypatch.setattr(rlm_module, "get_client", factory)
+    result = validate_round(H0, proposals, config, promotion)
+    contract = json.loads((result.round_path / "validation.json").read_text())
+    assert contract["promotion"]["metric"] == metric
+    before = {p: p.read_bytes() for p in result.round_path.rglob("*") if p.is_file()}
+    idle = ClientFactory([])
+    monkeypatch.setattr(rlm_module, "get_client", idle)
+    assert validate_round(H0, proposals, config, promotion).ledger.records == result.ledger.records
+    assert idle.total_calls == 0
+    assert before == {p: p.read_bytes() for p in result.round_path.rglob("*") if p.is_file()}
+
+
 @pytest.mark.parametrize("missing_partner", [False, True])
 def test_activation_pair_uses_existing_batch_gate(tmp_path, monkeypatch, missing_partner):
     from shrlm.optimization.proposal import propose_round

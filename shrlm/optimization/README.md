@@ -246,10 +246,13 @@ subject receives a measured verdict. A rejected or over-budget batch promotes no
 Analysis leaves missing held-in validation accuracy blank and counts bundled participation
 separately from individual promotion.
 
-Resume checks the protocol, held-out sample, repetitions, caps, backend, incumbent, and batch
-before model calls. Use a fresh output directory for legacy validation evidence or changed
-inputs; old v1 artifacts remain readable for analysis. Identical current-protocol inputs
-reuse completed runs, including after changing worker concurrency.
+Resume checks the protocol, held-out sample, repetitions, caps, backend, incumbent, batch,
+and promotion metric, thresholds, and resource bands before model calls. Use a fresh output
+directory for legacy validation evidence or changed inputs; old artifacts remain readable
+for analysis. A saved validation contract without `promotion.metric` is ambiguous and cannot
+be replayed, including when an interrupted experiment re-enters validation. Completed
+experiment rounds restored from their round markers retain the existing restoration path.
+Identical sealed inputs reuse completed runs, including after changing worker concurrency.
 
 ### `run_worker.py` — one run per child process, inside a subject
 

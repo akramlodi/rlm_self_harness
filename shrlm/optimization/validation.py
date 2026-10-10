@@ -474,9 +474,7 @@ def evaluate_subject(
     subject_path = subject_dir(config.out_dir, config.round_index, subject_id)
     check_subject_contract(subject_id, harness, config)
     verifier_config_method = getattr(config.verifier, "config", None)
-    verifier_config = (
-        dict(verifier_config_method()) if callable(verifier_config_method) else {}
-    )
+    verifier_config = dict(verifier_config_method()) if callable(verifier_config_method) else {}
     primary_quality = (
         QualityDefinition.from_dict(verifier_config["primary_quality"])
         if "primary_quality" in verifier_config
@@ -1070,6 +1068,7 @@ def validate_round(
                 "duplicate_evaluation": duplicate,
                 "rejections": [r.to_dict() for r in rejections],
                 "promotion": {
+                    "metric": pconfig.metric,
                     "tau_regression": pconfig.tau_regression,
                     "tau_improvement": pconfig.tau_improvement,
                     "cost_band": [pconfig.cost_band.lower, str(pconfig.cost_band.upper)],
