@@ -1,9 +1,9 @@
 """Pure composition and promotion decisions for held-out batch validation.
 
 ``plan_batch`` composes all admitted edits before validation and rejects any
-surface collision. ``score_candidate`` compares held-out pass counts and
-held-out cost/sub-call means against the incumbent. The batch must clear the
-configured improvement margin and resource bands. No constituent is scored
+surface collision. ``score_candidate`` compares configured held-out pass counts
+or verifier-owned primary quality and cost/sub-call means against the incumbent.
+The batch must clear the configured improvement margin and resource bands. No constituent is scored
 individually, and a failed batch has no individual fallback."""
 
 import math
@@ -46,6 +46,8 @@ MERGED_SUBJECT_ID = "merged"
 METRIC_PASS_COUNT = "pass_count"
 METRIC_PRIMARY_QUALITY = "primary_quality"
 PROMOTION_METRICS = (METRIC_PASS_COUNT, METRIC_PRIMARY_QUALITY)
+# Equality at a quality threshold must survive averaging and float subtraction.
+PRIMARY_QUALITY_ABS_TOL = 1e-12
 
 # The two band-checked metrics: the recorded name (the overall per-run mean
 # on held-out instances), the summary's per-split total it is computed from, and
@@ -167,9 +169,7 @@ class PromotionConfig:
         if self.metric not in PROMOTION_METRICS:
             raise ValueError(f"metric must be one of {PROMOTION_METRICS}, got {self.metric!r}")
         if not _is_nonneg_number(self.tau_improvement):
-            raise ValueError(
-                f"tau_improvement must be a number >= 0, got {self.tau_improvement!r}"
-            )
+            raise ValueError(f"tau_improvement must be a number >= 0, got {self.tau_improvement!r}")
         if isinstance(self.tau_regression, Mapping):
             if not self.tau_regression:
                 raise ValueError("tau_regression mapping must not be empty")
@@ -397,7 +397,12 @@ def score_candidate(
                     "delta": stratum_delta,
                 }
                 length_tau_regression = _regression_threshold(config.tau_regression, length)
-                if stratum_delta < -length_tau_regression:
+                if stratum_delta < -length_tau_regression and not math.isclose(
+                    stratum_delta,
+                    -length_tau_regression,
+                    rel_tol=0.0,
+                    abs_tol=PRIMARY_QUALITY_ABS_TOL,
+                ):
                     reasons.append(
                         f"{split_id} context_len={length} primary-quality delta "
                         f"{stratum_delta:+.6f} regresses beyond "
@@ -422,7 +427,15 @@ def score_candidate(
                     f"{split_id} pass-count delta {delta} regresses beyond "
                     f"tau_regression={pass_count_tau_regression}"
                 )
-    if deltas[SPLIT_HELDOUT] < config.tau_improvement:
+    if deltas[SPLIT_HELDOUT] < config.tau_improvement and not (
+        config.metric == METRIC_PRIMARY_QUALITY
+        and math.isclose(
+            deltas[SPLIT_HELDOUT],
+            config.tau_improvement,
+            rel_tol=0.0,
+            abs_tol=PRIMARY_QUALITY_ABS_TOL,
+        )
+    ):
         reasons.append(
             f"heldout {config.metric} delta is below "
             f"tau_improvement={config.tau_improvement} "
