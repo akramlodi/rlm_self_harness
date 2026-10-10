@@ -158,9 +158,9 @@ class TestExtractOolongAnswer:
         assert extract_oolong_answer("I could not compute this", "numeric") is None
 
     def test_comparison_phrases_collapse(self):
-        assert extract_oolong_answer("Answer: spam is less common than ham", "comparison").value == (
-            "less common"
-        )
+        assert extract_oolong_answer(
+            "Answer: spam is less common than ham", "comparison"
+        ).value == ("less common")
         assert extract_oolong_answer("more common", "comparison").value == "more common"
         assert extract_oolong_answer("the same frequency as", "comparison").value == (
             "same frequency"
@@ -236,9 +236,10 @@ class TestScoreOolong:
         assert near["exact"] is False and abs(near["score"] - 0.75**2) < 1e-9
 
     def test_numeric_non_number_scores_zero(self):
-        assert score_oolong(
-            oolong.ParsedAnswer(kind="numeric", value="lots"), 4, "numeric"
-        ) == {"score": 0.0, "exact": False}
+        assert score_oolong(oolong.ParsedAnswer(kind="numeric", value="lots"), 4, "numeric") == {
+            "score": 0.0,
+            "exact": False,
+        }
 
     def test_label_exact_match(self):
         assert score_oolong(extract_oolong_answer("spam", "label"), "spam", "label")["exact"]
@@ -258,7 +259,10 @@ class TestScoreOolong:
 
 class TestOolongVerifier:
     def synth(self, **kw: Any) -> dict[str, Any]:
-        return {"answer_kind": kw.get("answer_kind", "numeric"), "answer_raw": kw.get("answer_raw", "[2]")}
+        return {
+            "answer_kind": kw.get("answer_kind", "numeric"),
+            "answer_raw": kw.get("answer_raw", "[2]"),
+        }
 
     def test_exact_numeric_passes(self):
         verdict = OolongVerifier()(self.synth(), "reasoning\nFINAL: 2")
@@ -269,7 +273,9 @@ class TestOolongVerifier:
         assert verdict.passed is False and verdict.cause is VerifierCause.WRONG_FORMAT
 
     def test_no_answer_when_explicit_empty_against_nonempty_gold(self):
-        verdict = OolongVerifier()(self.synth(answer_kind="label", answer_raw="['spam']"), "FINAL: none")
+        verdict = OolongVerifier()(
+            self.synth(answer_kind="label", answer_raw="['spam']"), "FINAL: none"
+        )
         assert verdict.cause is VerifierCause.NO_ANSWER
 
     def test_wrong_value_for_scalar_miss(self):
@@ -346,7 +352,12 @@ class TestParseSubTask:
 
     def test_non_slice_task_is_none(self):
         # No labelled lines from the map -> not groundable.
-        assert parse_sub_task("Summarize the sentiment of the whole document.", build_label_map(LABELS_TEXT)) is None
+        assert (
+            parse_sub_task(
+                "Summarize the sentiment of the whole document.", build_label_map(LABELS_TEXT)
+            )
+            is None
+        )
 
     def test_fewer_than_two_matched_lines_is_none(self):
         mapping = build_label_map(LABELS_TEXT)
@@ -412,7 +423,12 @@ class TestLoadOolongSynth:
             for group, task, atype, ans in (
                 ("counting", "TASK_TYPE.NUMERIC_ONE_CLASS", "ANSWER_TYPE.NUMERIC", "[2]"),
                 ("user", "TASK_TYPE.MOST_FREQ", "ANSWER_TYPE.USER", "[11]"),
-                ("timeline", "TASK_TYPE.RELATIVE_FREQ", "ANSWER_TYPE.COMPARISON", "['less common than']"),
+                (
+                    "timeline",
+                    "TASK_TYPE.RELATIVE_FREQ",
+                    "ANSWER_TYPE.COMPARISON",
+                    "['less common than']",
+                ),
             ):
                 for k in range(3):
                     rows.append(
@@ -447,9 +463,13 @@ class TestLoadOolongSynth:
 
     def test_ids_are_content_derived_and_seed_independent(self, monkeypatch):
         stub_synth(monkeypatch, self._pool())
-        first = load_oolong_synth((1024, 4096, 16384), ("counting", "user", "timeline"), (), 6, seed=0)
+        first = load_oolong_synth(
+            (1024, 4096, 16384), ("counting", "user", "timeline"), (), 6, seed=0
+        )
         stub_synth(monkeypatch, self._pool())
-        second = load_oolong_synth((1024, 4096, 16384), ("counting", "user", "timeline"), (), 6, seed=99)
+        second = load_oolong_synth(
+            (1024, 4096, 16384), ("counting", "user", "timeline"), (), 6, seed=99
+        )
         overlap = set(i["id"] for i in first) & set(i["id"] for i in second)
         assert overlap
         for inst in first:

@@ -26,8 +26,7 @@ def quality_value(entry: dict[str, Any]) -> float:
     if measurement is not None:
         if measurement.get("definition_id") != SET_QUALITY.identifier:
             raise ValueError(
-                f"expected {SET_QUALITY.identifier!r}, got "
-                f"{measurement.get('definition_id')!r}"
+                f"expected {SET_QUALITY.identifier!r}, got {measurement.get('definition_id')!r}"
             )
         return float(measurement["value"])
     cause = entry.get("cause")
@@ -56,9 +55,7 @@ def calibrate(split_dirs: list[Path], quantile: float = 0.95) -> dict[str, Any]:
         for entry, (instance, _completion) in zip(entries, runs, strict=True):
             if "context_len" not in instance:
                 raise ValueError(f"instance {instance.get('id')!r} has no context_len")
-            values[int(entry["attempt"])][str(instance["context_len"])].append(
-                quality_value(entry)
-            )
+            values[int(entry["attempt"])][str(instance["context_len"])].append(quality_value(entry))
 
     attempts = sorted(values)
     if len(attempts) < 2:
@@ -75,15 +72,11 @@ def calibrate(split_dirs: list[Path], quantile: float = 0.95) -> dict[str, Any]:
         }
         for attempt in attempts
     }
-    macro = {
-        attempt: sum(means[attempt].values()) / len(lengths) for attempt in attempts
-    }
+    macro = {attempt: sum(means[attempt].values()) / len(lengths) for attempt in attempts}
     pairs = list(combinations(attempts, 2))
     macro_deltas = [abs(macro[right] - macro[left]) for left, right in pairs]
     by_length_deltas = {
-        length: [
-            abs(means[right][length] - means[left][length]) for left, right in pairs
-        ]
+        length: [abs(means[right][length] - means[left][length]) for left, right in pairs]
         for length in lengths
     }
     return {
@@ -92,9 +85,7 @@ def calibrate(split_dirs: list[Path], quantile: float = 0.95) -> dict[str, Any]:
         "quantile": quantile,
         "attempts": attempts,
         "attempt_macro_f1": {str(key): value for key, value in macro.items()},
-        "attempt_f1_by_context_length": {
-            str(attempt): means[attempt] for attempt in attempts
-        },
+        "attempt_f1_by_context_length": {str(attempt): means[attempt] for attempt in attempts},
         "absolute_pairwise_macro_deltas": macro_deltas,
         "absolute_pairwise_deltas_by_context_length": by_length_deltas,
         "recommended": {

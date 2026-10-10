@@ -18,9 +18,7 @@ from shrlm.experiment.config import ExperimentConfig
 LONG_CONTEXT_LENGTHS: tuple[int, ...] = (65536, 131072)
 
 
-def load_oolong_recursion_instances(
-    config: ExperimentConfig, n: int = 4
-) -> list[dict[str, Any]]:
+def load_oolong_recursion_instances(config: ExperimentConfig, n: int = 4) -> list[dict[str, Any]]:
     """Load ``n`` long OOLONG-synth instances from the configured synth split.
 
     Uses only the context lengths in ``LONG_CONTEXT_LENGTHS`` that the config's
