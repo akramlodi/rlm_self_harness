@@ -1,0 +1,20 @@
+{
+  "scope": "saved initial-to-final harness edits and 60 completed test attempts, with promotion and held-in source evidence",
+  "experiment": "/Users/williamstanford/RESEARCH/rlm_self_harness/experiment_oolong_pairs_dsv4f_20260928_174735_3rounds",
+  "base_commit": "e323f4328e0aa37b2cb5ff67cabd4729d1b0916c",
+  "docs_root": "docs",
+  "mode": "report-only",
+  "review_lenses": [
+    "correctness",
+    "testing/evaluation",
+    "performance",
+    "reliability",
+    "agent instruction activation",
+    "adversarial counterexamples"
+  ],
+  "execution": "sequential in main thread per supplied AGENTS tool mapping",
+  "cross_model": "not run: sanctioned git-diff route does not scope the saved generated artifacts under review",
+  "independent_reviewers": [],
+  "plan": "No unique implementation plan governs generated promotions; recorded candidate hypotheses are the intent contract",
+  "intent": "Determine what each promoted edit was supposed to repair, whether traces establish the behavior occurred and corrected its target, and why aggregate short-test accuracy did not improve. Compare exactly the same 10 task instances and all three attempts per condition without changing saved harnesses or launching new model calls."
+}

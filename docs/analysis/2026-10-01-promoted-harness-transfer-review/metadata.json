@@ -1,0 +1,30 @@
+{
+  "schema": "experiment-artifact-review/v1",
+  "date": "2026-10-01",
+  "branch": "main",
+  "head_sha": "e323f4328e0aa37b2cb5ff67cabd4729d1b0916c",
+  "mode": "report-only",
+  "review_status": "complete",
+  "reviewers": "single main-thread review per supplied AGENTS mapping",
+  "independent_validation": "not run",
+  "cross_model": "not run: generated saved-artifact scope is outside sanctioned Git-diff route",
+  "offline_validation": [
+    "60 trace SHA256 checks",
+    "identical instance records across conditions",
+    "30 unique task-attempt records per condition",
+    "all saved result aggregates recomputed",
+    "256 tiny-universe pair-count and reverse-product checks",
+    "controlled reconstruction using unchanged saved child labels",
+    "artifact links checked",
+    "analysis script Ruff check and format"
+  ],
+  "runtime_changes": false,
+  "new_model_calls": 0,
+  "limits": [
+    "no per-surface test ablations",
+    "not exhaustive manual adjudication of all child labels",
+    "10 tasks with 3 attempts per condition; sequential condition runs"
+  ],
+  "report": "report.md",
+  "findings": "findings.json"
+}
