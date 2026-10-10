@@ -1,0 +1,242 @@
+[
+  {
+    "instance_id": "oolong-t12-w9-7fd1c6c04d9c0437",
+    "task_id": 12,
+    "window": 9,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) such that one user has at least two instances with numeric value, and the other user has at least one instance with location and at least one instance with human being. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 29,
+    "initial_exact": 1,
+    "initial_f1": 0.677,
+    "initial_cost": 0.08867511,
+    "initial_attempt_f1": [
+      1.0,
+      0.906,
+      0.125
+    ],
+    "sh_rlm_exact": 1,
+    "sh_rlm_f1": 0.645,
+    "sh_rlm_cost": 0.69868704,
+    "sh_rlm_attempt_f1": [
+      1.0,
+      0.0,
+      0.935
+    ],
+    "f1_delta": -0.03200000000000003
+  },
+  {
+    "instance_id": "oolong-t11-w10-68f90f0d94d504da",
+    "task_id": 11,
+    "window": 10,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) such that one user has at least one instance with entity and one with abbreviation, and the other user has exactly one instance with entity. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 42,
+    "initial_exact": 0,
+    "initial_f1": 0.5076666666666667,
+    "initial_cost": 0.22429561,
+    "initial_attempt_f1": [
+      0.511,
+      0.381,
+      0.631
+    ],
+    "sh_rlm_exact": 0,
+    "sh_rlm_f1": 0.6076666666666667,
+    "sh_rlm_cost": 0.54450138,
+    "sh_rlm_attempt_f1": [
+      0.914,
+      0.0,
+      0.909
+    ],
+    "f1_delta": 0.09999999999999998
+  },
+  {
+    "instance_id": "oolong-t20-w9-d123b419c88623ed",
+    "task_id": 20,
+    "window": 9,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) such that one user has at least one instance with numeric value and at least one instance with human being, and the other user has at least one instance with location, at least one instance with entity, and exactly one instance with abbreviation. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 21,
+    "initial_exact": 0,
+    "initial_f1": 0.8773333333333332,
+    "initial_cost": 0.22818947,
+    "initial_attempt_f1": [
+      0.95,
+      0.955,
+      0.727
+    ],
+    "sh_rlm_exact": 0,
+    "sh_rlm_f1": 0.7473333333333333,
+    "sh_rlm_cost": 0.8757319,
+    "sh_rlm_attempt_f1": [
+      0.645,
+      0.647,
+      0.95
+    ],
+    "f1_delta": -0.1299999999999999
+  },
+  {
+    "instance_id": "oolong-t06-w10-9b441d42b516682e",
+    "task_id": 6,
+    "window": 10,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) where both users have at least one instance with a location or abbreviation. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 903,
+    "initial_exact": 2,
+    "initial_f1": 0.984,
+    "initial_cost": 0.17156619,
+    "initial_attempt_f1": [
+      1.0,
+      1.0,
+      0.952
+    ],
+    "sh_rlm_exact": 2,
+    "sh_rlm_f1": 0.992,
+    "sh_rlm_cost": 0.5813759700000001,
+    "sh_rlm_attempt_f1": [
+      1.0,
+      0.976,
+      1.0
+    ],
+    "f1_delta": 0.008000000000000007
+  },
+  {
+    "instance_id": "oolong-t12-w10-5787f2c8d5f82235",
+    "task_id": 12,
+    "window": 10,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) such that one user has at least two instances with numeric value, and the other user has at least one instance with location and at least one instance with human being. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 0,
+    "initial_exact": 1,
+    "initial_f1": 0.3333333333333333,
+    "initial_cost": 0.31236746,
+    "initial_attempt_f1": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "sh_rlm_exact": 1,
+    "sh_rlm_f1": 0.3333333333333333,
+    "sh_rlm_cost": 0.26552214,
+    "sh_rlm_attempt_f1": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "f1_delta": 0.0
+  },
+  {
+    "instance_id": "oolong-t13-w10-a393091893c98516",
+    "task_id": 13,
+    "window": 10,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) such that one user has exactly one instance with description and abstract concept, and the other user has at least one instance with abbreviation and at least one instance with entity. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 37,
+    "initial_exact": 0,
+    "initial_f1": 0.6693333333333333,
+    "initial_cost": 0.19195052,
+    "initial_attempt_f1": [
+      0.45,
+      0.868,
+      0.69
+    ],
+    "sh_rlm_exact": 0,
+    "sh_rlm_f1": 0.8833333333333333,
+    "sh_rlm_cost": 0.45163235,
+    "sh_rlm_attempt_f1": [
+      0.943,
+      0.828,
+      0.879
+    ],
+    "f1_delta": 0.21399999999999997
+  },
+  {
+    "instance_id": "oolong-t17-w9-cc7785997a8db97f",
+    "task_id": 17,
+    "window": 9,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) such that one user has exactly one instance with numeric value, and the other user has at least one instance with location and at least one instance with description and abstract concept. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 116,
+    "initial_exact": 1,
+    "initial_f1": 0.9646666666666667,
+    "initial_cost": 0.16327473999999997,
+    "initial_attempt_f1": [
+      1.0,
+      0.931,
+      0.963
+    ],
+    "sh_rlm_exact": 0,
+    "sh_rlm_f1": 0.7966666666666667,
+    "sh_rlm_cost": 0.8200885499999999,
+    "sh_rlm_attempt_f1": [
+      0.518,
+      0.978,
+      0.894
+    ],
+    "f1_delta": -0.16799999999999993
+  },
+  {
+    "instance_id": "oolong-t03-w9-39ef914e8722333f",
+    "task_id": 3,
+    "window": 9,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) where both users have at least one instance with a description and abstract concept or abbreviation. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 406,
+    "initial_exact": 0,
+    "initial_f1": 0.9209999999999999,
+    "initial_cost": 0.47650409,
+    "initial_attempt_f1": [
+      0.932,
+      0.9,
+      0.931
+    ],
+    "sh_rlm_exact": 0,
+    "sh_rlm_f1": 0.9093333333333334,
+    "sh_rlm_cost": 0.21790549,
+    "sh_rlm_attempt_f1": [
+      0.865,
+      0.932,
+      0.931
+    ],
+    "f1_delta": -0.011666666666666492
+  },
+  {
+    "instance_id": "oolong-t07-w10-9a0d3e39673a7350",
+    "task_id": 7,
+    "window": 10,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) where both users have at least one instance with a description and abstract concept or numeric value, and all instances that are a numeric value for both users must be after February 1, 2023. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 120,
+    "initial_exact": 2,
+    "initial_f1": 0.9583333333333334,
+    "initial_cost": 0.18645159,
+    "initial_attempt_f1": [
+      1.0,
+      0.875,
+      1.0
+    ],
+    "sh_rlm_exact": 2,
+    "sh_rlm_f1": 0.9793333333333333,
+    "sh_rlm_cost": 0.28446391,
+    "sh_rlm_attempt_f1": [
+      0.938,
+      1.0,
+      1.0
+    ],
+    "f1_delta": 0.020999999999999908
+  },
+  {
+    "instance_id": "oolong-t05-w10-d04805539072461c",
+    "task_id": 5,
+    "window": 10,
+    "question": "In the above data, list all pairs of user IDs (no duplicate pairs, list lower ID first) where both users have at least one instance with an entity or numeric value, and all instances that are an entity for both users must be before March 15, 2023. Each of the questions can be labelled as one of the labels (the data does not provide the labels, you need to figure out the label from the semantics of the question): description and abstract concept, entity, human being, numeric value, location, abbreviation. In your answer, list all pairs in the format (user_id_1, user_id_2), separated by newlines.",
+    "gold_pair_count": 300,
+    "initial_exact": 1,
+    "initial_f1": 0.9733333333333333,
+    "initial_cost": 0.36016307000000003,
+    "initial_attempt_f1": [
+      0.96,
+      0.96,
+      1.0
+    ],
+    "sh_rlm_exact": 1,
+    "sh_rlm_f1": 0.9336666666666668,
+    "sh_rlm_cost": 0.34204831,
+    "sh_rlm_attempt_f1": [
+      1.0,
+      0.958,
+      0.843
+    ],
+    "f1_delta": -0.03966666666666652
+  }
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "id": "F1",
+    "priority": "P1",
+    "finding": "Promoted S3/S5 expected-count rule is wrong for overlapping unordered role sets",
+    "evidence": "256 offline set-pair cases; 67 failures of promoted rule; false mismatches in saved test executions",
+    "status": "confirmed",
+    "location": "promoted-edits.md, rounds 3 and 4"
+  },
+  {
+    "id": "F2",
+    "priority": "P1",
+    "finding": "Several promoted causal explanations contradict their source operations or target the wrong error direction",
+    "evidence": "r1 completed repair; r2 omitted OR; r3 existing canonicalization; r4 normalization collapses aliases; r7 58 users is complete; r9 false-inclusion versus excluded-user sampling",
+    "status": "confirmed",
+    "location": "trace-evidence.md and promoted-edits.md"
+  },
+  {
+    "id": "F3",
+    "priority": "P1",
+    "finding": "Task predicates and required multiplicity remain unverified despite coverage checks",
+    "evidence": "T17/W9 attempt 1 uses numeric AND location instead of exactly one numeric; saved-label reconstruction raises F1 from 0.518 to 0.9913",
+    "status": "confirmed execution defect; attribution to a specific promotion unestablished",
+    "location": "trace-evidence.md#test-lost-predicate"
+  },
+  {
+    "id": "F4",
+    "priority": "P2",
+    "finding": "Iteration-limit fallback bypasses the promoted answer middleware",
+    "evidence": "Both final-harness wrong-format answers follow 30 REPL turns and direct fallback completion; source return path excludes middleware",
+    "status": "confirmed; pre-existing runtime boundary",
+    "location": "rlm/core/rlm.py:669"
+  },
+  {
+    "id": "F5",
+    "priority": "P2",
+    "finding": "S10 promotion does not establish execution of its coverage procedure",
+    "evidence": "Zero candidate-validation skill loads; zero short-test root loads, two nested child previews",
+    "status": "confirmed activation gap, not evidence that no coverage checks occurred",
+    "location": "verified-measurements.json"
+  },
+  {
+    "id": "F6",
+    "priority": "P2",
+    "finding": "S10 recipe includes latent identity/count assumptions",
+    "evidence": "Nonempty lines can include prompt scaffolding; duplicate text keys and chunk-local index keys can collide",
+    "status": "static counterexamples; not attributed as observed test failures",
+    "location": "promoted-edits.md, round 7"
+  }
+]

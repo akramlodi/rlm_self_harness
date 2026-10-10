@@ -1,0 +1,58 @@
+[
+  {
+    "id": "R1",
+    "priority": "P2",
+    "kind": "correction",
+    "title": "Preserve concrete diagnosis details in proposer evidence",
+    "file": "shrlm/optimization/proposal_evidence.py",
+    "line": 771,
+    "confidence": "high: reproduced projection loss",
+    "evidence": "agent_mechanism_detail, causal_status_detail, failing_level_detail are persisted but not projected into context",
+    "autofix_class": "manual",
+    "pre_existing": true,
+    "implemented": false,
+    "independently_reviewed": false
+  },
+  {
+    "id": "R2",
+    "priority": "P2",
+    "kind": "design recommendation",
+    "title": "Allow a capability and its necessary caller to share one pattern",
+    "file": "shrlm/optimization/proposal.py",
+    "line": 2055,
+    "confidence": "high: reproduced same-pattern occupancy rejection; performance benefit unmeasured",
+    "evidence": "if other.surface == spec.surface or other.pattern_index == spec.pattern_index",
+    "autofix_class": "advisory",
+    "pre_existing": true,
+    "implemented": false,
+    "independently_reviewed": false
+  },
+  {
+    "id": "R3",
+    "priority": "P2",
+    "kind": "design recommendation",
+    "title": "Connect proposal intent to named target and protected held-in cases",
+    "file": "shrlm/optimization/proposal.py",
+    "line": 791,
+    "confidence": "high: schema comparison; performance benefit unmeasured",
+    "evidence": "Candidate schema identifies pattern_index but no structured target/protected case lists; history exports aggregate outcomes",
+    "autofix_class": "advisory",
+    "pre_existing": true,
+    "implemented": false,
+    "independently_reviewed": false
+  },
+  {
+    "id": "R4",
+    "priority": "P2",
+    "kind": "design recommendation",
+    "title": "Make recovery status an explicit diagnosis assessment",
+    "file": "shrlm/optimization/attribution.py",
+    "line": 126,
+    "confidence": "moderate: existing prose/evidence partly covers this; structural assessment may improve prioritization",
+    "evidence": "symptom_summary and verification_limits carry recovery in prose; no general resolved/recovered state is ranked",
+    "autofix_class": "advisory",
+    "pre_existing": true,
+    "implemented": false,
+    "independently_reviewed": false
+  }
+]

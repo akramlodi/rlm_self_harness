@@ -1,0 +1,329 @@
+{
+  "conditions": {
+    "initial": {
+      "attempts": 30,
+      "exact": 8,
+      "mean_f1": 0.7866,
+      "total_cost": 2.40343785,
+      "total_run_seconds": 14934.063804543577,
+      "mean_root_iterations_including_fallback": 14.933333333333334,
+      "median_root_iterations_including_fallback": 14.5,
+      "exact_attempt_ids": [
+        "oolong-t05-w10-d04805539072461c__a03",
+        "oolong-t06-w10-9b441d42b516682e__a01",
+        "oolong-t06-w10-9b441d42b516682e__a02",
+        "oolong-t07-w10-9a0d3e39673a7350__a01",
+        "oolong-t07-w10-9a0d3e39673a7350__a03",
+        "oolong-t12-w10-5787f2c8d5f82235__a03",
+        "oolong-t12-w9-7fd1c6c04d9c0437__a01",
+        "oolong-t17-w9-cc7785997a8db97f__a01"
+      ],
+      "exact_task_ids": [
+        "oolong-t05-w10-d04805539072461c",
+        "oolong-t06-w10-9b441d42b516682e",
+        "oolong-t07-w10-9a0d3e39673a7350",
+        "oolong-t12-w10-5787f2c8d5f82235",
+        "oolong-t12-w9-7fd1c6c04d9c0437",
+        "oolong-t17-w9-cc7785997a8db97f"
+      ],
+      "wrong_format": [],
+      "input_tokens": 11270598,
+      "output_tokens": 513773,
+      "skill_loads": [],
+      "answer_redirects": []
+    },
+    "sh_rlm": {
+      "attempts": 30,
+      "exact": 7,
+      "mean_f1": 0.7827666666666666,
+      "total_cost": 5.08195704,
+      "total_run_seconds": 33833.59618133772,
+      "mean_root_iterations_including_fallback": 18.6,
+      "median_root_iterations_including_fallback": 17.5,
+      "exact_attempt_ids": [
+        "oolong-t05-w10-d04805539072461c__a01",
+        "oolong-t06-w10-9b441d42b516682e__a01",
+        "oolong-t06-w10-9b441d42b516682e__a03",
+        "oolong-t07-w10-9a0d3e39673a7350__a02",
+        "oolong-t07-w10-9a0d3e39673a7350__a03",
+        "oolong-t12-w10-5787f2c8d5f82235__a03",
+        "oolong-t12-w9-7fd1c6c04d9c0437__a01"
+      ],
+      "exact_task_ids": [
+        "oolong-t05-w10-d04805539072461c",
+        "oolong-t06-w10-9b441d42b516682e",
+        "oolong-t07-w10-9a0d3e39673a7350",
+        "oolong-t12-w10-5787f2c8d5f82235",
+        "oolong-t12-w9-7fd1c6c04d9c0437"
+      ],
+      "wrong_format": [
+        "oolong-t11-w10-68f90f0d94d504da__a02",
+        "oolong-t12-w9-7fd1c6c04d9c0437__a02"
+      ],
+      "input_tokens": 23773590,
+      "output_tokens": 1107794,
+      "skill_loads": [
+        {
+          "run": "oolong-t06-w10-9b441d42b516682e__a02",
+          "node": "r/i2b3c0/i4b0c0",
+          "iteration": 0,
+          "block": 8,
+          "event": {
+            "depth": 3,
+            "skill": "verify_coverage_against_source"
+          },
+          "code": "try:\n    skill = load_skill(\"verify_coverage_against_source\")\n    print(skill[:500])\nexcept Exception as e:\n    print(f\"Error: {e}\")"
+        },
+        {
+          "run": "oolong-t17-w9-cc7785997a8db97f__a01",
+          "node": "r/i5b0c2/i4b0c0",
+          "iteration": 0,
+          "block": 6,
+          "event": {
+            "depth": 3,
+            "skill": "verify_coverage_against_source"
+          },
+          "code": "try:\n    skill = load_skill(\"verify_coverage_against_source\")\n    print(skill[:500])\nexcept Exception as e:\n    print(f\"Error: {e}\")"
+        }
+      ],
+      "answer_redirects": [
+        {
+          "run": "oolong-t12-w10-5787f2c8d5f82235__a03",
+          "node": "r",
+          "iteration": 12
+        }
+      ]
+    }
+  },
+  "selected_intermediate_answers": [
+    {
+      "run": "oolong-t12-w9-7fd1c6c04d9c0437__a02",
+      "iteration": 17,
+      "block": 0,
+      "pairs": 29,
+      "missing": 5,
+      "extra": 5,
+      "f1_unrounded": 0.8275862068965517
+    },
+    {
+      "run": "oolong-t11-w10-68f90f0d94d504da__a02",
+      "iteration": 25,
+      "block": 0,
+      "pairs": 30,
+      "missing": 20,
+      "extra": 8,
+      "f1_unrounded": 0.6111111111111112
+    },
+    {
+      "run": "oolong-t13-w10-a393091893c98516__a03",
+      "iteration": 10,
+      "block": 0,
+      "pairs": 33,
+      "missing": 4,
+      "extra": 0,
+      "f1_unrounded": 0.9428571428571428
+    },
+    {
+      "run": "oolong-t13-w10-a393091893c98516__a03",
+      "iteration": 21,
+      "block": 0,
+      "pairs": 29,
+      "missing": 8,
+      "extra": 0,
+      "f1_unrounded": 0.8787878787878788
+    }
+  ],
+  "validation": [
+    {
+      "round": 1,
+      "candidate": "r01-c01-s2",
+      "exact": {
+        "baseline_pass_count": 0,
+        "candidate_pass_count": 1,
+        "delta": 1,
+        "n_runs": 10
+      },
+      "baseline_f1": 0.6408,
+      "candidate_f1": 0.7492,
+      "cost": {
+        "baseline": 0.07578525900000001,
+        "candidate": 0.10386303599999999,
+        "lower": 0.0,
+        "upper": 3,
+        "within": true
+      }
+    },
+    {
+      "round": 2,
+      "candidate": "r02-c01-s4",
+      "exact": {
+        "baseline_pass_count": 1,
+        "candidate_pass_count": 2,
+        "delta": 1,
+        "n_runs": 10
+      },
+      "baseline_f1": 0.6,
+      "candidate_f1": 0.7505,
+      "cost": {
+        "baseline": 0.114424334,
+        "candidate": 0.15539957,
+        "lower": 0.0,
+        "upper": 3,
+        "within": true
+      }
+    },
+    {
+      "round": 3,
+      "candidate": "r03-c01-s3",
+      "exact": {
+        "baseline_pass_count": 2,
+        "candidate_pass_count": 3,
+        "delta": 1,
+        "n_runs": 10
+      },
+      "baseline_f1": 0.5926,
+      "candidate_f1": 0.7419,
+      "cost": {
+        "baseline": 0.169577041,
+        "candidate": 0.14138089599999998,
+        "lower": 0.0,
+        "upper": 3,
+        "within": true
+      }
+    },
+    {
+      "round": 4,
+      "candidate": "r04-c01-s5",
+      "exact": {
+        "baseline_pass_count": 0,
+        "candidate_pass_count": 2,
+        "delta": 2,
+        "n_runs": 10
+      },
+      "baseline_f1": 0.6025,
+      "candidate_f1": 0.7091999999999999,
+      "cost": {
+        "baseline": 0.19541751599999999,
+        "candidate": 0.116145735,
+        "lower": 0.0,
+        "upper": 3,
+        "within": true
+      }
+    },
+    {
+      "round": 6,
+      "candidate": "r06-c01-s9",
+      "exact": {
+        "baseline_pass_count": 4,
+        "candidate_pass_count": 5,
+        "delta": 1,
+        "n_runs": 10
+      },
+      "baseline_f1": 0.7148,
+      "candidate_f1": 0.9098,
+      "cost": {
+        "baseline": 0.12666492099999999,
+        "candidate": 0.145066013,
+        "lower": 0.0,
+        "upper": 3,
+        "within": true
+      }
+    },
+    {
+      "round": 7,
+      "candidate": "r07-c01-s10",
+      "exact": {
+        "baseline_pass_count": 3,
+        "candidate_pass_count": 3,
+        "delta": 0,
+        "n_runs": 10
+      },
+      "baseline_f1": 0.8324,
+      "candidate_f1": 0.8154,
+      "cost": {
+        "baseline": 0.139608529,
+        "candidate": 0.08947543000000001,
+        "lower": 0.0,
+        "upper": 3,
+        "within": true
+      }
+    },
+    {
+      "round": 9,
+      "candidate": "r09-c01-s4",
+      "exact": {
+        "baseline_pass_count": 2,
+        "candidate_pass_count": 2,
+        "delta": 0,
+        "n_runs": 10
+      },
+      "baseline_f1": 0.7882,
+      "candidate_f1": 0.7941,
+      "cost": {
+        "baseline": 0.09503024199999999,
+        "candidate": 0.12611211699999997,
+        "lower": 0.0,
+        "upper": 3,
+        "within": true
+      }
+    }
+  ],
+  "predicate_only_reconstruction": {
+    "run": "oolong-t17-w9-cc7785997a8db97f__a01",
+    "labels": 188,
+    "role_a": [
+      10149,
+      21908,
+      26472,
+      34020,
+      35531,
+      50580,
+      57020,
+      58392,
+      82104,
+      85017,
+      88510,
+      89707,
+      94706,
+      98411,
+      99829
+    ],
+    "role_b": [
+      14630,
+      26472,
+      64261,
+      85017,
+      88510,
+      94706,
+      98250,
+      98411,
+      99829
+    ],
+    "pairs": 114,
+    "missing": 2,
+    "extra": 0,
+    "f1_unrounded": 0.991304347826087
+  },
+  "formula_check": {
+    "set_pairs_checked": 256,
+    "promoted_formula_failures": 67,
+    "minimal_witness": {
+      "a": [
+        1,
+        2
+      ],
+      "b": [
+        1,
+        2
+      ],
+      "actual_pairs": [
+        [
+          1,
+          2
+        ]
+      ],
+      "promoted_expected": 2
+    }
+  },
+  "r7_validation_skill_loads": []
+}

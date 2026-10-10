@@ -1,0 +1,34 @@
+{
+  "upstream_acceptance": {
+    "both_tied": false,
+    "train_gain_heldout_tie": true,
+    "train_loss_heldout_gain": false
+  },
+  "upstream_single_alias_changed_functions": [
+    "build_subagents",
+    "build_verification_instruction"
+  ],
+  "ours_same_pattern_distinct_surfaces_admitted": [
+    "S3"
+  ],
+  "ours_same_pattern_occupancy": [
+    {
+      "position": 2,
+      "pattern_index": 0,
+      "surface": "S4",
+      "status": "occupied",
+      "owner": {
+        "position": 1,
+        "pattern_index": 0,
+        "surface": "S3"
+      }
+    }
+  ],
+  "ours_diagnosis_fields_dropped_before_proposer": [
+    "agent_mechanism_detail",
+    "causal_status_detail",
+    "failing_level_detail"
+  ],
+  "model_calls": 0,
+  "note": "Synthetic probes establish implementation behavior, not performance benefit."
+}

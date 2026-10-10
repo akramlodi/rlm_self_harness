@@ -1,0 +1,53 @@
+{
+  "review_date": "2026-10-04",
+  "mode": "report-only comparative source review",
+  "branch": "main",
+  "head_sha": "e323f4328e0aa37b2cb5ff67cabd4729d1b0916c",
+  "reference_head_sha": "2720dbb3f52283684f4b85a1065d642df1779dd8",
+  "docs_root": "docs",
+  "intent": "Find simple task-agnostic optimizer improvements by comparing local Self-Harness with our mining/proposal/validation loop, preserving required RLM adaptations and intentional batch design.",
+  "plan_source": "none: comparative review, not plan-compliance or PR review",
+  "review_method": "sequential single-reviewer correctness, evidence, testing, and simplicity checks per user AGENTS mapping",
+  "cross_model_pass": "not run: sanctioned peer route scopes Git diffs, not this two-repository comparison",
+  "independence_verified": false,
+  "paid_model_calls": 0,
+  "experiments_launched": 0,
+  "production_files_changed": [],
+  "excluded": [
+    "pre-existing experiment artifact deletions",
+    "unrelated local work",
+    "runtime redesign",
+    "paper edits"
+  ],
+  "verification": {
+    "tests": 310,
+    "passed": 310,
+    "duration_seconds": 70.44,
+    "command": ".venv/bin/python -m pytest -q tests/optimization/test_clustering.py tests/optimization/test_proposal_evidence.py tests/optimization/test_proposal.py tests/optimization/test_batch_validation.py tests/optimization/test_attribution.py",
+    "offline_reproductions": "checks.json",
+    "ruff": "check passed; reproduction script formatted"
+  },
+  "source_sha256": {
+    "Self-Harness/acceptance/scripts/run_acceptance_gate.py": "74f6808e471ded4b3b8990e6a046a60342f51a1f002ba6f8ac3e427aca3963e7",
+    "Self-Harness/diagnosis/src/self_harness_diagnosis/integrated.py": "3fd2ba95a921c475ebe2cb0fb936e69fd714ba00facf1fda243dcfcdae334513",
+    "Self-Harness/diagnosis/src/self_harness_diagnosis/trace.py": "792f48b9c579edc5c3cf34d4865911d80bfc82e3ae98f9aa7919e736f1e9dfc8",
+    "Self-Harness/eval/scripts/run_harbor_eval.py": "84409336cbd5e40ea5d98d54f03f46a9ea0be5d6afc0476664801dda5565d0ec",
+    "Self-Harness/proposer/scripts/run_multi_proposer.py": "a60d834c1943c7d82f78864c04c3d8983ebbf116461d9a00aafc07da51640bfc",
+    "Self-Harness/proposer/src/self_harness_proposer/hooks.py": "036ecc8d172406a1ecbbd80a64e328bbcea890d05f6cf3eb08e5f8b85e2449ca",
+    "Self-Harness/proposer/src/self_harness_proposer/materialize.py": "c767346842a754d6074d9e5af15f700724eeb6c46c8f322442dbd6d6d368ee4a",
+    "Self-Harness/proposer/src/self_harness_proposer/multi_proposer.py": "26088fa60bff0b24733af7b2fdff1453913f8808abf7acc8319aa9885713f4d2",
+    "Self-Harness/workflow/scripts/run_self_harness_loop.py": "b316a9d84cd73a93735a02fbf146a04994ae5124c40a10531179b50f8779a89d",
+    "configs/experiment_oolong_pairs_DeepSeekV4Flash.toml": "d9b1b185cb3d5015b60c01e02e165769875403d3095976c4189923e52441ae3b",
+    "shrlm/optimization/attribution.py": "be3625be8219cfe19901db87159545f19505ef0fb4b5c99a001f4825dc4397a1",
+    "shrlm/optimization/behavior.py": "583170e93e9bc982a907b8bc034e55ce6087b6dba5acc13b4d209b6b06f0b7e9",
+    "shrlm/optimization/candidates.py": "d5d2ecc929d0f54ee53c8289bad1726f440a50299f5740e8eb92d03559b1c7e2",
+    "shrlm/optimization/clustering.py": "92b026bd15e937defa015695a6862b81faeb521802e694c2dccc2c21d71c16bf",
+    "shrlm/optimization/history.py": "311b6cfc0fb7fb3cc54ef6de9358d3100fa44272851bf1713d7060d83861c955",
+    "shrlm/optimization/mining.py": "b90de3369f80f3b03949dc849211de5c48e7e2c5e05ba38d64fd8296c3ab6b91",
+    "shrlm/optimization/promotion.py": "b931e013205e115c244e0881346be65af6f87de864ce388d818b30935569ca33",
+    "shrlm/optimization/proposal.py": "846d34b45b1ffd8ab45df5f7a9e2e844ebb467916f3fcbe14289bb9f401c5b1d",
+    "shrlm/optimization/proposal_evidence.py": "c79678867a8af9055f29b6b7cea9bba931c70836f6ffd812fea7546eec16617c",
+    "shrlm/optimization/taxonomy.py": "9a0449b33b981816c63b339cecf1ac75377abfe79cb9e6eb528c0cafbd8c08e2",
+    "shrlm/optimization/validation.py": "bba23f8dd6c61b3eb461a02aa487000d5b2f36963f2fb6d85b94ac52b6cf4dc7"
+  }
+}
