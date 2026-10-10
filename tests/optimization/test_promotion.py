@@ -322,6 +322,7 @@ class TestPrimaryQualityRule:
             ),
         )
         assert decision.accepted is accepted
+        assert decision.rule is not None
         assert (
             decision.rule[SPLIT_HELDOUT]["by_context_length"]["16384"]["delta"]
             == candidate_mean - baseline_mean

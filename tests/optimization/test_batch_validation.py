@@ -102,7 +102,9 @@ def test_explicit_metric_contract_replays_without_writes(tmp_path, monkeypatch, 
     before = {p: p.read_bytes() for p in result.round_path.rglob("*") if p.is_file()}
     idle = ClientFactory([])
     monkeypatch.setattr(rlm_module, "get_client", idle)
-    assert validate_round(H0, proposals, config, promotion).ledger.records == result.ledger.records
+    resumed = validate_round(H0, proposals, config, promotion)
+    assert resumed.ledger is not None and result.ledger is not None
+    assert resumed.ledger.records == result.ledger.records
     assert idle.total_calls == 0
     assert before == {p: p.read_bytes() for p in result.round_path.rglob("*") if p.is_file()}
 
