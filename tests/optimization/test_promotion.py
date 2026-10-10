@@ -300,11 +300,54 @@ class TestNoiseMargins:
 
 
 class TestPrimaryQualityRule:
+    @pytest.mark.parametrize("extra_regression, accepted", [(0.0, True), (1e-9, False)])
+    def test_repeated_f1_regression_boundary_is_inclusive(self, extra_regression, accepted):
+        baseline_mean = sum([0.054] * 12) / 12
+        candidate_mean = sum([0.036] * 12) / 12 - extra_regression
+        baseline = with_quality(
+            make_summary(BASELINE_ID, 0, 0, heldout_kwargs={"n_runs": 24}),
+            {"8192": 0.0, "16384": baseline_mean},
+        )
+        candidate = with_quality(
+            make_summary("cand-a", 0, 0, heldout_kwargs={"n_runs": 24}),
+            {"8192": 1.0, "16384": candidate_mean},
+        )
+        decision = score_candidate(
+            baseline,
+            candidate,
+            PromotionConfig(
+                metric=METRIC_PRIMARY_QUALITY,
+                tau_improvement=0.19891666666666663,
+                tau_regression={"8192": 0.544, "16384": 0.018000000000000016},
+            ),
+        )
+        assert decision.accepted is accepted
+        assert decision.rule is not None
+        assert (
+            decision.rule[SPLIT_HELDOUT]["by_context_length"]["16384"]["delta"]
+            == candidate_mean - baseline_mean
+        )
+        if not accepted:
+            assert any("context_len=16384" in reason for reason in decision.reasons)
+
+    @pytest.mark.parametrize("shortfall, accepted", [(0.0, True), (5e-13, True), (1e-9, False)])
+    def test_f1_improvement_boundary_is_inclusive(self, shortfall, accepted):
+        baseline = with_quality(BASELINE, {"8192": 0.1})
+        candidate = with_quality(make_summary("cand-a", 2, 2), {"8192": 0.3 - shortfall})
+        decision = score_candidate(
+            baseline,
+            candidate,
+            PromotionConfig(metric=METRIC_PRIMARY_QUALITY, tau_improvement=0.2),
+        )
+        assert decision.accepted is accepted
+        assert decision.delta(SPLIT_HELDOUT) == 0.3 - shortfall - 0.1
+
+    def test_pass_count_improvement_does_not_use_f1_tolerance(self):
+        assert not score(2, 3, PromotionConfig(tau_improvement=1.0 + 5e-13)).accepted
+
     def test_macro_f1_improvement_with_no_length_regression_accepts(self):
         baseline = with_quality(BASELINE, {"8192": 0.50, "32768": 0.40})
-        candidate = with_quality(
-            make_summary("cand-a", 2, 2), {"8192": 0.55, "32768": 0.45}
-        )
+        candidate = with_quality(make_summary("cand-a", 2, 2), {"8192": 0.55, "32768": 0.45})
         decision = score_candidate(
             baseline,
             candidate,
@@ -315,9 +358,7 @@ class TestPrimaryQualityRule:
 
     def test_macro_gain_cannot_hide_a_per_length_regression(self):
         baseline = with_quality(BASELINE, {"8192": 0.50, "32768": 0.50})
-        candidate = with_quality(
-            make_summary("cand-a", 2, 2), {"8192": 0.80, "32768": 0.40}
-        )
+        candidate = with_quality(make_summary("cand-a", 2, 2), {"8192": 0.80, "32768": 0.40})
         decision = score_candidate(
             baseline,
             candidate,
@@ -373,9 +414,7 @@ class TestPrimaryQualityRule:
     def test_per_length_tau_regression_missing_a_measured_length_raises(self):
         baseline = with_quality(BASELINE, {"8192": 0.50, "32768": 0.50})
         candidate = with_quality(make_summary("cand-a", 2, 2), {"8192": 0.60, "32768": 0.60})
-        config = PromotionConfig(
-            metric=METRIC_PRIMARY_QUALITY, tau_regression={"8192": 0.5}
-        )
+        config = PromotionConfig(metric=METRIC_PRIMARY_QUALITY, tau_regression={"8192": 0.5})
         with pytest.raises(ValueError, match="no entry for context_len='32768'"):
             score_candidate(baseline, candidate, config)
 

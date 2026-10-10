@@ -1169,8 +1169,8 @@ class TestSummaryPersistence:
 
         aggregate = validation.split_aggregate
 
-        def updated_aggregate(path):
-            return {**aggregate(path), "n_runtime_errors": runtime_errors}
+        def updated_aggregate(path, primary_quality=None):
+            return {**aggregate(path, primary_quality), "n_runtime_errors": runtime_errors}
 
         monkeypatch.setattr(validation, "split_aggregate", updated_aggregate)
         idle = ClientFactory([])

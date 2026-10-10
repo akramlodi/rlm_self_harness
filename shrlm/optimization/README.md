@@ -18,7 +18,7 @@ three stages (§3.3 of the proposal):
 |---|---|---|
 | **1. Weakness Mining** | Run the current harness on short held-in instances. Record verifier outcomes and recursive traces. Score each sub-call with the environment's synthesized sub-verifier. Convert failures to structured records and cluster them by signature → an **evidence bundle** `B_t`. | **implemented** (`shrlm/optimization/`) |
 | **2. Harness Proposal** | Give the model the mined patterns, behaviors to preserve, and prior edit history; get back several minimal candidate edits, each targeting one pattern on one declared surface. | not implemented |
-| **3. Proposal Validation** | Compose all admitted edits before evaluation. Compare the batch against the incumbent on held-out instances only; promote the whole batch when the exact-pass delta meets the configured improvement margin and cost/sub-calls meet their bands. At zero margin, equal exact passes qualify. | `validation.py`, `subject_worker.py`, `run_worker.py` |
+| **3. Proposal Validation** | Compose all admitted edits before evaluation. Compare the batch against the incumbent on held-out instances only, using the configured exact-pass or verifier-owned primary-quality objective and cost/sub-call bands. Primary-quality promotion checks equal-weight context-length means and each length's regression margin. The proposer receives this same contract. | `validation.py`, `subject_worker.py`, `run_worker.py` |
 
 The ten editable surfaces declared by the harness (`shrlm/rlm_harness.py`, `SURFACES`) are
 enumerated in code as `EditableSurface` ([taxonomy.py:51](optimization/taxonomy.py#L51)), keyed by
@@ -246,10 +246,13 @@ subject receives a measured verdict. A rejected or over-budget batch promotes no
 Analysis leaves missing held-in validation accuracy blank and counts bundled participation
 separately from individual promotion.
 
-Resume checks the protocol, held-out sample, repetitions, caps, backend, incumbent, and batch
-before model calls. Use a fresh output directory for legacy validation evidence or changed
-inputs; old v1 artifacts remain readable for analysis. Identical current-protocol inputs
-reuse completed runs, including after changing worker concurrency.
+Resume checks the protocol, held-out sample, repetitions, caps, backend, incumbent, batch,
+and promotion metric, thresholds, and resource bands before model calls. Use a fresh output
+directory for legacy validation evidence or changed inputs; old artifacts remain readable
+for analysis. A saved validation contract without `promotion.metric` is ambiguous and cannot
+be replayed, including when an interrupted experiment re-enters validation. Completed
+experiment rounds restored from their round markers retain the existing restoration path.
+Identical sealed inputs reuse completed runs, including after changing worker concurrency.
 
 ### `run_worker.py` — one run per child process, inside a subject
 

@@ -356,6 +356,8 @@ class TestLocalREPLTimeoutPropagation:
         with pytest.raises(TimeoutExceededError):
             repl.execute_code("rlm_query('hello')")
         repl.cleanup()
+
+
 class TestExecutionDoesNotChangeProcessCwd:
     """``os.chdir`` is process-global; ``rlm_query_batched`` runs child REPLs on
     threads. A REPL that chdir'd into its temp dir left siblings pointing at a

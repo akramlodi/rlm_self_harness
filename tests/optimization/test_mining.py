@@ -7,6 +7,7 @@ through which a RESOURCE_TERMINATED verdict (which no Verifier can produce)
 enters mining.
 """
 
+import ast
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -63,6 +64,30 @@ def make_miner(verifier: CountingVerifier) -> WeaknessMiner:
 def failing_run() -> tuple[dict[str, Any], Any]:
     instance = {"id": "inst-1", "question": "what is 2 + 2?"}
     return instance, as_completion(shallow_run())
+
+
+def test_partial_f1_failures_remain_mined_with_pair_diagnostics():
+    from shrlm.environments.oolong_pairs import OolongPairsVerifier
+
+    instance = {"id": "pairs", "question": "Find pairs", "gold_pairs": [(11, 22), (11, 33)]}
+    runs = []
+    for answer in ("[(11, 22)]", "[(11, 22), (11, 33)]"):
+        raw = shallow_run()
+        raw["response"] = answer
+        runs.append((instance, as_completion(raw)))
+    lm = MockLM(responses=[CANNED_ATTRIBUTION])
+    miner = WeaknessMiner(verifier=OolongPairsVerifier(), attributor=LLMAttributor(lm))
+    result = miner.mine(runs, round_index=1, harness_version="H0", split_id="held_in")
+    assert len(result.records) == 1
+    verdict = result.records[0].verdict
+    assert not verdict.passed and verdict.cause is VerifierCause.INCOMPLETE
+    assert verdict.quality is not None
+    assert verdict.quality.value == 0.667
+    digest = result.digest_texts[result.records[0].digest_sha256]
+    metrics = ast.literal_eval(digest.split("pair_diagnostics: ", 1)[1].splitlines()[0])
+    assert metrics["f1"] == 0.667 and metrics["missing"] == 1 and metrics["extra"] == 0
+    assert lm._call_count == 1
+    assert result.bundle.patterns
 
 
 def test_unestablished_coverage_survives_mining_and_persistence_as_unattributed(tmp_path):

@@ -1190,6 +1190,7 @@ class _Experiment:
                     passing_behaviors=load_passing_behaviors(mining_round_path),
                     prior_history=self.prior_history,
                     config=proposer_config(self.config),
+                    promotion=self.pconfig,
                     cache=ProposalCache(path=str(cache_path)),
                     workdir=round_path / WORK_DIR,
                 )

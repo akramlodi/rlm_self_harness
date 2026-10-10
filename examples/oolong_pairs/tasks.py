@@ -162,7 +162,7 @@ UserInstances = list[tuple[str, date]]
 
 
 def _count(instances: UserInstances, label: str) -> int:
-    return sum(1 for l, _ in instances if l == label)
+    return sum(1 for instance_label, _ in instances if instance_label == label)
 
 
 def _has(instances: UserInstances, label: str) -> bool:
@@ -170,7 +170,7 @@ def _has(instances: UserInstances, label: str) -> bool:
 
 
 def _dates(instances: UserInstances, label: str) -> list[date]:
-    return [d for l, d in instances if l == label]
+    return [day for instance_label, day in instances if instance_label == label]
 
 
 # --- Tasks 1-10: symmetric "both users satisfy the same eligibility predicate" ---

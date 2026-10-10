@@ -61,7 +61,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from string import Formatter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rlm.clients.base_lm import BaseLM
 from rlm.core.llm_observation import ObservationPersistenceError, observation_refs
@@ -134,6 +134,9 @@ from shrlm.rlm_harness import (
 )
 from shrlm.runner import declared_metadata_bound
 
+if TYPE_CHECKING:
+    from shrlm.optimization.promotion import PromotionConfig
+
 TEXT_CONTRACT = "literal-text/v1"
 RESPONSE_FORMAT_VERSION = "proposal-selection/v3"
 # ``HARNESS_FORMAT`` is imported from ``shrlm.harness_identity`` (the single
@@ -157,7 +160,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "5.0.0"
+PROMPT_VERSION = "5.1.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -698,10 +701,6 @@ state or explain why the earlier defect still affects it.
 
 PROPOSER_QUALITY = """\
 Candidate quality rules:
-- Promotion evaluates one combined candidate on held-out runs only, requiring \
-an exact-pass gain at least the configured minimum and the configured cost band. \
-Equality meets the threshold; with a zero minimum, tied exact passes qualify. \
-Dense-quality metrics are diagnostic and do not change this gate.
 - State predicted_effect as a task condition, the changed operation, and expected
 benefit. In regression_risks describe relevant already-working behavior, why it
 should remain intact, and uncertainty or added work. These are predictions, not
@@ -845,6 +844,46 @@ the same incumbent is refused locally before validation.
 """
 
 
+def render_promotion_contract(promotion: "PromotionConfig | None") -> str:
+    """Render the same objective and resource bands that validation enforces."""
+    from shrlm.optimization.promotion import METRIC_PASS_COUNT, Band, PromotionConfig
+
+    config = promotion if promotion is not None else PromotionConfig()
+
+    def band_value(band: Band) -> str | list[float | str]:
+        if band.lower == 0 and band.upper == float("inf"):
+            return "unconstrained"
+        return [band.lower, "inf" if band.upper == float("inf") else band.upper]
+
+    contract = {
+        "metric": config.metric,
+        "tau_improvement": config.tau_improvement,
+        "tau_regression": config.tau_regression,
+        "cost_band": band_value(config.cost_band),
+        "sub_call_band": band_value(config.sub_call_band),
+    }
+    objective = (
+        "Require an exact-pass gain at least tau_improvement and no pass-count "
+        "regression beyond tau_regression. With a zero minimum, tied exact passes qualify. "
+        "Verifier quality is diagnostic for this pass-count gate."
+        if config.metric == METRIC_PASS_COUNT
+        else "Use the verifier's registered primary-quality definition below. Compare "
+        "macro_by_context_length: average the held-out run scores within each context "
+        "length, then give each length equal weight. Include verifier-declared terminal "
+        "scores in those means. Require macro improvement at least tau_improvement "
+        "and no per-context-length regression beyond that length's tau_regression "
+        "(a scalar margin applies to every length). Exact-pass counts are diagnostic "
+        "and need not improve."
+    )
+    return (
+        "Promotion evaluates one combined candidate on held-out runs only.\n"
+        "Active promotion contract:\n" + canonical_json(contract) + "\n" + objective + "\n"
+        "Equality meets the threshold. Cost and sub-call bands are inclusive multipliers "
+        "of the incumbent's overall held-out per-run means, checked separately from "
+        "quality. Every configured gate must pass.\n"
+    )
+
+
 def render_prompt(
     patterns: list[dict[str, Any]],
     incumbent_serialization: dict[str, Any],
@@ -854,6 +893,7 @@ def render_prompt(
     verifier_config: dict[str, Any] | None = None,
     evidence: dict[str, Any] | None = None,
     evidence_audit: dict[str, Any] | None = None,
+    promotion: "PromotionConfig | None" = None,
 ) -> tuple[str, list[tuple[int, dict[str, Any]]]]:
     """The one system prompt for a round, and the addressable patterns shown.
 
@@ -924,7 +964,7 @@ def render_prompt(
     sections = [
         PROPOSER_INTRO + render_surface_block(),
         PROPOSER_TASK,
-        PROPOSER_QUALITY,
+        render_promotion_contract(promotion) + PROPOSER_QUALITY,
         TASK_REASONING_GUIDANCE,
         _render_verifier_contract(verifier_config),
         CALLABLE_CONTRACT,
@@ -937,9 +977,9 @@ def render_prompt(
         "entry below means the incumbent already contained that edit.\n"
         "A rejected but potentially_promising direction may merit a materially different "
         "refinement. Keep its rejection reasons and contrary metrics in view; do not replay "
-        "the same edit or attribute a combined gain to one member. These descriptive "
-        "diagnostics do not change promotion; v=1 is not a reliable causal estimate.\n"
-        + history_text,
+        "the same edit or attribute a combined gain to one member. Mining and history "
+        "diagnostics do not replace the active held-out promotion contract; "
+        "v=1 is not a reliable causal estimate.\n" + history_text,
         EDIT_FORMATS
         % {
             "s6_keys": list(S6_KEYS),
@@ -1824,6 +1864,7 @@ def propose_round(
     passing_behaviors: Sequence[dict[str, Any]] = (),
     prior_history: Sequence[tuple[list[dict[str, Any]], dict[str, Any]]] = (),
     config: ProposerConfig | None = None,
+    promotion: "PromotionConfig | None" = None,
     cache: ProposalCache | None = None,
     workdir: Path | str | None = None,
     preflight_profile: str | None = None,
@@ -1846,6 +1887,7 @@ def propose_round(
         prior_history: Prior rounds' ``(records, decision)`` pairs, one per
             round, from ``shrlm.optimization.validation.load_promotion_ledger``.
         config: Proposer configuration; defaults applied when omitted.
+        promotion: Active validation objective; defaults to pass-count promotion.
         cache: Response cache; a fresh in-memory one when omitted.
         workdir: Scratch directory for generated-source modules; a fresh
             temporary directory when omitted.
@@ -1888,6 +1930,7 @@ def propose_round(
         verifier_config=(bundle.get("config") or {}).get("verifier_config"),
         evidence=evidence,
         evidence_audit=evidence_audit,
+        promotion=promotion,
     )
     for index, pattern in enumerate(patterns):
         pattern.update(evidence_audit["choices"].get(str(index), {"selectable": False}))

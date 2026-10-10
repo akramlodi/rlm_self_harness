@@ -118,9 +118,7 @@ def load_oolong_pairs_split(
     """
     env = config.environments.oolong_pairs
     if length not in OOLONG_PAIRS_LENGTHS:
-        raise ValueError(
-            f"unknown split length {length!r}; expected one of {OOLONG_PAIRS_LENGTHS}"
-        )
+        raise ValueError(f"unknown split length {length!r}; expected one of {OOLONG_PAIRS_LENGTHS}")
     context_length = {
         "short": env.context_length_short,
         "mid16k": env.context_length_mid16k,
@@ -251,8 +249,7 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
         return {
             "oolong_pairs": {
                 **{
-                    length: dict(optimization_roles)
-                    for length in OOLONG_PAIRS_OPTIMIZATION_LENGTHS
+                    length: dict(optimization_roles) for length in OOLONG_PAIRS_OPTIMIZATION_LENGTHS
                 },
                 "long": {"test": splits.test_long},
             }

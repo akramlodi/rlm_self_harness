@@ -2640,6 +2640,98 @@ def test_runtime_failed_proposal_finishes_experiment(
     assert idle.total_calls == 0
 
 
+@pytest.mark.parametrize("regress_16k", [False, True])
+def test_blended_f1_objective_flows_through_mining_proposal_promotion_and_resume(
+    tmp_path, monkeypatch, regress_16k
+):
+    profile = load_config(
+        "full", path="configs/experiment_oolong_pairs_blended_DeepSeekV4Flash.toml"
+    )
+    config = make_config(tmp_path, v=3)
+    config = replace(
+        config,
+        loop=replace(config.loop, environment="oolong_pairs", initial_harness="H0"),
+        promotion=profile.promotion,
+        splits=replace(config.splits, n_in=1, n_ho=1, test_short=1, test_long=1),
+        environments=replace(
+            config.environments, oolong_pairs=replace(config.environments.oolong_pairs, n_short=5)
+        ),
+    )
+    lengths = {"short": 8192, "mid16k": 16384, "mid32k": 32768, "long": 262144}
+
+    def pair_loader(config, length, limit, seed):
+        return [
+            {
+                "id": f"pairs-{length}-{i}",
+                "prompt": "Find pairs",
+                "question": "Find pairs",
+                "context_len": lengths[length],
+                "gold_pairs": [(11, 22), (11, 33)],
+            }
+            for i in range(limit)
+        ]
+
+    class RecordingProposer(MockLM):
+        def __init__(self):
+            super().__init__(responses=[proposer_batch((0, TEXT_ROUND_1))])
+            self.prompts = []
+
+        def completion(self, prompt):
+            self.prompts.append(prompt)
+            return super().completion(prompt)
+
+    partial = final("[(11, 22)]")
+    wrong = final("WRONG")
+    baseline = [wrong] * 9 if not regress_16k else [wrong] * 3 + [partial] * 3 + [wrong] * 3
+    candidate = [partial] * 9 if not regress_16k else [partial] * 3 + [wrong] * 3 + [partial] * 3
+    factory = patch_runner(monkeypatch, [partial] * 3 + baseline + candidate)
+    proposer = RecordingProposer()
+    out = tmp_path / "exp"
+    result = run_experiment(
+        config,
+        out,
+        attributor_lm=MockLM(responses=[attribution("skipped_verification")] * 3),
+        proposer_lm=proposer,
+        loaders={"oolong_pairs": pair_loader},
+    )
+    assert factory.total_calls == 21
+    mining = experiment_round_dir(out, 1) / "mining" / "round_01"
+    records = [json.loads(line) for line in (mining / RECORDS_FILENAME).read_text().splitlines()]
+    assert len(records) == 3
+    assert all(
+        not r["verdict"]["passed"] and r["verdict"]["quality"]["value"] == 0.667 for r in records
+    )
+    prompt = proposer.prompts[0][0]["content"]
+    assert '"metric":"primary_quality"' in prompt
+    assert "equal weight" in prompt and "0.19891666666666663" in prompt
+    assert "0.018000000000000016" in prompt and "exact-pass gain" not in prompt
+    validation = validation_round_path(out, 1)
+    ledger, _ = load_promotion_ledger(validation)
+    measured = ledger[-1]
+    assert measured["rule"]["heldout"]["metric"] == "primary_quality"
+    for subject in ("baseline", "r01-c01-s4"):
+        summary = json.loads((validation / subject / "summary.json").read_text())
+        assert summary["splits"]["heldout"]["pass_count"] == 0
+    assert result.rounds[0].promoted is (not regress_16k)
+    if regress_16k:
+        assert measured["rule"]["heldout"]["delta"] > config.promotion.tau_improvement
+        assert any("context_len=16384" in reason for reason in measured["reasons"])
+    else:
+        assert measured["rule"]["heldout"]["delta"] == pytest.approx(0.667)
+    before = {p: p.read_bytes() for p in validation.rglob("*") if p.is_file()}
+    idle = patch_runner(monkeypatch, [])
+    resumed = run_experiment(
+        config,
+        out,
+        attributor_lm=MockLM(responses=[]),
+        proposer_lm=MockLM(responses=[]),
+        loaders={"oolong_pairs": pair_loader},
+    )
+    assert resumed.final_harness_hash == result.final_harness_hash
+    assert idle.total_calls == 0
+    assert before == {p: p.read_bytes() for p in validation.rglob("*") if p.is_file()}
+
+
 def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch):
     config = make_config(tmp_path, t=2)
     config = replace(
@@ -2727,13 +2819,16 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
         config,
         out,
         attributor_lm=MockLM(
-            responses=[attribution("incomplete_coverage"), attribution("premature_termination")] * 20
+            responses=[attribution("incomplete_coverage"), attribution("premature_termination")]
+            * 20
         ),
         proposer_lm=proposer,
         loaders={**LOADERS, "oolong_pairs": pair_loader},
     )
     assert len(result.rounds) == 2
-    assert factory.total_calls == 24  # (mining + baseline + one combined batch + next mining) x 3 lengths
+    assert (
+        factory.total_calls == 24
+    )  # (mining + baseline + one combined batch + next mining) x 3 lengths
     marker = json.loads((experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text())
     assert marker["preflight_profile"] == "oolong-pairs/v1"
     assert len(marker["candidate_ids"]) == 2

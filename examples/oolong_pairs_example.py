@@ -223,7 +223,9 @@ def _parse_context_lengths(raw: str) -> tuple[int, ...]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--n", type=int, default=4, help="Number of (window, task) problems to sample.")
+    parser.add_argument(
+        "--n", type=int, default=4, help="Number of (window, task) problems to sample."
+    )
     parser.add_argument(
         "--tasks",
         default="all",
@@ -235,7 +237,10 @@ def main():
         help=f"Comma-separated OOLONG context lengths to sample windows from (subset of {ALL_CONTEXT_LENGTHS}).",
     )
     parser.add_argument(
-        "--n-windows", type=int, default=2, help="Distinct context windows to sample per context length."
+        "--n-windows",
+        type=int,
+        default=2,
+        help="Distinct context windows to sample per context length.",
     )
     parser.add_argument(
         "--chunk-size",
@@ -272,7 +277,9 @@ def main():
     if not rows:
         print("No rows matched the given filters.")
         sys.exit(1)
-    print(f"Loaded {len(rows)} problem(s) (context_lengths={context_lengths}, tasks={args.tasks})\n")
+    print(
+        f"Loaded {len(rows)} problem(s) (context_lengths={context_lengths}, tasks={args.tasks})\n"
+    )
 
     results = []
     for i, row in enumerate(rows):

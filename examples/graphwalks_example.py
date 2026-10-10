@@ -275,9 +275,7 @@ def run_example(
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--n", type=int, default=4, help="Number of problems to sample.")
-    parser.add_argument(
-        "--problem-type", choices=["bfs", "parents", "both"], default="both"
-    )
+    parser.add_argument("--problem-type", choices=["bfs", "parents", "both"], default="both")
     parser.add_argument(
         "--max-chars", type=int, default=128_000, help="Max prompt_chars to keep (short subset)."
     )
