@@ -3,8 +3,8 @@
 ``plan_batch`` composes all admitted edits before validation and rejects any
 surface collision. ``score_candidate`` compares configured held-out pass counts
 or verifier-owned primary quality and cost/sub-call means against the incumbent.
-The batch must clear the configured improvement margin and resource bands. No constituent is scored
-individually, and a failed batch has no individual fallback."""
+The batch must clear the configured improvement margin and resource bands.
+No constituent is scored individually, and a failed batch has no individual fallback."""
 
 import math
 from collections.abc import Iterable, Mapping
