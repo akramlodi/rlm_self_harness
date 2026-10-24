@@ -57,7 +57,7 @@ import json
 import re
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from string import Formatter
@@ -861,6 +861,7 @@ def render_promotion_contract(promotion: "PromotionConfig | None") -> str:
         "tau_regression": config.tau_regression,
         "cost_band": band_value(config.cost_band),
         "sub_call_band": band_value(config.sub_call_band),
+        "failure_nonregression_causes": list(config.failure_nonregression_causes),
     }
     objective = (
         "Require an exact-pass gain at least tau_improvement and no pass-count "
@@ -878,6 +879,8 @@ def render_promotion_contract(promotion: "PromotionConfig | None") -> str:
     return (
         "Promotion evaluates one combined candidate on held-out runs only.\n"
         "Active promotion contract:\n" + canonical_json(contract) + "\n" + objective + "\n"
+        "Configured candidate-owned failure causes may not increase; a rejected candidate "
+        "with better conditional quality may enter one separately gated repair generation. "
         "Equality meets the threshold. Cost and sub-call bands are inclusive multipliers "
         "of the incumbent's overall held-out per-run means, checked separately from "
         "quality. Every configured gate must pass.\n"
@@ -1890,6 +1893,7 @@ def propose_round(
     caps: dict[str, int | float] | None = None,
     loader_timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
     evidence: dict[str, Any] | None = None,
+    pattern_filter: Callable[[dict[str, Any]], bool] | None = None,
 ) -> ProposalRoundResult:
     """Propose and write up to ``config.k`` candidates for one mining round.
 
@@ -1910,6 +1914,14 @@ def propose_round(
         cache: Response cache; a fresh in-memory one when omitted.
         workdir: Scratch directory for generated-source modules; a fresh
             temporary directory when omitted.
+        pattern_filter: When given, only patterns satisfying it are shown to
+            the proposer (the persisted bundle on disk is untouched -- this
+            narrows what one proposal call is offered, not what mining found).
+            Used by the refinement branch to keep the repair generation aimed
+            at the terminal causes that triggered it, rather than letting the
+            proposer drift to an unrelated pattern with equal or higher
+            support. ``None`` (the default, used by every normal round)
+            preserves the existing behavior exactly.
 
     Returns:
         A ``ProposalRoundResult`` covering every written proposal, every
@@ -1936,7 +1948,11 @@ def propose_round(
         {"stage": "proposal", "round": round_index},
         namespace="llm_calls/proposal",
     )
-    patterns = [dict(pattern) for pattern in bundle.get("patterns", [])]
+    patterns = [
+        dict(pattern)
+        for pattern in bundle.get("patterns", [])
+        if pattern_filter is None or pattern_filter(pattern)
+    ]
     attempt_index = prior_attempts(prior_history)
     incumbent_serialization = serialize_harness(incumbent)
     evidence_audit: dict[str, Any] = {}

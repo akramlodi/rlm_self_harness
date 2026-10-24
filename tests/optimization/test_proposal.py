@@ -617,6 +617,68 @@ def test_inventory_overflow_rejects_before_model_call(tmp_path):
     assert lm._call_count == 0
 
 
+def test_pattern_filter_hides_non_matching_patterns_from_the_proposer(tmp_path):
+    """The refinement branch's ``pattern_filter`` narrows what the proposer sees,
+    not what mining found -- a filtered-out pattern must never reach the prompt."""
+    kept = {
+        **make_pattern("skipped_verification", verifier_cause="wrong_format"),
+        "shared_symptoms": ["marker-kept-pattern-xyz"],
+    }
+    excluded = {
+        **make_pattern("incomplete_coverage", verifier_cause="mixed_set_error"),
+        "shared_symptoms": ["marker-excluded-pattern-abc"],
+    }
+    bundle = {**BUNDLE, "patterns": [kept, excluded]}
+
+    captured_prompts: list[str] = []
+
+    def response_fn(prompt: str | dict) -> str:
+        content = prompt if isinstance(prompt, str) else str(prompt)
+        captured_prompts.append(content)
+        return canned_batch()
+
+    propose_round(
+        bundle,
+        H0,
+        MockLM(response_fn=response_fn),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence(bundle["patterns"], preferred=()),
+        pattern_filter=lambda pattern: pattern["signature"]["verifier_cause"] == "wrong_format",
+    )
+
+    assert captured_prompts, "the proposer should still be called with the one matching pattern"
+    rendered = captured_prompts[0]
+    assert "marker-kept-pattern-xyz" in rendered
+    assert "marker-excluded-pattern-abc" not in rendered
+
+
+def test_pattern_filter_none_preserves_existing_behavior(tmp_path):
+    """Normal rounds never pass ``pattern_filter`` -- confirm the default keeps
+    every pattern visible, same as before this parameter existed."""
+    captured_prompts: list[str] = []
+
+    def response_fn(prompt: str | dict) -> str:
+        content = prompt if isinstance(prompt, str) else str(prompt)
+        captured_prompts.append(content)
+        return canned_batch()
+
+    propose_round(
+        BUNDLE,
+        H0,
+        MockLM(response_fn=response_fn),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        evidence=synthetic_evidence(BUNDLE["patterns"], preferred=()),
+    )
+
+    assert captured_prompts
+    rendered = captured_prompts[0]
+    for pattern in ALL_PATTERNS:
+        for symptom in pattern["shared_symptoms"]:
+            assert symptom in rendered
+
+
 def test_collision_retains_first_owner_and_sibling_even_when_repair_collides(tmp_path):
     bundle = {
         **BUNDLE,
