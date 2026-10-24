@@ -60,9 +60,9 @@ max_output_tokens = 8192
 
 [splits]
 # Applied identically at each of the three blended lengths by split_plan()'s
-# oolong_pairs branch: 8+8+8=24 held-in, 8+8+8=24 held-out, 4+4+4=12 test.
-# 8+8+4=20 exhausts the full 20-task_id pool at every length (n_short=40
-# per length is the hard ceiling; 20 stays within it).
+# oolong_pairs branch: 8 held-in, 8 trigger held-out, 4 repair-promotion, and
+# 4 untouched test instances per length. The 24 total remain below the hard
+# 40-instance pool ceiling at every length.
 #
 # n_ho raised 4 -> 8 on 2026-10-11 to shrink tau_improvement's noise floor
 # (projected ~0.114 -> ~0.08 at this held-out sample size, per
@@ -91,7 +91,9 @@ seed = 0 # seeded partition of the OOLONG-Pairs pools; task_id-to-role
 # Optimization-loop counts, section 3.2.
 m = 2 # mining repetitions per held-in instance
 v = 3 # validation repetitions per held-out instance per subject (no screening)
-k = 4 # maximum candidate edits per round, at most one per surface
+k = 1 # one candidate per round: every promotion decision is unambiguous
+# (plan_batch's PLAN_SINGLE path tests a lone candidate alone, never merged --
+# avoids the "which constituent caused the rejection" blind spot from round 1.2)
 t = 10 # generous ceiling; patience is the real stopping rule
 patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
 environment = "oolong_pairs" # this profile mines/validates OOLONG-Pairs (identity key)
@@ -148,9 +150,13 @@ tau_improvement = 0.02
 # The upper bound is the single most cost-sensitive value in this file. It
 # gates promotion, but a promoted edit may raise cost every round, so the
 # drift compounds: the pessimistic projection multiplies the optimization
-# leg by sum(ceiling^i) over T rounds. The 1.5 ceiling allows a candidate to
-# spend more when it materially improves F1 while preventing unbounded drift.
-cost_band = [0.0, 1.5]
+# leg by sum(ceiling^i) over T rounds. The 3.0 ceiling allows a candidate to
+# spend substantially more when it materially improves F1 while preventing
+# unbounded drift. The 0.5 floor rejects a candidate that costs less than
+# half the baseline's mean -- a sharp enough drop to suspect the edit is
+# doing materially less work (e.g. skipping verification) rather than
+# genuinely cheaper reasoning.
+cost_band = [0.5, 3.0]
 # sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
 
 [promotion.tau_regression]
@@ -166,6 +172,28 @@ cost_band = [0.0, 1.5]
 8192 = 0.143542
 16384 = 0.143708
 32768 = 0.243833
+
+[refinement]
+# One bounded repair generation for a rejected batch whose parseable-answer
+# F1 improves while a terminal (hard-zero) cause's rate worsens. Scoped to
+# the terminal set -- wrong_format, resource_terminated, runtime_error,
+# content_filtered -- not partial-credit causes (mixed_set_error, incomplete,
+# spurious): those are naturally noisy attempt to attempt, and watching them
+# for "did the rate go up" would trigger repair generations on ordinary
+# variance, not genuine new regressions.
+#
+# promotion_size=8 matches n_ho so the repaired descendant's final
+# accept/reject decision rests on the same sample size tau_regression/
+# tau_improvement were calibrated against, rather than a noisier comparison
+# on fewer instances. Eight fresh instances per optimization length are
+# reserved for the final descendant-vs-incumbent gate (8+8+4+8=28/length,
+# within the 40-instance pool).
+enabled = true
+promotion_size = 8
+min_conditional_quality_delta = 0.02
+min_failure_rate_delta = 0.0
+failure_causes = ["wrong_format", "resource_terminated", "runtime_error", "content_filtered"]
+max_generations = 1
 
 [caps]
 # Experiment-owned per-run limits (KTD3). max_budget, max_timeout, and
