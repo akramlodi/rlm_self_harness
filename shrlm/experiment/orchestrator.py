@@ -161,12 +161,14 @@ from shrlm.optimization.candidates import (
     materialize_harness,
 )
 from shrlm.optimization.costs import (
+    OUTCOME_COMPLETED,
     CandidateSpendBreaker,
     ValidationCaps,
     governed_limits,
     run_governed_round,
 )
 from shrlm.optimization.driver import (
+    MANIFEST_FILE,
     RoundConfig,
     build_round_rlm,
     execute_run,
@@ -188,6 +190,7 @@ from shrlm.optimization.proposal import (
 )
 from shrlm.optimization.types import SubVerifier, Verifier
 from shrlm.optimization.validation import (
+    EVAL_ROUND_INDEX,
     SPLIT_HELDOUT,
     EvaluationConfig,
     ValidationRound,
@@ -1261,6 +1264,38 @@ class _Experiment:
         )
         return proposals_dir
 
+    def _find_reusable_heldout(self, incumbent_hash: str, round_index: int) -> Path | None:
+        """The most recent persisted ``heldout/round_00`` directory for this harness.
+
+        Promotion thresholds, the verifier, repetitions, and ``self.splits.heldout``
+        are fixed for the whole experiment, so whenever the incumbent carries
+        forward unchanged -- a rejected round keeps the same incumbent into the
+        next one -- some already-persisted subject (the baseline, or an earlier
+        accepted/rejected candidate) has already run this exact harness against
+        this exact held-out split. This scans every subject's ``summary.json``
+        under the experiment's rounds so far rather than keeping an in-memory
+        cache, so a resumed or replayed run finds the same reuse opportunity a
+        fresh one would, with no separate bookkeeping to keep in sync with
+        replay.
+        """
+        best: Path | None = None
+        for candidate_round in range(1, round_index + 1):
+            candidate_round_path = experiment_round_dir(self.out_dir, candidate_round)
+            if not candidate_round_path.exists():
+                continue
+            for summary_path in sorted(candidate_round_path.glob("**/summary.json")):
+                summary = json.loads(summary_path.read_text())
+                if summary.get("harness_hash") != incumbent_hash:
+                    continue
+                if summary.get("outcome") != OUTCOME_COMPLETED:
+                    continue
+                split_round_path = (
+                    summary_path.parent / SPLIT_HELDOUT / f"round_{EVAL_ROUND_INDEX:02d}"
+                )
+                if (split_round_path / MANIFEST_FILE).exists():
+                    best = split_round_path
+        return best
+
     def _validate(
         self, round_path: Path, round_index: int, incumbent: Harness, proposals_dir: Path
     ) -> ValidationRound:
@@ -1300,6 +1335,9 @@ class _Experiment:
                     preflight_profile=_load_marker(
                         round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT
                     ).get("preflight_profile", "generic/v1"),
+                    baseline_seed=self._find_reusable_heldout(
+                        harness_hash(incumbent), round_index
+                    ),
                 )
             finally:
                 # A crashed validation stage still persisted (and paid for)

@@ -532,6 +532,52 @@ class TestResume:
 
 
 # ---------------------------------------------------------------------------
+# ``baseline_seed``: a later round's baseline resumes an earlier evaluation
+# of the identical incumbent at zero new calls, rather than re-running it.
+# ---------------------------------------------------------------------------
+
+
+class TestBaselineReuse:
+    def test_baseline_seed_resumes_at_zero_new_calls(self, tmp_path, monkeypatch):
+        config_1 = make_config(tmp_path, round_index=1)
+        factory_1 = ClientFactory([final("RIGHT")] * 4)  # 2 heldout x 2 repetitions
+        monkeypatch.setattr(rlm_module, "get_client", factory_1)
+        prior = evaluate_subject(BASELINE_ID, H0, config_1)
+        assert isinstance(prior, SubjectEvaluation)
+        assert factory_1.total_calls == 4
+
+        config_2 = make_config(tmp_path, round_index=2)
+        source = split_dir(config_1.out_dir, 1, BASELINE_ID, SPLIT_HELDOUT) / (
+            f"round_{EVAL_ROUND_INDEX:02d}"
+        )
+        candidate = fake_candidate("cand-a", candidate_harness("cand-a"))
+        # Only the candidate's four held-out runs are scripted: a factory with
+        # no entries for the baseline proves the seeded directory, not a
+        # fresh run, is what satisfied it.
+        factory_2 = ClientFactory([final("RIGHT")] * 4)
+        monkeypatch.setattr(rlm_module, "get_client", factory_2)
+        result = evaluate_validation_round(H0, [candidate], config_2, baseline_seed=source)
+
+        assert factory_2.total_calls == 4
+        assert result.baseline.summary["outcome"] == OUTCOME_COMPLETED
+        assert result.baseline.harness_hash == harness_hash(H0)
+        nested = split_dir(config_2.out_dir, 2, BASELINE_ID, SPLIT_HELDOUT) / (
+            f"round_{EVAL_ROUND_INDEX:02d}"
+        )
+        assert read_manifest(nested) == read_manifest(source)
+
+    def test_without_baseline_seed_the_baseline_runs_fresh(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path)
+        candidate = fake_candidate("cand-a", candidate_harness("cand-a"))
+        factory = ClientFactory([final("RIGHT")] * 8)  # baseline(4) + candidate(4)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        result = evaluate_validation_round(H0, [candidate], config)
+
+        assert factory.total_calls == 8
+        assert result.baseline.summary["outcome"] == OUTCOME_COMPLETED
+
+
+# ---------------------------------------------------------------------------
 # Budget: terminated runs stay aggregable; the breaker spans both splits
 # ---------------------------------------------------------------------------
 

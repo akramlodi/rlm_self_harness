@@ -457,6 +457,12 @@ MINING_FAIL = [final("WRONG"), final("WRONG")]
 MINING_FAIL_V2 = [final("WRONG-2"), final("WRONG-2")]
 SUBJECT_FAIL = [final("WRONG")] * 2
 SUBJECT_PASS = [final("RIGHT")] * 2
+# A below-perfect pass: one of the two held-out instances matches gold, the
+# other does not. Used where a later round's candidate must still have real
+# room to improve over an already-promoted incumbent reused as that round's
+# baseline (``Orchestrator._find_reusable_heldout``) -- an incumbent frozen at
+# SUBJECT_PASS would have nothing left to improve on.
+SUBJECT_HALF = [final("RIGHT"), final("WRONG")]
 
 
 def patch_runner(monkeypatch: pytest.MonkeyPatch, script: list[str]) -> ClientFactory:
@@ -512,14 +518,19 @@ def validation_round_path(out_dir: Path, round_index: int) -> Path:
 
 class TestFullExperiment:
     def run_two_promoted_rounds(self, config, out: Path, monkeypatch) -> tuple[Any, ClientFactory]:
+        # Round 2's baseline is H1 -- the incumbent round 1 just promoted --
+        # and is reused from round 1's own candidate evaluation
+        # (``Orchestrator._find_reusable_heldout``) rather than re-run, so no
+        # script entries are consumed for it here. H1 is promoted at
+        # SUBJECT_HALF (not a perfect SUBJECT_PASS) so round 2's candidate
+        # still has genuine room to improve on the reused baseline.
         factory = patch_runner(
             monkeypatch,
             MINING_FAIL
             + SUBJECT_FAIL
-            + SUBJECT_PASS  # round 1
+            + SUBJECT_HALF  # round 1: baseline H0 fails, candidate H1 half-passes
             + MINING_FAIL_V2
-            + SUBJECT_FAIL
-            + SUBJECT_PASS,  # round 2
+            + SUBJECT_PASS,  # round 2: baseline H1 reused, candidate H2 fully passes
         )
         attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
         proposer = MockLM(
@@ -537,7 +548,10 @@ class TestFullExperiment:
         out = tmp_path / "exp"
         result, factory = self.run_two_promoted_rounds(config, out, monkeypatch)
 
-        assert factory.total_calls == 12  # (2 + 4 + 4) per round, nothing re-run
+        # mining(2) + baseline(2) + candidate(2) for round 1, then
+        # mining(2) + candidate(2) for round 2 -- round 2's baseline is H1,
+        # reused from round 1's own candidate evaluation at zero extra calls.
+        assert factory.total_calls == 10
         assert result.stopped == STOP_MAX_ROUNDS
         assert [outcome.promoted for outcome in result.rounds] == [True, True]
 
@@ -615,14 +629,17 @@ class TestPatience:
     def test_two_consecutive_no_promotion_rounds_stop_before_t(self, tmp_path, monkeypatch):
         config = make_config(tmp_path, t=3, patience=2)
         out = tmp_path / "exp"
+        # Round 1 rejects, so the incumbent going into round 2 is still H0 --
+        # round 2's baseline is reused from round 1's own baseline evaluation
+        # (``Orchestrator._find_reusable_heldout``) instead of re-run, hence no
+        # SUBJECT_PASS entries for round 2's baseline below.
         factory = patch_runner(
             monkeypatch,
             MINING_FAIL
             + SUBJECT_PASS
-            + SUBJECT_FAIL  # round 1: candidate regresses
+            + SUBJECT_FAIL  # round 1: baseline H0, candidate regresses
             + MINING_FAIL_V2
-            + SUBJECT_PASS
-            + SUBJECT_FAIL,  # round 2: same
+            + SUBJECT_FAIL,  # round 2: baseline H0 reused, candidate regresses again
         )
         attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
         proposer = MockLM(
@@ -635,7 +652,7 @@ class TestPatience:
 
         assert result.stopped == STOP_PATIENCE
         assert [outcome.promoted for outcome in result.rounds] == [False, False]
-        assert factory.total_calls == 12  # two rounds ran, the third never started
+        assert factory.total_calls == 10  # two rounds ran, the third never started
         assert not experiment_round_dir(out, 3).exists()
         assert frozen_envelope(out)["hash"] == harness_hash(H0)
 
@@ -1733,13 +1750,16 @@ class TestCrossRoundHistory:
         config = make_config(tmp_path, t=2)
         out = tmp_path / "exp"
         captured = spy_prior_history(monkeypatch)
+        # Round 1's candidate half-passes (not a perfect SUBJECT_PASS), leaving
+        # room for round 2's candidate to still improve on H1 once H1 is
+        # reused, unscripted, as round 2's baseline
+        # (``Orchestrator._find_reusable_heldout``).
         patch_runner(
             monkeypatch,
             MINING_FAIL
             + SUBJECT_FAIL
-            + SUBJECT_PASS
+            + SUBJECT_HALF
             + MINING_FAIL_V2
-            + SUBJECT_FAIL
             + SUBJECT_PASS,
         )
         attributor = MockLM(responses=[attribution("skipped_verification")] * 4)
@@ -2279,15 +2299,18 @@ class TestPostRoundAnalysisOnResume:
         out = tmp_path / "exp"
 
         # Round 1 completes; round 2's first mining call raises, exactly like a
-        # crash partway through the second round.
-        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_PASS)
+        # crash partway through the second round. Round 1's candidate
+        # half-passes (not a perfect SUBJECT_PASS) so round 2's candidate
+        # still has room to improve once H1 is reused, unscripted, as round
+        # 2's baseline (``Orchestrator._find_reusable_heldout``).
+        patch_runner(monkeypatch, MINING_FAIL + SUBJECT_FAIL + SUBJECT_HALF)
         attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_1))])
         with pytest.raises(OSError):
             run(config, out, attributor, proposer)
         assert len(snapshots(out)) == 1  # round 1's refresh, and nothing else
 
-        patch_runner(monkeypatch, MINING_FAIL_V2 + SUBJECT_FAIL + SUBJECT_PASS)
+        patch_runner(monkeypatch, MINING_FAIL_V2 + SUBJECT_PASS)
         resumed_attributor = MockLM(responses=[attribution("skipped_verification")] * 2)
         resumed_proposer = MockLM(responses=[proposer_batch((0, TEXT_ROUND_2), revision=True)])
         result = run(config, out, resumed_attributor, resumed_proposer)
