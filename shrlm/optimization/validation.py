@@ -22,6 +22,7 @@ independent processes under the existing caps, breakers, and recovery rules."""
 
 import json
 import os
+import shutil
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -48,6 +49,9 @@ from shrlm.optimization.driver import (
     ACCOUNTING_VERSION,
     ACCOUNTING_VERSION_KEY,
     HARNESS_FILE,
+    INSTANCES_FILE,
+    MANIFEST_FILE,
+    TRACES_DIR,
     RoundConfig,
     load_round,
     manifest_accounting_version,
@@ -254,6 +258,10 @@ class RoundEvaluation:
 # ---------------------------------------------------------------------------
 
 
+def _quality_stratum_key(value: str) -> tuple[int, int | str]:
+    return (0, int(value)) if value.isdigit() else (1, value)
+
+
 def split_aggregate(
     split_path: Path | str,
     primary_quality: QualityDefinition | None = None,
@@ -296,6 +304,11 @@ def split_aggregate(
 
     n_runs = len(entries)
     pass_count = sum(1 for entry in entries if entry["passed"])
+    cause_counts: dict[str, int] = {}
+    for entry in entries:
+        cause = entry.get("cause")
+        if cause is not None:
+            cause_counts[str(cause)] = cause_counts.get(str(cause), 0) + 1
     total_cost = float(sum(entry["cost"] for entry in entries if entry.get("cost") is not None))
     aggregate = {
         "harness_hash": str(envelope["hash"]),
@@ -312,6 +325,7 @@ def split_aggregate(
         "n_runs": n_runs,
         "pass_count": pass_count,
         "pass_rate": pass_count / n_runs if n_runs else None,
+        "cause_counts": dict(sorted(cause_counts.items())),
         "n_resource_terminated": sum(
             1 for entry in entries if entry.get("cause") == VerifierCause.RESOURCE_TERMINATED.value
         ),
@@ -327,7 +341,9 @@ def split_aggregate(
     }
     if primary_quality is not None:
         quality_values: list[float] = []
+        observed_quality_values: list[float] = []
         by_context_length: dict[str, list[float]] = {}
+        observed_by_context_length: dict[str, list[float]] = {}
         for entry, (instance, _completion) in zip(entries, runs, strict=True):
             verdict = entry["verdict"]
             measurement = verdict.get("quality")
@@ -339,6 +355,9 @@ def split_aggregate(
                         f"{primary_quality.identifier!r}"
                     )
                 value = float(measurement["value"])
+                observed_quality_values.append(value)
+                observed_stratum = str(instance.get("context_len", "all"))
+                observed_by_context_length.setdefault(observed_stratum, []).append(value)
             else:
                 cause = entry.get("cause")
                 if cause not in primary_quality.terminal_values:
@@ -348,8 +367,8 @@ def split_aggregate(
                     )
                 value = float(primary_quality.terminal_values[cause])
             quality_values.append(value)
-            if "context_len" in instance:
-                by_context_length.setdefault(str(instance["context_len"]), []).append(value)
+            stratum = str(instance.get("context_len", "all"))
+            by_context_length.setdefault(stratum, []).append(value)
 
         quality_by_context_length = {
             length: {
@@ -357,7 +376,20 @@ def split_aggregate(
                 "total": sum(values),
                 "mean": sum(values) / len(values),
             }
-            for length, values in sorted(by_context_length.items(), key=lambda item: int(item[0]))
+            for length, values in sorted(
+                by_context_length.items(), key=lambda item: _quality_stratum_key(item[0])
+            )
+        }
+        observed_quality_by_context_length = {
+            length: {
+                "n_runs": len(values),
+                "total": sum(values),
+                "mean": sum(values) / len(values),
+            }
+            for length, values in sorted(
+                observed_by_context_length.items(),
+                key=lambda item: _quality_stratum_key(item[0]),
+            )
         }
         aggregate["primary_quality"] = {
             "definition": primary_quality.to_dict(),
@@ -371,6 +403,26 @@ def split_aggregate(
                 else None
             ),
             "by_context_length": quality_by_context_length,
+            # Quality conditional on the verifier having parsed and measured
+            # the answer. Terminal failures such as wrong_format remain in the
+            # unconditional aggregate above as zeroes; this second view is a
+            # diagnostic only and never directly promotes a harness.
+            "conditional_on_measurement": {
+                "n_runs": len(observed_quality_values),
+                "total": sum(observed_quality_values),
+                "mean": (
+                    sum(observed_quality_values) / len(observed_quality_values)
+                    if observed_quality_values
+                    else None
+                ),
+                "macro_by_context_length": (
+                    sum(item["mean"] for item in observed_quality_by_context_length.values())
+                    / len(observed_quality_by_context_length)
+                    if observed_quality_by_context_length
+                    else None
+                ),
+                "by_context_length": observed_quality_by_context_length,
+            },
         }
     return aggregate
 
@@ -605,10 +657,44 @@ def check_subject_contract(subject_id: str, harness: Harness, config: Evaluation
     )
 
 
+def _seed_baseline_split(incumbent: Harness, config: EvaluationConfig, source: Path) -> None:
+    """Copy an already-evaluated ``heldout/round_00`` directory into this baseline's.
+
+    ``source`` is some other subject's (baseline or candidate; this round or an
+    earlier one) persisted split directory for the identical incumbent harness
+    against the identical held-out instances -- callers only pass one such
+    directory, never an unrelated one. Seeding it here, inside
+    ``evaluate_validation_round``, means it lands after the round-level
+    ``validate_round`` contract check (``check_contract`` on
+    ``validation.json``) rather than before it: that check inspects the round
+    directory for legacy evidence via ``rglob``, and a pre-copy landing before
+    it runs would look exactly like stale leftovers from a different contract.
+    ``check_subject_contract`` is written *first*, before any file lands under
+    ``baseline/`` -- the same ``rglob`` legacy-evidence guard also applies one
+    level down, at ``baseline/evaluation.json``, and would equally mistake a
+    copied ``harness.json`` for stale evidence if the contract file did not
+    already exist. Once seeded, ``prepare_round`` (``driver.py``) verifies
+    every entry's sha256 and treats the whole split as already complete, so
+    the baseline resumes as a free no-op instead of re-running.
+    """
+    check_subject_contract(BASELINE_ID, incumbent, config)
+    target = split_dir(config.out_dir, config.round_index, BASELINE_ID, SPLIT_HELDOUT) / (
+        f"round_{EVAL_ROUND_INDEX:02d}"
+    )
+    if (target / MANIFEST_FILE).exists() or source.resolve() == target.resolve():
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    for name in (HARNESS_FILE, INSTANCES_FILE, MANIFEST_FILE):
+        shutil.copy2(source / name, target / name)
+    shutil.copytree(source / TRACES_DIR, target / TRACES_DIR, dirs_exist_ok=True)
+
+
 def evaluate_validation_round(
     incumbent: Harness,
     candidates: Iterable[LoadedCandidate | ValidationSubject],
     config: EvaluationConfig,
+    *,
+    baseline_seed: Path | None = None,
 ) -> RoundEvaluation:
     """Evaluate the baseline once, then every candidate against it (R5).
 
@@ -617,12 +703,18 @@ def evaluate_validation_round(
     the caps gate stays in the result as its ``CandidateRejection`` -- the
     ledger records every candidate, including the ones that never ran.
 
+    ``baseline_seed``, when given, is copied into the baseline's own split
+    directory (see ``_seed_baseline_split``) before it evaluates, letting an
+    identical already-priced evaluation stand in for a fresh one at zero cost.
+
     Raises:
         ValueError: If a candidate claims the reserved ``baseline`` id, two
             candidates share an id (their directories would collide), or the
             incumbent itself violates the experiment-owned caps (an experiment
             misconfiguration, not expected-invalid stage-2 output).
     """
+    if baseline_seed is not None:
+        _seed_baseline_split(incumbent, config, baseline_seed)
     candidates = list(candidates)
     seen: set[str] = set()
     for candidate in candidates:
@@ -975,15 +1067,19 @@ def validate_round(
     config: EvaluationConfig,
     promotion: "PromotionConfig | None" = None,
     *,
+    proposal_base: Harness | None = None,
     loader_timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
     preflight_profile: str | None = None,
     prior_evaluations: list[dict[str, Any]] | None = None,
+    baseline_seed: Path | None = None,
 ) -> ValidationRound:
     """Load and freeze a disjoint proposal batch, evaluate it, then persist one verdict.
 
     Only baseline and the combined candidate run, on held-out instances. There
     is no individual scoring, post-validation selection, or second merge leg.
     Single edits keep their candidate id; multi-edit batches evaluate as ``merged``.
+    ``baseline_seed``, forwarded to ``evaluate_validation_round``, lets an
+    identical already-evaluated harness stand in for a fresh baseline run.
     Duplicate surfaces or reserved ids fail before model calls. Loader rejections
     remain visible in the ledger. Empty proposal directories create no artifacts."""
     from shrlm.optimization.candidates import select_preflight_profile
@@ -1017,9 +1113,10 @@ def validate_round(
         else {}
     )
     pconfig = promotion if promotion is not None else PromotionConfig()
+    base = incumbent if proposal_base is None else proposal_base
     loaded, rejections = load_candidates(
         proposals_dir,
-        incumbent,
+        base,
         caps=config.caps.s6_caps(),
         timeout_seconds=loader_timeout_seconds,
         preflight_profile=preflight_profile,
@@ -1027,7 +1124,7 @@ def validate_round(
     for candidate in loaded:
         if candidate.candidate_id in (BASELINE_ID, MERGED_SUBJECT_ID):
             raise ValueError(f"candidate id {candidate.candidate_id!r} is reserved")
-    plan = plan_batch(incumbent, loaded)
+    plan = plan_batch(base, loaded)
     admitted_inputs = [
         {"id": c.candidate_id, "surface": c.surface, "hash": c.harness_hash} for c in loaded
     ]
@@ -1049,7 +1146,7 @@ def validate_round(
             for c in loaded
         )
         loaded = []
-        plan = plan_batch(incumbent, [])
+        plan = plan_batch(base, [])
     decisions = [decide_subject({}, rejection, pconfig) for rejection in rejections]
     evaluation = None
     constituents = loaded if plan.kind == PLAN_MERGE else []
@@ -1062,6 +1159,11 @@ def validate_round(
                 **evaluation_contract(config),
                 **profile_fields,
                 "incumbent_hash": harness_hash(incumbent),
+                **(
+                    {"proposal_base_hash": harness_hash(base)}
+                    if proposal_base is not None
+                    else {}
+                ),
                 "batch_hash": batch_hash,
                 "constituents": admitted_inputs,
                 "prior_evaluations": prior_evaluations or [],
@@ -1076,6 +1178,9 @@ def validate_round(
                         pconfig.sub_call_band.lower,
                         str(pconfig.sub_call_band.upper),
                     ],
+                    "failure_nonregression_causes": list(
+                        pconfig.failure_nonregression_causes
+                    ),
                 },
             },
         )
@@ -1086,7 +1191,9 @@ def validate_round(
         limits = governed_limits(subject_id, plan.harness.runtime_policy, config.caps)
         if isinstance(limits, CandidateRejection):
             raise ValueError(f"combined candidate violates caps: {limits.reason}")
-        evaluation = evaluate_validation_round(incumbent, [subject], config)
+        evaluation = evaluate_validation_round(
+            incumbent, [subject], config, baseline_seed=baseline_seed
+        )
         if evaluation.baseline.over_budget:
             raise ValueError(
                 "the baseline evaluation ran over budget; a partial baseline cannot anchor promotion"
