@@ -37,7 +37,8 @@ from random import Random
 from typing import Any
 
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import Verdict
+from shrlm.environments.diagnostics import NDCG_QUALITY
+from shrlm.optimization.types import QualityMeasurement, Verdict
 
 DATASET_REPO = "dianetc/OBLIQ-Bench"
 _CORPUS_FILE = "analogues/math/corpus/corpus.jsonl"
@@ -300,6 +301,7 @@ class ObliqBenchMathVerifier:
         """Verifier facts surfaced into MiningConfig by the experiment driver."""
         return {
             "environment": "obliq_bench_math",
+            "primary_quality": NDCG_QUALITY.to_dict(),
             "pass_ndcg_threshold": self.PASS_NDCG_THRESHOLD,
             "rank_k": RANK_K,
             "extraction_rule": self.EXTRACTION_RULE,
@@ -331,11 +333,19 @@ class ObliqBenchMathVerifier:
         predicted = set(top)
         missing, extra = gold_ids - predicted, predicted - gold_ids
         ndcg = ndcg_at_10(top, gold_ids)
+        quality = QualityMeasurement(NDCG_QUALITY.identifier, round(ndcg, 3))
         produced_str = json.dumps(top)
         detail = f"ndcg@10={ndcg:.3f} hits={len(predicted & gold_ids)}/{len(gold_ids)}"
 
         if ndcg >= self.PASS_NDCG_THRESHOLD:
-            return Verdict(passed=True, cause=None, gold=gold, produced=produced_str, detail=detail)
+            return Verdict(
+                passed=True,
+                cause=None,
+                gold=gold,
+                produced=produced_str,
+                detail=detail,
+                quality=quality,
+            )
 
         if missing and extra:
             cause = VerifierCause.MIXED_SET_ERROR
@@ -343,7 +353,14 @@ class ObliqBenchMathVerifier:
             cause = VerifierCause.INCOMPLETE
         else:
             cause = VerifierCause.SPURIOUS
-        return Verdict(passed=False, cause=cause, gold=gold, produced=produced_str, detail=detail)
+        return Verdict(
+            passed=False,
+            cause=cause,
+            gold=gold,
+            produced=produced_str,
+            detail=detail,
+            quality=quality,
+        )
 
 
 def make_obliq_bench_math_verifier() -> ObliqBenchMathVerifier:
