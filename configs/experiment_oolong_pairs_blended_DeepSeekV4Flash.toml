@@ -148,9 +148,13 @@ tau_improvement = 0.02
 # The upper bound is the single most cost-sensitive value in this file. It
 # gates promotion, but a promoted edit may raise cost every round, so the
 # drift compounds: the pessimistic projection multiplies the optimization
-# leg by sum(ceiling^i) over T rounds. The 1.5 ceiling allows a candidate to
-# spend more when it materially improves F1 while preventing unbounded drift.
-cost_band = [0.0, 1.5]
+# leg by sum(ceiling^i) over T rounds. The 3.0 ceiling allows a candidate to
+# spend substantially more when it materially improves F1 while preventing
+# unbounded drift. The 0.5 floor rejects a candidate that costs less than
+# half the baseline's mean -- a sharp enough drop to suspect the edit is
+# doing materially less work (e.g. skipping verification) rather than
+# genuinely cheaper reasoning.
+cost_band = [0.5, 3.0]
 # sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
 
 [promotion.tau_regression]

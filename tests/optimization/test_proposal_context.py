@@ -42,7 +42,7 @@ def test_blended_promotion_guidance_uses_the_configured_f1_gate():
     assert "f1" in prompt
     for value in ("0.02", "0.143542", "0.143708", "0.243833"):
         assert value in prompt
-    assert '"cost_band":[0.0,1.5]' in prompt
+    assert '"cost_band":[0.5,3.0]' in prompt
     assert '"sub_call_band":"unconstrained"' in prompt
 
 
