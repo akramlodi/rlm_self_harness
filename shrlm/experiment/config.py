@@ -420,6 +420,22 @@ AZURE_REASONING_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "none")
 
 
 @dataclass(frozen=True)
+class VLLMConfig:
+    """Self-hosted OpenAI-compatible endpoint settings (vLLM, Ollama, LM Studio, ...).
+
+    Only ``base_url`` lives here: it is not credential material (no "key"/
+    "token"/"secret" fragment), so it is safe to persist into every trajectory
+    trace the way ``backend_kwargs`` does. ``api_key`` is deliberately absent
+    -- ``reject_sensitive_backend_kwargs`` (``driver.py``) refuses any kwarg
+    whose name contains "key", so the credential instead comes from the
+    ``VLLM_API_KEY`` environment variable the client reads internally
+    (``_BACKEND_ENV_KEYS["vllm"]``), exactly like every other backend's key.
+    """
+
+    base_url: str
+
+
+@dataclass(frozen=True)
 class AzureFoundryConfig:
     """Azure AI Foundry provider settings, one knob per model family.
 
@@ -450,8 +466,8 @@ class BackendsConfig:
     """Role endpoints plus optional per-provider tables (KTD5): a provider
     table may be absent when no role uses that backend, and an openrouter role
     with no ``[backends.openrouter]`` table simply sends no provider routing.
-    An azure_foundry role, by contrast, REQUIRES the
-    ``[backends.azure_foundry]`` table: thinking mode is declared, never
+    An azure_foundry or vllm role, by contrast, REQUIRES its provider table:
+    thinking mode (azure_foundry) and base_url (vllm) are declared, never
     defaulted, so ``load_config`` refuses the absent table."""
 
     runner: EndpointConfig
@@ -459,6 +475,7 @@ class BackendsConfig:
     proposer: EndpointConfig
     openrouter: OpenRouterConfig | None = None
     azure_foundry: AzureFoundryConfig | None = None
+    vllm: VLLMConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -784,7 +801,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         backends_table,
         ("runner", "attributor", "proposer"),
         "backends",
-        optional=("openrouter", "azure_foundry"),
+        optional=("openrouter", "azure_foundry", "vllm"),
     )
     openrouter: OpenRouterConfig | None = None
     if "openrouter" in backends_table:
@@ -820,6 +837,19 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
                 "(thinking for Kimi-K2.5, reasoning_effort for gpt-oss); an absent table "
                 "would send neither knob, silently defaulting Kimi to thinking mode -- "
                 "~10x output cost and <think> markup in outputs."
+            )
+    vllm: VLLMConfig | None = None
+    if "vllm" in backends_table:
+        vllm = build_section(VLLMConfig, backends_table["vllm"], "backends.vllm")
+    else:
+        vllm_roles = sorted(
+            role for role in CLIENT_ROLES if backends_table[role].get("backend") == "vllm"
+        )
+        if vllm_roles:
+            raise ValueError(
+                f"missing [backends.vllm] table: role(s) {vllm_roles} use the vllm backend, "
+                "whose base_url must be declared explicitly -- there is no default self-hosted "
+                "endpoint to fall back to."
             )
 
     pricing_table = raw["pricing"]
@@ -876,6 +906,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
             proposer=build_section(EndpointConfig, backends_table["proposer"], "backends.proposer"),
             openrouter=openrouter,
             azure_foundry=azure_foundry,
+            vllm=vllm,
         ),
         pricing=PricingConfig(
             promo=build_section(PricingTier, pricing_table["promo"], "pricing.promo"),
@@ -968,7 +999,9 @@ def backend_kwargs_for(config: ExperimentConfig, role: str) -> dict[str, Any]:
     ``pricing`` from ``pricing.list_price``, nested under the single top-level
     key ``"pricing"`` -- deliberate: the driver's sensitive-kwarg scan matches
     top-level names and ``token`` substrings, and pricing is non-secret and
-    trace-safe.
+    trace-safe. A vllm role carries ``base_url`` the same way -- also not
+    credential material, so it is safe in persisted kwargs; the matching
+    ``api_key`` is never here (see ``VLLMConfig``'s docstring).
     """
     if role not in CLIENT_ROLES:
         raise ValueError(f"unknown client role {role!r}; expected one of {CLIENT_ROLES}")
@@ -983,6 +1016,9 @@ def backend_kwargs_for(config: ExperimentConfig, role: str) -> dict[str, Any]:
             "input_per_million": tier.input_per_million,
             "output_per_million": tier.output_per_million,
         }
+    elif endpoint.backend == "vllm":
+        assert config.backends.vllm is not None  # enforced at load_config time
+        kwargs["base_url"] = config.backends.vllm.base_url
     return kwargs
 
 

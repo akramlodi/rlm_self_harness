@@ -1,0 +1,268 @@
+# =============================================================================
+# configs/experiment_oolong_pairs_local_qwen.toml -- the OOLONG-Pairs profile
+# with the RUNNER role pointed at a local, self-hosted Qwen deployment
+# (vLLM/Ollama/LM Studio -- anything OpenAI-compatible) instead of
+# Azure Foundry DeepSeek-V4-Flash. Everything else (attributor, proposer,
+# splits, promotion, caps) is identical to
+# experiment_oolong_pairs_DeepSeekV4Flash.toml -- only the model actually
+# being measured/optimized changes.
+#
+# Requires a non-empty VLLM_API_KEY in the environment (.env) even though a
+# local server like Ollama does not validate its value -- shrlm's governed
+# round driver refuses to start a paid/local round without every credential
+# its backend declares (shrlm.optimization.driver.require_backend_credential).
+#
+# This file is intended for the calibrate_oolong_pairs_tau.py pilot (runner
+# role only -- mining/attribution/proposal never run), not yet for a full
+# optimization round:
+#   uv run python examples/calibrate_oolong_pairs_tau.py \
+#       --config configs/experiment_oolong_pairs_local_qwen.toml \
+#       --out-dir ./oolong_pairs_tau_calibration_qwen_smoke \
+#       --lengths 8192 --n-per-length 1 --attempts 2 --live
+#
+# Load with load_config(profile="full" | "smoke",
+#   path=".../experiment_oolong_pairs_local_qwen.toml").
+# =============================================================================
+
+[decoding]
+temperature = 0
+top_p = 0.95
+# Top of the pilot tuning range 2048-8192 (section 3.10 row 3). Raised from
+# 4096 on 2026-08-25 alongside thinking = true: reasoning tokens count against
+# this budget, so an instant-mode ceiling would let a hard instance spend the
+# allowance on reasoning and truncate the answer.
+max_output_tokens = 8192
+
+[splits]
+# The pinned trec_coarse validation split has 2 distinct windows at each
+# selected length. With 20 pair tasks per window, that is exactly 40 usable
+# instances at each optimization length and 40 at 262k. Partition 40 instances
+# into held-in, trigger validation, repair promotion, and untouched test roles;
+# reserve all 40 long instances for frozen-harness evaluation.
+n_in = 20 # held-in: weakness mining only
+n_ho = 10 # held-out: validation only, never mined
+test_short = 5 # untouched short test; five other instances are reserved for repair promotion
+test_long = 40 # untouched long test; exhausts its independent 40-instance pool
+seed = 0 # seeded partition of the OOLONG-Pairs pools
+
+[loop]
+# Optimization-loop counts, section 3.2.
+m = 2 # mining repetitions per held-in instance
+v = 1 # validation repetitions per held-out instance per subject
+k = 4 # maximum candidate edits per round, at most one per surface
+t = 3 # maximum optimization rounds
+patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
+environment = "oolong_pairs" # this profile mines/validates OOLONG-Pairs (identity key)
+# Start from the shipped reference prompt plus the orchestrator addendum, so
+# the harness-comparison machinery (H0 / H0*) works unmodified for OOLONG too.
+initial_harness = "H0*R"
+
+[promotion]
+# Macro F1 must be >= the incumbent at these zero thresholds. Unused by the
+# calibration pilot (score_candidate never runs there); carried over
+# unchanged so this file stays a minimal, faithful diff of the DeepSeek
+# config it mirrors, and is ready if a full optimization round follows.
+tau_regression = 0.0
+tau_improvement = 0.0
+metric = "primary_quality"
+cost_band = [0.0, 3]
+# sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
+
+[refinement]
+enabled = true
+promotion_size = 5
+min_conditional_quality_delta = 0.02
+min_failure_rate_delta = 0.0
+failure_causes = ["wrong_format", "resource_terminated", "runtime_error", "content_filtered"]
+max_generations = 1
+
+[caps]
+# Experiment-owned per-run limits (KTD3). Unchanged from the DeepSeek config;
+# a local deployment has no per-token $ cost, but max_budget still arms the
+# spend breaker via the synthesized-cost pricing table below, and max_timeout
+# still bounds a single run's wall-clock time.
+attempts = 1
+max_iterations = 30
+max_depth = 3
+max_budget = 2.0
+max_timeout = 3600.0
+candidate_budget = 100.0
+
+[environments.graphwalks]
+dataset_repo = "openai/graphwalks"
+dataset_file_short = "graphwalks_128k_and_shorter.parquet"
+dataset_file_long = "graphwalks_256k_to_1mil.parquet"
+dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead" # HF main, pinned 2026-08-12
+max_chars = 128000
+min_chars = 0
+problem_types = ["bfs", "parents"]
+
+[environments.oolong_pairs]
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-12
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192
+context_length_long = 262144
+max_scan = 50000
+n_short = 40
+n_long = 40
+
+[environments.oolong]
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-29
+subsets = []
+task_groups = ["counting", "user", "timeline"]
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd"
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb" # HF main, pinned 2026-08-29
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
+
+[backends.runner]
+# The role under test: a local, self-hosted OpenAI-compatible server. Point
+# model at exactly the deployment's served name (Ollama: `ollama list`; vLLM:
+# the --served-model-name you launched it with).
+backend = "vllm"
+model = "qwen3.6:35b-a3b"
+
+[backends.attributor]
+# Unused by the calibration pilot (no mining/attribution stage runs there).
+# Kept on the existing remote backend per this experiment's scope: only the
+# runner role is being evaluated against Qwen for now.
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
+
+[backends.proposer]
+# Unused by the calibration pilot, same reasoning as [backends.attributor].
+backend = "azure_foundry"
+model = "DeepSeek-V4-Flash" # must equal YOUR Foundry deployment name
+
+[backends.openrouter]
+provider_order = []
+allow_fallbacks = true
+
+[backends.azure_foundry]
+# Still required: attributor/proposer select azure_foundry above.
+thinking = true
+
+[backends.vllm]
+# Local server's OpenAI-compatible base_url. The default below matches
+# examples/quickstart_local_qwen.py's Ollama endpoint -- change it if your
+# deployment listens elsewhere (vLLM's default is typically
+# http://localhost:8000/v1).
+base_url = "http://localhost:11434/v1"
+
+[pricing.promo]
+# Synthesized cost is still computed from (fictitious) per-token rates even
+# though inference is local and free -- this is what arms max_budget/
+# candidate_budget's spend breaker (shrlm has no "unmetered" mode). Set to
+# DeepSeek-V4-Flash's rates purely so the breaker's numbers stay comparable
+# across configs; they do not reflect any real local cost.
+input_per_million = 0.19
+output_per_million = 0.51
+
+[pricing.list_price]
+input_per_million = 0.19
+output_per_million = 0.51
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true
+sensitivity_range = [1.99, 3.49]
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2400.0
+long = 700.0
+
+[[gpu_scenarios]]
+name = "2x_a100_tp2_rented"
+hourly_rate_usd = 2.58
+provenance = "Unvalidated estimate from A100 80GB marketplace rates 2026-08; BF16 needs 2xA100 at 262k (weights ~61GB + KV ~24.6GB/seq)"
+provenance_validated = false
+sensitivity_range = [0.94, 4.12]
+precision_note = "bf16 weights, tensor-parallel 2, vLLM serving"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2000.0
+long = 500.0
+
+[[gpu_scenarios]]
+name = "1x_a100_int4"
+hourly_rate_usd = 1.29
+provenance = "Unvalidated estimate; AWQ/GPTQ-INT4 weights ~17GB fit 262k KV on one A100 80GB"
+provenance_validated = false
+sensitivity_range = [0.47, 2.06]
+precision_note = "INT4 quantized weights change model numerics; measurements and comparability do not transfer (report prefers precision-preserving scenarios)"
+changes_numerics = true
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 1800.0
+long = 450.0
+
+[report]
+p_merge = 0.5
+eval_conditions = 3
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution_oolong_pairs_local_qwen.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_oolong_pairs_local_qwen.jsonl"
+eval_repetitions = 3
+validation_workers = 5
+# A single local deployment (one GPU/process) is a much tighter concurrency
+# ceiling than a hosted multi-tenant endpoint. Start sequential; raise only
+# after confirming the server handles concurrent requests without queuing
+# errors or OOM.
+validation_run_workers = 1
+mining_run_workers = 1
+real_check_every_n_rounds = 0
+
+
+# -----------------------------------------------------------------------------
+# Smoke profile: scale counts only. Any key here outside the loader's
+# smoke-overridable set is rejected at load time.
+# -----------------------------------------------------------------------------
+
+[smoke.splits]
+n_in = 3
+n_ho = 3
+test_short = 4
+test_long = 2
+
+[smoke.loop]
+m = 1
+v = 1
+k = 2
+t = 1
+
+[smoke.caps]
+max_budget = 0.5
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+real_check_every_n_rounds = 0
+
+[smoke.environments.oolong.synth]
+max_scan = 2000
+
+[smoke.environments.oolong.real]
+max_scan = 2000
+n_check = 4

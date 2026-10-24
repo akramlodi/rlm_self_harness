@@ -153,6 +153,7 @@ _SENSITIVE_KWARG_FRAGMENTS = ("key", "token", "secret", "password", "authorizati
 _BACKEND_ENV_KEYS: dict[str, tuple[str, ...]] = {
     "openrouter": ("OPENROUTER_API_KEY",),
     "azure_foundry": ("AZURE_API_KEY", "AZURE_FOUNDRY_ENDPOINT"),
+    "vllm": ("VLLM_API_KEY",),
 }
 
 

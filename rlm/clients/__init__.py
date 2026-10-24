@@ -21,12 +21,12 @@ def get_client(
 
         return OpenAIClient(**backend_kwargs)
     elif backend == "vllm":
-        from rlm.clients.openai import OpenAIClient
+        from rlm.clients.vllm import VLLMClient
 
         assert "base_url" in backend_kwargs, (
             "base_url is required to be set to local vLLM server address for vLLM"
         )
-        return OpenAIClient(**backend_kwargs)
+        return VLLMClient(**backend_kwargs)
     elif backend == "portkey":
         from rlm.clients.portkey import PortkeyClient
 
