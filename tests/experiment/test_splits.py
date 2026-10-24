@@ -459,6 +459,14 @@ class TestOolongPairsEnvironment:
                 f"oolong_pairs_{length}_test.jsonl": config.splits.test_short
                 for length in ("short", "mid16k", "mid32k")
             }
+            | (
+                {
+                    f"oolong_pairs_{length}_promotion.jsonl": config.refinement.promotion_size
+                    for length in ("short", "mid16k", "mid32k")
+                }
+                if config.refinement.enabled
+                else {}
+            )
             | {
                 "oolong_pairs_long_test.jsonl": config.splits.test_long,
             }

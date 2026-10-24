@@ -225,6 +225,9 @@ CLAUDE.md
 # long run is tens of MB) and split files can exceed GitHub's 100 MB limit.
 experiment_*/
 
+# Ad-hoc scratch scripts/outputs, not meant to be committed.
+scratch/
+
 !experiment_kimi/analysis/20260826T022243Z/*
 
 Self-Harness/*

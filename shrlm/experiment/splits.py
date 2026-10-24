@@ -249,6 +249,13 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
     from the plan, so an OOLONG run never touches the GraphWalks dataset.
     """
     splits = config.splits
+    # Dormant: still materialized whenever refinement is enabled, but
+    # refinement validation now reuses `held_out` instead of this split (see
+    # RefinementSettings' docstring and Orchestrator._validate_refinement).
+    # Kept rather than deleted as a paper trail for that earlier design.
+    promotion_roles = (
+        {"promotion": config.refinement.promotion_size} if config.refinement.enabled else {}
+    )
     if config.loop.environment == "graphwalks":
         oolong_pairs = config.environments.oolong_pairs
         return {
@@ -256,6 +263,7 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "short": {
                     "held_in": splits.n_in,
                     "held_out": splits.n_ho,
+                    **promotion_roles,
                     "test": splits.test_short,
                 },
                 "long": {"test": splits.test_long},
@@ -271,6 +279,7 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "short": {
                     "held_in": splits.n_in,
                     "held_out": splits.n_ho,
+                    **promotion_roles,
                     "test": splits.test_short,
                 },
             },
@@ -288,7 +297,12 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
         # mining/promotion draw from all three, combined. ``long`` (262144)
         # stays the separate, test-only length: never mined or validated,
         # only reserved for final-harness evaluation.
-        optimization_total = splits.n_in + splits.n_ho + splits.test_short
+        optimization_total = (
+            splits.n_in
+            + splits.n_ho
+            + splits.test_short
+            + (config.refinement.promotion_size if config.refinement.enabled else 0)
+        )
         if optimization_total > oolong_pairs.n_short:
             raise ValueError(
                 "oolong_pairs optimization roles require "
@@ -305,6 +319,7 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
         optimization_roles = {
             "held_in": splits.n_in,
             "held_out": splits.n_ho,
+            **promotion_roles,
             "test": splits.test_short,
         }
         return {
@@ -321,6 +336,7 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "short": {
                     "held_in": splits.n_in,
                     "held_out": splits.n_ho,
+                    **promotion_roles,
                     "test": splits.test_short,
                 },
             },
@@ -380,6 +396,124 @@ def write_split_file(path: Path, content: str, environment: str) -> None:
     )
 
 
+def _task_id_of(instance: dict[str, Any]) -> int:
+    return int(instance["task_id"])
+
+
+def _can_draw_oolong_pairs_with_promotion_safely(
+    config: ExperimentConfig, roles: dict[str, int]
+) -> bool:
+    """Whether ``_draw_oolong_pairs_with_promotion``'s invariant holds here.
+
+    It requires held_in+held_out+test to total exactly ``len(task_ids)`` --
+    true for the shipped blended profile (8+8+4=20), not for every profile
+    (e.g. the single-length profile's held_in alone is 20, a full window by
+    itself; held_out+test+promotion share the second window instead). Only
+    the proven-safe shape gets the corrected draw; anything else falls back
+    to the original behavior unchanged rather than guessing at a shape this
+    fix was not built and verified for.
+
+    Still exercised whenever refinement is enabled (the promotion role is
+    still materialized -- see ``split_plan``), even though
+    ``Orchestrator._validate_refinement`` no longer reads the resulting
+    ``promotion`` split: this function fixes a real materialization bug for
+    *any* role beyond held_in/held_out/test, not something specific to
+    refinement's now-dormant use of it.
+    """
+    if "promotion" not in roles:
+        return False
+    env = config.environments.oolong_pairs
+    primary_total = sum(size for role, size in roles.items() if role != "promotion")
+    return primary_total == len(env.task_ids)
+
+
+def _draw_oolong_pairs_with_promotion(
+    config: ExperimentConfig,
+    length: str,
+    roles: dict[str, int],
+    loader: LoaderFn,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """Draw one oolong_pairs length's roles when ``promotion`` is among them.
+
+    ``load_oolong_pairs`` requests ``ceil(n / len(task_ids))`` windows and then
+    shuffles-and-truncates the resulting (window, task_id) rows to exactly
+    ``n``. When ``n`` equals ``len(task_ids)`` this always returns one
+    instance per task_id (one window fully covers it, nothing to truncate).
+    The moment ``n`` exceeds ``len(task_ids)`` -- exactly what happens once a
+    ``promotion`` role is added on top of held_in/held_out/test -- a second
+    window is pulled in and the truncation becomes a random subset of 2x the
+    task_ids: some task_ids end up with two instances, others with zero. The
+    positional, curated-order slice that assigns roles by task_id then
+    misassigns every task_id after the first duplicate, and a task_id can
+    vanish from every role entirely.
+
+    Fixed by drawing in two deterministic, non-colliding passes instead of
+    one: the primary pass requests exactly ``len(task_ids)`` instances (one
+    window, zero duplication by construction) for held_in/held_out/test; the
+    promotion instances are drawn from a separate, full-pool call and
+    filtered to the complementary-window counterparts of held_out's task_ids
+    -- the same disjoint, difficulty-matched construction used by hand for
+    this fork's first promotion split.
+    """
+    env = config.environments.oolong_pairs
+    n_tasks = len(env.task_ids)
+    primary_roles = {role: size for role, size in roles.items() if role != "promotion"}
+    promotion_size = roles["promotion"]
+    primary_total = sum(primary_roles.values())
+    assert primary_total == n_tasks, (
+        "caller must only invoke this helper when held_in+held_out+test totals exactly "
+        "n_tasks -- see can_draw_oolong_pairs_with_promotion_safely"
+    )
+
+    primary = loader(config, length, primary_total, seed)
+    priority = {task_id: index for index, task_id in enumerate(OOLONG_PAIRS_CURATED_TASK_ORDER)}
+    primary = sorted(primary, key=lambda instance: priority[_task_id_of(instance)])
+    primary_task_ids = [_task_id_of(instance) for instance in primary]
+    if sorted(primary_task_ids) != sorted(env.task_ids):
+        raise ValueError(
+            f"oolong_pairs {length} primary draw did not cover every task_id exactly "
+            f"once (got {sorted(primary_task_ids)}, expected {sorted(env.task_ids)}); "
+            "this should be structurally impossible when primary_total == n_tasks"
+        )
+    primary_ids = {str(instance["id"]) for instance in primary}
+
+    held_out_start = primary_roles.get("held_in", 0)
+    held_out_size = primary_roles.get("held_out", 0)
+    held_out_task_ids = primary_task_ids[held_out_start : held_out_start + held_out_size]
+
+    full_pool = loader(config, length, n_tasks * 2, seed)
+    complementary = [
+        instance for instance in full_pool if str(instance["id"]) not in primary_ids
+    ]
+    by_task_id: dict[int, dict[str, Any]] = {}
+    for instance in complementary:
+        by_task_id.setdefault(_task_id_of(instance), instance)
+    missing = [task_id for task_id in held_out_task_ids if task_id not in by_task_id]
+    if missing:
+        raise ValueError(
+            f"oolong_pairs {length} has no complementary-window instance for held_out "
+            f"task_id(s) {missing}; cannot draw a disjoint promotion split from them"
+        )
+    promotion_pool = [by_task_id[task_id] for task_id in held_out_task_ids]
+    if len(promotion_pool) < promotion_size:
+        raise ValueError(
+            f"oolong_pairs {length} promotion role needs {promotion_size} instances but "
+            f"only {len(promotion_pool)} complementary-window held_out task_ids exist"
+        )
+    promotion = promotion_pool[:promotion_size]
+
+    ordered: list[dict[str, Any]] = []
+    cursor = 0
+    for role, size in roles.items():
+        if role == "promotion":
+            ordered.extend(promotion)
+        else:
+            ordered.extend(primary[cursor : cursor + size])
+            cursor += size
+    return ordered
+
+
 def materialize_environment(
     config: ExperimentConfig,
     splits_dir: Path,
@@ -393,7 +527,12 @@ def materialize_environment(
     files: dict[str, dict[str, Any]] = {}
     for length, roles in plan.items():
         total = sum(roles.values())
-        instances = loader(config, length, total, seed)
+        if environment == "oolong_pairs" and _can_draw_oolong_pairs_with_promotion_safely(
+            config, roles
+        ):
+            instances = _draw_oolong_pairs_with_promotion(config, length, roles, loader, seed)
+        else:
+            instances = loader(config, length, total, seed)
         if len(instances) != total:
             raise ValueError(
                 f"loader for {environment!r} returned {len(instances)} instances for the "
