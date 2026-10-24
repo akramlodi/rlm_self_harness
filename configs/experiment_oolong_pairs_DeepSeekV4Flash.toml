@@ -22,12 +22,12 @@ max_output_tokens = 8192
 [splits]
 # The pinned trec_coarse validation split has 2 distinct windows at each
 # selected length. With 20 pair tasks per window, that is exactly 40 usable
-# instances at 8k and 40 at 262k. Partition all 40 short instances disjointly
-# for optimization and its untouched test; reserve all 40 long instances for
-# frozen-harness evaluation.
+# instances at each optimization length and 40 at 262k. Partition 40 instances
+# into held-in, trigger validation, repair promotion, and untouched test roles;
+# reserve all 40 long instances for frozen-harness evaluation.
 n_in = 20 # held-in: weakness mining only
 n_ho = 10 # held-out: validation only, never mined
-test_short = 10 # untouched short test; 10 + 10 + 20 exhausts the 40-instance pool
+test_short = 5 # untouched short test; five other instances are reserved for repair promotion
 test_long = 40 # untouched long test; exhausts its independent 40-instance pool
 seed = 0 # seeded partition of the OOLONG-Pairs pools
 
@@ -46,11 +46,12 @@ environment = "oolong_pairs" # this profile mines/validates OOLONG-Pairs (identi
 initial_harness = "H0*R"
 
 [promotion]
-# Exact held-out passes must be >= the incumbent at these zero thresholds.
+# Macro F1 must be >= the incumbent at these zero thresholds.
 # Cost and sub-call bands still apply; ties are not evidence of improvement.
 # Bands are inclusive multipliers on the baseline's mean.
 tau_regression = 0.0
 tau_improvement = 0.0
+metric = "primary_quality"
 # The upper bound is the single most cost-sensitive value in this file. It
 # gates promotion, but a promoted edit may raise cost every round, so the
 # drift compounds: the pessimistic projection multiplies the optimization
@@ -60,6 +61,23 @@ tau_improvement = 0.0
 # buys almost nothing above 1.25 and costs orders of magnitude.
 cost_band = [0.0, 3]
 # sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
+
+[refinement]
+# A rejected batch may receive exactly one repair generation when its F1 on
+# parseable answers improves by at least 0.02 while the rate of any terminal
+# (hard-zero) cause also rises. Scoped to the terminal set -- wrong_format,
+# resource_terminated, runtime_error, content_filtered -- not partial-credit
+# causes (mixed_set_error, incomplete, spurious): those are naturally noisy
+# attempt to attempt, and watching them for "did the rate go up" would trigger
+# repair generations on ordinary variance, not genuine new regressions. Repair
+# mining reuses held-in development data; only the descendant is measured on
+# these five fresh instances against the round's original incumbent.
+enabled = true
+promotion_size = 5
+min_conditional_quality_delta = 0.02
+min_failure_rate_delta = 0.0
+failure_causes = ["wrong_format", "resource_terminated", "runtime_error", "content_filtered"]
+max_generations = 1
 
 [caps]
 # Experiment-owned per-run limits (KTD3). max_budget, max_timeout, and

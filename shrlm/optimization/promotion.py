@@ -164,6 +164,9 @@ class PromotionConfig:
     metric: str = METRIC_PASS_COUNT
     cost_band: Band = field(default_factory=Band)
     sub_call_band: Band = field(default_factory=Band)
+    # Candidate-owned terminal failures which may not become more frequent
+    # than under the incumbent. An empty tuple preserves the legacy rule.
+    failure_nonregression_causes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.metric not in PROMOTION_METRICS:
@@ -188,6 +191,10 @@ class PromotionConfig:
                 "tau_regression must be a number >= 0, or a mapping of context length to "
                 f"such a number, got {self.tau_regression!r}"
             )
+        if len(set(self.failure_nonregression_causes)) != len(
+            self.failure_nonregression_causes
+        ):
+            raise ValueError("failure_nonregression_causes must not contain duplicates")
 
 
 @dataclass(frozen=True)
@@ -420,6 +427,38 @@ def score_candidate(
         delta = candidate_value - baseline_value
         deltas[split_id] = delta
         rule[split_id] = {"metric": config.metric, **metric_rule, "delta": delta}
+        if config.failure_nonregression_causes:
+            base_counts = base_split.get("cause_counts")
+            cand_counts = cand_split.get("cause_counts")
+            if base_counts is None or cand_counts is None:
+                raise ValueError(
+                    "failure non-regression requires cause_counts from the current "
+                    "validation protocol"
+                )
+            n_runs = int(base_split["n_runs"])
+            baseline_failures = sum(
+                int(base_counts.get(cause, 0))
+                for cause in config.failure_nonregression_causes
+            )
+            candidate_failures = sum(
+                int(cand_counts.get(cause, 0))
+                for cause in config.failure_nonregression_causes
+            )
+            failure_rule = {
+                "causes": list(config.failure_nonregression_causes),
+                "baseline_count": baseline_failures,
+                "candidate_count": candidate_failures,
+                "baseline_rate": baseline_failures / n_runs,
+                "candidate_rate": candidate_failures / n_runs,
+                "delta": (candidate_failures - baseline_failures) / n_runs,
+            }
+            rule[split_id]["failure_nonregression"] = failure_rule
+            if candidate_failures > baseline_failures:
+                reasons.append(
+                    f"{split_id} configured candidate-owned failures increased "
+                    f"{baseline_failures}->{candidate_failures} for causes "
+                    f"{list(config.failure_nonregression_causes)}"
+                )
         if config.metric == METRIC_PASS_COUNT:
             pass_count_tau_regression = _regression_threshold(config.tau_regression)
             if delta < -pass_count_tau_regression:

@@ -78,6 +78,7 @@ TOP_LEVEL_KEYS: tuple[str, ...] = (
     "splits",
     "loop",
     "promotion",
+    "refinement",
     "caps",
     "environments",
     "backends",
@@ -95,6 +96,7 @@ IDENTITY_SECTIONS: tuple[str, ...] = (
     "splits",
     "loop",
     "promotion",
+    "refinement",
     "caps",
     "environments",
     "backends",
@@ -227,6 +229,58 @@ class PromotionSettings:
             value = getattr(self, name)
             if value is not None and len(value) != 2:
                 raise ValueError(f"promotion.{name} must be [lower, upper], got {value!r}")
+
+
+@dataclass(frozen=True)
+class RefinementSettings:
+    """One bounded repair generation for promising-but-brittle candidates.
+
+    The repair generation mines the rejected candidate on the existing held-in
+    development split; its descendant is then compared with the round's
+    original incumbent on ``held_out`` -- the same split the parent round
+    itself validated the incumbent against, so the repair is judged on
+    literally the same evidence (and ``Orchestrator._reuse_baseline_if_available``
+    can reuse that round's already-paid-for baseline instead of re-running it).
+
+    ``promotion_size`` is dormant: it still reserves a disjoint ``promotion``
+    split (materialized whenever ``enabled``, see ``splits.py``'s
+    ``_draw_oolong_pairs_with_promotion``), but refinement no longer validates
+    against it. Kept rather than deleted as a paper trail for that earlier
+    design, in case a future refinement variant wants a disjoint split again
+    instead of reusing ``held_out``.
+    """
+
+    enabled: bool = False
+    promotion_size: int = 0
+    min_conditional_quality_delta: float = 0.0
+    min_failure_rate_delta: float = 0.0
+    failure_causes: tuple[str, ...] = ("wrong_format",)
+    max_generations: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError(f"refinement.enabled must be a boolean, got {self.enabled!r}")
+        if isinstance(self.promotion_size, bool) or not isinstance(self.promotion_size, int):
+            raise ValueError(
+                f"refinement.promotion_size must be an integer, got {self.promotion_size!r}"
+            )
+        minimum = 1 if self.enabled else 0
+        if self.promotion_size < minimum:
+            raise ValueError(
+                f"refinement.promotion_size must be >= {minimum} when enabled="
+                f"{self.enabled}, got {self.promotion_size}"
+            )
+        for name in ("min_conditional_quality_delta", "min_failure_rate_delta"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(f"refinement.{name} must be a number >= 0, got {value!r}")
+        if not self.failure_causes:
+            raise ValueError("refinement.failure_causes must not be empty")
+        if self.max_generations != 1:
+            raise ValueError(
+                "refinement.max_generations must be exactly 1; recursive repair is bounded "
+                "to one generation so validation cannot become an adaptive search loop"
+            )
 
 
 @dataclass(frozen=True)
@@ -535,6 +589,7 @@ class ExperimentConfig:
     splits: SplitsConfig
     loop: LoopConfig
     promotion: PromotionSettings
+    refinement: RefinementSettings
     caps: CapsConfig
     environments: EnvironmentsConfig
     backends: BackendsConfig
@@ -679,7 +734,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     unknown = sorted(set(raw) - set(TOP_LEVEL_KEYS))
     if unknown:
         raise ValueError(f"unknown top-level key(s) in {path}: {unknown}")
-    missing_tables = sorted(set(TOP_LEVEL_KEYS) - set(raw))
+    missing_tables = sorted((set(TOP_LEVEL_KEYS) - {"refinement"}) - set(raw))
     if missing_tables:
         raise ValueError(f"missing table(s) in {path}: {missing_tables}")
 
@@ -697,6 +752,8 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     promotion_table = dict(raw["promotion"])
     tuplify(promotion_table, "cost_band")
     tuplify(promotion_table, "sub_call_band")
+    refinement_table = dict(raw.get("refinement", {}))
+    tuplify(refinement_table, "failure_causes")
 
     env_table = raw["environments"]
     check_keys(
@@ -790,6 +847,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         splits=build_section(SplitsConfig, raw["splits"], "splits"),
         loop=loop,
         promotion=build_section(PromotionSettings, promotion_table, "promotion"),
+        refinement=build_section(RefinementSettings, refinement_table, "refinement"),
         caps=build_section(CapsConfig, raw["caps"], "caps"),
         environments=EnvironmentsConfig(
             graphwalks=build_section(GraphWalksConfig, graphwalks_table, "environments.graphwalks"),
@@ -999,6 +1057,9 @@ def promotion_config(config: ExperimentConfig) -> PromotionConfig:
         "tau_improvement": settings.tau_improvement,
         "metric": settings.metric,
         "cost_band": Band(lower=settings.cost_band[0], upper=settings.cost_band[1]),
+        "failure_nonregression_causes": (
+            config.refinement.failure_causes if config.refinement.enabled else ()
+        ),
     }
     if settings.sub_call_band is not None:
         kwargs["sub_call_band"] = Band(
