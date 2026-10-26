@@ -24,7 +24,7 @@ import json
 import os
 import shutil
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -93,6 +93,12 @@ PROMOTIONS_FILENAME = "promotions.jsonl"
 DECISION_FILENAME = "decision.json"
 LEDGER_RECORD_FORMAT = "shrlm-promotion-record/v2"
 DECISION_FORMAT = "shrlm-promotion-decision/v2"
+
+# OOLONG-Pairs proposal screening evaluates a deliberately small, stratified
+# slice before spending on a full held-out validation.  These are counts per
+# context length, not repetitions.
+OOLONG_SCREENING_COUNTS: dict[int, int] = {8192: 1, 16384: 2, 32768: 3}
+SCREENING_FILENAME = "screening.json"
 
 # Merge participation roles a ledger record can carry: a constituent of the
 # round's merge plan, or the merged harness's evaluation record.
@@ -1186,6 +1192,194 @@ def validate_round(
     )
 
 
+def oolong_screening_splits(splits: ValidationSplits) -> ValidationSplits:
+    """Return the fixed 1x/2x/3x OOLONG-Pairs screening subset.
+
+    The input is the already-materialized held-out split, so this selection is
+    deterministic and cannot leak mining examples.  Requiring every stratum
+    makes a non-blended or undersized profile fail before any screening call.
+    """
+    selected: list[dict[str, Any]] = []
+    for context_len, count in OOLONG_SCREENING_COUNTS.items():
+        matches = [item for item in splits.heldout if item.get("context_len") == context_len]
+        if len(matches) < count:
+            raise ValueError(
+                f"OOLONG screening needs {count} held-out instances at context_len="
+                f"{context_len}, found {len(matches)}"
+            )
+        selected.extend(matches[:count])
+    return ValidationSplits(heldin=splits.heldin, heldout=selected)
+
+
+def _screening_score(summary: dict[str, Any], metric: str) -> tuple[float, float, float]:
+    """A deterministic, measurement-only ordering key for screened proposals."""
+    aggregate = summary["splits"][SPLIT_HELDOUT]
+    if metric == "primary_quality":
+        quality = aggregate.get("primary_quality")
+        score = float(quality["mean"]) if quality is not None else float("-inf")
+    else:
+        score = float(aggregate["pass_count"])
+    # Lower cost and fewer subcalls resolve equal quality without changing the
+    # promotion rule used by full validation.
+    return (score, -float(aggregate["mean_cost"]), -float(aggregate["mean_sub_calls"]))
+
+
+def validate_oolong_screened_round(
+    incumbent: Harness,
+    proposals_dir: Path | str,
+    config: EvaluationConfig,
+    promotion: "PromotionConfig",
+    *,
+    loader_timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
+    preflight_profile: str | None = None,
+    baseline_seed: Path | None = None,
+) -> ValidationRound:
+    """Screen up to four OOLONG-Pairs proposals, then validate them in rank order.
+
+    Screening runs every admitted candidate on the fixed 1/2/3 8k/16k/32k
+    held-out subset.  Full validation then consumes the ranked queue one at a
+    time, stopping at the first promotable candidate.  Consequently a rejected
+    candidate never triggers another mining/proposal pass; only an exhausted
+    queue returns control to the outer optimizer.
+    """
+    from shrlm.optimization.candidates import select_preflight_profile
+    from shrlm.optimization.promotion import (
+        PLAN_SINGLE,
+        PromotionPlan,
+        decide_subject,
+        promote_decision,
+    )
+
+    round_path = round_dir(config.out_dir, config.round_index)
+    if preflight_profile is None:
+        preflight_profile = select_preflight_profile(evaluation_contract(config)["verifier_config"])
+    loaded, rejections = load_candidates(
+        proposals_dir,
+        incumbent,
+        caps=config.caps.s6_caps(),
+        timeout_seconds=loader_timeout_seconds,
+        preflight_profile=preflight_profile,
+    )
+    if len(loaded) > 4:
+        raise ValueError(
+            f"OOLONG screened validation allows at most 4 candidates, got {len(loaded)}"
+        )
+    if not loaded:
+        # Preserve the existing loader-rejection-only semantics for an empty
+        # viable queue; no baseline or screening call is justified.
+        return validate_round(
+            incumbent,
+            proposals_dir,
+            config,
+            promotion,
+            loader_timeout_seconds=loader_timeout_seconds,
+            preflight_profile=preflight_profile,
+            baseline_seed=baseline_seed,
+        )
+
+    screening_splits = oolong_screening_splits(config.splits)
+    screening_config = replace(
+        config,
+        splits=screening_splits,
+        out_dir=round_path / "screening",
+        round_index=0,
+    )
+    check_contract(
+        round_path / "validation.json",
+        {
+            **evaluation_contract(config),
+            "architecture": "oolong-screened-queue/v1",
+            "incumbent_hash": harness_hash(incumbent),
+            "candidate_ids": [candidate.candidate_id for candidate in loaded],
+            "screening_counts": {str(key): value for key, value in OOLONG_SCREENING_COUNTS.items()},
+            "preflight_profile": preflight_profile,
+        },
+    )
+    screen = evaluate_validation_round(incumbent, loaded, screening_config)
+    if screen.baseline.over_budget:
+        raise ValueError("the screening baseline ran over budget; ranking is not trustworthy")
+    screen_by_id = {candidate.subject_id: candidate for candidate in screen.candidates}
+    ranked = sorted(
+        loaded,
+        key=lambda candidate: (
+            candidate.candidate_id not in screen_by_id
+            or screen_by_id[candidate.candidate_id].over_budget,
+            tuple(
+                -value
+                for value in _screening_score(
+                    screen_by_id[candidate.candidate_id].summary, promotion.metric
+                )
+            )
+            if candidate.candidate_id in screen_by_id
+            and not screen_by_id[candidate.candidate_id].over_budget
+            else (float("inf"),) * 3,
+            candidate.candidate_id,
+        ),
+    )
+
+    attempts: list[dict[str, Any]] = []
+    selected_evaluation: RoundEvaluation | None = None
+    selected_decision = None
+    selected_candidate = None
+    for candidate in ranked:
+        full = evaluate_validation_round(
+            incumbent, [candidate], config, baseline_seed=baseline_seed
+        )
+        if full.baseline.over_budget:
+            raise ValueError(
+                "the full-validation baseline ran over budget; promotion is unscorable"
+            )
+        decision = decide_subject(
+            full.baseline.summary, full.candidates[0], promotion, candidate.surface
+        )
+        attempts.append({"candidate_id": candidate.candidate_id, "decision": decision.to_dict()})
+        selected_evaluation, selected_decision, selected_candidate = full, decision, candidate
+        if decision.accepted:
+            selected_decision = promote_decision(decision)
+            attempts[-1]["decision"] = selected_decision.to_dict()
+            break
+
+    assert (
+        selected_evaluation is not None
+        and selected_decision is not None
+        and selected_candidate is not None
+    )
+    plan = PromotionPlan(
+        PLAN_SINGLE,
+        (selected_candidate.candidate_id,),
+        selected_candidate.harness,
+        selected_candidate.harness_hash,
+        excluded={
+            candidate.candidate_id: "screened queue not reached"
+            for candidate in ranked[len(attempts) :]
+        },
+    )
+    ledger = write_promotion_ledger(selected_evaluation, [selected_decision], plan)
+    _persist_once(
+        round_path / SCREENING_FILENAME,
+        json.dumps(
+            {
+                "format": "shrlm-oolong-screening/v1",
+                "counts": {str(key): value for key, value in OOLONG_SCREENING_COUNTS.items()},
+                "ranked_candidate_ids": [candidate.candidate_id for candidate in ranked],
+                "full_validation_attempts": attempts,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        f"{round_path / SCREENING_FILENAME} records a diverging candidate queue",
+    )
+    return ValidationRound(
+        round_path=round_path,
+        loader_rejections=rejections,
+        evaluation=selected_evaluation,
+        decisions=[selected_decision],
+        plan=plan,
+        ledger=ledger,
+    )
+
+
 __all__ = [
     "BASELINE_ID",
     "DECISION_FILENAME",
@@ -1193,6 +1387,7 @@ __all__ = [
     "EVAL_ROUND_INDEX",
     "LEDGER_RECORD_FORMAT",
     "PROMOTIONS_FILENAME",
+    "OOLONG_SCREENING_COUNTS",
     "ROLE_CONSTITUENT",
     "ROLE_MERGED",
     "SPLIT_HELDIN",
@@ -1214,9 +1409,11 @@ __all__ = [
     "evaluation_contract",
     "load_promotion_ledger",
     "load_summary",
+    "oolong_screening_splits",
     "split_aggregate",
     "split_dir",
     "subject_dir",
     "validate_round",
+    "validate_oolong_screened_round",
     "write_promotion_ledger",
 ]

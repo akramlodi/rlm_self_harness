@@ -73,6 +73,7 @@ from shrlm.optimization.validation import (
     evaluate_validation_round,
     load_promotion_ledger,
     load_summary,
+    oolong_screening_splits,
     split_aggregate,
     split_dir,
     subject_dir,
@@ -253,6 +254,26 @@ def make_instances(prefix: str, n: int = 2) -> list[dict[str, Any]]:
 
 def make_splits(n: int = 2) -> ValidationSplits:
     return ValidationSplits(heldin=make_instances("hi", n), heldout=make_instances("ho", n))
+
+
+def test_oolong_screening_splits_are_stratified_and_deterministic():
+    heldout = [
+        {"id": f"{context_len}-{index}", "context_len": context_len}
+        for context_len, count in ((8192, 3), (16384, 3), (32768, 4))
+        for index in range(count)
+    ]
+    splits = ValidationSplits(heldin=[{"id": "held-in"}], heldout=heldout)
+
+    screened = oolong_screening_splits(splits)
+
+    assert [item["id"] for item in screened.heldout] == [
+        "8192-0",
+        "16384-0",
+        "16384-1",
+        "32768-0",
+        "32768-1",
+        "32768-2",
+    ]
 
 
 def make_config(tmp_path: Path, caps: ValidationCaps = CAPS, **overrides: Any) -> EvaluationConfig:

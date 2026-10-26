@@ -196,6 +196,7 @@ from shrlm.optimization.validation import (
     ValidationRound,
     ValidationSplits,
     load_promotion_ledger,
+    validate_oolong_screened_round,
     validate_round,
 )
 from shrlm.rlm_harness import HARNESSES, Harness
@@ -1325,20 +1326,28 @@ class _Experiment:
         ) as meter:
             before = _validation_usage(validation_round_path)
             try:
-                validation = validate_round(
-                    incumbent,
-                    proposals_dir,
-                    eval_config,
-                    self.pconfig,
-                    prior_evaluations=prior_evaluations(self.prior_history),
-                    loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
-                    preflight_profile=_load_marker(
+                common_kwargs = {
+                    "loader_timeout_seconds": self.config.operational.loader_timeout_seconds,
+                    "preflight_profile": _load_marker(
                         round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT
                     ).get("preflight_profile", "generic/v1"),
-                    baseline_seed=self._find_reusable_heldout(
+                    "baseline_seed": self._find_reusable_heldout(
                         harness_hash(incumbent), round_index
                     ),
-                )
+                }
+                if self.binding.name == "oolong_pairs":
+                    validation = validate_oolong_screened_round(
+                        incumbent, proposals_dir, eval_config, self.pconfig, **common_kwargs
+                    )
+                else:
+                    validation = validate_round(
+                        incumbent,
+                        proposals_dir,
+                        eval_config,
+                        self.pconfig,
+                        prior_evaluations=prior_evaluations(self.prior_history),
+                        **common_kwargs,
+                    )
             finally:
                 # A crashed validation stage still persisted (and paid for)
                 # every run its manifests hold; charge the delta either way.
