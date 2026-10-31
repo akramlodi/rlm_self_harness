@@ -66,6 +66,7 @@ Usage:
 import argparse
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -81,6 +82,38 @@ from shrlm.experiment.orchestrator import run_experiment
 from shrlm.optimization.driver import _BACKEND_ENV_KEYS
 
 load_dotenv()
+
+
+def screened_h0_pilot_config(config: ExperimentConfig) -> ExperimentConfig:
+    """A bounded, two-round live pilot for the OOLONG screened-queue loop.
+
+    This is deliberately constructed from the checked-in OOLONG-Pairs profile
+    so model, dataset revision, pricing, and promotion rule stay identical to
+    the intended live setup.  It uses the smallest held-out split that can
+    exercise the fixed 1x/2x/3x 8k/16k/32k screening design.
+    """
+    if config.loop.environment != "oolong_pairs":
+        raise ValueError("--screened-h0-pilot requires loop.environment = 'oolong_pairs'")
+    return replace(
+        config,
+        splits=replace(config.splits, n_in=6, n_ho=3, test_short=4, test_long=4),
+        loop=replace(
+            config.loop,
+            m=1,
+            v=1,
+            k=4,
+            t=2,
+            patience=2,
+            initial_harness="H0",
+        ),
+        caps=replace(config.caps, candidate_budget=25.0),
+        operational=replace(
+            config.operational,
+            validation_workers=3,
+            validation_run_workers=1,
+            mining_run_workers=3,
+        ),
+    )
 
 
 def missing_env_keys(config: ExperimentConfig) -> list[str]:
@@ -161,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
         help="pre-flight only: env gate, config load, identity print; spends nothing",
     )
     parser.add_argument(
+        "--screened-h0-pilot",
+        action="store_true",
+        help="run the bounded two-round OOLONG-Pairs screened-queue pilot from H0",
+    )
+    parser.add_argument(
         "--probe-json",
         default=None,
         help="path to the probe verdict examples/experiment_smoke.py --probe wrote "
@@ -169,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_config(args.profile, args.config)
+    if args.screened_h0_pilot:
+        config = screened_h0_pilot_config(config)
 
     missing = missing_env_keys(config)
     if missing:

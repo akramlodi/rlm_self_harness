@@ -54,6 +54,7 @@ produced string, and RESOURCE_TERMINATED is owned by the experiment driver.
 """
 
 import hashlib
+import os
 import queue
 import random
 import re
@@ -662,6 +663,25 @@ def build_gold_mapping(entries: list[OolongEntry]) -> dict[int, UserInstances]:
 # upstream retries, while still failing well before "indefinitely" if the
 # stream has genuinely stalled.
 DEFAULT_SCAN_DEADLINE_SECONDS: float = 60.0
+SCAN_DEADLINE_ENV = "OOLONG_SCAN_DEADLINE_SECONDS"
+
+
+def _scan_deadline_seconds() -> float:
+    """Return the per-row stream timeout, allowing slow upstream downloads."""
+    raw_value = os.getenv(SCAN_DEADLINE_ENV)
+    if raw_value is None:
+        return DEFAULT_SCAN_DEADLINE_SECONDS
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{SCAN_DEADLINE_ENV} must be a positive number of seconds, got {raw_value!r}"
+        ) from exc
+    if value <= 0:
+        raise ValueError(
+            f"{SCAN_DEADLINE_ENV} must be a positive number of seconds, got {raw_value!r}"
+        )
+    return value
 
 
 def _bounded_iter(
@@ -709,7 +729,7 @@ def _bounded_iter(
 def iter_dataset_rows(
     split: str,
     revision: str | None,
-    deadline_seconds: float = DEFAULT_SCAN_DEADLINE_SECONDS,
+    deadline_seconds: float | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream raw upstream rows -- the module's only network seam.
 
@@ -727,7 +747,10 @@ def iter_dataset_rows(
             '    uv pip install -e ".[oolong]"'
         ) from exc
     raw_rows = iter(load_dataset(DATASET_REPO, split=split, streaming=True, revision=revision))
-    return _bounded_iter(raw_rows, deadline_seconds)
+    return _bounded_iter(
+        raw_rows,
+        _scan_deadline_seconds() if deadline_seconds is None else deadline_seconds,
+    )
 
 
 def _check_context_lengths(context_lengths: tuple[int, ...]) -> None:
