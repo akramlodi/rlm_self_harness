@@ -295,7 +295,18 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
     config = load_config("smoke")
     config = replace(
         config,
-        operational=replace(config.operational, mining_run_workers=1),
+        operational=replace(
+            config.operational,
+            mining_run_workers=1,
+            # screening_run_workers defaults to 3 (Orchestrator._screen's own
+            # knob, decoupled from validation_run_workers): above 1, each of a
+            # subject's runs dispatches to its own child process with a freshly
+            # reconstructed client, so those calls never increment this single
+            # in-process ClientFactory's count. Pinning it to 1 keeps every
+            # scripted call flowing through the one shared factory this smoke
+            # run's assertions are built around.
+            screening_run_workers=1,
+        ),
     )
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setenv("OPENROUTER_API_KEY", OPENROUTER_KEY_SENTINEL)
