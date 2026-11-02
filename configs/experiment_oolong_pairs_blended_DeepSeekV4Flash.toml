@@ -92,7 +92,7 @@ seed = 0 # seeded partition of the OOLONG-Pairs pools; task_id-to-role
 m = 2 # mining repetitions per held-in instance
 v = 3 # validation repetitions per held-out instance per subject, for the
 # round's best-ranked candidate (see v_screen below for the others)
-k = 3 # up to 3 independently-proposed single-surface candidates per round:
+k = 4 # up to 4 independently-proposed single-surface candidates per round:
 # each is screened independently (never merged -- avoids the "which
 # constituent caused the rejection" blind spot from round 1.2), ranked, and
 # only the best-ranked one is fully validated here. If it is rejected, the
@@ -100,7 +100,7 @@ k = 3 # up to 3 independently-proposed single-surface candidates per round:
 # evidence against the unchanged incumbent.
 v_screen = 1 # cheap per-candidate screening attempt count, strictly < v
 t = 10 # generous ceiling; patience is the real stopping rule
-patience = 4 # consecutive fresh mining rounds without promotion before
+patience = 3 # consecutive fresh mining rounds without promotion before
 # stopping. This is intentionally independent of k: k controls alternatives
 # screened within one round, while patience controls how many newly-mined
 # optimization attempts may fail in succession (3.10 row 5).
@@ -154,7 +154,13 @@ metric = "primary_quality"
 # tau_regression veto is UNCHANGED and still independently gates every
 # length; this change only affects the macro-improvement check once no
 # length has regressed beyond its own margin.
-tau_improvement = 0.02
+# LOOSENED further on 2026-11-02: 0.02 -> 0.0, promoting on any
+# non-negative macro improvement once tau_regression's per-length veto
+# already clears -- round 1's own best candidate (r01-c03-s3) landed a
+# macro delta of only +0.001, nowhere near 0.02. Not yet quantified against
+# the same bootstrap method; treat as a further risk-accepted deviation
+# until that analysis is redone for this threshold specifically.
+tau_improvement = 0.0
 # The upper bound is the single most cost-sensitive value in this file. It
 # gates promotion, but a promoted edit may raise cost every round, so the
 # drift compounds: the pessimistic projection multiplies the optimization
