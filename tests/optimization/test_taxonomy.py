@@ -115,8 +115,8 @@ class TestSurfaceAgreementWithHarness:
 
 
 class TestCoverageInvariants:
-    def test_sixteen_concrete_mechanisms_plus_other(self):
-        assert len(AgentMechanism) == 17
+    def test_eighteen_concrete_mechanisms_plus_other(self):
+        assert len(AgentMechanism) == 19
         assert AgentMechanism.OTHER in AgentMechanism
 
     def test_every_mechanism_is_documented(self):
@@ -131,13 +131,11 @@ class TestCoverageInvariants:
     def test_other_has_no_surface_by_design(self):
         assert AgentMechanism.OTHER not in MECHANISM_SURFACE
 
-    def test_primary_surfaces_exclude_answer_only_middleware(self):
+    def test_primary_surfaces_cover_every_editable_surface(self):
         # Compared against the harness declaration, not the enum, so a shrunken
         # or drifted mapping fails even if the enum drifts with it.
-        assert {surface.value for surface in MECHANISM_SURFACE.values()} == set(SURFACES) - {"S9"}
-        assert set(MECHANISM_SURFACE.values()) == set(EditableSurface) - {
-            EditableSurface.ANSWER_MIDDLEWARE
-        }
+        assert {surface.value for surface in MECHANISM_SURFACE.values()} == set(SURFACES)
+        assert set(MECHANISM_SURFACE.values()) == set(EditableSurface)
 
     def test_child_level_mechanisms_never_map_to_a_root_only_surface(self):
         for mechanism in CHILD_LEVEL_MECHANISMS:
@@ -178,7 +176,17 @@ class TestCoverageInvariants:
         # reach entry), so bundles written under 2.0.0 are not comparable.
         # 3.1.0: MECHANISM_SURFACES widened each mechanism to a set of eligible
         # surfaces (primary unchanged) and made OTHER addressable.
-        assert TAXONOMY_VERSION == "3.3.0"
+        # 3.4.0 separates wrong-objective execution from answer serialization,
+        # making S9 primary only when an internal semantic result is visible.
+        assert TAXONOMY_VERSION == "3.4.0"
+
+    def test_new_mechanisms_have_conservative_evidence_contracts(self):
+        objective = MECHANISM_DOCS[AgentMechanism.TASK_OBJECTIVE_MISINTERPRETATION]
+        serialization = MECHANISM_DOCS[AgentMechanism.ANSWER_SERIALIZATION_FAILURE]
+        assert "different task or output objective" in objective
+        assert "wrong answer does not establish" in objective
+        assert "internal value" in serialization and "emitted answer" in serialization
+        assert "wrong_format verifier cause alone" in serialization
 
 
 class TestSkillsSurface:

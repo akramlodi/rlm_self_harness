@@ -56,16 +56,20 @@ Read in this order; each module depends only on the ones above it.
 
 ### `taxonomy.py` — the closed vocabulary
 Every label in the system, as enums: `VerifierCause`, `FailingLevel`, `CausalStatus`,
-`AgentMechanism` (16 concrete mechanisms + `OTHER`), `EditableSurface` (the ten harness surfaces
+`AgentMechanism` (18 concrete mechanisms + `OTHER`), `EditableSurface` (the ten harness surfaces
 S1–S10). Plus four tables: `MECHANISM_DOCS`, `MECHANISM_SURFACE` (mechanism → the one surface that
 could fix it, [:339](optimization/taxonomy.py#L339); every one of the ten surfaces is reachable —
 S10 through `unconsulted_procedure`, defined against the digest's `available_skills` /
 `loaded_skills` lines and claimed only when neither the S6 budget-exhaustion nor the S3
 depth-degradation mechanism independently explains the terminal failure), `SURFACE_REACH`, and
-`CAUSAL_WEIGHT`. `TAXONOMY_VERSION` is `3.3.0`; shared capability descriptions and
+`CAUSAL_WEIGHT`. `TAXONOMY_VERSION` is `3.4.0`; shared capability descriptions and
 evidence-supported S8/S5 alternatives supplement the primary-surface table. It stamps
 every bundle, and the mechanism-frequency diff refuses to compare bundles written under a
 different version unless explicitly told to.
+
+The two newest mechanisms separate visibly pursuing the wrong task objective from answer
+serialization failure. The latter requires both the intended semantic value and the conflicting
+emitted representation in the trace; a `wrong_format` verdict alone is insufficient.
 
 *Why closed:* the vocabulary **is** the clustering key. An open vocabulary would make every failure
 its own cluster and mining would return nothing.
