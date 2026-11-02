@@ -509,6 +509,69 @@ def test_evidence_packing_bounds_rendered_text_and_deduplicates_operations():
     assert pack_evidence(patterns, evidence, k=4, budget=6000) == (rendered, audit)
 
 
+def test_default_evidence_budget_scales_with_candidate_opportunities():
+    from shrlm.optimization.proposal_evidence import evidence_budget_for, pack_evidence
+
+    assert [evidence_budget_for(k) for k in range(1, 5)] == [48000, 56000, 76000, 96000]
+
+    mechanisms = [
+        "incomplete_coverage",
+        "misaligned_unit",
+        "llm_for_rlm_substitution",
+        "skipped_verification",
+    ]
+    inventory = [
+        {
+            "index": index,
+            "signature": {"agent_mechanism": mechanism, "causal_status": "contributing"},
+            "instance_support": 4 - index,
+        }
+        for index, mechanism in enumerate(mechanisms)
+    ]
+    contexts = {
+        index: {
+            "run_id": f"run-{index}",
+            "trace": {
+                "snippets": [
+                    {
+                        "node_id": "r",
+                        "code": f"pattern_{index} = [\n" + "    1,\n" * 2200 + "]",
+                        "code_complete": True,
+                        "reason": "cited operation",
+                    }
+                ]
+            },
+        }
+        for index in range(4)
+    }
+
+    rendered, audit = pack_evidence(inventory, {"patterns": contexts}, k=4)
+
+    assert audit["evidence_budget_chars"] == 96000
+    assert audit["evidence_budget_policy"] == {
+        "inventory_allowance_chars": 16000,
+        "per_candidate_chars": 20000,
+        "candidate_slots": 4,
+        "minimum_chars": 48000,
+        "maximum_chars": 96000,
+        "explicit_override": False,
+    }
+    assert audit["expanded_patterns"] == [0, 1, 2, 3]
+    assert audit["expanded_mechanisms"] == mechanisms
+    assert len(rendered) <= audit["evidence_budget_chars"]
+    for index in range(4):
+        assert f"pattern_{index} = [" in rendered
+
+
+def test_explicit_evidence_budget_override_remains_exact():
+    from shrlm.optimization.proposal_evidence import pack_evidence
+
+    _, audit = pack_evidence([], {}, k=4, budget=2000)
+
+    assert audit["evidence_budget_chars"] == 2000
+    assert audit["evidence_budget_policy"]["explicit_override"] is True
+
+
 def test_oversized_operation_uses_alternative_without_cutting_code():
     from shrlm.optimization.proposal_evidence import pack_evidence
 
