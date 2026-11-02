@@ -441,7 +441,7 @@ screening_workers = 1
 # Within-subject concurrency during screening: while one subject has the
 # floor, its own small screening-subset instances (one per length here, so
 # 3) run concurrently rather than being serialized to one at a time.
-# Independent of validation_run_workers/_warm.
+# Independent of validation_run_workers.
 screening_run_workers = 3
 
 # Held-in mining runs fan out independently. Start at 5; if provider 429s
