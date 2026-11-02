@@ -160,7 +160,7 @@ PROPOSAL_FILENAME = "proposal.json"
 # that reached validation, renders each attempted edit's predicted effect, and
 # says that a candidate identical to the current surface is refused before
 # validation (see VALIDATOR_VERSION 1.5.0).
-PROMPT_VERSION = "5.1.0"
+PROMPT_VERSION = "5.3.0"
 # Version of the validation logic in this module (validate_candidate_spec,
 # _validate_edit_shape, _validate_single_def, skill_edit._validate_skill_edit).
 # Folded into the cache key so a validator change cannot replay stale responses
@@ -176,7 +176,7 @@ PROMPT_VERSION = "5.1.0"
 # materialization returns an empty result instead of raising. The 2026-09-10
 # OOLONG-Pairs run lost rounds 4-6 to a proposer that re-emitted the incumbent's
 # own S9 three rounds in a row; under 1.4.0 that was counted, never re-asked.
-VALIDATOR_VERSION = "5.0.0"
+VALIDATOR_VERSION = "6.0.0"
 
 DEFAULT_K = 4
 # Raised from 3 on 2026-08-24: stealth/ox-alpha exhausted 3 attempts twice in
@@ -401,6 +401,7 @@ class ProposerConfig:
 
     k: int = DEFAULT_K
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    iterative_slot_filling: bool = False
     prompt_version: str = PROMPT_VERSION
     validator_version: str = VALIDATOR_VERSION
     transport_retries: int = DEFAULT_TRANSPORT_RETRIES
@@ -606,16 +607,19 @@ The ten editable surfaces:
 """
 
 PROPOSER_TASK = """\
-Propose at most one edit per surface in this round. All admitted edits will be \
-evaluated as one combined candidate, with one shared promotion decision. The \
-candidate limit is a maximum, not a quota. When patterns compete for a surface, \
-choose the best-supported minimal edit. Do not move an edit to a weaker surface \
-just to fill the batch. If only one surface warrants a change, propose one edit; \
-if none does, return empty selections and candidates lists.
-Select in priority order, reserving each chosen surface. Reserve a pattern for \
-one singleton or one complete activation pair. The host retains the first candidate in candidate order that \
-passes all local gates for a surface and pattern; later contenders cannot replace \
-that owner. Invalid candidates do not reserve a surface.
+Each proposal occupies one exact (pattern, surface) slot. You may propose different \
+surface hypotheses for the same pattern and the same surface for different patterns, \
+because every admitted edit is screened \
+independently on a small instance subset, ranked, and only the best-ranked one is \
+fully validated for promotion -- never merged with the others into one combined \
+candidate. If that winner is rejected by full validation, the remaining screened \
+candidates are retired and the next optimization round mines fresh evidence against \
+the unchanged incumbent; no runner-up from this batch is later validated. The host \
+supplies the target count below. Fill it only with distinct, evidenced \
+pattern-surface hypotheses; never invent a weak final edit merely to fill the target. The same exact tuple \
+may occur only once. The host retains the first candidate in candidate order that \
+passes all local gates for an exact tuple; later duplicates cannot replace that owner. \
+Invalid candidates do not reserve a tuple.
 
 Before replacement text, describe incumbent_behavior (what the relevant execution \
 actually did at its latest relevant state, compared with the instructions already \
@@ -636,7 +640,7 @@ worked example when its return contract conflicts with the procedure needed here
 do not append another rule while leaving an incompatible example as the default. \
 Preserve an explicitly scoped example when it remains correct for simpler tasks.
 
-For each pattern you choose to address, propose exactly one minimal edit on one of \
+For each pattern-surface hypothesis you choose to address, propose exactly one minimal edit on one of \
 its eligible surfaces, naming that surface in the candidate's "surface" field -- \
 change only what is needed to address that specific mechanism, never a broad rewrite. You do not have to address every pattern: skip a pattern if no \
 minimal edit plausibly addresses it (weak support, or the failure looks like a \
@@ -792,7 +796,7 @@ with similar skills in the index and never loaded correctly.
 
 RESPONSE_FORMAT = """\
 Respond with one fenced JSON object using format proposal-selection/v3. Write
-selections first: choose at most %(k)s edits, one per surface,
+selections first: %(quota_instruction)s
 ranked by evidence for the unresolved operation. Then write exactly one matching
 candidate per selection. No extra model call is needed. To withdraw all, return
 empty selections and candidates lists. Example shape:
@@ -815,14 +819,15 @@ empty selections and candidates lists. Example shape:
 }
 ```
 Selection reasons and each explanation field must contain 1-600 characters.
-Normally choose one edit per pattern. The sole exception is an activation pair:
+Multiple singleton hypotheses may target different eligible surfaces of one pattern.
+An activation pair remains one atomic joint hypothesis:
 exactly one S8/S10 capability plus one S2/S3 caller for the same evidenced pattern.
 Both must be eligible. Set the same activation_pair identifier on both selections
 and both candidates; use null or omit it for singletons. A pair consumes two slots.
 Select the joint intervention before writing replacements, and reserve both surfaces.
 Explain why existing discovery/instructions do not suffice, which named capability
 the caller invokes, and its input/output contract. Do not pair a skill removal.
-Do not add a second intervention for that pattern or reuse either surface. If one
+Do not reuse either exact pattern-surface tuple. If one
 member fails checks, repair or withdraw both together; unrelated valid edits stay.
 Each selection's evidence_refs lists 1-12 admitted operation_ref IDs from
 its own selectable pattern. Copy identities from the evidence inventory; inventory-only
@@ -877,7 +882,9 @@ def render_promotion_contract(promotion: "PromotionConfig | None") -> str:
         "and need not improve."
     )
     return (
-        "Promotion evaluates one combined candidate on held-out runs only.\n"
+        "Promotion fully evaluates one candidate at a time on held-out runs, the "
+        "best-ranked survivor of an independent per-candidate screening pass -- never "
+        "a combined merge of this round's admitted edits.\n"
         "Active promotion contract:\n" + canonical_json(contract) + "\n" + objective + "\n"
         "Configured candidate-owned failure causes may not increase; a rejected candidate "
         "with better conditional quality may enter one separately gated repair generation. "
@@ -897,6 +904,7 @@ def render_prompt(
     evidence: dict[str, Any] | None = None,
     evidence_audit: dict[str, Any] | None = None,
     promotion: "PromotionConfig | None" = None,
+    iterative_slot_filling: bool = False,
 ) -> tuple[str, list[tuple[int, dict[str, Any]]]]:
     """The one system prompt for a round, and the addressable patterns shown.
 
@@ -1001,8 +1009,17 @@ def render_prompt(
         sections.append(ANSWER_CONTRACT)
     if any("S10" in _pattern_surfaces(pattern) for _, pattern in addressable):
         sections.append(SKILLS_PEDAGOGY % {"skill_loader": SKILL_LOADER_NAME})
-    eligible = {surface for _, pattern in addressable for surface in _pattern_surfaces(pattern)}
-    sections.append(RESPONSE_FORMAT % {"k": min(k, len(eligible))})
+    slot_capacity = sum(len(_pattern_surfaces(pattern)) for _, pattern in addressable)
+    target = min(k, slot_capacity)
+    quota_instruction = (
+        f"choose exactly {target} distinct grounded pattern-surface edits, ranked by evidence "
+        "for the unresolved operation. If fewer survive locally, the host will ask only for "
+        "the remaining slots."
+        if iterative_slot_filling
+        else f"choose at most {target} distinct grounded pattern-surface edits, ranked by evidence "
+        "for the unresolved operation."
+    )
+    sections.append(RESPONSE_FORMAT % {"quota_instruction": quota_instruction})
     rendered = "\n\n".join(sections)
     if evidence_audit is not None:
         evidence_audit["system_prompt_chars"] = len(rendered)
@@ -1576,6 +1593,7 @@ def config_material(config: ProposerConfig, lm: BaseLM) -> dict[str, Any]:
         "sampling_args": lm.sampling_args,
         "k": config.k,
         "max_attempts": config.max_attempts,
+        "iterative_slot_filling": config.iterative_slot_filling,
         "prompt_version": config.prompt_version,
         "validator_version": config.validator_version,
         "text_contract": TEXT_CONTRACT,
@@ -1675,10 +1693,10 @@ def publish_proposal_result(
 
 
 def repair_slot(index: int, surface: str | None, pair: Any) -> tuple[int, str | None, str]:
-    """Keep capability/caller repair slots distinct while allowing retargeting."""
+    """Identify the exact singleton tuple or one role of an atomic pair."""
     if isinstance(pair, str) and pair:
         return index, pair, "capability" if surface in {"S8", "S10"} else "caller"
-    return index, None, "single"
+    return index, surface, "single"
 
 
 def validate_batch_members(
@@ -1706,8 +1724,17 @@ def validate_batch_members(
     ):
         pair = item.get("activation_pair") if isinstance(item, dict) else None
         key = repair_slot(index, surface, pair)
+        repair_key = key
         if failed_slots is not None:
-            position = failed_slots.get(key, position)
+            if key not in failed_slots and not pair:
+                alternatives = [
+                    failed_key
+                    for failed_key in failed_slots
+                    if failed_key[0] == index and failed_key[2] == "single"
+                ]
+                if len(alternatives) == 1:
+                    repair_key = alternatives[0]
+            position = failed_slots.get(repair_key, position)
         try:
             duplicates = duplicate_json_keys(item)
             if duplicates:
@@ -1734,7 +1761,9 @@ def validate_batch_members(
             # attempt fixing it while the second violation -- never surfaced --
             # kills the next one. Content checks combine after every structural
             # /orphan-exclusion guard below has already passed.
-            reason_violation = not isinstance(reason, str) or not reason.strip() or len(reason) > 600
+            reason_violation = (
+                not isinstance(reason, str) or not reason.strip() or len(reason) > 600
+            )
             refs = selection.get("evidence_refs", [])
             if (
                 not isinstance(refs, list)
@@ -1771,9 +1800,10 @@ def validate_batch_members(
                 raise ProposalRejection(
                     "proposal-selection/v3 requires candidate revision and selection evidence_refs"
                 )
-            if failed_slots is not None and key not in failed_slots:
+            if failed_slots is not None and repair_key not in failed_slots:
                 raise ProposalRejection(
-                    "repair must target only an original failed pattern and pair role"
+                    "repair must target only an original failed pattern-surface slot or retarget "
+                    "one failed singleton from that pattern"
                 )
             # Collected, not raised one at a time: ``reason`` length and the
             # behavior-field lengths are independent of each other, so both can
@@ -1809,7 +1839,8 @@ def validate_batch_members(
                 old_surface = original.get("surface")
                 if (
                     original["pattern_index"] == index
-                    and repair_slot(index, old_surface, original.get("activation_pair")) == key
+                    and repair_slot(index, old_surface, original.get("activation_pair"))
+                    == repair_key
                     and old_surface != surface
                     and original.get("behavioral_change") == spec.behavioral_change
                 ):
@@ -1966,9 +1997,19 @@ def propose_round(
         evidence=evidence,
         evidence_audit=evidence_audit,
         promotion=promotion,
+        iterative_slot_filling=config.iterative_slot_filling,
     )
     for index, pattern in enumerate(patterns):
         pattern.update(evidence_audit["choices"].get(str(index), {"selectable": False}))
+    available_slots = {
+        (index, surface) for index, pattern in addressable for surface in _pattern_surfaces(pattern)
+    }
+    target_count = min(config.k, len(available_slots))
+    evidence_audit["slot_filling"] = {
+        "enabled": config.iterative_slot_filling,
+        "capacity": len(available_slots),
+        "target": target_count,
+    }
     system_sha = prompt_sha256(rendered_prompt)
     cfg_sha = config_sha256(config, lm)
     bundle_id = str(bundle.get("bundle_id", ""))
@@ -2047,6 +2088,8 @@ def propose_round(
     failed_slots: dict[tuple[int, str | None, str], int] = {}
     failed_sources: list[Any] = []
     repairing = False
+    filling = False
+    saw_valid_response = False
     for attempt in range(config.max_attempts if addressable else 0):
         user = (
             "Propose your candidates now."
@@ -2066,24 +2109,22 @@ def propose_round(
                 "One repair response only. Return replacements only for the failed original "
                 "patterns; omit a failed singleton to withdraw it. Repair or withdraw BOTH activation "
                 "pair members with the original pair id; never downgrade a pair to a singleton. "
-                "You may choose another eligible, "
-                "unoccupied surface for that same pattern. Explain the revised behavioral change "
-                "when retargeting: compare with all shown incumbent surfaces and prior attempts, "
+                "Repair the same exact failed pattern-surface singleton. Explain the revised behavioral change "
+                "by comparing with the shown incumbent surface and prior attempts, "
                 "and identify the changed operation, input, or invocation condition. Moving the "
                 "same instruction alone is insufficient. Keep retained edits unchanged; no new patterns. "
                 "Return selections followed by candidates. Select in priority order and remove "
-                "each selected surface from further consideration. Occupied surfaces cannot "
-                "be selected again. Do not move an edit to an unsuitable surface just to fill "
-                "the batch.\nOccupied surfaces: "
-                + canonical_json(sorted(r["surface"] for r in retained))
-                + "\nEligible unoccupied surfaces: "
+                "each selected exact tuple from further consideration. Occupied tuples cannot "
+                "be selected again.\nOccupied pattern-surface tuples: "
+                + canonical_json([[r["pattern_index"], r["surface"]] for r in retained])
+                + "\nEligible failed tuples: "
                 + canonical_json(
                     {
-                        str(index): [
-                            s
-                            for s in _pattern_surfaces(patterns[index])
-                            if s not in {r["surface"] for r in retained}
-                        ]
+                        str(index): sorted(
+                            key[1]
+                            for key in failed_slots
+                            if key[0] == index and isinstance(key[1], str)
+                        )
                         for index in sorted({key[0] for key in failed_slots})
                     }
                 )
@@ -2101,6 +2142,24 @@ def propose_round(
                 + "\nFailures: "
                 + rejection
             )
+        elif filling:
+            retained_slots = {(spec.pattern_index, spec.surface) for _, spec, _ in materialized}
+            remaining = sorted(available_slots - retained_slots)
+            missing = target_count - len(materialized)
+            user = (
+                f"Fill the remaining {missing} screening candidate slot(s). Return only new, "
+                "distinct grounded pattern-surface hypotheses; do not repeat retained tuples. "
+                "Use only the remaining tuple inventory below, and do not invent a candidate "
+                "when the evidence does not support it.\nRetained: "
+                + canonical_json(
+                    [
+                        {"pattern_index": spec.pattern_index, "surface": spec.surface}
+                        for _, spec, _ in materialized
+                    ]
+                )
+                + "\nRemaining grounded pattern-surface tuples: "
+                + canonical_json([[index, surface] for index, surface in remaining])
+            )
         request_sha = prompt_sha256(
             canonical_json({"system": system_sha, "user": user, "profile": profile})
         )
@@ -2112,8 +2171,11 @@ def propose_round(
         )
         observed = None
         try:
+            call_stage = (
+                "proposal_repair" if repairing else "proposal_fill" if filling else "proposal"
+            )
             with recorder.call(
-                "proposal_repair" if attempt else "proposal",
+                call_stage,
                 lm.model_name,
                 attempt=attempt + 1,
             ) as observed:
@@ -2164,10 +2226,18 @@ def propose_round(
             parsed = extract_proposal_response(response)
             selections = parsed["selections"]
             raw_items = parsed["candidates"]
-            if max(len(raw_items), len(selections)) > config.k:
+            response_limit = (
+                len(failed_slots)
+                if repairing
+                else target_count - len(materialized)
+                if config.iterative_slot_filling
+                else config.k
+            )
+            if max(len(raw_items), len(selections)) > response_limit:
                 raise ProposalRejection(
-                    f"response proposed {max(len(raw_items), len(selections))} entries, more than the allowed {config.k}"
+                    f"response proposed {max(len(raw_items), len(selections))} entries, more than the allowed {response_limit}"
                 )
+            saw_valid_response = True
         except ProposalRejection as exc:
             rejection = str(exc)
             attempts.append(
@@ -2205,6 +2275,15 @@ def propose_round(
             failed_sources,
             selections,
         )
+        if filling and not repairing:
+            used_positions = {position for position, _, _ in materialized}
+            free_positions = [
+                position for position in range(1, config.k + 1) if position not in used_positions
+            ]
+            slots = [
+                (free_positions[offset], spec)
+                for offset, (_, spec) in enumerate(slots[: len(free_positions)])
+            ]
         if repairing and local_failures and not slots:
             rejection = "; ".join(failure["reason"] for failure in local_failures)
             attempts.append(
@@ -2255,14 +2334,8 @@ def propose_round(
                             "surface": other.surface,
                         }
                         for pos, other, _ in materialized
-                        if other.surface == spec.surface
-                        or (
-                            other.pattern_index == spec.pattern_index
-                            and (
-                                not spec.activation_pair
-                                or other.activation_pair != spec.activation_pair
-                            )
-                        )
+                        if other.pattern_index == spec.pattern_index
+                        and other.surface == spec.surface
                     ),
                     None,
                 )
@@ -2272,7 +2345,7 @@ def propose_round(
                         {
                             **identity,
                             "gate": "occupancy",
-                            "reason": f"surface {spec.surface} or pattern {spec.pattern_index} is occupied by {owner}",
+                            "reason": f"pattern-surface tuple ({spec.pattern_index}, {spec.surface}) is occupied by {owner}",
                             "owner": owner,
                             "predicted_effect": spec.predicted_effect,
                             "behavior": proposal_history_fields(spec, incumbent_serialization),
@@ -2423,11 +2496,12 @@ def propose_round(
         # A valid repair replaces the failed slots (omission explicitly withdraws them).
         materialization_failures = new_materialization_failures
         preflight_failures = new_preflight_failures
-        owned_patterns = {spec.pattern_index for _, spec, _ in materialized}
+        owned_slots = {
+            repair_slot(spec.pattern_index, spec.surface, spec.activation_pair)
+            for _, spec, _ in materialized
+        }
         failed_slots = {
-            key: position
-            for key, position in new_failed_slots.items()
-            if key[0] not in owned_patterns
+            key: position for key, position in new_failed_slots.items() if key not in owned_slots
         }
         failed_sources = [
             item
@@ -2452,17 +2526,48 @@ def propose_round(
                 attempt + 1, cached, response, not has_failures, rejection, admissions, refs
             )
         )
-        if repairing or not failed_slots:
-            break
-        repairing = True
+        if failed_slots and not repairing:
+            repairing = True
+            filling = False
+            continue
+        repairing = False
+        if config.iterative_slot_filling and len(materialized) < target_count:
+            filling = True
+            continue
+        break
     else:
-        if not repairing and addressable:
+        if not config.iterative_slot_filling and not repairing and addressable:
             error = ProposalRejection(
                 f"no valid proposal batch after {config.max_attempts} attempts: {rejection}",
                 attempts=attempts,
             )
             persist_proposal_failure(workdir, error, attempts)
             raise error
+        if config.iterative_slot_filling and not saw_valid_response and addressable:
+            error = ProposalRejection(
+                f"no valid proposal response after {config.max_attempts} attempts: {rejection}",
+                attempts=attempts,
+            )
+            persist_proposal_failure(workdir, error, attempts)
+            raise error
+
+    slot_status = (
+        "disabled"
+        if not config.iterative_slot_filling
+        else "proposal_exhaustion"
+        if len(materialized) < target_count
+        else "capacity_shortfall"
+        if len(available_slots) < config.k
+        else "filled"
+    )
+    evidence_audit["slot_filling"].update(
+        {
+            "status": slot_status,
+            "retained": len(materialized),
+            "remaining": max(0, target_count - len(materialized)),
+            "attempts": len(attempts),
+        }
+    )
 
     all_indices = {index for index, _ in addressable}
     proposed_indices = {spec.pattern_index for _, spec, _ in materialized} | {

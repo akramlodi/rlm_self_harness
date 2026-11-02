@@ -221,9 +221,16 @@ different declared id is preserved in the rejection reason.
 - **Rejections are data.** Expect your proposals to be rejected sometimes and
   read the `gate`/`reason` pair; they are designed to be actionable
   ("candidate declares surface S2 but modifies S3").
-- **K is a ceiling, not a quota.** Propose at most one edit per surface. Local
-  loader checks run per edit; paid validation runs baseline plus one combined
-  held-out batch, with no individual edit scoring.
+- **K is a grounded target.** Occupancy is per exact `(pattern, surface)` tuple,
+  so different surface hypotheses for one pattern and the same surface for
+  different patterns may coexist. The experiment loop iteratively requests the
+  missing slots after retaining locally valid candidates. It targets K only
+  when at least K grounded tuples exist; the audit records `capacity_shortfall`
+  or `proposal_exhaustion` otherwise. Candidates are screened independently,
+  ranked, and fully validated one at a time rather than merged. If every
+  screened candidate is rejected, `[reattribution]` (when enabled) re-attributes
+  the same already-executed mining runs once and re-screens a fresh pool before
+  paying for full validation of a candidate screening already rejected.
 
 
 ## Proposal context and local repair
@@ -231,10 +238,11 @@ different declared id is preserved in the rejection reason.
 The live response uses `proposal-selection/v3`, separate from the saved
 `shrlm-proposal/v2` envelope. It contains `format`, an ordered `selections` list
 of `{pattern_index, surface, reason, evidence_refs}`, and a `candidates` list with exactly one
-matching replacement per selection. Select the best-supported intervention per
-surface first, then write its replacement. Both lists must have at most `k`
-entries; each surface may appear once. Each pattern permits one singleton or one
-complete activation pair: S8/S10 capability plus S2/S3 caller, both eligible, with
+matching replacement per selection. Select distinct, best-supported
+pattern-surface hypotheses first, then write their replacements. Both lists must
+respect the remaining target count; an exact tuple may appear once. Multiple
+singletons may address different surfaces of one pattern. An optional complete
+activation pair remains atomic: S8/S10 capability plus S2/S3 caller, both eligible, with
 the same optional `activation_pair` label on selections and candidates. Pairs
 consume two slots and survive/fail together, including repair and reload. Reasons contain 1–600
 characters. Empty lists withdraw all proposals. Legacy response arrays are

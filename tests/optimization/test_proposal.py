@@ -679,7 +679,7 @@ def test_pattern_filter_none_preserves_existing_behavior(tmp_path):
             assert symptom in rendered
 
 
-def test_collision_retains_first_owner_and_sibling_even_when_repair_collides(tmp_path):
+def test_same_surface_for_different_patterns_occupies_distinct_slots(tmp_path):
     bundle = {
         **BUNDLE,
         "patterns": [
@@ -692,7 +692,7 @@ def test_collision_retains_first_owner_and_sibling_even_when_repair_collides(tmp
     first = {**TEXT_ITEM, "pattern_index": 1, "surface": "S3"}
     second = {**TEXT_ITEM, "pattern_index": 2, "surface": "S3"}
     prompts = []
-    responses = iter([canned_batch(sibling, first, second), canned_batch(second)])
+    responses = iter([canned_batch(sibling, first, second)])
 
     def response(prompt):
         prompts.append(prompt)
@@ -706,15 +706,10 @@ def test_collision_retains_first_owner_and_sibling_even_when_repair_collides(tmp
         workdir=tmp_path / "work",
         evidence=synthetic_evidence((bundle).get("patterns", []), preferred=()),
     )
-    assert [w.surface for w in result.written] == ["S2", "S3"]
-    assert [w.pattern_index for w in result.written] == [0, 1]
-    assert len(prompts) == 2
-    assert 'Occupied surfaces: ["S2","S3"]' in prompts[1][1]["content"]
-    assert 'Eligible unoccupied surfaces: {"2":["S4","S8"]}' in prompts[1][1]["content"]
-    collision = result.attempts[0].admissions[-1]
-    assert collision["status"] == "occupied"
-    assert collision["position"] == 3
-    assert collision["owner"] == {"position": 2, "pattern_index": 1, "surface": "S3"}
+    assert [w.surface for w in result.written] == ["S2", "S3", "S3"]
+    assert [w.pattern_index for w in result.written] == [0, 1, 2]
+    assert len(prompts) == 1
+    assert all(a["status"] == "admitted" for a in result.attempts[0].admissions)
     assert result.evidence_audit["evidence_chars"] <= 32000
     assert result.evidence_audit["attempt_prompt_chars"] == [
         sum(len(message["content"]) for message in prompt) for prompt in prompts
@@ -768,7 +763,7 @@ def test_failed_contender_does_not_reserve_surface(tmp_path, monkeypatch, gate):
     assert [w.candidate_id for w in result.written] == ["r00-c02-s2"]
 
 
-def test_same_pattern_owner_is_not_repairable_and_ids_stay_unique(tmp_path):
+def test_same_surface_for_different_patterns_keeps_candidate_ids_unique(tmp_path):
     first = edit_item(0, {"kind": "text", "new_text": H0.execution_instruction}, surface="S3")
     owner = edit_item(
         0, {"kind": "text", "new_text": "Verify each computed condition."}, surface="S4"
@@ -776,14 +771,8 @@ def test_same_pattern_owner_is_not_repairable_and_ids_stay_unique(tmp_path):
     collision = edit_item(
         1, {"kind": "text", "new_text": "Check a different condition."}, surface="S4"
     )
-    repaired = edit_item(
-        1,
-        {"kind": "text", "new_text": "Compute conditions explicitly."},
-        surface="S3",
-        behavioral_change="Apply the condition during execution.",
-    )
     prompts = []
-    responses = iter([canned_batch(first, owner, collision), canned_batch(repaired)])
+    responses = iter([canned_batch(first, owner, collision), canned_batch()])
 
     def response(prompt):
         prompts.append(prompt)
@@ -802,8 +791,8 @@ def test_same_pattern_owner_is_not_repairable_and_ids_stay_unique(tmp_path):
             preferred=(),
         ),
     )
-    assert [w.candidate_id for w in result.written] == ["r00-c02-s4", "r00-c03-s3"]
-    assert 'Eligible unoccupied surfaces: {"1":["S3","S8"]}' in prompts[1][1]["content"]
+    assert [w.candidate_id for w in result.written] == ["r00-c02-s4", "r00-c03-s4"]
+    assert len(prompts) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -2113,10 +2102,10 @@ def test_render_prompt_keeps_legacy_answer_dumps_inventory_only():
     assert huge not in rendered
 
 
-def test_duplicate_surface_owner_survives_withdrawal(tmp_path):
+def test_same_surface_is_admitted_for_two_distinct_patterns(tmp_path):
     bundle = {"bundle_id": "same-surface", "patterns": [PATTERN_TEXT, PATTERN_TEXT]}
     duplicate = {**TEXT_ITEM, "pattern_index": 1}
-    lm = MockLM(responses=[canned_batch(TEXT_ITEM, duplicate), canned_batch()])
+    lm = MockLM(responses=[canned_batch(TEXT_ITEM, duplicate)])
     result = propose_round(
         bundle,
         H0,
@@ -2125,10 +2114,9 @@ def test_duplicate_surface_owner_survives_withdrawal(tmp_path):
         workdir=tmp_path / "work",
         evidence=synthetic_evidence((bundle).get("patterns", []), preferred=()),
     )
-    assert len(result.attempts) == 2
-    assert "surface S4" in result.attempts[0].violation
-    assert len(result.written) == 1
-    assert result.skipped_patterns == [1]
+    assert len(result.attempts) == 1
+    assert len(result.written) == 2
+    assert result.skipped_patterns == []
 
 
 @pytest.mark.parametrize("failure", ["unchanged", "malformed", "duplicate"])
@@ -2179,7 +2167,7 @@ def test_repair_retargets_failed_pattern_and_preserves_independent_member(tmp_pa
     assert [w.path.read_bytes() for w in replay.written] == saved
 
 
-def test_prompt_explains_batch_surface_limit():
+def test_prompt_explains_pattern_surface_occupancy():
     prompt, _ = render_prompt(
         [PATTERN_TEXT],
         serialize_harness(H0),
@@ -2188,9 +2176,93 @@ def test_prompt_explains_batch_surface_limit():
         4,
         evidence=synthetic_evidence([PATTERN_TEXT], preferred=()),
     )
-    assert "at most one edit per surface" in prompt
-    assert "one combined candidate" in prompt
-    assert "not a quota" in prompt
+    assert "one exact (pattern, surface) slot" in prompt
+    assert "same surface for different patterns" in prompt
+    assert "screened independently" in prompt and "never merged" in prompt
+    assert "next optimization round mines fresh evidence" in prompt
+    assert "no runner-up from this batch is later validated" in prompt
+    assert "never invent a weak final edit" in prompt
+
+
+def test_iterative_slot_filling_retains_partial_batch_and_fills_remaining(tmp_path):
+    patterns = [make_pattern("lossy_aggregation"), make_pattern("lossy_aggregation")]
+    first = [
+        edit_item(0, {"kind": "text", "new_text": "Compute joins explicitly."}, surface="S3"),
+        edit_item(0, {"kind": "text", "new_text": "Verify joined rows."}, surface="S4"),
+    ]
+    second = [
+        edit_item(1, {"kind": "text", "new_text": "Preserve joined fields."}, surface="S3"),
+        edit_item(1, {"kind": "text", "new_text": "Compare joined fields."}, surface="S4"),
+    ]
+    prompts = []
+
+    def respond(prompt):
+        prompts.append(prompt)
+        return [canned_batch(*first), canned_batch(*second)][len(prompts) - 1]
+
+    result = propose_round(
+        {"patterns": patterns},
+        H0,
+        MockLM(response_fn=respond),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        config=ProposerConfig(k=4, max_attempts=4, iterative_slot_filling=True),
+        evidence=synthetic_evidence(patterns, preferred=()),
+    )
+
+    assert len(result.written) == 4
+    assert "Fill the remaining 2 screening candidate slot(s)" in prompts[1][1]["content"]
+    assert result.evidence_audit["slot_filling"] == {
+        "enabled": True,
+        "capacity": 6,
+        "target": 4,
+        "status": "filled",
+        "retained": 4,
+        "remaining": 0,
+        "attempts": 2,
+    }
+
+
+def test_iterative_slot_filling_reports_grounded_capacity_shortfall(tmp_path):
+    patterns = [make_pattern("misaligned_unit")]
+    s2 = edit_item(
+        0, {"kind": "text", "new_text": "Decompose by independently solvable unit."}, surface="S2"
+    )
+    s10 = {**SKILLS_ITEM, "pattern_index": 0}
+    result = propose_round(
+        {"patterns": patterns},
+        H0,
+        MockLM(responses=[canned_batch(s2, s10)]),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        config=ProposerConfig(k=4, max_attempts=1, iterative_slot_filling=True),
+        evidence=synthetic_evidence(patterns, preferred=()),
+    )
+
+    audit = result.evidence_audit["slot_filling"]
+    assert len(result.written) == 2
+    assert audit["capacity"] == audit["target"] == 2
+    assert audit["status"] == "capacity_shortfall"
+
+
+def test_iterative_slot_filling_reports_proposal_exhaustion(tmp_path):
+    patterns = [make_pattern("lossy_aggregation"), make_pattern("lossy_aggregation")]
+    one = edit_item(0, {"kind": "text", "new_text": "Compute joins explicitly."}, surface="S3")
+    result = propose_round(
+        {"patterns": patterns},
+        H0,
+        MockLM(responses=[canned_batch(one), canned_batch()]),
+        tmp_path / "proposals",
+        workdir=tmp_path / "work",
+        config=ProposerConfig(k=4, max_attempts=2, iterative_slot_filling=True),
+        evidence=synthetic_evidence(patterns, preferred=()),
+    )
+
+    audit = result.evidence_audit["slot_filling"]
+    assert len(result.written) == 1
+    assert audit["capacity"] >= 4
+    assert audit["status"] == "proposal_exhaustion"
+    assert audit["remaining"] == 3
 
 
 def test_complete_current_surface_is_shared_and_contract_is_environment_specific():
