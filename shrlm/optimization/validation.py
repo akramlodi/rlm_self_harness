@@ -21,10 +21,11 @@ a ledger with no baseline. Subject workers evaluate baseline and batch in
 independent processes under the existing caps, breakers, and recovery rules."""
 
 import json
+import math
 import os
 import shutil
-from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +40,7 @@ from shrlm.optimization.candidates import (
 )
 from shrlm.optimization.costs import (
     OUTCOME_COMPLETED,
+    OUTCOME_EARLY_REJECTED,
     OUTCOME_OVER_BUDGET,
     CandidateSpendBreaker,
     ValidationCaps,
@@ -141,6 +143,40 @@ class ValidationSplits:
 
 
 @dataclass(frozen=True)
+class TauEarlyStopping:
+    """A completed-stratum promotion veto for one candidate evaluation.
+
+    The baseline has already completed, so every context length has a fixed
+    mean and preregistered regression margin. Candidate instances are executed
+    in context-length order. Once every scheduled run for a length is present,
+    a regression beyond its margin is final: no later length can repair that
+    independent veto.
+    """
+
+    baseline_by_context_length: dict[str, float]
+    tau_by_context_length: dict[str, float]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "baseline_by_context_length": dict(self.baseline_by_context_length),
+            "tau_by_context_length": dict(self.tau_by_context_length),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "TauEarlyStopping":
+        return cls(
+            baseline_by_context_length={
+                str(key): float(value)
+                for key, value in dict(payload["baseline_by_context_length"]).items()
+            },
+            tau_by_context_length={
+                str(key): float(value)
+                for key, value in dict(payload["tau_by_context_length"]).items()
+            },
+        )
+
+
+@dataclass(frozen=True)
 class EvaluationConfig:
     """Everything one validation round's evaluations share.
 
@@ -175,6 +211,7 @@ class EvaluationConfig:
     run_workers: int = 1
     verifier_factory: str | None = None
     client_factory: tuple[str, dict[str, Any]] | None = None
+    tau_early_stopping: TauEarlyStopping | None = None
 
     def __post_init__(self) -> None:
         if self.repetitions < 1:
@@ -504,6 +541,87 @@ def _write_summary(path: Path, payload: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _ordered_for_tau(instances: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group candidate instances by context length without reordering within it."""
+    return sorted(
+        instances,
+        key=lambda instance: _quality_stratum_key(str(instance.get("context_len", "all"))),
+    )
+
+
+def _tau_stop_predicate(
+    instances: list[dict[str, Any]],
+    repetitions: int,
+    primary_quality: QualityDefinition,
+    policy: TauEarlyStopping,
+) -> Callable[[list[dict[str, Any]]], dict[str, Any] | None]:
+    """Return the manifest predicate for a completed context-length veto."""
+    if primary_quality.direction != "higher":
+        raise ValueError("tau early stopping currently requires higher-is-better quality")
+    lengths_by_id = {
+        str(instance["id"]): str(instance.get("context_len", "all")) for instance in instances
+    }
+    if len(lengths_by_id) != len(instances):
+        raise ValueError("tau early stopping requires unique validation instance ids")
+    expected: dict[str, int] = {}
+    for length in lengths_by_id.values():
+        expected[length] = expected.get(length, 0) + repetitions
+    configured = set(policy.baseline_by_context_length)
+    if configured != set(expected) or configured != set(policy.tau_by_context_length):
+        raise ValueError(
+            "tau early stopping requires baseline means and thresholds for exactly the "
+            f"candidate context lengths: expected {sorted(expected)}, baseline "
+            f"{sorted(policy.baseline_by_context_length)}, tau "
+            f"{sorted(policy.tau_by_context_length)}"
+        )
+
+    def stop(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+        values: dict[str, list[float]] = {length: [] for length in expected}
+        for entry in entries:
+            instance_id = str(entry["instance_id"])
+            if instance_id not in lengths_by_id:
+                raise ValueError(f"manifest contains unknown validation instance {instance_id!r}")
+            verdict = entry["verdict"]
+            measurement = verdict.get("quality")
+            if measurement is not None:
+                if measurement.get("definition_id") != primary_quality.identifier:
+                    raise ValueError(
+                        "persisted quality definition does not match the verifier contract"
+                    )
+                value = float(measurement["value"])
+            else:
+                cause = entry.get("cause")
+                if cause not in primary_quality.terminal_values:
+                    raise ValueError(
+                        f"run {entry.get('run_id')!r} has no quality measurement and "
+                        f"cause {cause!r} has no registered terminal value"
+                    )
+                value = float(primary_quality.terminal_values[cause])
+            values[lengths_by_id[instance_id]].append(value)
+
+        for length in sorted(expected, key=_quality_stratum_key):
+            observed = values[length]
+            if len(observed) != expected[length]:
+                continue
+            candidate_mean = sum(observed) / len(observed)
+            baseline_mean = policy.baseline_by_context_length[length]
+            tau = policy.tau_by_context_length[length]
+            delta = candidate_mean - baseline_mean
+            if delta < -tau and not math.isclose(delta, -tau, rel_tol=0.0, abs_tol=1e-12):
+                return {
+                    "kind": "tau_regression",
+                    "context_len": length,
+                    "n_runs": len(observed),
+                    "baseline": baseline_mean,
+                    "candidate": candidate_mean,
+                    "delta": delta,
+                    "tau_regression": tau,
+                }
+        return None
+
+    return stop
+
+
 def evaluate_subject(
     subject_id: str,
     harness: Harness,
@@ -534,13 +652,28 @@ def evaluate_subject(
     )
     split_summaries: dict[str, dict[str, Any]] = {}
     for split_id, instances in config.splits.evaluation_items():
+        ordered_instances = (
+            _ordered_for_tau(instances) if config.tau_early_stopping is not None else instances
+        )
+        stop_predicate = (
+            _tau_stop_predicate(
+                ordered_instances,
+                config.repetitions,
+                primary_quality,
+                config.tau_early_stopping,
+            )
+            if config.tau_early_stopping is not None and primary_quality is not None
+            else None
+        )
+        if config.tau_early_stopping is not None and primary_quality is None:
+            raise ValueError("tau early stopping requires a verifier primary_quality contract")
         split_path = split_dir(config.out_dir, config.round_index, subject_id, split_id)
         round_config = RoundConfig(
             round_index=EVAL_ROUND_INDEX,
-            run_workers=config.run_workers,
+            run_workers=1 if stop_predicate is not None else config.run_workers,
             client_factory=config.client_factory,
             harness=harness,
-            instances=instances,
+            instances=ordered_instances,
             verifier=config.verifier,
             out_dir=split_path,
             backend=config.backend,
@@ -548,14 +681,17 @@ def evaluate_subject(
             attempts=config.repetitions,
             **limits,
         )
-        result = run_governed_round(round_config, breaker)
-        split_summaries[split_id] = {
+        result = run_governed_round(round_config, breaker, early_stop=stop_predicate)
+        split_summary = {
             "round_path": f"{split_id}/round_{EVAL_ROUND_INDEX:02d}",
             "n_instances": len(instances),
             "outcome": result.outcome,
             "skipped_run_ids": list(result.skipped_run_ids),
             **split_aggregate(split_path, primary_quality),
         }
+        if result.early_stop is not None:
+            split_summary["early_stop"] = result.early_stop
+        split_summaries[split_id] = split_summary
 
     # The split aggregate carries the hash its persisted harness.json
     # recorded for this same harness, so reuse it rather than paying for a
@@ -570,6 +706,14 @@ def evaluate_subject(
             f"subject {subject_id!r} mixes cost-accounting versions "
             f"{sorted(split_versions)}; its figures cannot anchor promotion"
         )
+    early_rejection = next(
+        (
+            split["early_stop"]
+            for split in split_summaries.values()
+            if split.get("early_stop") is not None
+        ),
+        None,
+    )
     summary = {
         "format": SUMMARY_FORMAT,
         "validation_protocol": VALIDATION_PROTOCOL,
@@ -590,13 +734,19 @@ def evaluate_subject(
         # breaker alone would mark such a subject `completed` and let the
         # preregistered rule score a sample that never ran.
         "outcome": (
-            OUTCOME_OVER_BUDGET
+            OUTCOME_EARLY_REJECTED
+            if any(
+                split.get("outcome") == OUTCOME_EARLY_REJECTED for split in split_summaries.values()
+            )
+            else OUTCOME_OVER_BUDGET
             if (breaker.tripped or _any_split_skipped(split_summaries))
             else OUTCOME_COMPLETED
         ),
         "spent": breaker.spent,
         "splits": split_summaries,
     }
+    if early_rejection is not None:
+        summary["early_rejection"] = early_rejection
     summary_path = subject_path / SUMMARY_FILENAME
     _write_summary(summary_path, summary)
     return SubjectEvaluation(
@@ -622,7 +772,7 @@ def evaluation_contract(config: EvaluationConfig) -> dict[str, Any]:
     verifier_config = dict(config_method()) if callable(config_method) else {}
     if "primary_quality" in verifier_config:
         QualityDefinition.from_dict(verifier_config["primary_quality"])
-    return {
+    contract = {
         "validation_protocol": VALIDATION_PROTOCOL,
         "verifier_config": verifier_config,
         "heldout": config.splits.heldout,
@@ -632,6 +782,9 @@ def evaluation_contract(config: EvaluationConfig) -> dict[str, Any]:
         "backend_kwargs": config.backend_kwargs,
         "verifier_type": f"{type(config.verifier).__module__}.{type(config.verifier).__qualname__}",
     }
+    if config.tau_early_stopping is not None:
+        contract["tau_early_stopping"] = config.tau_early_stopping.to_dict()
+    return contract
 
 
 def check_contract(path: Path, payload: dict[str, Any]) -> None:
@@ -689,12 +842,118 @@ def _seed_baseline_split(incumbent: Harness, config: EvaluationConfig, source: P
     shutil.copytree(source / TRACES_DIR, target / TRACES_DIR, dirs_exist_ok=True)
 
 
+@dataclass(frozen=True)
+class ScreeningSeed:
+    """One candidate's already-persisted screening-stage runs, reusable toward
+    its full validation (shrlm.experiment.orchestrator's tournament).
+
+    Unlike ``_seed_baseline_split``'s whole-split copy, screening covers a
+    *subset* of full validation's instances at *fewer* attempts, so only the
+    specific ``(instance_id, attempt)`` entries that exist get copied --
+    never ``instances.jsonl``/``harness.json``, which ``_prepare_round_dir``
+    (driver.py) must still write fresh for the full instance set.
+    """
+
+    source_split_round_dir: Path  # e.g. screening/round_NN/<candidate_id>/heldout/round_00
+    instance_ids: frozenset[str]
+    max_attempt: int  # v_screen: only attempts <= this were screened
+
+
+def _read_manifest_lines(round_dir_path: Path) -> list[dict[str, Any]]:
+    manifest_path = round_dir_path / MANIFEST_FILE
+    if not manifest_path.exists():
+        return []
+    return [json.loads(line) for line in manifest_path.read_text().splitlines() if line.strip()]
+
+
+def _seed_partial_split(
+    subject_id: str, harness: Harness, config: EvaluationConfig, seed: ScreeningSeed
+) -> None:
+    """Copy one candidate's screened ``(instance, attempt)`` runs into its own
+    split directory, before its full validation runs.
+
+    Same ordering discipline as ``_seed_baseline_split``: the subject's own
+    ``evaluation.json`` contract is written first, before any file lands
+    under its directory, so ``check_contract``'s legacy-evidence ``rglob``
+    guard (one level up and one level down) never mistakes the copied traces
+    for stale evidence from a different contract. Deliberately does not
+    write ``instances.jsonl``/``harness.json`` -- ``_prepare_round_dir``
+    (driver.py) writes both fresh for the FULL instance set on first touch,
+    and its own pending-list computation (purely ``instance x attempt``
+    driven from on-disk manifest state) then sees the seeded entries as
+    already ``done`` and everything else -- new instances never screened,
+    and the extra attempts beyond ``v_screen`` for screened instances -- as
+    ``pending``, with no further changes needed anywhere else.
+    """
+    check_subject_contract(subject_id, harness, config)
+    target = split_dir(config.out_dir, config.round_index, subject_id, SPLIT_HELDOUT) / (
+        f"round_{EVAL_ROUND_INDEX:02d}"
+    )
+    if (
+        target / MANIFEST_FILE
+    ).exists() or seed.source_split_round_dir.resolve() == target.resolve():
+        return
+    source_entries = [
+        entry
+        for entry in _read_manifest_lines(seed.source_split_round_dir)
+        if entry["instance_id"] in seed.instance_ids and int(entry["attempt"]) <= seed.max_attempt
+    ]
+    if not source_entries:
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    (target / TRACES_DIR).mkdir(exist_ok=True)
+    for entry in source_entries:
+        trace_path = str(entry["trace_path"])
+        source_trace = seed.source_split_round_dir / trace_path
+        (target / trace_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_trace, target / trace_path)
+        # Each trace's llm_observations references are stored in a sibling
+        # "<stem>.llm_calls" directory (shrlm.optimization.llm_observation_store),
+        # never inside the trace file itself -- copy it alongside, or a later
+        # verify_observations against the copied trace finds nothing there.
+        source_observations = source_trace.parent / f"{source_trace.stem}.llm_calls"
+        if source_observations.exists():
+            shutil.copytree(
+                source_observations,
+                (target / trace_path).parent / source_observations.name,
+                dirs_exist_ok=True,
+            )
+    with (target / MANIFEST_FILE).open("w") as handle:
+        for entry in source_entries:
+            handle.write(json.dumps(entry) + "\n")
+
+
+def _tau_policy_from_baseline(
+    baseline: SubjectEvaluation,
+    tau_regression: float | Mapping[str, float],
+) -> TauEarlyStopping:
+    quality = baseline.summary["splits"][SPLIT_HELDOUT].get("primary_quality")
+    if quality is None:
+        raise ValueError("tau early stopping requires baseline primary-quality aggregates")
+    strata = quality.get("by_context_length") or {}
+    if not strata:
+        raise ValueError("tau early stopping requires non-empty baseline context-length strata")
+    means = {str(length): float(item["mean"]) for length, item in strata.items()}
+    if isinstance(tau_regression, Mapping):
+        if set(tau_regression) != set(means):
+            raise ValueError(
+                "tau_regression lengths differ from the baseline context lengths: "
+                f"tau={sorted(tau_regression)}, baseline={sorted(means)}"
+            )
+        thresholds = {str(length): float(value) for length, value in tau_regression.items()}
+    else:
+        thresholds = {length: float(tau_regression) for length in means}
+    return TauEarlyStopping(means, thresholds)
+
+
 def evaluate_validation_round(
     incumbent: Harness,
     candidates: Iterable[LoadedCandidate | ValidationSubject],
     config: EvaluationConfig,
     *,
     baseline_seed: Path | None = None,
+    candidate_seeds: "dict[str, ScreeningSeed] | None" = None,
+    tau_regression: float | Mapping[str, float] | None = None,
 ) -> RoundEvaluation:
     """Evaluate the baseline once, then every candidate against it (R5).
 
@@ -706,6 +965,13 @@ def evaluate_validation_round(
     ``baseline_seed``, when given, is copied into the baseline's own split
     directory (see ``_seed_baseline_split``) before it evaluates, letting an
     identical already-priced evaluation stand in for a fresh one at zero cost.
+    ``candidate_seeds``, keyed by ``candidate_id``, does the same per-candidate
+    via ``_seed_partial_split`` -- only the matching candidate's already-run
+    screening attempts are reused, everything else for it still runs fresh.
+    ``tau_regression`` enables completed-context-length early rejection. The
+    baseline is evaluated first, then candidates run one at a time with their
+    instances grouped by length; a completed stratum beyond tau stops the
+    remaining tail. Omitting it preserves ordinary parallel screening.
 
     Raises:
         ValueError: If a candidate claims the reserved ``baseline`` id, two
@@ -729,7 +995,51 @@ def evaluate_validation_round(
             )
         seen.add(candidate.candidate_id)
 
-    if config.workers > 1:
+    if tau_regression is not None:
+        if config.workers > 1:
+            baseline_result = evaluate_subjects_in_processes(
+                [(BASELINE_ID, incumbent, harness_hash(incumbent))], config
+            )[0]
+        else:
+            baseline_result = evaluate_subject(BASELINE_ID, incumbent, config)
+        if isinstance(baseline_result, CandidateRejection):
+            raise ValueError(BASELINE_REJECTED_MESSAGE.format(reason=baseline_result.reason))
+        baseline = baseline_result
+        if baseline.over_budget:
+            raise ValueError(
+                "the baseline evaluation ran over budget; a partial baseline cannot "
+                "anchor tau early stopping"
+            )
+        policy = _tau_policy_from_baseline(baseline, tau_regression)
+        candidate_config = replace(config, tau_early_stopping=policy)
+        results = []
+        for candidate in candidates:
+            seed = (candidate_seeds or {}).get(candidate.candidate_id)
+            if seed is not None:
+                _seed_partial_split(
+                    candidate.candidate_id, candidate.harness, candidate_config, seed
+                )
+            if candidate_config.workers > 1:
+                result = evaluate_subjects_in_processes(
+                    [
+                        (
+                            candidate.candidate_id,
+                            candidate.harness,
+                            candidate.harness_hash,
+                        )
+                    ],
+                    candidate_config,
+                )[0]
+            else:
+                result = evaluate_subject(
+                    candidate.candidate_id, candidate.harness, candidate_config
+                )
+            results.append(result)
+    elif config.workers > 1:
+        for candidate in candidates:
+            seed = (candidate_seeds or {}).get(candidate.candidate_id)
+            if seed is not None:
+                _seed_partial_split(candidate.candidate_id, candidate.harness, config, seed)
         subjects = [(BASELINE_ID, incumbent, harness_hash(incumbent))] + [
             (candidate.candidate_id, candidate.harness, candidate.harness_hash)
             for candidate in candidates
@@ -738,6 +1048,10 @@ def evaluate_validation_round(
         baseline = outcomes[0]
         results = outcomes[1:]
     else:
+        for candidate in candidates:
+            seed = (candidate_seeds or {}).get(candidate.candidate_id)
+            if seed is not None:
+                _seed_partial_split(candidate.candidate_id, candidate.harness, config, seed)
         for subject_id, harness in [(BASELINE_ID, incumbent)] + [
             (candidate.candidate_id, candidate.harness) for candidate in candidates
         ]:
@@ -760,6 +1074,101 @@ def evaluate_validation_round(
         baseline=baseline,
         candidates=results,
     )
+
+
+# ---------------------------------------------------------------------------
+# The screening ledger: a durable, resumable ranking of independently
+# screened candidates (shrlm.experiment.orchestrator's tournament). Separate
+# from the promotion ledger below -- a screened candidate carries a real
+# score, which promotions.jsonl's DECISION_BUNDLED shape forbids (it requires
+# rule=None, band=None) -- and never a promotion verdict in its own right.
+# ---------------------------------------------------------------------------
+
+SCREENING_DIR = "screening"
+SCREENING_LEDGER_FILENAME = "screening.jsonl"
+SCREENING_DECISION_FILENAME = "screening_decision.json"
+SCREENING_LEDGER_FORMAT = "shrlm-screening-record/v1"
+SCREENING_DECISION_FORMAT = "shrlm-screening-decision/v1"
+
+
+@dataclass(frozen=True)
+class ScreeningLedger:
+    """One round's persisted screening ranking: where it lives and what it holds."""
+
+    round_path: Path
+    ledger_path: Path
+    decision_path: Path
+    records: list[dict[str, Any]]
+    decision: dict[str, Any]
+
+
+def write_screening_ledger(
+    evaluation: RoundEvaluation,
+    ranked: "list[CandidateDecision]",
+    *,
+    round_path: Path,
+    incumbent_hash: str,
+) -> ScreeningLedger:
+    """Persist the screening pass's ranking.
+
+    This file is the durable audit of the current round's ranking. Only its
+    winner proceeds to full validation; a rejection retires the remaining
+    candidates and the next round mines fresh evidence. Identical rewrites
+    are no-ops and divergent ones refuse, like ``write_promotion_ledger``.
+    """
+    by_id = {
+        subject.subject_id: subject
+        for subject in evaluation.candidates
+        if isinstance(subject, SubjectEvaluation)
+    }
+    records = [
+        {
+            "format": SCREENING_LEDGER_FORMAT,
+            "rank": rank,
+            **decision.to_dict(),
+            "links": _subject_links(by_id[decision.subject_id])
+            if decision.subject_id in by_id
+            else None,
+        }
+        for rank, decision in enumerate(ranked, start=1)
+    ]
+    ledger_path = round_path / SCREENING_LEDGER_FILENAME
+    decision_path = round_path / SCREENING_DECISION_FILENAME
+    decision_payload = {
+        "format": SCREENING_DECISION_FORMAT,
+        "incumbent_hash": incumbent_hash,
+        "baseline": {
+            "harness_hash": evaluation.baseline.harness_hash,
+            "links": {"summary": f"{BASELINE_ID}/{SUMMARY_FILENAME}"},
+        },
+        "ranked_candidate_ids": [decision.subject_id for decision in ranked],
+    }
+    _persist_once(
+        ledger_path,
+        "\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n",
+        f"{ledger_path} already holds a diverging screening ledger; refusing to rewrite it",
+    )
+    _persist_once(
+        decision_path,
+        json.dumps(decision_payload, indent=2, sort_keys=True) + "\n",
+        f"{decision_path} already holds a diverging screening decision; refusing to rewrite it",
+    )
+    return ScreeningLedger(
+        round_path=round_path,
+        ledger_path=ledger_path,
+        decision_path=decision_path,
+        records=records,
+        decision=decision_payload,
+    )
+
+
+def load_screening_decision(round_path: Path) -> dict[str, Any] | None:
+    """The persisted ``screening_decision.json`` for one round, or ``None``
+    if this round never ran a screening pass."""
+    path = round_path / SCREENING_DECISION_FILENAME
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
 
 
 # ---------------------------------------------------------------------------
@@ -1086,6 +1495,7 @@ def validate_round(
     from shrlm.optimization.promotion import (
         DECISION_BUNDLED,
         MERGED_SUBJECT_ID,
+        METRIC_PRIMARY_QUALITY,
         PLAN_MERGE,
         CandidateDecision,
         PromotionConfig,
@@ -1159,11 +1569,7 @@ def validate_round(
                 **evaluation_contract(config),
                 **profile_fields,
                 "incumbent_hash": harness_hash(incumbent),
-                **(
-                    {"proposal_base_hash": harness_hash(base)}
-                    if proposal_base is not None
-                    else {}
-                ),
+                **({"proposal_base_hash": harness_hash(base)} if proposal_base is not None else {}),
                 "batch_hash": batch_hash,
                 "constituents": admitted_inputs,
                 "prior_evaluations": prior_evaluations or [],
@@ -1178,9 +1584,7 @@ def validate_round(
                         pconfig.sub_call_band.lower,
                         str(pconfig.sub_call_band.upper),
                     ],
-                    "failure_nonregression_causes": list(
-                        pconfig.failure_nonregression_causes
-                    ),
+                    "failure_nonregression_causes": list(pconfig.failure_nonregression_causes),
                 },
             },
         )
@@ -1192,7 +1596,13 @@ def validate_round(
         if isinstance(limits, CandidateRejection):
             raise ValueError(f"combined candidate violates caps: {limits.reason}")
         evaluation = evaluate_validation_round(
-            incumbent, [subject], config, baseline_seed=baseline_seed
+            incumbent,
+            [subject],
+            config,
+            baseline_seed=baseline_seed,
+            tau_regression=(
+                pconfig.tau_regression if pconfig.metric == METRIC_PRIMARY_QUALITY else None
+            ),
         )
         if evaluation.baseline.over_budget:
             raise ValueError(
@@ -1244,6 +1654,150 @@ def validate_round(
     )
 
 
+def validate_ranked_candidate(
+    incumbent: Harness,
+    proposals_dir: Path | str,
+    candidate_id: str,
+    config: EvaluationConfig,
+    promotion: "PromotionConfig | None" = None,
+    *,
+    loader_timeout_seconds: float = DEFAULT_MATERIALIZATION_TIMEOUT_SECONDS,
+    preflight_profile: str | None = None,
+    prior_evaluations: list[dict[str, Any]] | None = None,
+    baseline_seed: Path | None = None,
+    screening_seed: ScreeningSeed | None = None,
+) -> ValidationRound:
+    """Full-validate exactly one already-screened candidate (shrlm.experiment.
+    orchestrator's tournament): no directory-wide ``load_candidates`` scan,
+    no ``plan_batch``, no merge -- the opposite of ``validate_round``'s
+    "load everything in ``proposals_dir``, merge what's admitted" shape.
+
+    ``candidate_id`` names one proposal already materialized under
+    ``proposals_dir`` (ordinarily by an earlier screening round, whose
+    ``proposals_dir`` this still is -- the gate-materialized ``surfaces.py``
+    module beside its ``proposal.json`` is reused as-is). ``screening_seed``,
+    when given, reuses that candidate's own already-run screening attempts
+    toward this full validation (see ``_seed_partial_split``); ``baseline_seed``
+    does the same for the baseline, exactly as in ``validate_round``.
+
+    The resulting plan is always ``PLAN_SINGLE`` -- a solo candidate,
+    regardless of how many siblings exist in ``proposals_dir`` or were
+    screened alongside it. ``write_promotion_ledger`` needs no changes: this
+    is exactly the shape it already expects for a single measured candidate.
+    """
+    from shrlm.optimization.candidates import load_candidate, select_preflight_profile
+    from shrlm.optimization.promotion import (
+        METRIC_PRIMARY_QUALITY,
+        PLAN_SINGLE,
+        PromotionConfig,
+        PromotionPlan,
+        decide_subject,
+        promote_decision,
+    )
+
+    round_path = round_dir(config.out_dir, config.round_index)
+    contract_path = round_path / "validation.json"
+    persisted_contract = json.loads(contract_path.read_text()) if contract_path.exists() else None
+    if preflight_profile is None:
+        preflight_profile = (
+            persisted_contract.get("preflight_profile", "generic/v1")
+            if persisted_contract is not None
+            else select_preflight_profile(evaluation_contract(config)["verifier_config"])
+        )
+
+    proposal_path = Path(proposals_dir) / candidate_id / "proposal.json"
+    loaded_or_rejection = load_candidate(
+        proposal_path,
+        incumbent,
+        caps=config.caps.s6_caps(),
+        timeout_seconds=loader_timeout_seconds,
+        preflight_profile=preflight_profile,
+    )
+    pconfig = promotion if promotion is not None else PromotionConfig()
+    if isinstance(loaded_or_rejection, CandidateRejection):
+        rejections = [loaded_or_rejection]
+        decisions = [decide_subject({}, loaded_or_rejection, pconfig)]
+        plan = PromotionPlan(PLAN_SINGLE, (candidate_id,), None, None)
+        ledger = write_promotion_ledger(
+            None, decisions, plan, round_path=round_path, loader_rejections=rejections
+        )
+        return ValidationRound(
+            round_path=round_path,
+            loader_rejections=rejections,
+            evaluation=None,
+            decisions=decisions,
+            plan=plan,
+            ledger=ledger,
+        )
+    candidate = loaded_or_rejection
+
+    check_contract(
+        contract_path,
+        {
+            **evaluation_contract(config),
+            "preflight_profile": preflight_profile,
+            "incumbent_hash": harness_hash(incumbent),
+            "batch_hash": candidate.harness_hash,
+            "constituents": [
+                {
+                    "id": candidate.candidate_id,
+                    "surface": candidate.surface,
+                    "hash": candidate.harness_hash,
+                }
+            ],
+            "prior_evaluations": prior_evaluations or [],
+            "duplicate_evaluation": None,
+            "rejections": [],
+            "promotion": {
+                "metric": pconfig.metric,
+                "tau_regression": pconfig.tau_regression,
+                "tau_improvement": pconfig.tau_improvement,
+                "cost_band": [pconfig.cost_band.lower, str(pconfig.cost_band.upper)],
+                "sub_call_band": [pconfig.sub_call_band.lower, str(pconfig.sub_call_band.upper)],
+                "failure_nonregression_causes": list(pconfig.failure_nonregression_causes),
+            },
+        },
+    )
+
+    plan = PromotionPlan(
+        PLAN_SINGLE, (candidate.candidate_id,), candidate.harness, candidate.harness_hash
+    )
+    limits = governed_limits(candidate.candidate_id, candidate.harness.runtime_policy, config.caps)
+    if isinstance(limits, CandidateRejection):
+        raise ValueError(f"screened candidate violates caps: {limits.reason}")
+    subject = ValidationSubject(candidate.candidate_id, candidate.harness, candidate.harness_hash)
+    evaluation = evaluate_validation_round(
+        incumbent,
+        [subject],
+        config,
+        baseline_seed=baseline_seed,
+        candidate_seeds={candidate.candidate_id: screening_seed}
+        if screening_seed is not None
+        else None,
+        tau_regression=(
+            pconfig.tau_regression if pconfig.metric == METRIC_PRIMARY_QUALITY else None
+        ),
+    )
+    if evaluation.baseline.over_budget:
+        raise ValueError(
+            "the baseline evaluation ran over budget; a partial baseline cannot anchor promotion"
+        )
+    verdict = decide_subject(
+        evaluation.baseline.summary, evaluation.candidates[0], pconfig, surface=candidate.surface
+    )
+    if verdict.accepted:
+        verdict = promote_decision(verdict)
+    ledger = write_promotion_ledger(evaluation, [verdict], plan)
+    return ValidationRound(
+        round_path=round_path,
+        loader_rejections=[],
+        evaluation=evaluation,
+        decisions=[verdict],
+        plan=plan,
+        ledger=ledger,
+    )
+
+
 __all__ = [
     "BASELINE_ID",
     "DECISION_FILENAME",
@@ -1253,6 +1807,9 @@ __all__ = [
     "PROMOTIONS_FILENAME",
     "ROLE_CONSTITUENT",
     "ROLE_MERGED",
+    "SCREENING_DECISION_FILENAME",
+    "SCREENING_DIR",
+    "SCREENING_LEDGER_FILENAME",
     "SPLIT_HELDIN",
     "SPLIT_HELDOUT",
     "SUMMARY_FILENAME",
@@ -1261,7 +1818,10 @@ __all__ = [
     "EvaluationConfig",
     "PromotionLedger",
     "RoundEvaluation",
+    "ScreeningLedger",
+    "ScreeningSeed",
     "SubjectEvaluation",
+    "TauEarlyStopping",
     "ValidationRound",
     "ValidationSplits",
     "ValidationSubject",
@@ -1271,10 +1831,13 @@ __all__ = [
     "evaluate_validation_round",
     "evaluation_contract",
     "load_promotion_ledger",
+    "load_screening_decision",
     "load_summary",
     "split_aggregate",
     "split_dir",
     "subject_dir",
+    "validate_ranked_candidate",
     "validate_round",
     "write_promotion_ledger",
+    "write_screening_ledger",
 ]

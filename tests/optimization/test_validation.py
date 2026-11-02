@@ -33,6 +33,7 @@ from shrlm.optimization.candidates import (
 )
 from shrlm.optimization.costs import (
     OUTCOME_COMPLETED,
+    OUTCOME_EARLY_REJECTED,
     OUTCOME_OVER_BUDGET,
     ValidationCaps,
     governed_limits,
@@ -57,7 +58,7 @@ from shrlm.optimization.subject_worker import (
     SubjectWorkerError,
 )
 from shrlm.optimization.taxonomy import VerifierCause
-from shrlm.optimization.types import Verdict
+from shrlm.optimization.types import QualityDefinition, QualityMeasurement, Verdict
 from shrlm.optimization.validation import (
     BASELINE_ID,
     DECISION_FILENAME,
@@ -66,6 +67,7 @@ from shrlm.optimization.validation import (
     SPLIT_HELDOUT,
     SUMMARY_FILENAME,
     EvaluationConfig,
+    ScreeningSeed,
     SubjectEvaluation,
     ValidationSplits,
     check_subject_contract,
@@ -233,6 +235,31 @@ class GoldVerifier:
         if produced == gold:
             return Verdict(passed=True, cause=None, gold=gold, produced=produced)
         return Verdict(passed=False, cause=VerifierCause.WRONG_VALUE, gold=gold, produced=produced)
+
+
+TAU_TEST_QUALITY = QualityDefinition(
+    name="tau_test_quality",
+    version="v1",
+    direction="higher",
+)
+
+
+@dataclass
+class TauQualityVerifier:
+    """Treat the produced number as a bounded primary-quality value."""
+
+    def config(self) -> dict[str, Any]:
+        return {"primary_quality": TAU_TEST_QUALITY.to_dict()}
+
+    def __call__(self, instance: dict[str, Any], produced: str) -> Verdict:
+        value = float(produced)
+        return Verdict(
+            passed=value == 1.0,
+            cause=None if value == 1.0 else VerifierCause.WRONG_VALUE,
+            gold="1.0",
+            produced=produced,
+            quality=QualityMeasurement(TAU_TEST_QUALITY.identifier, value),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +602,151 @@ class TestBaselineReuse:
 
         assert factory.total_calls == 8
         assert result.baseline.summary["outcome"] == OUTCOME_COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Screening reuse (shrlm.experiment.orchestrator's tournament): a candidate's
+# already-run screening attempts, over a small instance subset, count toward
+# its own later full validation -- only the genuinely new (instance, attempt)
+# pairs run fresh.
+# ---------------------------------------------------------------------------
+
+
+class TestScreeningReuse:
+    def test_screening_seed_resumes_only_the_new_instance_and_attempt(self, tmp_path, monkeypatch):
+        candidate = fake_candidate("cand-a", candidate_harness("cand-a"))
+        screening_splits = ValidationSplits(
+            heldin=make_instances("hi", 2), heldout=make_instances("ho", 2)[:1]
+        )
+        screening_config = make_config(
+            tmp_path,
+            round_index=1,
+            out_dir=tmp_path / "screening",
+            splits=screening_splits,
+            repetitions=1,
+        )
+        factory_screen = ClientFactory([final("RIGHT")] * 2)  # baseline + candidate, ho-1 x 1
+        monkeypatch.setattr(rlm_module, "get_client", factory_screen)
+        evaluate_validation_round(H0, [candidate], screening_config)
+        assert factory_screen.total_calls == 2
+
+        full_config = make_config(tmp_path, round_index=2, out_dir=tmp_path / "validation")
+        seed = ScreeningSeed(
+            source_split_round_dir=split_dir(screening_config.out_dir, 1, "cand-a", SPLIT_HELDOUT)
+            / f"round_{EVAL_ROUND_INDEX:02d}",
+            instance_ids=frozenset({"ho-1"}),
+            max_attempt=1,
+        )
+        # baseline: 2 instances x 2 repetitions = 4, unaffected (no baseline
+        # seed passed). candidate: ho-1's attempt 1 is reused from screening;
+        # only ho-1's attempt 2 and ho-2's two attempts run fresh (3 calls).
+        factory_full = ClientFactory([final("RIGHT")] * 4 + [final("RIGHT")] * 3)
+        monkeypatch.setattr(rlm_module, "get_client", factory_full)
+        result = evaluate_validation_round(
+            H0, [candidate], full_config, candidate_seeds={"cand-a": seed}
+        )
+
+        assert factory_full.total_calls == 7
+        assert result.candidates[0].summary["outcome"] == OUTCOME_COMPLETED
+        nested = split_dir(full_config.out_dir, 2, "cand-a", SPLIT_HELDOUT) / (
+            f"round_{EVAL_ROUND_INDEX:02d}"
+        )
+        manifest = read_manifest(nested)
+        assert {(entry["instance_id"], entry["attempt"]) for entry in manifest} == {
+            ("ho-1", 1),
+            ("ho-1", 2),
+            ("ho-2", 1),
+            ("ho-2", 2),
+        }
+        # instances.jsonl is written fresh for the FULL instance set, never
+        # copied from screening's one-instance subset.
+        assert (nested / "instances.jsonl").read_text().count("\n") == 2
+
+    def test_without_a_screening_seed_the_candidate_runs_fully_fresh(self, tmp_path, monkeypatch):
+        config = make_config(tmp_path)
+        candidate = fake_candidate("cand-a", candidate_harness("cand-a"))
+        factory = ClientFactory([final("RIGHT")] * 8)  # baseline(4) + candidate(4)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        result = evaluate_validation_round(H0, [candidate], config, candidate_seeds={})
+
+        assert factory.total_calls == 8
+        assert result.candidates[0].summary["outcome"] == OUTCOME_COMPLETED
+
+
+class TestTauEarlyStopping:
+    @pytest.mark.parametrize("repetitions", [1, 3], ids=["short", "production"])
+    def test_completed_length_veto_stops_later_lengths(self, tmp_path, monkeypatch, repetitions):
+        heldout = [
+            {
+                "id": f"ho-{length}-{index}",
+                "prompt": f"context {length} {index}",
+                "gold": "1.0",
+                "context_len": length,
+            }
+            for length in (8192, 16384)
+            for index in range(2)
+        ]
+        splits = ValidationSplits(heldin=make_instances("hi", 2), heldout=heldout)
+        baseline_runs = len(heldout) * repetitions
+        first_length_runs = 2 * repetitions
+        factory = ClientFactory([final("1.0")] * baseline_runs + [final("0.0")] * first_length_runs)
+        monkeypatch.setattr(rlm_module, "get_client", factory)
+        config = make_config(
+            tmp_path,
+            caps=replace(CAPS, candidate_budget=0.1),
+            verifier=TauQualityVerifier(),
+            splits=splits,
+            repetitions=repetitions,
+            run_workers=1,
+        )
+        candidate = fake_candidate("cand-tau", candidate_harness("tau"))
+
+        evaluation = evaluate_validation_round(
+            H0,
+            [candidate],
+            config,
+            tau_regression={"8192": 0.1, "16384": 0.1},
+        )
+
+        measured = evaluation.candidates[0]
+        assert isinstance(measured, SubjectEvaluation)
+        assert measured.outcome == OUTCOME_EARLY_REJECTED
+        assert measured.summary["early_rejection"] == {
+            "kind": "tau_regression",
+            "context_len": "8192",
+            "n_runs": first_length_runs,
+            "baseline": 1.0,
+            "candidate": 0.0,
+            "delta": -1.0,
+            "tau_regression": 0.1,
+        }
+        candidate_runs = read_manifest(
+            split_dir(config.out_dir, 1, "cand-tau", SPLIT_HELDOUT) / "round_00"
+        )
+        assert len(candidate_runs) == first_length_runs
+        assert {entry["instance_id"].split("-")[1] for entry in candidate_runs} == {"8192"}
+        assert factory.total_calls == baseline_runs + first_length_runs
+
+        decision = decide_subject(
+            evaluation.baseline.summary,
+            measured,
+            PromotionConfig(
+                metric="primary_quality",
+                tau_regression={"8192": 0.1, "16384": 0.1},
+            ),
+        )
+        assert decision.decision == DECISION_REJECTED
+        assert "validation stopped early" in decision.reasons[0]
+
+        resumed = evaluate_validation_round(
+            H0,
+            [candidate],
+            config,
+            tau_regression={"8192": 0.1, "16384": 0.1},
+        )
+        assert factory.total_calls == baseline_runs + first_length_runs
+        assert isinstance(resumed.candidates[0], SubjectEvaluation)
+        assert resumed.candidates[0].outcome == OUTCOME_EARLY_REJECTED
 
 
 # ---------------------------------------------------------------------------

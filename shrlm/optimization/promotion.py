@@ -13,7 +13,7 @@ from typing import Any
 
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.candidates import CandidateRejection, LoadedCandidate
-from shrlm.optimization.costs import OUTCOME_COMPLETED
+from shrlm.optimization.costs import OUTCOME_COMPLETED, OUTCOME_EARLY_REJECTED
 from shrlm.optimization.driver import ACCOUNTING_VERSION_KEY, LEGACY_ACCOUNTING_VERSION
 from shrlm.optimization.validation import (
     SPLIT_HELDOUT,
@@ -191,9 +191,7 @@ class PromotionConfig:
                 "tau_regression must be a number >= 0, or a mapping of context length to "
                 f"such a number, got {self.tau_regression!r}"
             )
-        if len(set(self.failure_nonregression_causes)) != len(
-            self.failure_nonregression_causes
-        ):
+        if len(set(self.failure_nonregression_causes)) != len(self.failure_nonregression_causes):
             raise ValueError("failure_nonregression_causes must not contain duplicates")
 
 
@@ -437,12 +435,10 @@ def score_candidate(
                 )
             n_runs = int(base_split["n_runs"])
             baseline_failures = sum(
-                int(base_counts.get(cause, 0))
-                for cause in config.failure_nonregression_causes
+                int(base_counts.get(cause, 0)) for cause in config.failure_nonregression_causes
             )
             candidate_failures = sum(
-                int(cand_counts.get(cause, 0))
-                for cause in config.failure_nonregression_causes
+                int(cand_counts.get(cause, 0)) for cause in config.failure_nonregression_causes
             )
             failure_rule = {
                 "causes": list(config.failure_nonregression_causes),
@@ -545,6 +541,24 @@ def decide_subject(
             upstream=subject.to_dict(),
             surface=surface,
         )
+    if subject.outcome == OUTCOME_EARLY_REJECTED:
+        early = subject.summary.get("early_rejection") or {}
+        length = early.get("context_len", "unknown")
+        delta = float(early.get("delta", 0.0))
+        tau = float(early.get("tau_regression", 0.0))
+        return CandidateDecision(
+            subject_id=subject.subject_id,
+            decision=DECISION_REJECTED,
+            reasons=(
+                f"heldout context_len={length} primary-quality delta {delta:+.6f} "
+                f"regresses beyond tau_regression={tau}; validation stopped early",
+            ),
+            tau_regression=config.tau_regression,
+            tau_improvement=config.tau_improvement,
+            harness_hash=subject.harness_hash,
+            rule={SPLIT_HELDOUT: {"metric": config.metric, "early_stop": early}},
+            surface=surface,
+        )
     if subject.over_budget:
         return CandidateDecision(
             subject_id=subject.subject_id,
@@ -597,6 +611,36 @@ def assess_round(
         )
         for candidate in evaluation.candidates
     ]
+
+
+def rank_screened_candidates(
+    evaluation: RoundEvaluation,
+    config: PromotionConfig,
+    surfaces: Mapping[str, str] | None = None,
+) -> list[CandidateDecision]:
+    """Order independently-screened candidates best-first (shrlm.experiment.
+    orchestrator's tournament): reuses ``assess_round``'s existing
+    per-candidate delta computation against the screening-subset baseline --
+    same rule, smaller sample -- then sorts.
+
+    A candidate that was never scored (a ``CandidateRejection``, or an
+    over-budget subject) sinks below every one that actually ran, in
+    ``subject_id`` order among themselves; ties among scored candidates also
+    break on ``subject_id`` for a fully deterministic order.
+
+    This score is for ranking only: the accept/reject verdict ``assess_round``
+    computes on this tiny, reduced-attempt screening sample is never a
+    promotion decision and is never written to ``promotions.jsonl`` -- see
+    ``shrlm.optimization.validation.write_screening_ledger``.
+    """
+    decisions = assess_round(evaluation, config, surfaces)
+
+    def rank_key(decision: CandidateDecision) -> tuple[bool, float, str]:
+        scored = decision.rule is not None
+        delta = -decision.delta(SPLIT_HELDOUT) if scored else math.inf
+        return (not scored, delta, decision.subject_id)
+
+    return sorted(decisions, key=rank_key)
 
 
 # ---------------------------------------------------------------------------
@@ -692,5 +736,6 @@ __all__ = [
     "merge_harnesses",
     "plan_batch",
     "promote_decision",
+    "rank_screened_candidates",
     "score_candidate",
 ]

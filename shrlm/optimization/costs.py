@@ -119,6 +119,7 @@ from shrlm.optimization.types import Verdict
 
 # Candidate outcomes the promotion ledger records for a governed round.
 OUTCOME_COMPLETED = "completed"
+OUTCOME_EARLY_REJECTED = "early_rejected"
 OUTCOME_OVER_BUDGET = "over_budget"
 
 # Where a run child's own artifacts live: its request, its log, its result.
@@ -339,6 +340,7 @@ class GovernedRoundResult:
     outcome: str
     spent: float
     skipped_run_ids: list[str]
+    early_stop: dict[str, Any] | None = None
 
     @property
     def over_budget(self) -> bool:
@@ -902,7 +904,12 @@ def _governed_result(
     )
 
 
-def run_governed_round(config: RoundConfig, breaker: CandidateSpendBreaker) -> GovernedRoundResult:
+def run_governed_round(
+    config: RoundConfig,
+    breaker: CandidateSpendBreaker,
+    *,
+    early_stop: Callable[[list[dict[str, Any]]], dict[str, Any] | None] | None = None,
+) -> GovernedRoundResult:
     """Run one round under the breaker: persist-first, one run at a time.
 
     Pre-existing manifest lines are charged before anything executes, so a
@@ -923,6 +930,11 @@ def run_governed_round(config: RoundConfig, breaker: CandidateSpendBreaker) -> G
             ``governed_limits``.
         breaker: The candidate's breaker, shared across that candidate's
             rounds (splits, repetitions) so the budget is truly cumulative.
+        early_stop: Optional deterministic predicate evaluated against the
+            persisted manifest after every sequential run. Returning a record
+            stops the contiguous pending tail without marking it over-budget.
+            Early stopping deliberately requires ``run_workers=1`` so no run
+            from a later stratum can be launched before the veto is known.
 
     Returns:
         The manifest entries, the ``completed``/``over_budget`` outcome, the
@@ -931,11 +943,15 @@ def run_governed_round(config: RoundConfig, breaker: CandidateSpendBreaker) -> G
     round_path = round_dir(config.out_dir, config.round_index)
     round_path.mkdir(parents=True, exist_ok=True)
     with claim_split(round_path):
-        return _run_governed_round_claimed(config, breaker, round_path)
+        return _run_governed_round_claimed(config, breaker, round_path, early_stop=early_stop)
 
 
 def _run_governed_round_claimed(
-    config: RoundConfig, breaker: CandidateSpendBreaker, round_path: Path
+    config: RoundConfig,
+    breaker: CandidateSpendBreaker,
+    round_path: Path,
+    *,
+    early_stop: Callable[[list[dict[str, Any]]], dict[str, Any] | None] | None,
 ) -> GovernedRoundResult:
     """``run_governed_round``'s body, with this split's claim already held."""
     orphaned = _live_run_children(round_path)
@@ -961,6 +977,26 @@ def _run_governed_round_claimed(
         if run_id_for(str(instance["id"]), attempt) not in claimed
     ]
 
+    if early_stop is not None and config.run_workers != 1:
+        raise ValueError("early stopping requires run_workers=1")
+
+    early_stop_record = None if breaker.tripped or early_stop is None else early_stop(entries)
+    if early_stop_record is not None:
+        done = {str(entry["run_id"]) for entry in entries}
+        skipped = [
+            run_id
+            for instance in config.instances
+            for attempt in range(1, config.attempts + 1)
+            if (run_id := run_id_for(str(instance["id"]), attempt)) not in done
+        ]
+        return GovernedRoundResult(
+            entries=entries,
+            outcome=OUTCOME_EARLY_REJECTED,
+            spent=breaker.spent,
+            skipped_run_ids=skipped,
+            early_stop=early_stop_record,
+        )
+
     if config.run_workers > 1:
         return _dispatch_runs_concurrently(config, breaker, path, entries, pending)
 
@@ -977,13 +1013,15 @@ def _run_governed_round_claimed(
     for entry in entries[known:]:
         breaker.charge(entry, namespace=namespace)
 
-    while not breaker.tripped:
+    while not breaker.tripped and early_stop_record is None:
         known = len(entries)
         entries = _run_slice(config, stop_after=1, deadline=deadline, known=known)
         if len(entries) == known:
             break  # nothing pending: the round is complete
         for entry in entries[known:]:
             breaker.charge(entry, namespace=namespace)
+        if not breaker.tripped and early_stop is not None:
+            early_stop_record = early_stop(entries)
 
     done = {str(entry["run_id"]) for entry in entries}
     skipped = [
@@ -994,9 +1032,16 @@ def _run_governed_round_claimed(
     ]
     return GovernedRoundResult(
         entries=entries,
-        outcome=OUTCOME_OVER_BUDGET if breaker.tripped else OUTCOME_COMPLETED,
+        outcome=(
+            OUTCOME_OVER_BUDGET
+            if breaker.tripped
+            else OUTCOME_EARLY_REJECTED
+            if early_stop_record is not None
+            else OUTCOME_COMPLETED
+        ),
         spent=breaker.spent,
         skipped_run_ids=skipped,
+        early_stop=early_stop_record,
     )
 
 
@@ -1004,6 +1049,7 @@ __all__ = [
     "HARD_DEADLINE_FACTOR",
     "HARD_DEADLINE_GRACE_SECONDS",
     "OUTCOME_COMPLETED",
+    "OUTCOME_EARLY_REJECTED",
     "OUTCOME_OVER_BUDGET",
     "CandidateSpendBreaker",
     "GovernedRoundResult",
