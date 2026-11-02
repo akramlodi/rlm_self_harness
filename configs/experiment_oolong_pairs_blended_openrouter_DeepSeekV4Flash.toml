@@ -420,12 +420,14 @@ validation_run_workers = 3
 # Screening tournament's own pair of the same two knobs (Orchestrator._screen),
 # independent of validation_workers/validation_run_workers above. Screening
 # evaluates the baseline plus up to k candidates (k+1 subjects -- five with
-# this profile's k=4), and that higher
-# subject count was the real driver of a real rate-limit storm observed on
-# the Azure deployment this config no longer uses. screening_workers=1 runs
-# subjects strictly in sequence -- baseline, then each candidate in turn --
-# so never more than one subject's worth of traffic is in flight.
-screening_workers = 1
+# this profile's k=4). screening_workers=1 ran subjects strictly in sequence
+# after a real rate-limit storm on the Azure deployment this config no longer
+# uses; raised to 2 here since OpenRouter has shown no 429s under
+# screening_run_workers/mining_run_workers=3, and a bounded 2-slot queue
+# (evaluate_subjects_in_processes) means a straggling subject's last run no
+# longer blocks the next candidate from starting -- watch for 429s and revert
+# to 1 if they appear.
+screening_workers = 2
 # Within-subject concurrency during screening: while one subject has the
 # floor, its own small screening-subset instances (one per length here, so
 # 3) run concurrently rather than being serialized to one at a time.
