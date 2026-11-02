@@ -90,12 +90,20 @@ seed = 0 # seeded partition of the OOLONG-Pairs pools; task_id-to-role
 [loop]
 # Optimization-loop counts, section 3.2.
 m = 2 # mining repetitions per held-in instance
-v = 3 # validation repetitions per held-out instance per subject (no screening)
-k = 1 # one candidate per round: every promotion decision is unambiguous
-# (plan_batch's PLAN_SINGLE path tests a lone candidate alone, never merged --
-# avoids the "which constituent caused the rejection" blind spot from round 1.2)
+v = 3 # validation repetitions per held-out instance per subject, for the
+# round's best-ranked candidate (see v_screen below for the others)
+k = 3 # up to 3 independently-proposed single-surface candidates per round:
+# each is screened independently (never merged -- avoids the "which
+# constituent caused the rejection" blind spot from round 1.2), ranked, and
+# only the best-ranked one is fully validated here. If it is rejected, the
+# other screened candidates are retired and the next round mines fresh
+# evidence against the unchanged incumbent.
+v_screen = 1 # cheap per-candidate screening attempt count, strictly < v
 t = 10 # generous ceiling; patience is the real stopping rule
-patience = 3 # consecutive no-promotion rounds before stopping (3.10 row 5)
+patience = 4 # consecutive fresh mining rounds without promotion before
+# stopping. This is intentionally independent of k: k controls alternatives
+# screened within one round, while patience controls how many newly-mined
+# optimization attempts may fail in succession (3.10 row 5).
 environment = "oolong_pairs" # this profile mines/validates OOLONG-Pairs (identity key)
 # Start from the sparse mechanism floor. This keeps the learned SH-RLM versus
 # hand-written H0*R comparison meaningful instead of seeding the answer.
@@ -175,12 +183,20 @@ cost_band = [0.5, 3.0]
 
 [refinement]
 # One bounded repair generation for a rejected batch whose parseable-answer
-# F1 improves while a terminal (hard-zero) cause's rate worsens. Scoped to
-# the terminal set -- wrong_format, resource_terminated, runtime_error,
-# content_filtered -- not partial-credit causes (mixed_set_error, incomplete,
-# spurious): those are naturally noisy attempt to attempt, and watching them
-# for "did the rate go up" would trigger repair generations on ordinary
-# variance, not genuine new regressions.
+# F1 improves while a terminal (hard-zero) cause's rate worsens. Narrowed to
+# wrong_format alone on 2026-10-26: real evidence this session showed the
+# other three terminal causes (resource_terminated, runtime_error,
+# content_filtered) had support=1 everywhere examined -- too thin to
+# construct a working fix even when the proposer's view was already
+# restricted to them -- while the one genuinely clean, successful repair
+# seen all session was built on an unambiguous wrong_format diagnosis. Not
+# partial-credit causes (mixed_set_error, incomplete, spurious) either:
+# those are naturally noisy attempt to attempt, and watching them for "did
+# the rate go up" would trigger repair generations on ordinary variance,
+# not genuine new regressions. (Deferred: a separate branch should compare
+# this against keeping all 4 causes, and against no restriction at all, to
+# see which setting yields more successfully-promoted-after-refinement
+# outcomes -- not yet measured.)
 #
 # promotion_size=8 matches n_ho so the repaired descendant's final
 # accept/reject decision rests on the same sample size tau_regression/
@@ -192,8 +208,19 @@ enabled = true
 promotion_size = 8
 min_conditional_quality_delta = 0.02
 min_failure_rate_delta = 0.0
-failure_causes = ["wrong_format", "resource_terminated", "runtime_error", "content_filtered"]
+failure_causes = ["wrong_format"]
 max_generations = 1
+
+[reattribution]
+# When every one of a round's screened candidates is screening-rejected,
+# re-attribute the same already-executed mining runs once (no new rollouts)
+# before full-validating a candidate screening has already told us is
+# doomed -- see shrlm.experiment.orchestrator._reattribute_and_rescreen.
+# Attribution itself was shown non-reproducible on frozen evidence this
+# session (0/5 and 1/5 agreement across independent reruns of the same
+# digest for the two patterns that actually became real candidates) -- this
+# is the cheap, targeted mitigation for that specific noise source.
+enabled = true
 
 [caps]
 # Experiment-owned per-run limits (KTD3). max_budget, max_timeout, and
@@ -370,16 +397,52 @@ proposal_cache_path = ".cache/shrlm/proposals_oolong_pairs_blended.jsonl"
 eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
 validation_workers = 5
 
+# Full validation only. Primary-quality validation evaluates the baseline
+# first, then the winner, so the winner can stop after any completed context
+# length that violates tau. The screening tournament has its own pair of
+# knobs below, decoupled from this one. Screening's subject count (baseline +
+# up to k candidates) is
+# structurally larger, and sharing one knob between the two stages was the
+# actual driver of a real rate-limit storm observed with 5 live screening
+# subjects at once.
+#
 # How many of ONE subject's runs execute concurrently, each in its own child
-# process (python -m shrlm.optimization.run_worker). THE TWO KNOBS BELOW
-# MULTIPLY: total in-flight runs is validation_workers x validation_run_workers,
-# and provider rate limiting is the real ceiling. Both are identity-exempt
-# (safe to change under an existing --out-dir).
+# process (python -m shrlm.optimization.run_worker). Identity-exempt (safe to
+# change under an existing --out-dir). In practice this only ever governs the
+# baseline's own concurrency: under primary-quality tau early stopping, the
+# candidate's own run_workers is forced to 1 unconditionally
+# (evaluate_subject's stop_predicate branch), so a later context length's
+# runs can never launch before an earlier length's veto is known. A second
+# "warm" knob used in the reused-baseline case existed here until
+# 2026-11-02; it was deleted once direct tracing showed it had no observable
+# effect -- a warm round's baseline is never evaluated live at all (it's
+# reused), and the candidate it would otherwise apply to is already forced
+# to 1 regardless.
 #
 # Lowered 3 -> 1 on 2026-08-30 for the recursive (H0*R) profile after a
-# 429-storm incident; kept at 1 here too since this profile shares the same
-# Azure deployment.
-validation_run_workers = 1
+# 429-storm incident on this same Azure deployment.
+#
+# Raised 1 -> 3 on 2026-11-02 to empirically compare baseline throughput:
+# baseline never runs concurrently with the candidate (sequential subject
+# dispatch), so the original 5-live-subject rate-limit-storm rationale above
+# doesn't directly bear on raising just this subject's own run-level
+# concurrency. Revert to 1 if this reintroduces rate-limit pressure.
+validation_run_workers = 3
+
+# Screening tournament's own pair of the same two knobs (Orchestrator._screen),
+# independent of validation_workers/validation_run_workers above. Screening
+# evaluates the baseline plus up to k candidates (k+1 subjects -- four with
+# this profile), and that higher
+# subject count was the real driver of a real rate-limit storm observed on
+# this deployment with five concurrent subjects. screening_workers=1 runs
+# subjects strictly in sequence -- baseline, then each candidate in turn --
+# so never more than one subject's worth of traffic is in flight.
+screening_workers = 1
+# Within-subject concurrency during screening: while one subject has the
+# floor, its own small screening-subset instances (one per length here, so
+# 3) run concurrently rather than being serialized to one at a time.
+# Independent of validation_run_workers/_warm.
+screening_run_workers = 3
 
 # Held-in mining runs fan out independently. Start at 5; if provider 429s
 # appear, reduce to 3, then 1.
@@ -404,7 +467,7 @@ test_long = 2
 [smoke.loop]
 m = 1
 v = 1
-k = 2
+k = 3
 t = 1
 
 [smoke.caps]

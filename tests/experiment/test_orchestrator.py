@@ -54,6 +54,7 @@ from shrlm.experiment.orchestrator import (
     EVIDENCE_MARKER_FILENAME,
     FROZEN_DIR,
     FROZEN_HARNESS_FILENAME,
+    MINING_DIR,
     OBLIQ_BENCH_MATH_VERIFIER_FACTORY,
     OOLONG_PAIRS_VERIFIER_FACTORY,
     OOLONG_SYNTH_VERIFIER_FACTORY,
@@ -61,10 +62,12 @@ from shrlm.experiment.orchestrator import (
     PROPOSALS_MARKER_FILENAME,
     PROPOSALS_MARKER_FORMAT,
     REAL_CHECK_DIR,
+    REATTRIBUTION_DIR,
     ROLE_HELD_IN,
     ROLE_HELD_OUT,
     ROUND_MARKER_FILENAME,
     ROUND_MARKER_FORMAT,
+    SCREENING_DIR,
     STOP_MAX_ROUNDS,
     STOP_PATIENCE,
     ExperimentPersistenceError,
@@ -92,6 +95,7 @@ from shrlm.experiment.usage import STAGE_USAGE_FILE, read_jsonl, read_stage_usag
 from shrlm.harness_identity import harness_hash, write_harness_json
 from shrlm.optimization.bundle import (
     ATTRIBUTIONS_FILENAME,
+    BUNDLES_DIR,
     RECORDS_FILENAME,
     round_dir,
     write_bundle,
@@ -301,7 +305,10 @@ def make_config(
     proposer_model: str = "proposer-test",
     mining_run_workers: int = 1,
     validation_workers: int = 1,
+    screening_workers: int = 1,
+    screening_run_workers: int = 1,
     initial_harness: str | None = None,
+    reattribution_enabled: bool = False,
 ) -> ExperimentConfig:
     text = TOML_TEMPLATE.format(
         temperature=temperature,
@@ -315,11 +322,15 @@ def make_config(
         "eval_repetitions = 1\n",
         "eval_repetitions = 1\n"
         f"mining_run_workers = {mining_run_workers}\n"
-        f"validation_workers = {validation_workers}\n",
+        f"validation_workers = {validation_workers}\n"
+        f"screening_workers = {screening_workers}\n"
+        f"screening_run_workers = {screening_run_workers}\n",
         1,
     )
     if initial_harness is not None:
         text = text.replace("[loop]\n", f'[loop]\ninitial_harness = "{initial_harness}"\n', 1)
+    if reattribution_enabled:
+        text += "\n[reattribution]\nenabled = true\n"
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "experiment.toml"
     path.write_text(text)
@@ -838,46 +849,62 @@ class TestResumeAfterBundle:
 # ---------------------------------------------------------------------------
 
 
-class TestMergedPromotion:
-    def run_merged_round(self, config, out: Path, monkeypatch) -> tuple[Any, ClientFactory]:
+class TestScreeningTournamentPromotion:
+    """Two admitted candidates (k=2) no longer merge into one combined
+    subject: each is screened independently, ranked, and only the
+    best-ranked one is fully validated and promoted."""
+
+    def run_tournament_round(self, config, out: Path, monkeypatch) -> tuple[Any, ClientFactory]:
         factory = patch_runner(
             monkeypatch,
             MINING_FAIL  # two failures with distinct mechanisms -> two patterns
-            + SUBJECT_FAIL  # baseline
-            + SUBJECT_PASS,  # combined candidate
+            + SUBJECT_FAIL  # screening baseline
+            + SUBJECT_FAIL  # screening candidate (S2): no better than baseline
+            + SUBJECT_PASS  # screening candidate (S4): clearly best -- ranked #1
+            + SUBJECT_FAIL,  # full-validation baseline (rerun fresh; the winner's
+            # own full validation reuses its screening runs, 0 new calls)
         )
         attributor = MockLM(
             responses=[attribution("incomplete_coverage"), attribution("skipped_verification")]
         )
-        # Both patterns are text surfaces (S2 and S4); the same replacement
-        # text on each makes the merged harness independent of pattern order.
+        # Both patterns are text surfaces (S2 and S4); same replacement text
+        # on each keeps the winner's identity independent of pattern order.
         proposer = MockLM(
             responses=[proposer_batch((0, MERGE_TEXT), (1, MERGE_TEXT), surfaces=("S2", "S4"))]
         )
         return run(config, out, attributor, proposer), factory
 
-    def test_merged_harness_promotes_and_freezes(self, tmp_path, monkeypatch):
+    def test_best_ranked_candidate_promotes_and_freezes(self, tmp_path, monkeypatch):
         config = make_config(tmp_path)
         out = tmp_path / "exp"
-        result, factory = self.run_merged_round(config, out, monkeypatch)
+        result, factory = self.run_tournament_round(config, out, monkeypatch)
 
-        assert factory.total_calls == 6  # 2 mining + 4 subjects x 4 runs
+        assert factory.total_calls == 10  # 2 mining + 3x2 screening + 1x2 full-validation baseline
         assert result.rounds[0].promoted
         _, decision = load_promotion_ledger(validation_round_path(out, 1))
-        assert decision["promoted_subject_id"] == "merged"
+        assert decision["promoted_subject_id"] == "r01-c02-s4"
 
-        expected = replace(
-            H0,
-            decomposition_instruction=MERGE_TEXT,
-            verification_instruction=MERGE_TEXT,
-        )
+        expected = replace(H0, verification_instruction=MERGE_TEXT)
         assert result.final_harness_hash == harness_hash(expected)
         assert frozen_envelope(out)["hash"] == harness_hash(expected)
 
-    def test_resume_rematerializes_the_merged_incumbent_from_disk(self, tmp_path, monkeypatch):
+        screening_round = experiment_round_dir(out, 1) / SCREENING_DIR / "round_01"
+        screened_runs = {}
+        for subject_id in ("baseline", "r01-c01-s2", "r01-c02-s4"):
+            manifest = screening_round / subject_id / "heldout" / "round_00" / "runs.jsonl"
+            screened_runs[subject_id] = {
+                (entry["instance_id"], int(entry["attempt"]))
+                for entry in (
+                    json.loads(line) for line in manifest.read_text().splitlines() if line.strip()
+                )
+            }
+        assert screened_runs["baseline"] == screened_runs["r01-c01-s2"]
+        assert screened_runs["baseline"] == screened_runs["r01-c02-s4"]
+
+    def test_resume_rematerializes_the_promoted_incumbent_from_disk(self, tmp_path, monkeypatch):
         config = make_config(tmp_path)
         out = tmp_path / "exp"
-        first, _ = self.run_merged_round(config, out, monkeypatch)
+        first, _ = self.run_tournament_round(config, out, monkeypatch)
 
         idle = patch_runner(monkeypatch, [])
         result = run(config, out, MockLM(responses=[]), MockLM(responses=[]))
@@ -885,6 +912,302 @@ class TestMergedPromotion:
         assert idle.total_calls == 0
         assert result.final_harness_hash == first.final_harness_hash
         assert harness_hash(result.final_harness) == first.final_harness_hash
+
+
+def test_tournament_remines_after_the_top_ranked_candidate_is_rejected(tmp_path, monkeypatch):
+    """Rejecting round 1's best-ranked candidate no longer falls back to the
+    next-ranked one from the same (stale) screening pool -- round 2 mines a
+    fresh pool against the still-unpromoted incumbent instead."""
+    config = make_config(tmp_path, t=2)
+    out = tmp_path / "exp"
+    factory = patch_runner(
+        monkeypatch,
+        MINING_FAIL  # round 1: two failures with distinct mechanisms -> two patterns
+        # Baseline gets partial credit (SUBJECT_HALF) rather than SUBJECT_FAIL: a
+        # 0-vs-0 tie would trivially satisfy this harness's tau_improvement=0.0
+        # and promote by accident, and a perfect SUBJECT_PASS baseline would
+        # leave round 2's candidate no room to ever beat it (see SUBJECT_HALF's
+        # own docstring above).
+        + SUBJECT_HALF  # screening baseline
+        + SUBJECT_FAIL  # screening candidate (S2) -- strictly worse than baseline
+        + SUBJECT_FAIL  # screening candidate (S4) -- strictly worse than baseline;
+        # some deterministic rank wins between the two equally-bad candidates
+        + SUBJECT_HALF  # full-validation baseline rerun (same score as screening;
+        # the top-ranked candidate's own full validation reuses its failing
+        # screening runs at 0 new calls, so it is rejected against this baseline)
+        + MINING_FAIL_V2  # round 2: a fresh mining pass against the same H0
+        + SUBJECT_PASS,  # round 2's one candidate -- strictly better than the
+        # SUBJECT_HALF baseline it inherits warm from round 1 -> promotes.
+    )
+    attributor = MockLM(
+        responses=[
+            attribution("incomplete_coverage"),  # round 1's two failures -> two distinct
+            attribution("skipped_verification"),  # patterns, so k=2 fills in one proposer call.
+            attribution("skipped_verification"),  # round 2's two failures -> the SAME mechanism,
+            attribution("skipped_verification"),  # so one pattern -> one proposer call suffices.
+        ]
+    )
+    proposer = MockLM(
+        responses=[
+            proposer_batch((0, TEXT_ROUND_1), (1, MERGE_TEXT), surfaces=("S2", "S4")),
+            proposer_batch((0, TEXT_ROUND_2), surfaces=("S4",)),
+        ]
+        + [EMPTY_BATCH] * 8
+    )
+    result = run(config, out, attributor, proposer)
+
+    assert len(result.rounds) == 2
+    assert not result.rounds[0].promoted
+    assert result.rounds[1].promoted
+    assert factory.total_calls == 14
+
+    # Round 1: both candidates screened, ranked, and the top one fully
+    # validated and rejected -- the other ranked candidate is never touched.
+    screening_round = experiment_round_dir(out, 1) / SCREENING_DIR / "round_01"
+    screening_decision = json.loads(
+        (screening_round / "screening_decision.json").read_text()
+    )
+    ranked = screening_decision["ranked_candidate_ids"]
+    assert len(ranked) == 2
+    validation_1 = validation_round_path(out, 1)
+    assert (validation_1 / ranked[0]).exists()
+    assert not (validation_1 / ranked[1]).exists()
+
+    # Round 2: fresh mining, not a validate-only runner-up round reusing
+    # round 1's pool. The rejected round-1 runner-up is still never validated.
+    assert (experiment_round_dir(out, 2) / MINING_DIR).exists()
+    round_2_marker = json.loads(
+        (experiment_round_dir(out, 2) / PROPOSALS_MARKER_FILENAME).read_text()
+    )
+    assert "reused_from_round" not in round_2_marker
+    assert not (validation_round_path(out, 2) / ranked[1]).exists()
+
+
+def test_reattribution_rescreens_after_every_screened_candidate_is_rejected(tmp_path, monkeypatch):
+    """With [reattribution] enabled, a round whose entire screened pool is
+    screening-rejected re-attributes the SAME already-executed mining runs
+    (no new rollouts) into a fresh pool before ever paying for full
+    validation of a candidate screening already told us is doomed. Neither
+    original-pool candidate is ever fully validated; the round promotes via
+    the reattributed candidate instead, with no round 2 needed at all."""
+    config = make_config(tmp_path, t=1, reattribution_enabled=True)
+    out = tmp_path / "exp"
+    factory = patch_runner(
+        monkeypatch,
+        MINING_FAIL  # round 1's only mining pass -- the reattribution retry below
+        # re-attributes these SAME persisted runs, no new rollouts.
+        + SUBJECT_HALF  # screening baseline
+        + SUBJECT_FAIL  # screening candidate (S2) -- strictly worse than baseline
+        + SUBJECT_FAIL  # screening candidate (S4) -- strictly worse than baseline;
+        # every screened candidate is rejected -> triggers the reattribution retry.
+        + SUBJECT_HALF  # reattribution's own screening baseline (screening always
+        # reruns its baseline fresh, per _screen's own documented behavior)
+        + SUBJECT_PASS  # reattribution's one candidate (S4) -- clearly better -> accepted
+        + SUBJECT_HALF,  # full-validation baseline (fresh; round 1 has no prior
+        # baseline to reuse). The reattributed winner's own full validation
+        # reuses its reattribution screening runs, 0 new calls.
+    )
+    attributor = MockLM(
+        responses=[
+            attribution("incomplete_coverage"),  # original pass: two distinct mechanisms
+            attribution("skipped_verification"),  # -> two patterns, one proposer call.
+            attribution("task_objective_misinterpretation"),  # reattribution pass: the
+            attribution("task_objective_misinterpretation"),  # SAME mechanism both times
+            # -> one pattern, one proposer call.
+        ]
+    )
+    proposer = MockLM(
+        responses=[
+            proposer_batch((0, TEXT_ROUND_1), (1, MERGE_TEXT), surfaces=("S2", "S4")),
+            proposer_batch((0, TEXT_ROUND_2), surfaces=("S4",)),
+        ]
+        + [EMPTY_BATCH] * 8
+    )
+    result = run(config, out, attributor, proposer)
+
+    assert len(result.rounds) == 1
+    assert result.rounds[0].promoted
+    assert factory.total_calls == 14
+
+    round_path = experiment_round_dir(out, 1)
+    mining_round = round_path / MINING_DIR / "round_01"
+    original_bundle = json.loads((mining_round / "bundle.json").read_text())
+    reattributed_bundle = json.loads(
+        (mining_round / BUNDLES_DIR / "reattribution" / "bundle.json").read_text()
+    )
+    assert reattributed_bundle["bundle_id"] != original_bundle["bundle_id"]
+
+    reattribution_path = round_path / REATTRIBUTION_DIR
+    assert (reattribution_path / PROPOSALS_MARKER_FILENAME).exists()
+    reattributed_screening_decision = json.loads(
+        (reattribution_path / SCREENING_DIR / "round_01" / "screening_decision.json").read_text()
+    )
+    assert reattributed_screening_decision["ranked_candidate_ids"] == ["r01-c01-s4"]
+
+    # Neither original-pool candidate was ever fully validated -- only the
+    # reattributed winner was.
+    validation_1 = validation_round_path(out, 1)
+    assert not (validation_1 / "r01-c01-s2").exists()
+    assert not (validation_1 / "r01-c02-s4").exists()
+    assert (validation_1 / "r01-c01-s4").exists()
+
+    expected = replace(H0, verification_instruction=TEXT_ROUND_2)
+    assert result.final_harness_hash == harness_hash(expected)
+
+
+def test_reattribution_still_rejected_proceeds_without_a_second_retry(tmp_path, monkeypatch):
+    """The reattribution retry is bounded to exactly one attempt: if its own
+    rescreened pool is also all-rejected, the round proceeds to fully
+    validate *that* pool's top-ranked (still-doomed) candidate -- it does
+    not recurse into a second retry, and it does not fall back to
+    re-validating the original (already-superseded) pool either."""
+    config = make_config(tmp_path, t=1, reattribution_enabled=True)
+    out = tmp_path / "exp"
+    factory = patch_runner(
+        monkeypatch,
+        MINING_FAIL  # round 1's only mining pass
+        + SUBJECT_HALF  # screening baseline
+        + SUBJECT_FAIL  # screening candidate (S2) -- rejected
+        + SUBJECT_FAIL  # screening candidate (S4) -- rejected -> triggers reattribution
+        + SUBJECT_HALF  # reattribution's own screening baseline
+        + SUBJECT_FAIL  # reattribution's one candidate (S4) -- also rejected
+        + SUBJECT_HALF,  # full-validation baseline, fresh
+    )
+    attributor = MockLM(
+        responses=[
+            attribution("incomplete_coverage"),
+            attribution("skipped_verification"),
+            attribution("task_objective_misinterpretation"),
+            attribution("task_objective_misinterpretation"),
+        ]
+    )
+    proposer = MockLM(
+        responses=[
+            proposer_batch((0, TEXT_ROUND_1), (1, MERGE_TEXT), surfaces=("S2", "S4")),
+            proposer_batch((0, TEXT_ROUND_2), surfaces=("S4",)),
+        ]
+        + [EMPTY_BATCH] * 8
+    )
+    result = run(config, out, attributor, proposer)
+
+    assert len(result.rounds) == 1
+    assert not result.rounds[0].promoted
+    assert factory.total_calls == 14
+
+    round_path = experiment_round_dir(out, 1)
+    # Exactly one reattribution attempt -- its own bundle exists -- and the
+    # round proceeds with the reattributed pool's own top-ranked candidate,
+    # not either original-pool candidate (which is never fully validated).
+    assert (round_path / MINING_DIR / "round_01" / BUNDLES_DIR / "reattribution").exists()
+    validation_1 = validation_round_path(out, 1)
+    assert not (validation_1 / "r01-c01-s2").exists()
+    assert not (validation_1 / "r01-c02-s4").exists()
+    assert (validation_1 / "r01-c01-s4").exists()
+    assert result.final_harness_hash == harness_hash(H0)  # unpromoted: still H0
+
+
+class TestScreeningWorkersDecoupling:
+    """``screening_workers``/``screening_run_workers`` are independent of
+    ``validation_workers``: screening's subject dispatch (in-process vs
+    child-process) must follow the screening knob, not the one that governs
+    full validation's baseline+winner pair."""
+
+    def test_screening_stays_in_process_while_full_validation_uses_children(
+        self, tmp_path, monkeypatch
+    ):
+        from shrlm.optimization.subject_worker import LOG_FILENAME
+        from tests.optimization.test_validation import parallel_client_factory
+
+        # validation_workers=5 would force subprocess dispatch if screening
+        # still inherited it; screening_workers=1 must keep screening
+        # in-process regardless.
+        config = make_config(
+            tmp_path, validation_workers=5, screening_workers=1, screening_run_workers=2
+        )
+        out = tmp_path / "exp"
+        # Mining is the only stage that consults the monkeypatched in-process
+        # client (rlm_module.get_client); every validation/screening subject
+        # -- in-process or in a child -- builds its own client through
+        # client_factory once one is configured at run_experiment, regardless
+        # of screening_workers/validation_workers. So mining stays on
+        # patch_runner, and every subject (screening AND the full-validation
+        # baseline rerun) gets its own scripted client_factory entry, with
+        # enough entries to cover both its screening and its full-validation
+        # evaluation.
+        factory = patch_runner(monkeypatch, MINING_FAIL)
+        attributor = MockLM(
+            responses=[attribution("incomplete_coverage"), attribution("skipped_verification")]
+        )
+        proposer = MockLM(
+            responses=[proposer_batch((0, MERGE_TEXT), (1, MERGE_TEXT), surfaces=("S2", "S4"))]
+        )
+        client_factory = parallel_client_factory(
+            tmp_path,
+            {
+                "baseline": SUBJECT_FAIL * 2,  # screening + a full-validation rerun
+                "r01-c01-s2": SUBJECT_FAIL * 2,  # screening + full validation either could reach
+                "r01-c02-s4": SUBJECT_FAIL * 2,  # (same budget for both candidates either way)
+            },
+        )
+
+        result = run_experiment(
+            config,
+            out,
+            verifier=GoldVerifier(),
+            attributor_lm=attributor,
+            proposer_lm=proposer,
+            loaders=LOADERS,
+            verifier_factory="tests.optimization.test_driver:GoldVerifier",
+            client_factory=client_factory,
+        )
+
+        assert factory.total_calls == 2  # mining only; every validation subject used a child
+        assert len(result.rounds) == 1  # the round completed, whatever the promotion outcome
+
+        # Screening ran strictly in-process (screening_workers=1): no subject
+        # gets a worker.log, the subprocess dispatch marker.
+        screening_round = experiment_round_dir(out, 1) / SCREENING_DIR / "round_01"
+        for subject_id in ("baseline", "r01-c01-s2", "r01-c02-s4"):
+            assert not (screening_round / subject_id / LOG_FILENAME).exists()
+        # screening_run_workers=2 still gave each screened subject real
+        # run-level concurrency underneath -- that path writes its own
+        # per-run "run_workers" directory, independent of the (absent)
+        # subject-level worker.log.
+        assert any(
+            (screening_round / subject_id / "heldout" / "round_00" / "run_workers").exists()
+            for subject_id in ("baseline", "r01-c01-s2", "r01-c02-s4")
+        )
+
+        # Full validation did use a child process for its live subject(s) --
+        # validation_workers=5 still governs that stage, unaffected by either
+        # new screening knob.
+        validation_round = validation_round_path(out, 1)
+        assert (validation_round / "baseline" / LOG_FILENAME).exists()
+
+    def test_screening_workers_alone_resolves_the_verifier_factory(self, tmp_path):
+        from shrlm.environments.graphwalks import GraphWalksVerifier
+        from shrlm.experiment.orchestrator import GRAPHWALKS_VERIFIER_FACTORY, _Experiment
+
+        experiment = _Experiment(
+            config=make_config(tmp_path, validation_workers=1, screening_workers=3),
+            out_dir=tmp_path / "exp",
+            verifier=GraphWalksVerifier(),
+            sub_verifier=None,
+            attributor_lm=None,
+            proposer_lm=None,
+            loaders=None,
+        )
+        assert experiment.verifier_factory == GRAPHWALKS_VERIFIER_FACTORY
+
+    def test_screening_workers_alone_refuses_an_injected_verifier_without_a_factory(
+        self, tmp_path, monkeypatch
+    ):
+        config = make_config(tmp_path, validation_workers=1, screening_workers=2)
+        out = tmp_path / "exp"
+        patch_runner(monkeypatch, MINING_FAIL)
+        with pytest.raises(ValueError, match="verifier_factory"):
+            run(config, out, MockLM(responses=[]), MockLM(responses=[]))
+        assert not out.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1449,7 +1772,6 @@ class TestParallelValidationStage:
             ).verifier_factory
             is None
         )
-
 
 # ---------------------------------------------------------------------------
 # Persisted state that contradicts itself: the resume guards (R7)
@@ -2755,8 +3077,8 @@ def test_blended_f1_objective_flows_through_mining_proposal_promotion_and_resume
     assert before == {p: p.read_bytes() for p in validation.rglob("*") if p.is_file()}
 
 
-def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch):
-    config = make_config(tmp_path, t=2)
+def test_oolong_diagnosis_tournament_ranks_and_screens_the_top_candidate(tmp_path, monkeypatch):
+    config = make_config(tmp_path, t=1)
     config = replace(
         config,
         loop=replace(config.loop, environment="oolong_pairs"),
@@ -2785,8 +3107,6 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
 
         def completion(self, prompt):
             self.prompts.append(prompt)
-            if len(self.prompts) == 3:
-                return EMPTY_BATCH
             if len(self.prompts) == 1:
                 from shrlm.optimization.proposal_evidence import EVIDENCE_HEADING
 
@@ -2834,9 +3154,7 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
     proposer = RepairProposer()
     factory = patch_runner(
         monkeypatch,
-        [final("[(11, 22)]")] * 12
-        + [final("[(11, 22), (11, 33), (22, 33)]")] * 6
-        + [final("[(11, 22)]")] * 6,
+        [final("[(11, 22)]")] * 12 + [final("[(11, 22), (11, 33), (22, 33)]")] * 6 + [final("[(11, 22)]")] * 9,
     )
     result = run_experiment(
         config,
@@ -2848,36 +3166,32 @@ def test_oolong_diagnosis_repair_batch_history_and_resume(tmp_path, monkeypatch)
         proposer_lm=proposer,
         loaders={**LOADERS, "oolong_pairs": pair_loader},
     )
-    assert len(result.rounds) == 2
-    assert (
-        factory.total_calls == 24
-    )  # (mining + baseline + one combined batch + next mining) x 3 lengths
+    # Both candidates (s2, s9) are screened and ranked in round 1; only s2
+    # (the better-ranked one) is fully validated there -- s9 is never
+    # validated at all now that the runner-up chain is gone (a later round
+    # would re-mine from scratch instead, see
+    # test_oolong_diagnosis_remines_after_the_top_ranked_candidate_is_rejected
+    # below). t=1 caps this experiment to that single round.
+    assert len(result.rounds) == 1
+    assert factory.total_calls == 24  # mining (3 lengths) + screening (3 subjects x 3 lengths)
+    # + round 1's fresh baseline (3 lengths, the screening baseline is excluded from reuse) --
+    # s2's own full-validation runs are seeded from its screening runs at 0 new calls.
     marker = json.loads((experiment_round_dir(out, 1) / PROPOSALS_MARKER_FILENAME).read_text())
     assert marker["preflight_profile"] == "oolong-pairs/v1"
     assert len(marker["candidate_ids"]) == 2
     assert len(marker["attempts"]) == 2
     assert "bracketed_pair" in marker["attempts"][0]["violation"]
-    validation = validation_round_path(out, 1)
-    assert not list(validation.glob("*/heldin"))
-    assert not (validation / "r01-c01-s2").exists()
-    history_prompt = proposer.prompts[2][0]["content"]
-    assert "the model answered without verifying" in history_prompt
-    assert "definition_ref" in history_prompt and "n_unknown" in history_prompt
-    assert "AnswerDecision.accept() missing" in history_prompt
-    assert "Preserve record identity and coverage" in history_prompt
-    assert "Preserve valid answers" in history_prompt
-    heldout_ids = {
-        str(instance["id"])
-        for instance in orchestrator_module._read_split(
-            out / SPLITS_DIR, "oolong_pairs", "short", "held_out"
-        )
-    }
-    assert all(
-        f"TASK_SENTINEL_{instance_id.rsplit('-', 1)[-1]}" not in history_prompt
-        for instance_id in heldout_ids
+    screening_decision = json.loads(
+        (experiment_round_dir(out, 1) / SCREENING_DIR / "round_01" / "screening_decision.json")
+        .read_text()
     )
+    assert screening_decision["ranked_candidate_ids"] == ["r01-c01-s2", "r01-c02-s9"]
+    validation_1 = validation_round_path(out, 1)
+    assert not list(validation_1.glob("*/heldin"))
+    assert (validation_1 / "r01-c01-s2").exists()
+    assert not (validation_1 / "r01-c02-s9").exists()
     snapshots_before = {
-        p: p.read_bytes() for p in validation.rglob("*.json") if p.name != "surfaces.py"
+        p: p.read_bytes() for p in validation_1.rglob("*.json") if p.name != "surfaces.py"
     }
     idle = patch_runner(monkeypatch, [])
     replay = run_experiment(

@@ -14,6 +14,7 @@ from shrlm.experiment.config import (
     CLIENT_ROLES,
     CONFIG_PATH,
     OperationalConfig,
+    ReattributionSettings,
     backend_kwargs_for,
     check_keys,
     evaluation_config_kwargs,
@@ -208,6 +209,29 @@ def test_real_check_cadence_must_be_a_non_negative_integer() -> None:
         dataclasses.replace(operational, real_check_every_n_rounds=cast(int, 1.5))
 
 
+def test_reattribution_defaults_to_disabled_and_is_identity_significant() -> None:
+    """Unlike worker-count knobs, ``reattribution.enabled`` changes what gets
+    promoted (a fresh candidate pool, not just wall clock/cost), so it must
+    affect ``identity_hash`` rather than be exempt."""
+    config = load_config()
+    assert config.reattribution == ReattributionSettings(enabled=False)
+    base = identity_hash(config)
+    toggled = dataclasses.replace(config, reattribution=ReattributionSettings(enabled=True))
+    assert identity_hash(toggled) != base
+
+
+def test_reattribution_enabled_must_be_a_boolean() -> None:
+    with pytest.raises(ValueError, match="reattribution.enabled"):
+        ReattributionSettings(enabled=cast(bool, "true"))
+
+
+def test_config_without_a_reattribution_table_still_loads(tmp_path: Path) -> None:
+    """The shipped default config has no ``[reattribution]`` table at all;
+    it must still load, falling back to the dataclass default."""
+    path = write_config(tmp_path, shipped_text())
+    assert load_config(path=path).reattribution == ReattributionSettings(enabled=False)
+
+
 def test_validation_run_workers_defaults_to_one_and_is_identity_exempt() -> None:
     """Run-level fan-out changes wall clock and request rate, never behavior.
 
@@ -232,6 +256,47 @@ def test_validation_run_workers_must_be_a_positive_integer(tmp_path: Path) -> No
     text = shipped_text().replace("validation_run_workers = 1", "validation_run_workers = 0")
     with pytest.raises(ValueError, match="validation_run_workers"):
         load_config(path=write_config(tmp_path, text))
+
+
+def test_screening_workers_default_matches_the_shipped_config_and_is_identity_exempt() -> None:
+    """Orchestrator._screen's own subject-level knob, independent of
+    validation_workers -- screening's subject count (baseline + up to k
+    candidates) is structurally larger than full validation's (at most 2),
+    so it doesn't inherit validation_workers. Changes wall clock and peak
+    request rate only, same identity exemption as the other worker counts."""
+    config = load_config()
+    assert config.operational.screening_workers == 1
+    assert load_config("smoke").operational.screening_workers == 1
+    base = identity_hash(config)
+    wider = dataclasses.replace(config.operational, screening_workers=4)
+    assert identity_hash(dataclasses.replace(config, operational=wider)) == base
+
+
+def test_screening_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
+    operational = load_config().operational
+    with pytest.raises(ValueError, match="screening_workers"):
+        dataclasses.replace(operational, screening_workers=0)
+    with pytest.raises(ValueError, match="screening_workers"):
+        dataclasses.replace(operational, screening_workers=cast(int, True))
+
+
+def test_screening_run_workers_default_matches_the_shipped_config_and_is_identity_exempt() -> None:
+    """The run-level half of the same pair: within-subject concurrency during
+    screening, independent of validation_run_workers/_warm."""
+    config = load_config()
+    assert config.operational.screening_run_workers == 3
+    assert load_config("smoke").operational.screening_run_workers == 3
+    base = identity_hash(config)
+    wider = dataclasses.replace(config.operational, screening_run_workers=5)
+    assert identity_hash(dataclasses.replace(config, operational=wider)) == base
+
+
+def test_screening_run_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
+    operational = load_config().operational
+    with pytest.raises(ValueError, match="screening_run_workers"):
+        dataclasses.replace(operational, screening_run_workers=0)
+    with pytest.raises(ValueError, match="screening_run_workers"):
+        dataclasses.replace(operational, screening_run_workers=cast(int, True))
 
 
 def test_mining_run_workers_defaults_to_one_and_is_identity_exempt(tmp_path: Path) -> None:
@@ -818,6 +883,13 @@ def test_proposer_config_factory() -> None:
     proposer = proposer_config(load_config())
     assert isinstance(proposer, ProposerConfig)
     assert proposer.k == 4
+    assert proposer.iterative_slot_filling is True
+
+
+def test_blended_oolong_uses_three_candidates_in_full_and_smoke() -> None:
+    path = Path("configs/experiment_oolong_pairs_blended_DeepSeekV4Flash.toml")
+    assert load_config("full", path=path).loop.k == 3
+    assert load_config("smoke", path=path).loop.k == 3
 
 
 def test_shipped_sampling_args_route_qwen_knobs_and_omit_provider() -> None:
@@ -950,6 +1022,66 @@ def _with_initial_harness(text: str, value: str) -> str:
 def test_initial_harness_defaults_to_h0() -> None:
     assert load_config().loop.initial_harness == "H0"
     assert load_config("smoke").loop.initial_harness == "H0"
+
+
+# ---------------------------------------------------------------------------
+# [loop] v_screen -- the screening-tournament's cheap attempt count (strictly
+# less than v)
+# ---------------------------------------------------------------------------
+
+
+def _with_loop_v_screen(text: str, value: int) -> str:
+    assert "[loop]\n" in text
+    return text.replace("[loop]\n", f"[loop]\nv_screen = {value}\n", 1)
+
+
+def test_v_screen_defaults_to_one_with_no_config_present() -> None:
+    assert load_config().loop.v_screen == 1
+    assert load_config("smoke").loop.v_screen == 1
+
+
+def test_v_screen_must_be_strictly_less_than_v(tmp_path: Path) -> None:
+    # The shipped config's v is 4 (section 3.2); v_screen == v is rejected.
+    path = write_config(tmp_path, _with_loop_v_screen(shipped_text(), 4))
+    with pytest.raises(ValueError, match=r"v_screen \(4\) must be < v \(4\)"):
+        load_config("full", path=path)
+
+
+def test_v_screen_above_v_is_rejected(tmp_path: Path) -> None:
+    path = write_config(tmp_path, _with_loop_v_screen(shipped_text(), 5))
+    with pytest.raises(ValueError, match=r"v_screen \(5\) must be < v \(4\)"):
+        load_config("full", path=path)
+
+
+def test_v_screen_below_one_is_rejected(tmp_path: Path) -> None:
+    path = write_config(tmp_path, _with_loop_v_screen(shipped_text(), 0))
+    with pytest.raises(ValueError, match=r"v_screen must be >= 1, got 0"):
+        load_config("full", path=path)
+
+
+def test_v_screen_has_no_floor_to_clear_when_v_is_one(tmp_path: Path) -> None:
+    # v<=1 leaves no room for a strictly cheaper probe; the validator treats
+    # this as "no cheap screen possible" instead of refusing the config.
+    base = shipped_text()
+    assert "v = 4 #" in base
+    text = _with_loop_v_screen(base.replace("v = 4 #", "v = 1 #", 1), 5)
+    path = write_config(tmp_path, text)
+    config = load_config("full", path=path)
+    assert config.loop.v == 1
+    assert config.loop.v_screen == 5
+
+
+def test_smoke_loop_may_override_v_screen(tmp_path: Path) -> None:
+    text = shipped_text().replace("[smoke.loop]\n", "[smoke.loop]\nv_screen = 1\n", 1)
+    assert "[smoke.loop]\nv_screen = 1\n" in text
+    path = write_config(tmp_path, text)
+    assert load_config("smoke", path=path).loop.v_screen == 1
+
+
+def test_v_screen_is_an_identity_key(tmp_path: Path) -> None:
+    base = identity_hash(load_config())
+    changed = write_config(tmp_path, _with_loop_v_screen(shipped_text(), 2))
+    assert identity_hash(load_config("full", path=changed)) != base
 
 
 class TestGptOssOolongConfig:

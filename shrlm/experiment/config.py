@@ -79,6 +79,7 @@ TOP_LEVEL_KEYS: tuple[str, ...] = (
     "loop",
     "promotion",
     "refinement",
+    "reattribution",
     "caps",
     "environments",
     "backends",
@@ -97,6 +98,7 @@ IDENTITY_SECTIONS: tuple[str, ...] = (
     "loop",
     "promotion",
     "refinement",
+    "reattribution",
     "caps",
     "environments",
     "backends",
@@ -120,6 +122,7 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
         "splits.test_long",
         "loop.m",
         "loop.v",
+        "loop.v_screen",
         "loop.k",
         "loop.t",
         "caps.attempts",
@@ -130,6 +133,8 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
         "operational.mining_run_workers",
         "operational.validation_workers",
         "operational.validation_run_workers",
+        "operational.screening_workers",
+        "operational.screening_run_workers",
         "operational.real_check_every_n_rounds",
         "environments.oolong_pairs.n_short",
         "environments.oolong_pairs.n_long",
@@ -203,6 +208,15 @@ class LoopConfig:
     # experiment identity and its own out-dir. ``load_config`` validates it
     # before any spend.
     environment: str = "graphwalks"
+    # Screening-tournament attempt count, strictly less than ``v``: when a
+    # round admits more than one candidate, every candidate is first screened
+    # independently at this (cheap) attempt count on a small instance subset
+    # and ranked, and only the top-ranked one is fully validated at ``v``
+    # attempts (reusing its screening runs). Defaults to 1, the cheapest
+    # meaningful screen, so existing configs need no change; a config that
+    # cares about this cost tradeoff sets it explicitly. Identity key like
+    # the other counts -- ``_validate_screening`` enforces ``1 <= v_screen < v``.
+    v_screen: int = 1
 
 
 @dataclass(frozen=True)
@@ -281,6 +295,30 @@ class RefinementSettings:
                 "refinement.max_generations must be exactly 1; recursive repair is bounded "
                 "to one generation so validation cannot become an adaptive search loop"
             )
+
+
+@dataclass(frozen=True)
+class ReattributionSettings:
+    """One bounded re-attribution retry when every one of a round's screened
+    candidates is screening-rejected (shrlm.experiment.orchestrator's
+    ``Orchestrator._reattribute_and_rescreen``).
+
+    Re-attributes the round's already-executed mining runs fresh -- no new
+    agent rollouts, since mining itself is disk-driven and purely re-reads
+    persisted runs -- before falling through to full-validating a candidate
+    screening has already rejected. Attribution was shown non-reproducible on
+    frozen evidence (independent re-queries of the same digest produced
+    different ``agent_mechanism`` labels), so a single screening pool's
+    all-rejected outcome may reflect attribution noise rather than a genuine
+    absence of a workable fix. Bounded to exactly one retry, the same
+    discipline as ``RefinementSettings.max_generations``.
+    """
+
+    enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError(f"reattribution.enabled must be a boolean, got {self.enabled!r}")
 
 
 @dataclass(frozen=True)
@@ -534,6 +572,35 @@ class OperationalConfig:
     run-level fan-out: it yields a two-level process tree and keeps each
     subject's breaker charging in a strict order.
 
+    In practice ``validation_run_workers`` only ever governs the baseline's
+    own concurrency: under primary-quality tau early stopping (this project's
+    only validation metric with ``tau_regression`` configured),
+    ``evaluate_validation_round`` builds the candidate's ``EvaluationConfig``
+    with ``tau_early_stopping`` set, which forces the candidate's own
+    ``run_workers`` to ``1`` unconditionally (``evaluate_subject``'s
+    ``stop_predicate`` branch) so a later context length's runs can never
+    launch before an earlier length's regression veto is known. A second
+    "warm" knob for the reused-baseline case existed here until 2026-11-02;
+    it was deleted once direct tracing showed it had no observable effect --
+    a warm round's baseline is never evaluated live at all (reused), and the
+    candidate it would otherwise apply to is already forced to 1 regardless.
+
+    ``screening_workers`` and ``screening_run_workers`` are the screening
+    tournament's own pair of the same two knobs, independent of
+    ``validation_workers``/``validation_run_workers``. ``Orchestrator._screen``
+    evaluates the baseline plus up to ``k`` candidates against a small
+    screening subset -- a structurally larger subject count (``k + 1``) than
+    full validation ever has (at most 2: baseline + winner). The default
+    ``screening_workers = 1`` runs subjects strictly in sequence -- baseline,
+    then each candidate in turn, never more than one subject's worth of
+    traffic in flight -- while ``screening_run_workers = 3`` keeps real
+    concurrency within each subject's own small instance set so a subject
+    isn't serialized down to one run at a time. This split exists because a
+    screening round's higher subject count was the actual driver of a real
+    rate-limit storm observed with both peaks sharing one knob; decoupling
+    them lets screening's run-level concurrency stay productive without also
+    raising its subject-level peak.
+
     ``mining_run_workers`` independently controls run-level fan-out during
     mining. Like the validation worker counts, it changes wall clock and peak
     request rate without changing experiment identity.
@@ -546,6 +613,8 @@ class OperationalConfig:
     mining_run_workers: int = 1
     validation_workers: int = 1
     validation_run_workers: int = 1
+    screening_workers: int = 1
+    screening_run_workers: int = 3
     # How often (in executed rounds) the OOLONG-real generalization check runs
     # when ``loop.environment == "oolong_synth"``: 0 disables it, N > 0 runs it
     # after every Nth executed round plus once for the final incumbent. It never
@@ -559,6 +628,8 @@ class OperationalConfig:
         _require_positive_int("operational.mining_run_workers", self.mining_run_workers)
         _require_positive_int("operational.validation_workers", self.validation_workers)
         _require_positive_int("operational.validation_run_workers", self.validation_run_workers)
+        _require_positive_int("operational.screening_workers", self.screening_workers)
+        _require_positive_int("operational.screening_run_workers", self.screening_run_workers)
         if isinstance(self.real_check_every_n_rounds, bool) or not isinstance(
             self.real_check_every_n_rounds, int
         ):
@@ -590,6 +661,7 @@ class ExperimentConfig:
     loop: LoopConfig
     promotion: PromotionSettings
     refinement: RefinementSettings
+    reattribution: ReattributionSettings
     caps: CapsConfig
     environments: EnvironmentsConfig
     backends: BackendsConfig
@@ -670,6 +742,27 @@ def _validate_environment(loop: LoopConfig) -> LoopConfig:
     return loop
 
 
+def _validate_screening(loop: LoopConfig) -> LoopConfig:
+    """Reject a ``[loop] v_screen`` that cannot be a cheaper probe than ``v``.
+
+    ``v <= 1`` (common under the smoke profile) leaves no room for a strictly
+    cheaper attempt count -- 1 is already the floor -- so the orchestrator
+    treats that case as "no cheap screen possible" and evaluates every
+    candidate at full ``v`` instead, rather than this validator refusing the
+    config outright.
+    """
+    if loop.v_screen < 1:
+        raise ValueError(f"[loop] v_screen must be >= 1, got {loop.v_screen}")
+    if loop.v <= 1:
+        return loop
+    if loop.v_screen >= loop.v:
+        raise ValueError(
+            f"[loop] v_screen ({loop.v_screen}) must be < v ({loop.v}); screening must use "
+            "strictly fewer attempts than full validation"
+        )
+    return loop
+
+
 def check_keys(
     table: dict[str, Any],
     expected: tuple[str, ...],
@@ -734,7 +827,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     unknown = sorted(set(raw) - set(TOP_LEVEL_KEYS))
     if unknown:
         raise ValueError(f"unknown top-level key(s) in {path}: {unknown}")
-    missing_tables = sorted((set(TOP_LEVEL_KEYS) - {"refinement"}) - set(raw))
+    missing_tables = sorted((set(TOP_LEVEL_KEYS) - {"refinement", "reattribution"}) - set(raw))
     if missing_tables:
         raise ValueError(f"missing table(s) in {path}: {missing_tables}")
 
@@ -753,6 +846,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     tuplify(promotion_table, "cost_band")
     tuplify(promotion_table, "sub_call_band")
     refinement_table = dict(raw.get("refinement", {}))
+    reattribution_table = dict(raw.get("reattribution", {}))
     tuplify(refinement_table, "failure_causes")
 
     env_table = raw["environments"]
@@ -831,8 +925,10 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         tuplify(scenario, "sensitivity_range")
         scenarios.append(build_section(GpuScenario, scenario, f"gpu_scenarios[{index}]"))
 
-    loop = _validate_environment(
-        _validate_initial_harness(build_section(LoopConfig, raw["loop"], "loop"))
+    loop = _validate_screening(
+        _validate_environment(
+            _validate_initial_harness(build_section(LoopConfig, raw["loop"], "loop"))
+        )
     )
     if loop.environment == "obliq_bench_math" and obliq_bench_math_table is None:
         raise ValueError(
@@ -848,6 +944,9 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         loop=loop,
         promotion=build_section(PromotionSettings, promotion_table, "promotion"),
         refinement=build_section(RefinementSettings, refinement_table, "refinement"),
+        reattribution=build_section(
+            ReattributionSettings, reattribution_table, "reattribution"
+        ),
         caps=build_section(CapsConfig, raw["caps"], "caps"),
         environments=EnvironmentsConfig(
             graphwalks=build_section(GraphWalksConfig, graphwalks_table, "environments.graphwalks"),
@@ -1072,4 +1171,4 @@ def proposer_config(config: ExperimentConfig) -> ProposerConfig:
     """The ``ProposerConfig`` with the experiment's candidate width. Prompt and
     validator versions stay module-owned; transport knobs keep their defaults
     (they change when a response is obtained, never what is produced)."""
-    return ProposerConfig(k=config.loop.k)
+    return ProposerConfig(k=config.loop.k, iterative_slot_filling=True)
