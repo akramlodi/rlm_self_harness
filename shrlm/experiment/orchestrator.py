@@ -136,7 +136,9 @@ from shrlm.experiment.errors import ExperimentError
 from shrlm.experiment.splits import (
     OOLONG_PAIRS_OPTIMIZATION_LENGTHS,
     LoaderFn,
+    default_screening_subset,
     materialize_splits,
+    oolong_pairs_screening_subset,
     split_file_name,
 )
 from shrlm.experiment.usage import (
@@ -151,6 +153,7 @@ from shrlm.optimization.attribution import AttributionCache, LLMAttributor
 from shrlm.optimization.bundle import (
     ATTRIBUTIONS_FILENAME,
     BUNDLE_FILENAME,
+    BUNDLES_DIR,
     RECORDS_FILENAME,
     round_dir,
     write_bundle,
@@ -158,6 +161,8 @@ from shrlm.optimization.bundle import (
 from shrlm.optimization.candidates import (
     SUPPORTED_PROPOSAL_FORMATS,
     CandidateRejection,
+    LoadedCandidate,
+    load_candidates,
     materialize_harness,
 )
 from shrlm.optimization.costs import (
@@ -178,25 +183,38 @@ from shrlm.optimization.driver import (
 from shrlm.optimization.history import prior_evaluations
 from shrlm.optimization.llm_observation_store import rebase_observations, verify_observations
 from shrlm.optimization.mining import WeaknessMiner
-from shrlm.optimization.promotion import DECISION_PROMOTED, PromotionConfig
+from shrlm.optimization.promotion import (
+    DECISION_PROMOTED,
+    CandidateDecision,
+    PromotionConfig,
+    rank_screened_candidates,
+)
 from shrlm.optimization.proposal import (
     HISTORY_NOT_MATERIALIZED,
     PROPOSAL_FILENAME,
     ProposalBudgetExhausted,
     ProposalCache,
     ProposalRejection,
+    ProposerConfig,
     load_passing_behaviors,
     propose_round,
 )
+from shrlm.optimization.refinement import assess_refinement
 from shrlm.optimization.types import SubVerifier, Verifier
 from shrlm.optimization.validation import (
     EVAL_ROUND_INDEX,
     SPLIT_HELDOUT,
     EvaluationConfig,
+    ScreeningSeed,
     ValidationRound,
     ValidationSplits,
+    ValidationSubject,
+    evaluate_validation_round,
     load_promotion_ledger,
+    split_dir,
+    validate_ranked_candidate,
     validate_round,
+    write_screening_ledger,
 )
 from shrlm.rlm_harness import HARNESSES, Harness
 
@@ -226,6 +244,11 @@ STAGE_MINING = "mining"
 STAGE_ATTRIBUTION = "attribution"
 STAGE_PROPOSAL = "proposal"
 STAGE_VALIDATION = "validation"
+# The screening tournament's own directory/stage: more than one admitted
+# candidate is screened independently here before full validation commits
+# spend to only the best-ranked one. See _Experiment._screen_and_validate.
+SCREENING_DIR = "screening"
+STAGE_SCREENING = "screening"
 
 STOP_MAX_ROUNDS = "max_rounds"
 STOP_PATIENCE = "patience"
@@ -244,6 +267,24 @@ INITIAL_INCUMBENT = "H0"
 SPLIT_LENGTH = "short"
 ROLE_HELD_IN = "held_in"
 ROLE_HELD_OUT = "held_out"
+ROLE_PROMOTION = "promotion"
+
+REFINEMENT_DIR = "refinement"
+REFINEMENT_MARKER_FILENAME = "refinement.json"
+REFINEMENT_MARKER_FORMAT = "shrlm-refinement/v1"
+STAGE_REFINEMENT_MINING = "refinement_mining"
+STAGE_REFINEMENT_ATTRIBUTION = "refinement_attribution"
+STAGE_REFINEMENT_PROPOSAL = "refinement_proposal"
+STAGE_REFINEMENT_PROMOTION = "refinement_promotion"
+
+# One bounded retry when every one of a round's screened candidates is
+# screening-rejected: re-attribute the same already-executed mining runs (no
+# new rollouts) into a second bundle, propose and re-screen a fresh pool from
+# it. See _Experiment._reattribute_and_rescreen.
+REATTRIBUTION_DIR = "reattribution"
+STAGE_REATTRIBUTION_ATTRIBUTION = "reattribution_attribution"
+STAGE_REATTRIBUTION_PROPOSAL = "reattribution_proposal"
+STAGE_REATTRIBUTION_SCREENING = "reattribution_screening"
 
 # OOLONG-real generalization check (non-gated): its split role and metering
 # stage. Written under ``opt/round_NN/real_check/`` and, for the final
@@ -476,6 +517,32 @@ def load_round_history(
                     validation_path, record, ledger_decision.get("baseline")
                 )
             records.append(enriched)
+        refinement_root = round_path / REFINEMENT_DIR
+        refinement_validation = round_dir(refinement_root / VALIDATION_DIR, round_index)
+        refinement_decision_path = refinement_validation / "decision.json"
+        if refinement_decision_path.exists():
+            repair_records, repair_decision = load_promotion_ledger(refinement_validation)
+            repair_proposals = refinement_root / PROPOSALS_DIR
+            for record in repair_records:
+                enriched = {
+                    **record,
+                    **proposal_behavior(repair_proposals, record.get("subject_id")),
+                    "refinement_phase": "repair_promotion",
+                }
+                if record.get("links"):
+                    enriched["diagnostics"] = validation_history_diagnostics(
+                        refinement_validation, record
+                    )
+                    enriched["diagnostic_progress"] = validation_history_progress(
+                        refinement_validation, record, repair_decision.get("baseline")
+                    )
+                records.append(enriched)
+            decision["refinement_promotion"] = repair_decision
+        refinement_marker = refinement_root / REFINEMENT_MARKER_FILENAME
+        if refinement_marker.exists():
+            decision["refinement"] = _load_marker(
+                refinement_marker, REFINEMENT_MARKER_FORMAT
+            )
     marker = _load_marker(round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT)
     for failure in marker.get("materialization_failures", []):
         records.append(
@@ -797,6 +864,18 @@ class _Experiment:
     pconfig: PromotionConfig = field(init=False)
     binding: EnvBinding = field(init=False)
     splits: ValidationSplits = field(init=False)
+    # Materialized whenever ``config.refinement.enabled`` (see ``run()``), but no
+    # longer read by ``_validate_refinement``: refinement now validates against
+    # ``self.splits.heldout`` -- the same split the parent round itself used --
+    # so a repaired candidate is judged on literally the same evidence as the
+    # incumbent it is trying to beat, and so that evidence's baseline can be
+    # reused via ``_find_reusable_heldout`` instead of re-run. Kept
+    # (rather than deleted) along with the ``promotion`` split/role machinery
+    # it depends on (``ROLE_PROMOTION`` here; ``config.refinement.promotion_size``
+    # and ``_draw_oolong_pairs_with_promotion`` in ``splits.py``) as a deliberate
+    # paper trail for the design this replaced, in case a future refinement
+    # variant wants a disjoint split again.
+    promotion_instances: list[dict[str, Any]] = field(init=False, default_factory=list)
     splits_dir: Path = field(init=False)
     usage_path: Path = field(init=False)
     prior_history: list[tuple[list[dict[str, Any]], dict[str, Any]]] = field(init=False)
@@ -812,8 +891,14 @@ class _Experiment:
     def _resolve_verifier_factory(self) -> str | None:
         """The dotted path validation children rebuild the verifier from (KTD6).
 
-        Only a parallel validation stage (``operational.validation_workers > 1``)
-        needs one. A verifier that is the selected environment's default type
+        Only a subject-level parallel stage (``operational.validation_workers``
+        or ``operational.screening_workers`` ``> 1``) needs one -- these are the
+        two knobs that map to ``EvaluationConfig.workers``, which spawns one
+        child process per subject via a dotted-path factory. Run-level
+        concurrency (``validation_run_workers``/``screening_run_workers``,
+        mapping to ``run_workers``) does not: those children receive the live
+        ``Verifier`` object directly through ``RoundConfig``, not a factory
+        string. A verifier that is the selected environment's default type
         maps to that environment's factory path; an injected verifier must come
         with an explicit ``verifier_factory``, and the mismatch is a
         configuration error raised here -- before any directory is created or any
@@ -821,7 +906,8 @@ class _Experiment:
         """
         if self.verifier_factory is not None:
             return self.verifier_factory
-        if self.config.operational.validation_workers <= 1:
+        operational = self.config.operational
+        if operational.validation_workers <= 1 and operational.screening_workers <= 1:
             return None
         if type(self.verifier) is GraphWalksVerifier:
             return GRAPHWALKS_VERIFIER_FACTORY
@@ -832,10 +918,11 @@ class _Experiment:
         if type(self.verifier) is ObliqBenchMathVerifier:
             return OBLIQ_BENCH_MATH_VERIFIER_FACTORY
         raise ValueError(
-            f"operational.validation_workers={self.config.operational.validation_workers} "
-            "evaluates validation subjects in child processes, which rebuild the verifier "
-            f"from a dotted path; the injected verifier {type(self.verifier).__name__} has "
-            "none. Pass run_experiment(verifier_factory=...) or set validation_workers = 1."
+            f"operational.validation_workers={operational.validation_workers} and/or "
+            f"operational.screening_workers={operational.screening_workers} evaluate "
+            "validation subjects in child processes, which rebuild the verifier from a "
+            f"dotted path; the injected verifier {type(self.verifier).__name__} has none. "
+            "Pass run_experiment(verifier_factory=...) or set both to 1."
         )
 
     # -- lazily built caller-held clients (only when their stage must run) --
@@ -874,6 +961,20 @@ class _Experiment:
                 for instance in _read_split(splits_dir, self.binding.name, length, ROLE_HELD_OUT)
             ],
         )
+        # Still materialized for every refinement-enabled experiment (dormant;
+        # see the field docstring on ``promotion_instances`` -- refinement
+        # validates against ``self.splits.heldout`` now, not this split).
+        self.promotion_instances = (
+            [
+                instance
+                for length in self.binding.lengths
+                for instance in _read_split(
+                    splits_dir, self.binding.name, length, ROLE_PROMOTION
+                )
+            ]
+            if self.config.refinement.enabled
+            else []
+        )
 
         incumbent: Harness = HARNESSES[self.config.loop.initial_harness]
         rounds: list[RoundOutcome] = []
@@ -892,7 +993,7 @@ class _Experiment:
             if replayed:
                 outcome = self._replay_round(round_path, round_index)
             else:
-                outcome = self._execute_round(round_path, round_index, incumbent)
+                outcome = self._execute_screening_round(round_path, round_index, incumbent)
             rounds.append(outcome)
             if replayed:
                 replay_unanalyzed = True
@@ -959,13 +1060,25 @@ class _Experiment:
         """The promoted incumbent, rebuilt from the persisted validation round."""
         assert outcome.promoted_harness_hash is not None  # promoted implies a hash
         validation_round_path = round_dir(round_path / VALIDATION_DIR, round_index)
+        refinement_round_path = round_dir(
+            round_path / REFINEMENT_DIR / VALIDATION_DIR, round_index
+        )
+        source = (
+            refinement_round_path
+            if (refinement_round_path / "decision.json").exists()
+            and json.loads((refinement_round_path / "decision.json").read_text()).get(
+                "promoted_harness_hash"
+            )
+            == outcome.promoted_harness_hash
+            else validation_round_path
+        )
         return _rematerialize_promoted(
-            validation_round_path, outcome.promoted_harness_hash, round_path / WORK_DIR
+            source, outcome.promoted_harness_hash, round_path / WORK_DIR
         )
 
     # -- one round, stage by stage --
 
-    def _execute_round(
+    def _execute_screening_round(
         self, round_path: Path, round_index: int, incumbent: Harness
     ) -> RoundOutcome:
         mining_parent = round_path / MINING_DIR
@@ -976,7 +1089,30 @@ class _Experiment:
         proposals_dir = self._proposals(
             round_path, mining_round_path, round_index, incumbent, bundle
         )
-        validation = self._validate(round_path, round_index, incumbent, proposals_dir)
+        validation = self._screen_and_validate(round_path, round_index, incumbent, proposals_dir)
+        return self._finalize_round(round_path, round_index, incumbent, validation)
+
+    def _finalize_round(
+        self,
+        round_path: Path,
+        round_index: int,
+        incumbent: Harness,
+        validation: ValidationRound,
+    ) -> RoundOutcome:
+        """Shared tail for every round shape: apply refinement when
+        applicable, persist the round marker, return the outcome."""
+        refinement = self._refinement_candidate(validation)
+        if refinement is not None:
+            branch_base, diagnostic = refinement
+            self._persist_refinement_diagnostic(
+                round_path, round_index, branch_base, diagnostic.to_dict()
+            )
+            if diagnostic.admitted:
+                repaired_validation = self._refine(
+                    round_path, round_index, incumbent, branch_base
+                )
+                if repaired_validation.ledger is not None:
+                    validation = repaired_validation
 
         outcome = RoundOutcome(
             round_index=round_index,
@@ -992,7 +1128,102 @@ class _Experiment:
         )
         return outcome
 
-    def _mine_runs(self, mining_parent: Path, round_index: int, incumbent: Harness) -> None:
+    def _refinement_candidate(
+        self, validation: ValidationRound
+    ) -> tuple[Harness, Any] | None:
+        """Return the rejected measured batch and its preregistered diagnostic."""
+        if not self.config.refinement.enabled or validation.promoted:
+            return None
+        if validation.evaluation is None or validation.plan.harness is None:
+            return None
+        measured = validation.evaluation.candidates
+        if len(measured) != 1 or isinstance(measured[0], CandidateRejection):
+            return None
+        diagnostic = assess_refinement(
+            validation.evaluation.baseline.summary,
+            measured[0].summary,
+            self.config.refinement,
+        )
+        return validation.plan.harness, diagnostic
+
+    def _persist_refinement_diagnostic(
+        self,
+        round_path: Path,
+        round_index: int,
+        branch_base: Harness,
+        diagnostic: dict[str, Any],
+    ) -> None:
+        path = round_path / REFINEMENT_DIR / REFINEMENT_MARKER_FILENAME
+        _persist_once(
+            path,
+            {
+                "format": REFINEMENT_MARKER_FORMAT,
+                "round": round_index,
+                "branch_base_hash": harness_hash(branch_base),
+                "max_generations": self.config.refinement.max_generations,
+                "diagnostic": diagnostic,
+            },
+            f"{path} already records a diverging refinement diagnostic for round "
+            f"{round_index}; refusing to adapt the repair branch to changed evidence.",
+        )
+
+    def _refine(
+        self,
+        round_path: Path,
+        round_index: int,
+        incumbent: Harness,
+        branch_base: Harness,
+    ) -> ValidationRound:
+        """Run one repair generation and test its descendant on fresh instances."""
+        refinement_path = round_path / REFINEMENT_DIR
+        mining_parent = refinement_path / MINING_DIR
+        mining_round_path = round_dir(mining_parent, round_index)
+        self._mine_runs(
+            mining_parent,
+            round_index,
+            branch_base,
+            stage=STAGE_REFINEMENT_MINING,
+            stage_work_id=f"round_{round_index:02d}/{REFINEMENT_DIR}/{STAGE_MINING}",
+        )
+        bundle = self._evidence_bundle(
+            mining_parent,
+            mining_round_path,
+            round_index,
+            stage=STAGE_REFINEMENT_ATTRIBUTION,
+            stage_work_id=f"round_{round_index:02d}/{REFINEMENT_DIR}/{STAGE_ATTRIBUTION}",
+        )
+        refinement_causes = set(self.config.refinement.failure_causes)
+        proposals_dir = self._proposals(
+            refinement_path,
+            mining_round_path,
+            round_index,
+            branch_base,
+            bundle,
+            stage=STAGE_REFINEMENT_PROPOSAL,
+            stage_work_id=f"round_{round_index:02d}/{REFINEMENT_DIR}/{STAGE_PROPOSAL}",
+            pattern_filter=lambda pattern: (
+                (pattern.get("signature") or {}).get("verifier_cause") in refinement_causes
+            ),
+            # One bounded repair (RefinementSettings.max_generations=1), not
+            # an adaptive search: reusing the main loop's k here would let a
+            # k=4 tournament config silently propose up to 4 repair
+            # candidates, contradicting pattern_filter's narrow-targeting
+            # purpose.
+            proposer_config_override=ProposerConfig(k=1),
+        )
+        return self._validate_refinement(
+            refinement_path, round_index, incumbent, branch_base, proposals_dir
+        )
+
+    def _mine_runs(
+        self,
+        mining_parent: Path,
+        round_index: int,
+        incumbent: Harness,
+        *,
+        stage: str = STAGE_MINING,
+        stage_work_id: str | None = None,
+    ) -> None:
         """Stage 1: the held-in mining runs, governed by the spend breaker (R12)."""
         limits = governed_limits("incumbent", incumbent.runtime_policy, self.caps)
         if isinstance(limits, CandidateRejection):
@@ -1023,8 +1254,8 @@ class _Experiment:
             **limits,
         )
         with StageMeter(
-            stage=STAGE_MINING,
-            stage_work_id=f"round_{round_index:02d}/{STAGE_MINING}",
+            stage=stage,
+            stage_work_id=stage_work_id or f"round_{round_index:02d}/{STAGE_MINING}",
             round_index=round_index,
             out_path=self.usage_path,
         ) as meter:
@@ -1070,7 +1301,14 @@ class _Experiment:
                 )
 
     def _evidence_bundle(
-        self, mining_parent: Path, mining_round_path: Path, round_index: int
+        self,
+        mining_parent: Path,
+        mining_round_path: Path,
+        round_index: int,
+        *,
+        stage: str = STAGE_ATTRIBUTION,
+        stage_work_id: str | None = None,
+        bundle_dir: Path | None = None,
     ) -> dict[str, Any]:
         """Stage 2: mine the persisted round into the evidence triplet.
 
@@ -1080,20 +1318,43 @@ class _Experiment:
         for nothing (see the module docstring's resume contract). An unmarked
         bundle is re-mined with its persisted ``created_at`` so the rewrite
         reproduces it byte for byte.
+
+        ``bundle_dir``, when given, is where the bundle/attributions/marker
+        triplet (and this call's own attribution cache) land instead of
+        ``mining_round_path`` -- the same mechanism ``write_bundle``'s own
+        ``bundle_dir`` parameter documents for letting two bundles coexist
+        under one round (``shrlm.optimization.bundle``'s "sub-verification
+        ablation" precedent). ``mine_round`` itself still reads runs from
+        ``mining_parent``/``mining_round_path`` unchanged -- only where the
+        *output* lands differs. The attribution cache is also scoped to
+        ``bundle_dir`` rather than the shared experiment-wide cache path:
+        ``LLMAttributor.cache_key`` is a pure function of the prompt, the
+        digest's own bytes, and the attributor's config, with no
+        round/attempt component, so re-attributing byte-identical digests
+        against the *same* cache file would just replay the first pass's
+        cached responses instead of making fresh calls.
         """
-        bundle_path = mining_round_path / BUNDLE_FILENAME
-        marker_path = mining_round_path / EVIDENCE_MARKER_FILENAME
+        destination = bundle_dir if bundle_dir is not None else mining_round_path
+        bundle_path = destination / BUNDLE_FILENAME
+        marker_path = destination / EVIDENCE_MARKER_FILENAME
         if marker_path.exists():
             _load_marker(marker_path, EVIDENCE_MARKER_FORMAT)
-            verify_observations(
-                read_jsonl(mining_round_path / ATTRIBUTIONS_FILENAME), mining_round_path
-            )
+            # Observation refs inside attributions.jsonl are relative to
+            # mining_round_path (mine_round's own observation_recorder is
+            # always anchored there, regardless of bundle_dir) -- never to
+            # destination, which only holds the relocated bundle/records/
+            # attributions triplet itself.
+            verify_observations(read_jsonl(destination / ATTRIBUTIONS_FILENAME), mining_round_path)
             return json.loads(bundle_path.read_text())
-        cache_path = _operational_path(self.out_dir, self.config.operational.attribution_cache_path)
+        cache_path = (
+            bundle_dir / "attribution_cache.jsonl"
+            if bundle_dir is not None
+            else _operational_path(self.out_dir, self.config.operational.attribution_cache_path)
+        )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with StageMeter(
-            stage=STAGE_ATTRIBUTION,
-            stage_work_id=f"round_{round_index:02d}/{STAGE_ATTRIBUTION}",
+            stage=stage,
+            stage_work_id=stage_work_id or f"round_{round_index:02d}/{STAGE_ATTRIBUTION}",
             round_index=round_index,
             out_path=self.usage_path,
         ) as meter:
@@ -1132,11 +1393,12 @@ class _Experiment:
                 result.records,
                 out_dir=str(mining_parent),
                 raw_attributions=result.raw_attributions,
+                **({"bundle_dir": str(bundle_dir)} if bundle_dir is not None else {}),
             )
         _persist_once(
             marker_path,
             _evidence_marker_payload(
-                mining_round_path,
+                destination,
                 round_index,
                 n_records=len(result.records),
                 n_attributions=len(result.raw_attributions),
@@ -1154,8 +1416,21 @@ class _Experiment:
         round_index: int,
         incumbent: Harness,
         bundle: dict[str, Any],
+        *,
+        stage: str = STAGE_PROPOSAL,
+        stage_work_id: str | None = None,
+        pattern_filter: Callable[[dict[str, Any]], bool] | None = None,
+        proposer_config_override: ProposerConfig | None = None,
+        bundle_path: Path | None = None,
     ) -> Path:
-        """Stage 3: propose candidates, sealed by ``proposals_complete.json``."""
+        """Stage 3: propose candidates, sealed by ``proposals_complete.json``.
+
+        ``bundle_path``, when given, is where ``bundle`` actually lives (a
+        reattribution retry's ``bundle_dir``, not ``mining_round_path`` --
+        see ``_evidence_bundle``'s own ``bundle_dir`` parameter) so
+        ``load_proposal_evidence`` checks ``bundle`` against the right
+        persisted file instead of the original bundle at ``mining_round_path``.
+        """
         from shrlm.optimization.candidates import select_preflight_profile
         from shrlm.optimization.proposal_evidence import load_proposal_evidence
 
@@ -1169,11 +1444,11 @@ class _Experiment:
             raise ExperimentPersistenceError(
                 "validation is frozen without a proposal marker; refusing paid proposal work"
             )
-        evidence = load_proposal_evidence(mining_round_path, bundle)
+        evidence = load_proposal_evidence(mining_round_path, bundle, bundle_path=bundle_path)
         cache_path = _operational_path(self.out_dir, self.config.operational.proposal_cache_path)
         with StageMeter(
-            stage=STAGE_PROPOSAL,
-            stage_work_id=f"round_{round_index:02d}/{STAGE_PROPOSAL}",
+            stage=stage,
+            stage_work_id=stage_work_id or f"round_{round_index:02d}/{STAGE_PROPOSAL}",
             round_index=round_index,
             out_path=self.usage_path,
         ) as meter:
@@ -1192,10 +1467,13 @@ class _Experiment:
                     evidence=evidence,
                     passing_behaviors=load_passing_behaviors(mining_round_path),
                     prior_history=self.prior_history,
-                    config=proposer_config(self.config),
+                    config=proposer_config_override
+                    if proposer_config_override is not None
+                    else proposer_config(self.config),
                     promotion=self.pconfig,
                     cache=ProposalCache(path=str(cache_path)),
                     workdir=round_path / WORK_DIR,
+                    pattern_filter=pattern_filter,
                 )
             except (ProposalBudgetExhausted, ProposalRejection) as exc:
                 # Two deterministic stage failures close the round with zero
@@ -1269,14 +1547,19 @@ class _Experiment:
 
         Promotion thresholds, the verifier, repetitions, and ``self.splits.heldout``
         are fixed for the whole experiment, so whenever the incumbent carries
-        forward unchanged -- a rejected round keeps the same incumbent into the
-        next one -- some already-persisted subject (the baseline, or an earlier
-        accepted/rejected candidate) has already run this exact harness against
-        this exact held-out split. This scans every subject's ``summary.json``
-        under the experiment's rounds so far rather than keeping an in-memory
-        cache, so a resumed or replayed run finds the same reuse opportunity a
-        fresh one would, with no separate bookkeeping to keep in sync with
-        replay.
+        forward unchanged -- a rejected round, or a refinement branch validating
+        against the very round it is repairing -- some already-persisted subject
+        (the baseline, or an earlier accepted/rejected candidate; main validation
+        or refinement) has already run this exact harness against this exact
+        held-out split. This scans every subject's ``summary.json`` under the
+        experiment's rounds so far rather than keeping an in-memory cache, so a
+        resumed or replayed run finds the same reuse opportunity a fresh one
+        would, with no separate bookkeeping to keep in sync with replay.
+
+        Screening summaries (``SCREENING_DIR``) are excluded: they evaluate
+        only the small screening instance subset, never the full
+        ``self.splits.heldout`` population full validation needs -- seeding
+        from one would copy the wrong (and incomplete) instance set.
         """
         best: Path | None = None
         for candidate_round in range(1, round_index + 1):
@@ -1284,6 +1567,8 @@ class _Experiment:
             if not candidate_round_path.exists():
                 continue
             for summary_path in sorted(candidate_round_path.glob("**/summary.json")):
+                if SCREENING_DIR in summary_path.relative_to(candidate_round_path).parts:
+                    continue
                 summary = json.loads(summary_path.read_text())
                 if summary.get("harness_hash") != incumbent_hash:
                     continue
@@ -1308,6 +1593,7 @@ class _Experiment:
         """
         validation_parent = round_path / VALIDATION_DIR
         validation_round_path = round_dir(validation_parent, round_index)
+        baseline_seed = self._find_reusable_heldout(harness_hash(incumbent), round_index)
         eval_config = EvaluationConfig(
             splits=self.splits,
             verifier=self.verifier,
@@ -1315,7 +1601,10 @@ class _Experiment:
             round_index=round_index,
             verifier_factory=self.verifier_factory,
             client_factory=self.client_factory,
-            **evaluation_config_kwargs(self.config),
+            **{
+                **evaluation_config_kwargs(self.config),
+                "run_workers": self.config.operational.validation_run_workers,
+            },
         )
         with StageMeter(
             stage=STAGE_VALIDATION,
@@ -1335,13 +1624,365 @@ class _Experiment:
                     preflight_profile=_load_marker(
                         round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT
                     ).get("preflight_profile", "generic/v1"),
-                    baseline_seed=self._find_reusable_heldout(
-                        harness_hash(incumbent), round_index
-                    ),
+                    baseline_seed=baseline_seed,
                 )
             finally:
                 # A crashed validation stage still persisted (and paid for)
                 # every run its manifests hold; charge the delta either way.
+                meter.add(_validation_usage(validation_round_path) - before)
+        return validation
+
+    def _screen_and_validate(
+        self, round_path: Path, round_index: int, incumbent: Harness, proposals_dir: Path
+    ) -> ValidationRound:
+        """Stage 4, tournament-aware: more than one admitted candidate is
+        screened independently on a small instance subset before only the
+        best-ranked one is fully validated; zero or one candidate takes
+        today's single-subject path (``_validate``) unchanged -- the
+        tournament machinery is then a no-op, naturally subsuming it.
+        """
+        validation_parent = round_path / VALIDATION_DIR
+        eval_config = EvaluationConfig(
+            splits=self.splits,
+            verifier=self.verifier,
+            out_dir=validation_parent,
+            round_index=round_index,
+            verifier_factory=self.verifier_factory,
+            client_factory=self.client_factory,
+            **evaluation_config_kwargs(self.config),
+        )
+        preflight_profile = _load_marker(
+            round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT
+        ).get("preflight_profile", "generic/v1")
+        loaded, _rejections = load_candidates(
+            proposals_dir,
+            incumbent,
+            caps=eval_config.caps.s6_caps(),
+            timeout_seconds=self.config.operational.loader_timeout_seconds,
+            preflight_profile=preflight_profile,
+        )
+        if len(loaded) <= 1:
+            return self._validate(round_path, round_index, incumbent, proposals_dir)
+
+        ranked = self._screen(round_path, round_index, incumbent, loaded)
+        winner_proposals_dir = proposals_dir
+        winner_screening_round_path = round_path
+        if self.config.reattribution.enabled and all(not decision.accepted for decision in ranked):
+            retry = self._reattribute_and_rescreen(round_path, round_index, incumbent)
+            if retry is not None:
+                ranked, winner_proposals_dir, winner_screening_round_path = retry
+        winner_id = ranked[0].subject_id
+        return self._validate_ranked(
+            round_path,
+            round_index,
+            incumbent,
+            winner_proposals_dir,
+            winner_id,
+            screening_seed=self._screening_seed(
+                winner_screening_round_path, round_index, winner_id
+            ),
+        )
+
+    def _screen(
+        self,
+        round_path: Path,
+        round_index: int,
+        incumbent: Harness,
+        loaded: list[LoadedCandidate],
+        *,
+        stage: str = STAGE_SCREENING,
+        stage_work_id: str | None = None,
+    ) -> list[CandidateDecision]:
+        """Evaluate every admitted candidate independently (never merged)
+        against a small instance subset at ``v_screen`` attempts, rank them,
+        and persist the ranking. Returns the full ranked decisions
+        (``.subject_id``, ``.accepted``), best-ranked first."""
+        screening_parent = round_path / SCREENING_DIR
+        screening_round_path = round_dir(screening_parent, round_index)
+        screening_subset = self._screening_subset()
+        eval_config = EvaluationConfig(
+            splits=ValidationSplits(heldin=self.splits.heldin, heldout=screening_subset),
+            verifier=self.verifier,
+            out_dir=screening_parent,
+            round_index=round_index,
+            verifier_factory=self.verifier_factory,
+            client_factory=self.client_factory,
+            **{
+                **evaluation_config_kwargs(self.config),
+                "repetitions": self._effective_v_screen(),
+                # Screening's subject count (baseline + up to k candidates)
+                # is structurally larger than full validation's (at most 2),
+                # so it uses its own pair of knobs instead of inheriting
+                # validation_workers/validation_run_workers: screening_workers
+                # (default 1) runs subjects strictly in sequence, and
+                # screening_run_workers (default 3) keeps real concurrency
+                # within each subject's own small instance set.
+                "workers": self.config.operational.screening_workers,
+                # A reusable baseline came from full validation over every
+                # held-out instance. Copying that whole split into this
+                # subset evaluation would compare a full-population baseline
+                # with subset-only candidates. Screening is deliberately
+                # cheap, so run its baseline fresh on exactly the same task
+                # ids, context windows, and attempts as every candidate.
+                "run_workers": self.config.operational.screening_run_workers,
+            },
+        )
+        subjects = [
+            ValidationSubject(candidate.candidate_id, candidate.harness, candidate.harness_hash)
+            for candidate in loaded
+        ]
+        with StageMeter(
+            stage=stage,
+            stage_work_id=stage_work_id or f"round_{round_index:02d}/{STAGE_SCREENING}",
+            round_index=round_index,
+            out_path=self.usage_path,
+        ) as meter:
+            before = _validation_usage(screening_round_path)
+            try:
+                evaluation = evaluate_validation_round(
+                    incumbent,
+                    subjects,
+                    eval_config,
+                )
+            finally:
+                meter.add(_validation_usage(screening_round_path) - before)
+        ranked = rank_screened_candidates(evaluation, self.pconfig)
+        write_screening_ledger(
+            evaluation,
+            ranked,
+            round_path=screening_round_path,
+            incumbent_hash=harness_hash(incumbent),
+        )
+        return ranked
+
+    def _reattribute_and_rescreen(
+        self,
+        round_path: Path,
+        round_index: int,
+        incumbent: Harness,
+    ) -> tuple[list[CandidateDecision], Path, Path] | None:
+        """One bounded retry: every one of this round's screened candidates
+        was screening-rejected. Re-attribute the SAME already-executed mining
+        runs (no new rollouts -- ``mine_round`` is disk-driven) into a second
+        bundle (``write_bundle``'s ``bundle_dir``, the sub-verification
+        ablation's own precedent for two bundles coexisting under one round),
+        propose and re-screen a fresh candidate pool from it, under a sibling
+        ``REATTRIBUTION_DIR`` tree so none of this collides with the original
+        pool's markers.
+
+        Returns ``None`` (no retry data; the caller keeps the original,
+        doomed ranking) when the fresh pool has zero candidates. Never
+        recurses -- a retry pool that is itself all-rejected is returned as
+        the new ranking anyway, exactly like ``RefinementSettings.
+        max_generations`` being hardcoded to ``1``.
+        """
+        mining_parent = round_path / MINING_DIR
+        mining_round_path = round_dir(mining_parent, round_index)
+        bundle_dir = mining_round_path / BUNDLES_DIR / "reattribution"
+        bundle = self._evidence_bundle(
+            mining_parent,
+            mining_round_path,
+            round_index,
+            stage=STAGE_REATTRIBUTION_ATTRIBUTION,
+            stage_work_id=f"round_{round_index:02d}/{REATTRIBUTION_DIR}/{STAGE_ATTRIBUTION}",
+            bundle_dir=bundle_dir,
+        )
+        reattribution_path = round_path / REATTRIBUTION_DIR
+        proposals_dir = self._proposals(
+            reattribution_path,
+            mining_round_path,
+            round_index,
+            incumbent,
+            bundle,
+            stage=STAGE_REATTRIBUTION_PROPOSAL,
+            stage_work_id=f"round_{round_index:02d}/{REATTRIBUTION_DIR}/{STAGE_PROPOSAL}",
+            bundle_path=bundle_dir / BUNDLE_FILENAME,
+        )
+        preflight_profile = _load_marker(
+            reattribution_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT
+        ).get("preflight_profile", "generic/v1")
+        new_loaded, _rejections = load_candidates(
+            proposals_dir,
+            incumbent,
+            caps=self.caps.s6_caps(),
+            timeout_seconds=self.config.operational.loader_timeout_seconds,
+            preflight_profile=preflight_profile,
+        )
+        if not new_loaded:
+            return None
+        ranked = self._screen(
+            reattribution_path,
+            round_index,
+            incumbent,
+            new_loaded,
+            stage=STAGE_REATTRIBUTION_SCREENING,
+            stage_work_id=f"round_{round_index:02d}/{REATTRIBUTION_DIR}/{STAGE_SCREENING}",
+        )
+        return ranked, proposals_dir, reattribution_path
+
+    def _screening_subset(self) -> list[dict[str, Any]]:
+        """The small, difficulty-informed instance subset screening runs
+        against -- oolong_pairs gets the curated hard/easy mix derived from
+        real trace data; every other environment gets the generic fallback.
+        """
+        subset = (
+            oolong_pairs_screening_subset(self.splits.heldout)
+            if self.binding.name == "oolong_pairs"
+            else default_screening_subset(self.splits.heldout)
+        )
+        heldout_by_id = {str(instance["id"]): instance for instance in self.splits.heldout}
+        if len(heldout_by_id) != len(self.splits.heldout):
+            raise ValueError("held-out instance ids must be unique before screening")
+        subset_ids = [str(instance["id"]) for instance in subset]
+        if not subset_ids:
+            raise ValueError("screening subset must contain at least one held-out instance")
+        if len(set(subset_ids)) != len(subset_ids):
+            raise ValueError("screening subset contains duplicate instance ids")
+        for instance in subset:
+            instance_id = str(instance["id"])
+            if instance_id not in heldout_by_id or instance != heldout_by_id[instance_id]:
+                raise ValueError(
+                    "every screening instance must be an unchanged member of the full "
+                    f"held-out evaluation set; mismatch for {instance_id!r}"
+                )
+        return subset
+
+    def _effective_v_screen(self) -> int:
+        """``v_screen``, or full ``v`` when ``v<=1`` leaves no room for a
+        strictly cheaper probe (the config validator allows this case)."""
+        return self.config.loop.v_screen if self.config.loop.v > 1 else self.config.loop.v
+
+    def _screening_seed(
+        self, round_path: Path, screening_round_index: int, candidate_id: str
+    ) -> ScreeningSeed:
+        """The just-written screening run for ``candidate_id``, reusable
+        toward its own full validation."""
+        screening_parent = round_path / SCREENING_DIR
+        return ScreeningSeed(
+            source_split_round_dir=split_dir(
+                screening_parent, screening_round_index, candidate_id, SPLIT_HELDOUT
+            )
+            / f"round_{EVAL_ROUND_INDEX:02d}",
+            instance_ids=frozenset(str(i["id"]) for i in self._screening_subset()),
+            max_attempt=self._effective_v_screen(),
+        )
+
+    def _validate_ranked(
+        self,
+        round_path: Path,
+        round_index: int,
+        incumbent: Harness,
+        proposals_dir: Path,
+        candidate_id: str,
+        *,
+        screening_seed: ScreeningSeed | None,
+    ) -> ValidationRound:
+        """Full-validate exactly one already-ranked candidate: the
+        tournament's winner, fresh off its own screening round."""
+        validation_parent = round_path / VALIDATION_DIR
+        validation_round_path = round_dir(validation_parent, round_index)
+        baseline_seed = self._find_reusable_heldout(harness_hash(incumbent), round_index)
+        eval_config = EvaluationConfig(
+            splits=self.splits,
+            verifier=self.verifier,
+            out_dir=validation_parent,
+            round_index=round_index,
+            verifier_factory=self.verifier_factory,
+            client_factory=self.client_factory,
+            **{
+                **evaluation_config_kwargs(self.config),
+                "run_workers": self.config.operational.validation_run_workers,
+            },
+        )
+        with StageMeter(
+            stage=STAGE_VALIDATION,
+            stage_work_id=f"round_{round_index:02d}/{STAGE_VALIDATION}",
+            round_index=round_index,
+            out_path=self.usage_path,
+        ) as meter:
+            before = _validation_usage(validation_round_path)
+            try:
+                validation = validate_ranked_candidate(
+                    incumbent,
+                    proposals_dir,
+                    candidate_id,
+                    eval_config,
+                    self.pconfig,
+                    prior_evaluations=prior_evaluations(self.prior_history),
+                    loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
+                    preflight_profile=_load_marker(
+                        round_path / PROPOSALS_MARKER_FILENAME, PROPOSALS_MARKER_FORMAT
+                    ).get("preflight_profile", "generic/v1"),
+                    baseline_seed=baseline_seed,
+                    screening_seed=screening_seed,
+                )
+            finally:
+                meter.add(_validation_usage(validation_round_path) - before)
+        return validation
+
+    def _validate_refinement(
+        self,
+        refinement_path: Path,
+        round_index: int,
+        incumbent: Harness,
+        branch_base: Harness,
+        proposals_dir: Path,
+    ) -> ValidationRound:
+        """Compare a repaired descendant with the original incumbent.
+
+        Repair proposals materialize against ``branch_base``; promotion is
+        anchored to ``incumbent`` and uses the same ``held_out`` split the
+        parent round itself validated against. The refinement branch exists to
+        decide whether a *repaired* candidate beats the original incumbent on
+        the identical evidence the parent round already used for that
+        incumbent -- reusing ``held_out`` (rather than the disjoint
+        ``promotion`` split this experiment also materializes, see
+        ``_draw_oolong_pairs_with_promotion`` in ``splits.py``) makes that
+        comparison literally apples-to-apples, and lets ``_find_reusable_heldout``
+        pick up the parent round's own, already-paid-for baseline instead of
+        re-running it here.
+        """
+        validation_parent = refinement_path / VALIDATION_DIR
+        validation_round_path = round_dir(validation_parent, round_index)
+        baseline_seed = self._find_reusable_heldout(harness_hash(incumbent), round_index)
+        eval_config = EvaluationConfig(
+            splits=ValidationSplits(
+                heldin=self.splits.heldin,
+                heldout=self.splits.heldout,
+            ),
+            verifier=self.verifier,
+            out_dir=validation_parent,
+            round_index=round_index,
+            verifier_factory=self.verifier_factory,
+            client_factory=self.client_factory,
+            **{
+                **evaluation_config_kwargs(self.config),
+                "run_workers": self.config.operational.validation_run_workers,
+            },
+        )
+        with StageMeter(
+            stage=STAGE_REFINEMENT_PROMOTION,
+            stage_work_id=f"round_{round_index:02d}/{REFINEMENT_DIR}/promotion",
+            round_index=round_index,
+            out_path=self.usage_path,
+        ) as meter:
+            before = _validation_usage(validation_round_path)
+            try:
+                validation = validate_round(
+                    incumbent,
+                    proposals_dir,
+                    eval_config,
+                    self.pconfig,
+                    proposal_base=branch_base,
+                    prior_evaluations=prior_evaluations(self.prior_history),
+                    loader_timeout_seconds=self.config.operational.loader_timeout_seconds,
+                    preflight_profile=_load_marker(
+                        refinement_path / PROPOSALS_MARKER_FILENAME,
+                        PROPOSALS_MARKER_FORMAT,
+                    ).get("preflight_profile", "generic/v1"),
+                    baseline_seed=baseline_seed,
+                )
+            finally:
                 meter.add(_validation_usage(validation_round_path) - before)
         return validation
 

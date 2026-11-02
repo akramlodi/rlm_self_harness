@@ -1,0 +1,476 @@
+# =============================================================================
+# configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml --
+# the blended 8K/16K/32K OOLONG-Pairs profile
+# (experiment_oolong_pairs_blended_DeepSeekV4Flash.toml), re-hosted on
+# OpenRouter instead of Azure Foundry, with three additional changes made
+# together on 2026-11-02:
+#
+#   [backends]  runner/attributor/proposer switched from azure_foundry/
+#               "DeepSeek-V4-Flash" to openrouter/"deepseek/deepseek-v4-flash"
+#               (same model, different host -- see
+#               experiment_oolong_pairs_openrouter_DeepSeekV4Flash.toml for
+#               the established single-length precedent this mirrors).
+#               [backends.azure_foundry] is dropped entirely: it's only
+#               required when some role actually selects that backend.
+#               [pricing] is repointed at OpenRouter's listed rate for this
+#               model -- inert for the live spend breaker either way
+#               (OpenRouter returns real per-response cost; the synthesized
+#               [pricing] numbers only feed the report/GPU-scenario
+#               projections), but kept accurate rather than left as Azure's
+#               figures.
+#   [loop]      k 3 -> 4: one more independently-screened candidate per
+#               round.
+#               patience 4 -> 3: stop one round sooner after consecutive
+#               non-promotion.
+#   [promotion] tau_improvement 0.02 -> 0.0: promote on ANY non-negative
+#               macro improvement once the per-length tau_regression veto
+#               already clears, rather than requiring a 0.02 margin. This is
+#               a further loosening past the 2026-10-12 change already in
+#               the base config (0.106917 -> 0.02); the per-length
+#               tau_regression veto below is UNCHANGED and still
+#               independently gates every length, so a candidate that
+#               regresses any length beyond its own calibrated margin is
+#               still rejected regardless of this threshold.
+#
+# Everything else -- splits, v/v_screen/m/t, the per-length tau_regression
+# table, refinement, reattribution, caps, environments, and the operational
+# concurrency knobs (including validation_run_workers=3, raised 2026-11-02
+# on the Azure-hosted run this config is forked from) -- is unchanged from
+# the Azure-hosted base config.
+#
+# Run (fresh):
+#   uv run python examples/run_experiment.py \
+#       --config configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml \
+#       --out-dir ./experiment_oolong_pairs_blended_openrouter_dsv4f
+#
+# Resume (same --out-dir; persist-first, picks up at the exact stage boundary):
+#   uv run python examples/run_experiment.py \
+#       --config configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml \
+#       --out-dir ./experiment_oolong_pairs_blended_openrouter_dsv4f
+#
+# Load with load_config(profile="full" | "smoke",
+#   path=".../experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml").
+# =============================================================================
+
+[decoding]
+temperature = 0
+top_p = 0.95
+# Top of the pilot tuning range 2048-8192 (section 3.10 row 3). Raised from
+# 4096 on 2026-08-25 alongside thinking = true: reasoning tokens count against
+# this budget, so an instant-mode ceiling would let a hard instance spend the
+# allowance on reasoning and truncate the answer.
+max_output_tokens = 8192
+
+[splits]
+# Applied identically at each of the three blended lengths by split_plan()'s
+# oolong_pairs branch: 8 held-in, 8 trigger held-out, 4 repair-promotion, and
+# 4 untouched test instances per length. The 24 total remain below the hard
+# 40-instance pool ceiling at every length.
+#
+# n_ho raised 4 -> 8 on 2026-10-11 to shrink tau_improvement's noise floor
+# (projected ~0.114 -> ~0.08 at this held-out sample size, per
+# shrlm.experiment.calibrate_promotion_tau.parametric_calibrate run against
+# round 2's real data) -- round 2's actual best candidate only reached a
+# macro delta of +0.026, nowhere near the old tau_improvement=0.127056.
+# With total=n_in+n_ho+test_short now equal to the full 20-task_id pool,
+# load_oolong_pairs_split's OOLONG_PAIRS_CURATED_TASK_ORDER reorder
+# (shrlm/experiment/splits.py) also takes effect: held_out is no longer an
+# easy-only population (it previously drew only task_ids 4/6/8/10, F1
+# ~0.80-0.94) -- it now also includes known-hard task_ids 11/18 (F1
+# ~0.5-0.73), so held_out validation can actually observe whether a
+# mining-motivated fix for a hard-task failure mode generalizes, rather
+# than only ever testing against the easiest slice of the task space.
+# tau_regression/tau_improvement below must be recalibrated against this
+# new held-out population before trusting them for a live round.
+n_in = 8 # held-in: weakness mining only, per length
+n_ho = 8 # held-out: validation only, never mined, per length
+test_short = 4 # untouched short test, per length
+test_long = 40 # untouched long test; exhausts its independent 40-instance pool
+seed = 0 # seeded partition of the OOLONG-Pairs pools; task_id-to-role
+# assignment is then reordered by OOLONG_PAIRS_CURATED_TASK_ORDER, not left
+# to this seed's raw shuffle (see shrlm/experiment/splits.py)
+
+[loop]
+# Optimization-loop counts, section 3.2.
+m = 2 # mining repetitions per held-in instance
+v = 3 # validation repetitions per held-out instance per subject, for the
+# round's best-ranked candidate (see v_screen below for the others)
+k = 4 # up to 4 independently-proposed single-surface candidates per round
+# (raised from 3 on 2026-11-02): each is screened independently (never
+# merged -- avoids the "which constituent caused the rejection" blind spot
+# from round 1.2), ranked, and only the best-ranked one is fully validated
+# here. If it is rejected, the other screened candidates are retired and
+# the next round mines fresh evidence against the unchanged incumbent.
+v_screen = 1 # cheap per-candidate screening attempt count, strictly < v
+t = 10 # generous ceiling; patience is the real stopping rule
+patience = 3 # consecutive fresh mining rounds without promotion before
+# stopping (lowered from 4 on 2026-11-02). This is intentionally
+# independent of k: k controls alternatives screened within one round,
+# while patience controls how many newly-mined optimization attempts may
+# fail in succession (3.10 row 5).
+environment = "oolong_pairs" # this profile mines/validates OOLONG-Pairs (identity key)
+# Start from the sparse mechanism floor. This keeps the learned SH-RLM versus
+# hand-written H0*R comparison meaningful instead of seeding the answer.
+initial_harness = "H0"
+
+[promotion]
+# Use verifier F1 rather than exact-match pass count. Both tau values are
+# incumbent-relative deltas.
+#
+# Frozen 2026-10-12 via bootstrap_calibrate() (shrlm/experiment/
+# calibrate_promotion_tau.py) against the MIXED held-out split (n_ho=8,
+# OOLONG_PAIRS_CURATED_TASK_ORDER -- see [splits] above), superseding the
+# 2026-10-11 values calibrated on the old n_ho=4 easy-only held-out split.
+# That split's held-out population (task_ids 4/6/8/10, F1 ~0.80-0.94) no
+# longer matches this config's held-out population (now also includes
+# known-hard task_ids 11/18), so its tau values were stale for this split
+# and had to be recalibrated from scratch, not just reused.
+#
+# Source: experiment_real_runs/oolong_pairs_h0_init_blended_mixed_split/
+# opt/round_01/validation/round_01/baseline/heldout (round 1's real baseline
+# validation under this exact split/config), 8 instances x 3 attempts per
+# length, 5000 nested-bootstrap replicates, quantile=0.95, seed=0. Parametric
+# closed-form cross-check agreed within ~2-8% at every length (tightest
+# agreement of any calibration run this project). Mining round 1's held-in
+# data (m=2, different task-id population) gave a consistent but much
+# cruder order-of-magnitude figure (~0.92-1.00), as expected from a thinner,
+# differently-sourced sample -- not used as a calibration input, only a
+# sanity check.
+#
+# Notable shift from the old split: 16384 is NO LONGER clearly the quietest
+# length (was ~3x quieter than 8192/32768 under the easy-only held-out set;
+# now 8192 and 16384 are nearly identical, and 32768 is the noisiest).
+# Mixing harder task_ids into held-out changed the noise profile, not just
+# the mean -- don't assume a "quiet length" finding from one split carries
+# over to a different held-out population.
+metric = "primary_quality"
+# tau_improvement LOOSENED further on 2026-11-02: 0.02 -> 0.0, promoting on
+# any non-negative macro improvement once tau_regression's per-length veto
+# already clears. The bootstrap-calibrated value was 0.106917; it was
+# already loosened to 0.02 on 2026-10-12 (see the base config this was
+# forked from for that change's quantified false-accept-rate cost). This
+# config loosens it once more to 0.0 -- not yet quantified against the same
+# bootstrap method; treat as a further risk-accepted deviation until that
+# analysis is redone for this threshold specifically.
+tau_improvement = 0.0
+# The upper bound is the single most cost-sensitive value in this file. It
+# gates promotion, but a promoted edit may raise cost every round, so the
+# drift compounds: the pessimistic projection multiplies the optimization
+# leg by sum(ceiling^i) over T rounds. The 3.0 ceiling allows a candidate to
+# spend substantially more when it materially improves F1 while preventing
+# unbounded drift. The 0.5 floor rejects a candidate that costs less than
+# half the baseline's mean -- a sharp enough drop to suspect the edit is
+# doing materially less work (e.g. skipping verification) rather than
+# genuinely cheaper reasoning.
+cost_band = [0.5, 3.0]
+# sub_call_band = [0.5, 2.0]  # optional; omitted means unconstrained
+
+[promotion.tau_regression]
+# Per-length noise floor, keyed by context length in tokens. score_candidate
+# looks up each measured length's own margin instead of gating every length
+# with one global number. Same bootstrap_calibrate() provenance as
+# tau_improvement above (mixed held-out split, 8x3, 5000 replicates,
+# quantile=0.95, seed=0); parametric cross-check in parentheses.
+# 8192:  0.1435 (parametric 0.1330)
+# 16384: 0.1437 (parametric 0.1406) -- no longer the outlier-quiet length;
+#                now statistically indistinguishable from 8192.
+# 32768: 0.2438 (parametric 0.2480) -- now clearly the noisiest length.
+8192 = 0.143542
+16384 = 0.143708
+32768 = 0.243833
+
+[refinement]
+# One bounded repair generation for a rejected batch whose parseable-answer
+# F1 improves while a terminal (hard-zero) cause's rate worsens. Narrowed to
+# wrong_format alone on 2026-10-26: real evidence this session showed the
+# other three terminal causes (resource_terminated, runtime_error,
+# content_filtered) had support=1 everywhere examined -- too thin to
+# construct a working fix even when the proposer's view was already
+# restricted to them -- while the one genuinely clean, successful repair
+# seen all session was built on an unambiguous wrong_format diagnosis. Not
+# partial-credit causes (mixed_set_error, incomplete, spurious) either:
+# those are naturally noisy attempt to attempt, and watching them for "did
+# the rate go up" would trigger repair generations on ordinary variance,
+# not genuine new regressions. (Deferred: a separate branch should compare
+# this against keeping all 4 causes, and against no restriction at all, to
+# see which setting yields more successfully-promoted-after-refinement
+# outcomes -- not yet measured.)
+#
+# promotion_size=8 matches n_ho so the repaired descendant's final
+# accept/reject decision rests on the same sample size tau_regression/
+# tau_improvement were calibrated against, rather than a noisier comparison
+# on fewer instances. Eight fresh instances per optimization length are
+# reserved for the final descendant-vs-incumbent gate (8+8+4+8=28/length,
+# within the 40-instance pool).
+enabled = true
+promotion_size = 8
+min_conditional_quality_delta = 0.02
+min_failure_rate_delta = 0.0
+failure_causes = ["wrong_format"]
+max_generations = 1
+
+[reattribution]
+# When every one of a round's screened candidates is screening-rejected,
+# re-attribute the same already-executed mining runs once (no new rollouts)
+# before full-validating a candidate screening has already told us is
+# doomed -- see shrlm.experiment.orchestrator._reattribute_and_rescreen.
+# Attribution itself was shown non-reproducible on frozen evidence this
+# session (0/5 and 1/5 agreement across independent reruns of the same
+# digest for the two patterns that actually became real candidates) -- this
+# is the cheap, targeted mitigation for that specific noise source.
+enabled = true
+
+[caps]
+# Experiment-owned per-run limits (KTD3). max_budget, max_timeout, and
+# candidate_budget are mandatory: the loader raises immediately when one is
+# missing (R12). candidate_budget is the cumulative circuit-breaker budget
+# across all of one candidate's validation runs.
+attempts = 1 # default per-round attempts; stages override with m / v / eval_repetitions
+max_iterations = 45
+# Raised from 1 to 3 on 2026-08-22 alongside the S10 skills surface: at depth 1
+# every sub-call is a bare completion (no system prompt, no REPL), so a child
+# could never see the skills index or call the loader. At 2, rlm_query children
+# are real RLMs that inherit the prompt and the child REPL namespace; llm_query
+# and depth-2 leaves stay bare completions. Per-run exposure is still bounded by
+# max_budget; S6 may set a lower depth but may not exceed this cap.
+max_depth = 3
+# The one hard cost guarantee: the spend breaker terminates any run that
+# exceeds this, so run exposure is bounded by total_runs x max_budget.
+max_budget = 2.0 # USD per run
+max_timeout = 3600.0 # seconds per run
+# Applies to EVERY validation subject, the baseline included: an over-budget
+# baseline makes the round unscorable (promotion.assess_round raises).
+candidate_budget = 100.0 # USD across all of one subject's runs
+
+[environments.graphwalks]
+# Source environment, section 3.1.
+dataset_repo = "openai/graphwalks"
+dataset_file_short = "graphwalks_128k_and_shorter.parquet"
+dataset_file_long = "graphwalks_256k_to_1mil.parquet"
+dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead" # HF main, pinned 2026-08-12
+max_chars = 128000 # inclusive upper bound on prompt_chars for the short split
+min_chars = 0 # inclusive lower bound on prompt_chars
+problem_types = ["bfs", "parents"]
+
+[environments.oolong_pairs]
+# Selected environment. The short pool is partitioned for optimization; long is test-only.
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-12
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192 # tokens; 32x pairing per section 3.10 row 4
+context_length_mid16k = 16384 # second blended optimization length
+context_length_mid32k = 32768 # third blended optimization length
+context_length_long = 262144
+max_scan = 50000 # cap on raw dataset rows streamed while collecting windows
+n_short = 40 # hard short-pool ceiling at the pinned revision
+n_long = 40 # hard long-pool ceiling at the pinned revision, not a choice:
+# the trec_coarse validation split ships only 2 distinct context windows per
+# context length, and the loader pairs each window with the 20 task_ids above,
+# so 2 x 20 = 40 is every instance at either selected length. A larger value
+# fails the coverage gate in load_oolong_pairs before any spend.
+
+[environments.oolong]
+# OOLONG (arXiv:2511.02817). `synth` is the mining/validation pool when
+# [loop] environment = "oolong_synth"; `real` is a periodic generalization
+# check that is run but NEVER fed into the promotion gate (cadence:
+# [operational] real_check_every_n_rounds). Both sub-tables are inert when
+# this environment is not selected -- present so the schema is uniform.
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test" # OOLONG-synth's own split carrying the full 1K-128K power-of-two range
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b" # HF main, pinned 2026-08-29
+subsets = [] # source ICL datasets to draw from; [] = all (spam, trec_coarse, imdb, ...)
+task_groups = ["counting", "user", "timeline"]
+# Length diversity is REQUIRED: this pool must span lengths the model can solve
+# without decomposing (1K-4K) AND lengths where aggregation breaks down (>=64K;
+# published models <50% at 128K). The loader draws a balanced share per length.
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd" # Critical Role D&D transcripts ("toy_dnd" is the tiny smoke variant)
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb" # HF main, pinned 2026-08-29
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
+
+[backends.runner]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash" # OpenRouter slug for "DeepSeek V4 Flash 0423"
+
+[backends.attributor]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+
+[backends.proposer]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+
+[backends.openrouter]
+# Provider routing, sent as sampling_args["extra_body"]["provider"] for
+# openrouter-backed roles only. An empty order list means no restriction; the
+# pilot pins the serving provider before the main run so quantization cannot
+# drift mid-experiment.
+provider_order = []
+allow_fallbacks = true
+
+[pricing.promo]
+# OpenRouter listed rate for deepseek/deepseek-v4-flash, USD per 1M tokens
+# (same figure already verified in experiment_oolong_pairs_openrouter_
+# DeepSeekV4Flash.toml; refresh before real spend). Report/GPU-scenario
+# input only -- the live spend breaker uses OpenRouter's returned
+# usage.cost, not this synthesized figure.
+input_per_million = 0.009
+output_per_million = 1.28
+
+[pricing.list_price]
+input_per_million = 0.009
+output_per_million = 1.28
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true # eligible for the recommendation (rate and throughput are sourced)
+sensitivity_range = [1.99, 3.49] # USD/hour band for the sensitivity analysis
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+# Aggregate decode throughput by context bucket, single GPU, tokens/second.
+short = 2400.0 # contexts <= 32k tokens
+long = 700.0 # contexts >= 128k tokens
+
+[[gpu_scenarios]]
+name = "2x_a100_tp2_rented"
+hourly_rate_usd = 2.58 # 2 GPUs x $1.29/h
+provenance = "Unvalidated estimate from A100 80GB marketplace rates 2026-08; BF16 needs 2xA100 at 262k (weights ~61GB + KV ~24.6GB/seq)"
+provenance_validated = false # scenario-only until the rate and throughput are measured
+sensitivity_range = [0.94, 4.12]
+precision_note = "bf16 weights, tensor-parallel 2, vLLM serving"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2000.0
+long = 500.0
+
+[[gpu_scenarios]]
+name = "1x_a100_int4"
+hourly_rate_usd = 1.29
+provenance = "Unvalidated estimate; AWQ/GPTQ-INT4 weights ~17GB fit 262k KV on one A100 80GB"
+provenance_validated = false # scenario-only until the rate and throughput are measured
+sensitivity_range = [0.47, 2.06]
+precision_note = "INT4 quantized weights change model numerics; measurements and comparability do not transfer (report prefers precision-preserving scenarios)"
+changes_numerics = true # INT4: a candidate only when quantization is explicitly accepted
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 1800.0
+long = 450.0
+
+[report]
+p_merge = 0.5 # legacy input; unused by held-out batch validation projections
+eval_conditions = 3 # B1, H1, SH-RLM: the full-experiment evaluation grid (section 3.5)
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution_oolong_pairs_blended_openrouter.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_oolong_pairs_blended_openrouter.jsonl"
+eval_repetitions = 3 # evaluation-stage repetitions per instance per condition (KTD8)
+validation_workers = 5
+
+# Full validation only. Primary-quality validation evaluates the baseline
+# first, then the winner, so the winner can stop after any completed context
+# length that violates tau. The screening tournament has its own pair of
+# knobs below, decoupled from this one. Screening's subject count (baseline +
+# up to k candidates) is
+# structurally larger, and sharing one knob between the two stages was the
+# actual driver of a real rate-limit storm observed with 5 live screening
+# subjects at once.
+#
+# How many of ONE subject's runs execute concurrently, each in its own child
+# process (python -m shrlm.optimization.run_worker). Identity-exempt (safe to
+# change under an existing --out-dir). In practice this only ever governs the
+# baseline's own concurrency: under primary-quality tau early stopping, the
+# candidate's own run_workers is forced to 1 unconditionally
+# (evaluate_subject's stop_predicate branch), so a later context length's
+# runs can never launch before an earlier length's veto is known. A second
+# "warm" knob used in the reused-baseline case existed here until
+# 2026-11-02; it was deleted once direct tracing showed it had no observable
+# effect -- a warm round's baseline is never evaluated live at all (it's
+# reused), and the candidate it would otherwise apply to is already forced
+# to 1 regardless.
+#
+# Lowered 3 -> 1 on 2026-08-30 for the recursive (H0*R) profile after a
+# 429-storm incident on the Azure deployment this config no longer uses.
+#
+# Raised 1 -> 3 on 2026-11-02 (carried over from the Azure-hosted base
+# config's own live test that day): baseline never runs concurrently with
+# the candidate (sequential subject dispatch), so the 5-live-subject
+# rate-limit-storm rationale above doesn't directly bear on raising just
+# this subject's own run-level concurrency. OpenRouter's own rate limits
+# are a different deployment's limits entirely -- watch for 429s here and
+# revert to 1 if they appear.
+validation_run_workers = 3
+
+# Screening tournament's own pair of the same two knobs (Orchestrator._screen),
+# independent of validation_workers/validation_run_workers above. Screening
+# evaluates the baseline plus up to k candidates (k+1 subjects -- five with
+# this profile's k=4), and that higher
+# subject count was the real driver of a real rate-limit storm observed on
+# the Azure deployment this config no longer uses. screening_workers=1 runs
+# subjects strictly in sequence -- baseline, then each candidate in turn --
+# so never more than one subject's worth of traffic is in flight.
+screening_workers = 1
+# Within-subject concurrency during screening: while one subject has the
+# floor, its own small screening-subset instances (one per length here, so
+# 3) run concurrently rather than being serialized to one at a time.
+# Independent of validation_run_workers/_warm.
+screening_run_workers = 3
+
+# Held-in mining runs fan out independently. Start at 3; if provider 429s
+# appear, reduce further.
+mining_run_workers = 3
+
+# OOLONG-real is unrelated to the selected pair-task pool and stays disabled.
+# Identity-exempt.
+real_check_every_n_rounds = 0
+
+
+# -----------------------------------------------------------------------------
+# Smoke profile: scale counts only. Any key here outside the loader's
+# smoke-overridable set is rejected at load time.
+# -----------------------------------------------------------------------------
+
+[smoke.splits]
+n_in = 3
+n_ho = 3
+test_short = 4
+test_long = 2
+
+[smoke.loop]
+m = 1
+v = 1
+k = 3
+t = 1
+
+[smoke.caps]
+max_budget = 0.5
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+real_check_every_n_rounds = 0 # smoke never spends on the OOLONG-real check
+
+
+[smoke.environments.oolong.synth]
+max_scan = 2000
+
+[smoke.environments.oolong.real]
+max_scan = 2000
+n_check = 4

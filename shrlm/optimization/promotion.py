@@ -13,7 +13,7 @@ from typing import Any
 
 from shrlm.harness_identity import harness_hash
 from shrlm.optimization.candidates import CandidateRejection, LoadedCandidate
-from shrlm.optimization.costs import OUTCOME_COMPLETED
+from shrlm.optimization.costs import OUTCOME_COMPLETED, OUTCOME_EARLY_REJECTED
 from shrlm.optimization.driver import ACCOUNTING_VERSION_KEY, LEGACY_ACCOUNTING_VERSION
 from shrlm.optimization.validation import (
     SPLIT_HELDOUT,
@@ -164,6 +164,9 @@ class PromotionConfig:
     metric: str = METRIC_PASS_COUNT
     cost_band: Band = field(default_factory=Band)
     sub_call_band: Band = field(default_factory=Band)
+    # Candidate-owned terminal failures which may not become more frequent
+    # than under the incumbent. An empty tuple preserves the legacy rule.
+    failure_nonregression_causes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.metric not in PROMOTION_METRICS:
@@ -188,6 +191,8 @@ class PromotionConfig:
                 "tau_regression must be a number >= 0, or a mapping of context length to "
                 f"such a number, got {self.tau_regression!r}"
             )
+        if len(set(self.failure_nonregression_causes)) != len(self.failure_nonregression_causes):
+            raise ValueError("failure_nonregression_causes must not contain duplicates")
 
 
 @dataclass(frozen=True)
@@ -420,6 +425,36 @@ def score_candidate(
         delta = candidate_value - baseline_value
         deltas[split_id] = delta
         rule[split_id] = {"metric": config.metric, **metric_rule, "delta": delta}
+        if config.failure_nonregression_causes:
+            base_counts = base_split.get("cause_counts")
+            cand_counts = cand_split.get("cause_counts")
+            if base_counts is None or cand_counts is None:
+                raise ValueError(
+                    "failure non-regression requires cause_counts from the current "
+                    "validation protocol"
+                )
+            n_runs = int(base_split["n_runs"])
+            baseline_failures = sum(
+                int(base_counts.get(cause, 0)) for cause in config.failure_nonregression_causes
+            )
+            candidate_failures = sum(
+                int(cand_counts.get(cause, 0)) for cause in config.failure_nonregression_causes
+            )
+            failure_rule = {
+                "causes": list(config.failure_nonregression_causes),
+                "baseline_count": baseline_failures,
+                "candidate_count": candidate_failures,
+                "baseline_rate": baseline_failures / n_runs,
+                "candidate_rate": candidate_failures / n_runs,
+                "delta": (candidate_failures - baseline_failures) / n_runs,
+            }
+            rule[split_id]["failure_nonregression"] = failure_rule
+            if candidate_failures > baseline_failures:
+                reasons.append(
+                    f"{split_id} configured candidate-owned failures increased "
+                    f"{baseline_failures}->{candidate_failures} for causes "
+                    f"{list(config.failure_nonregression_causes)}"
+                )
         if config.metric == METRIC_PASS_COUNT:
             pass_count_tau_regression = _regression_threshold(config.tau_regression)
             if delta < -pass_count_tau_regression:
@@ -506,6 +541,24 @@ def decide_subject(
             upstream=subject.to_dict(),
             surface=surface,
         )
+    if subject.outcome == OUTCOME_EARLY_REJECTED:
+        early = subject.summary.get("early_rejection") or {}
+        length = early.get("context_len", "unknown")
+        delta = float(early.get("delta", 0.0))
+        tau = float(early.get("tau_regression", 0.0))
+        return CandidateDecision(
+            subject_id=subject.subject_id,
+            decision=DECISION_REJECTED,
+            reasons=(
+                f"heldout context_len={length} primary-quality delta {delta:+.6f} "
+                f"regresses beyond tau_regression={tau}; validation stopped early",
+            ),
+            tau_regression=config.tau_regression,
+            tau_improvement=config.tau_improvement,
+            harness_hash=subject.harness_hash,
+            rule={SPLIT_HELDOUT: {"metric": config.metric, "early_stop": early}},
+            surface=surface,
+        )
     if subject.over_budget:
         return CandidateDecision(
             subject_id=subject.subject_id,
@@ -558,6 +611,36 @@ def assess_round(
         )
         for candidate in evaluation.candidates
     ]
+
+
+def rank_screened_candidates(
+    evaluation: RoundEvaluation,
+    config: PromotionConfig,
+    surfaces: Mapping[str, str] | None = None,
+) -> list[CandidateDecision]:
+    """Order independently-screened candidates best-first (shrlm.experiment.
+    orchestrator's tournament): reuses ``assess_round``'s existing
+    per-candidate delta computation against the screening-subset baseline --
+    same rule, smaller sample -- then sorts.
+
+    A candidate that was never scored (a ``CandidateRejection``, or an
+    over-budget subject) sinks below every one that actually ran, in
+    ``subject_id`` order among themselves; ties among scored candidates also
+    break on ``subject_id`` for a fully deterministic order.
+
+    This score is for ranking only: the accept/reject verdict ``assess_round``
+    computes on this tiny, reduced-attempt screening sample is never a
+    promotion decision and is never written to ``promotions.jsonl`` -- see
+    ``shrlm.optimization.validation.write_screening_ledger``.
+    """
+    decisions = assess_round(evaluation, config, surfaces)
+
+    def rank_key(decision: CandidateDecision) -> tuple[bool, float, str]:
+        scored = decision.rule is not None
+        delta = -decision.delta(SPLIT_HELDOUT) if scored else math.inf
+        return (not scored, delta, decision.subject_id)
+
+    return sorted(decisions, key=rank_key)
 
 
 # ---------------------------------------------------------------------------
@@ -653,5 +736,6 @@ __all__ = [
     "merge_harnesses",
     "plan_batch",
     "promote_decision",
+    "rank_screened_candidates",
     "score_candidate",
 ]

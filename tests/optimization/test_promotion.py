@@ -40,6 +40,7 @@ from shrlm.optimization.promotion import (
     merge_harnesses,
     plan_batch,
     promote_decision,
+    rank_screened_candidates,
     score_candidate,
 )
 from shrlm.optimization.validation import (
@@ -705,6 +706,71 @@ class TestAssessRound:
         assert [decision.surface for decision in assess_round(evaluation, PromotionConfig())] == [
             None
         ]
+
+
+# ---------------------------------------------------------------------------
+# Screening-tournament ranking (shrlm.experiment.orchestrator): best-ranked
+# first among independently screened candidates, for ranking only -- never a
+# promotion verdict in its own right.
+# ---------------------------------------------------------------------------
+
+
+class TestRankScreenedCandidates:
+    def test_scored_candidates_rank_by_descending_delta(self):
+        evaluation = RoundEvaluation(
+            round_path=Path("/nonexistent/round_01"),
+            baseline=fake_evaluation(BASELINE),
+            candidates=[
+                fake_evaluation(make_summary("cand-flat", 2, 2)),
+                fake_evaluation(make_summary("cand-good", 2, 3)),
+            ],
+        )
+
+        ranked = rank_screened_candidates(evaluation, PromotionConfig())
+
+        assert [decision.subject_id for decision in ranked] == ["cand-good", "cand-flat"]
+        assert ranked[0].delta(SPLIT_HELDOUT) > ranked[1].delta(SPLIT_HELDOUT)
+
+    def test_unscored_candidates_sink_below_every_scored_one(self):
+        rejection = CandidateRejection(
+            candidate_id="cand-broken",
+            gate=GATE_SCHEMA,
+            reason="proposal.json unreadable",
+            path="/nonexistent/cand-broken/proposal.json",
+        )
+        evaluation = RoundEvaluation(
+            round_path=Path("/nonexistent/round_01"),
+            baseline=fake_evaluation(BASELINE),
+            candidates=[
+                rejection,
+                fake_evaluation(make_summary("cand-burn", 1, 0, outcome=OUTCOME_OVER_BUDGET)),
+                fake_evaluation(make_summary("cand-good", 2, 3)),
+            ],
+        )
+
+        ranked = rank_screened_candidates(evaluation, PromotionConfig())
+
+        assert [decision.subject_id for decision in ranked] == [
+            "cand-good",
+            "cand-broken",
+            "cand-burn",
+        ]
+        assert ranked[0].rule is not None
+        assert ranked[1].rule is None and ranked[2].rule is None
+
+    def test_ties_break_on_subject_id(self):
+        evaluation = RoundEvaluation(
+            round_path=Path("/nonexistent/round_01"),
+            baseline=fake_evaluation(BASELINE),
+            candidates=[
+                fake_evaluation(make_summary("cand-b", 2, 2)),
+                fake_evaluation(make_summary("cand-a", 2, 2)),
+            ],
+        )
+
+        ranked = rank_screened_candidates(evaluation, PromotionConfig())
+
+        assert [decision.subject_id for decision in ranked] == ["cand-a", "cand-b"]
 
 
 # ---------------------------------------------------------------------------

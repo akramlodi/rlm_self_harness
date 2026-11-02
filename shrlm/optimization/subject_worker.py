@@ -194,6 +194,7 @@ def build_request(
     round_index: int,
     verifier_factory: str,
     client_factory: tuple[str, dict[str, Any]] | None,
+    tau_early_stopping: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The request document one child evaluates (KTD3)."""
     from shrlm.optimization.validation import VALIDATION_PROTOCOL
@@ -219,6 +220,7 @@ def build_request(
         "client_factory": (
             [client_factory[0], client_factory[1]] if client_factory is not None else None
         ),
+        "tau_early_stopping": tau_early_stopping,
     }
 
 
@@ -285,6 +287,7 @@ def run_subject_worker(request_path: str | Path) -> dict[str, Any]:
         from shrlm.optimization.validation import (
             VALIDATION_PROTOCOL,
             EvaluationConfig,
+            TauEarlyStopping,
             ValidationSplits,
             evaluate_subject,
         )
@@ -323,6 +326,11 @@ def run_subject_worker(request_path: str | Path) -> dict[str, Any]:
             client_factory=(
                 (request["client_factory"][0], request["client_factory"][1])
                 if request.get("client_factory") is not None
+                else None
+            ),
+            tau_early_stopping=(
+                TauEarlyStopping.from_dict(request["tau_early_stopping"])
+                if request.get("tau_early_stopping") is not None
                 else None
             ),
         )
@@ -471,6 +479,11 @@ def evaluate_subjects_in_processes(
                     client_factory=(
                         (config.client_factory[0], dict(factory_args.get(subject_id, {})))
                         if config.client_factory is not None
+                        else None
+                    ),
+                    tau_early_stopping=(
+                        config.tau_early_stopping.to_dict()
+                        if config.tau_early_stopping is not None
                         else None
                     ),
                 )

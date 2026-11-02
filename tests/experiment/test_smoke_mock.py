@@ -89,11 +89,12 @@ EVAL_SET_ORDER: tuple[tuple[str, str], ...] = (
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
 
-STAGES = ("mining", "attribution", "proposal", "validation", "eval")
+STAGES = ("mining", "attribution", "proposal", "screening", "validation", "eval")
 
 # Two distinct failure mechanisms across the three held-in mining runs give two
 # patterns, hence two candidates (the smoke profile's k=2) on two different
-# surfaces, combined into the one candidate evaluated against the baseline.
+# surfaces. Each is screened independently (never merged) and ranked; only
+# the best-ranked one is fully validated and (here) promoted.
 MECHANISMS = ("incomplete_coverage", "skipped_verification", "skipped_verification")
 MERGE_TEXT = "Cover every input chunk and verify before answering. [smoke]"
 
@@ -195,17 +196,25 @@ def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def optimization_script() -> list[str]:
-    """Mining (all failing) then validation: baseline fails, every subject passes.
+    """Mining (all failing), then the screening tournament, then full validation.
 
-    Validation runs the baseline and combined candidate on held-out instances
-    at v=1. Pass/fail here drives the promotion path; this tests wiring only.
+    Screening (at smoke scale, the full held-out set and v==v_screen==1)
+    evaluates the baseline and both candidates independently: baseline
+    fails, both candidates pass (tied -- the lower subject id, the S4
+    candidate, wins rank #1 on the tie-break). Full validation reruns the
+    baseline fresh (same failing result) and fully validates the winner --
+    whose own run is entirely seeded from its screening pass, 0 new calls,
+    since the screening subset and attempt count equal the full set here.
+    Pass/fail drives the promotion path; this tests wiring only.
     """
     held_in = fixture_instances("graphwalks", "short", "held_in")
     held_out = fixture_instances("graphwalks", "short", "held_out")
 
     script = [final(WRONG_ANSWER) for _ in held_in]  # mining: 3 failures
-    script += [final(WRONG_ANSWER) for _ in held_out]  # baseline
-    script += [final(gold_answer(instance)) for instance in held_out]  # combined candidate
+    script += [final(WRONG_ANSWER) for _ in held_out]  # screening baseline
+    script += [final(gold_answer(instance)) for instance in held_out]  # screening candidate (S4)
+    script += [final(gold_answer(instance)) for instance in held_out]  # screening candidate (S2)
+    script += [final(WRONG_ANSWER) for _ in held_out]  # full-validation baseline, fresh
     return script
 
 
@@ -232,6 +241,19 @@ def lambda_evaluation_script() -> list[str]:
 
 def n_optimization_runs() -> int:
     return len(optimization_script())
+
+
+# The winning candidate's full-validation runs are entirely seeded from its
+# own screening pass (0 new LM calls -- not in optimization_script()), but
+# they're still persisted (copied trace files + manifest entries), so a
+# count over persisted runs (check_costs_present) needs this on top of
+# n_optimization_runs(), while a count over LM calls (factory.total_calls)
+# does not.
+N_SCREENING_REUSED_RUNS = 3  # the winner's held-out instances, at v==v_screen==1
+
+
+def n_optimization_persisted_runs() -> int:
+    return n_optimization_runs() + N_SCREENING_REUSED_RUNS
 
 
 def n_evaluation_runs() -> int:
@@ -273,7 +295,18 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
     config = load_config("smoke")
     config = replace(
         config,
-        operational=replace(config.operational, mining_run_workers=1),
+        operational=replace(
+            config.operational,
+            mining_run_workers=1,
+            # screening_run_workers defaults to 3 (Orchestrator._screen's own
+            # knob, decoupled from validation_run_workers): above 1, each of a
+            # subject's runs dispatches to its own child process with a freshly
+            # reconstructed client, so those calls never increment this single
+            # in-process ClientFactory's count. Pinning it to 1 keeps every
+            # scripted call flowing through the one shared factory this smoke
+            # run's assertions are built around.
+            screening_run_workers=1,
+        ),
     )
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setenv("OPENROUTER_API_KEY", OPENROUTER_KEY_SENTINEL)
@@ -507,7 +540,7 @@ class TestLiveSmokeStructuralChecks:
         experiment_smoke.check_directory_contract(smoke.out_dir)
         # No run is terminated in the mock tier, so every run carries a cost.
         assert experiment_smoke.check_costs_present(smoke.out_dir) == (
-            n_optimization_runs() + n_evaluation_runs(),
+            n_optimization_persisted_runs() + n_evaluation_runs(),
             0,
         )
         persisted = experiment_smoke.check_sampling_args(smoke.out_dir, smoke.config)
@@ -521,7 +554,12 @@ class TestLiveSmokeStructuralChecks:
 
     def test_stage_coverage_check_reads_the_smoke_artifacts(self, smoke: SmokeRun):
         counts = experiment_smoke.check_stage_coverage(smoke.out_dir)
-        assert set(counts) == set(experiment_smoke.REQUIRED_STAGES)
+        # REQUIRED_STAGES is the minimum proving every model role ran; the
+        # smoke profile's k=2 also screens two candidates independently
+        # (STAGE_SCREENING), a real extra stage check_stage_coverage never
+        # filters out.
+        assert set(experiment_smoke.REQUIRED_STAGES) <= set(counts)
+        assert set(counts) - set(experiment_smoke.REQUIRED_STAGES) == {"screening"}
         assert all(count > 0 for count in counts.values())
 
     def test_stage_coverage_names_a_missing_stage(self, smoke: SmokeRun, tmp_path):

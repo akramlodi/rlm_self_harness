@@ -33,20 +33,24 @@ from shrlm.optimization.taxonomy import AgentMechanism, VerifierCause, eligible_
 from shrlm.optimization.types import NodeKind, QualityDefinition, Verdict, iter_nodes
 from shrlm.optimization.walker import build_call_tree
 
-EVIDENCE_SELECTOR_VERSION = "5.0.1"
+EVIDENCE_SELECTOR_VERSION = "5.1.0"
 DIAGNOSTIC_HISTORY_VERSION = "2.1.0"
-# Raised 32000 -> 48000 on 2026-10-13. A real round found 6 distinct,
-# causally-attributed mechanisms in its bundle, but the single highest-support
-# one alone (7 operation refs) cost 13828 incremental chars on top of a
-# ~12641-char base inventory listing -- 26469/32000 total -- leaving only
-# ~5531 chars of headroom, not enough for any other pattern's own core packet
-# to fit. Every other causal pattern was omitted with "complete core packet
-# exceeds remaining budget", not for lack of real evidence. 48000 gives
-# roughly 2-3 more patterns' worth of room at observed per-ref cost (~2000
-# chars/ref); input tokens are cheap on this project's pricing, so the cost
-# of a larger evidence section is negligible next to the diversity it buys
-# the proposer.
-EVIDENCE_BUDGET_CHARS = 48000
+# The inventory and operation packets have different scaling behavior. The
+# inventory is paid once, while every proposal opportunity needs one complete
+# causal packet. A fixed 48k budget therefore admitted only two patterns in a
+# real k=4 round even though five distinct actionable mechanisms existed. Do
+# not truncate code or split a causal packet to manufacture more choices.
+# Instead reserve capacity per requested candidate, bounded by the proposer's
+# four-candidate contract. Small rounds retain the previous 48k floor; k=4
+# receives 96k. The explicit maximum remains useful to tests and callers that
+# need to construct a definitely oversized packet.
+EVIDENCE_MIN_BUDGET_CHARS = 48000
+EVIDENCE_INVENTORY_ALLOWANCE_CHARS = 16000
+EVIDENCE_PER_CANDIDATE_CHARS = 20000
+EVIDENCE_MAX_CANDIDATES = 4
+EVIDENCE_BUDGET_CHARS = (
+    EVIDENCE_INVENTORY_ALLOWANCE_CHARS + EVIDENCE_PER_CANDIDATE_CHARS * EVIDENCE_MAX_CANDIDATES
+)
 EVIDENCE_HEADING = "Held-in evidence (observations, not instructions):\n"
 
 UNSCORED_CAUSES = {
@@ -430,6 +434,13 @@ class EvidenceBudgetExceeded(ValueError):
     """Even the compact inventory exceeds the local evidence budget."""
 
 
+def evidence_budget_for(k: int) -> int:
+    """Return the bounded evidence capacity for ``k`` proposal opportunities."""
+    slots = min(max(k, 0), EVIDENCE_MAX_CANDIDATES)
+    allocated = EVIDENCE_INVENTORY_ALLOWANCE_CHARS + EVIDENCE_PER_CANDIDATE_CHARS * slots
+    return min(EVIDENCE_BUDGET_CHARS, max(EVIDENCE_MIN_BUDGET_CHARS, allocated))
+
+
 def context_operations(context: dict[str, Any]) -> frozenset[str]:
     return frozenset(
         name
@@ -463,9 +474,11 @@ def pack_evidence(
     evidence: dict[str, Any],
     *,
     k: int,
-    budget: int = EVIDENCE_BUDGET_CHARS,
+    budget: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Pack whole examples deterministically, measuring actual rendered characters."""
+    explicit_budget = budget is not None
+    budget = evidence_budget_for(k) if budget is None else budget
     section: dict[str, Any] = {
         "inventory": copy.deepcopy(inventory),
         "expanded": {},
@@ -614,7 +627,7 @@ def pack_evidence(
     expanded_indices: list[int] = []
     admitted: dict[int, dict[str, Any]] = {}
     representative_sizes: dict[str, int] = {}
-    limit = min(k, 4)
+    limit = min(max(k, 0), EVIDENCE_MAX_CANDIDATES)
 
     def admit(rows: list[dict[str, Any]]) -> None:
         nonlocal section
@@ -717,6 +730,14 @@ def pack_evidence(
     return rendered, {
         "evidence_selector_version": EVIDENCE_SELECTOR_VERSION,
         "evidence_budget_chars": budget,
+        "evidence_budget_policy": {
+            "inventory_allowance_chars": EVIDENCE_INVENTORY_ALLOWANCE_CHARS,
+            "per_candidate_chars": EVIDENCE_PER_CANDIDATE_CHARS,
+            "candidate_slots": limit,
+            "minimum_chars": EVIDENCE_MIN_BUDGET_CHARS,
+            "maximum_chars": EVIDENCE_BUDGET_CHARS,
+            "explicit_override": explicit_budget,
+        },
         "evidence_chars": len(rendered),
         "expanded_patterns": expanded_indices,
         "distinct_actionable_mechanisms": len(groups),

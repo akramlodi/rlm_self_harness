@@ -28,7 +28,7 @@ max_output_tokens = 8192
 
 [splits]
 # Only 151 OBLIQ-Bench Math queries exist total. Single-pool shape (like
-# oolong_synth): held_in + held_out + test_short = 50 of 151, leaving 101
+# oolong_synth): held_in + held_out + promotion + test_short = 65 of 151, leaving 86
 # unused. test_long is INERT for this environment (split_plan() never reads
 # it for loop.environment == "obliq_bench_math") -- present because
 # SplitsConfig is a shared, mandatory dataclass, not because it does anything
@@ -56,9 +56,20 @@ environment = "obliq_bench_math"
 initial_harness = "H0*"
 
 [promotion]
+metric = "primary_quality"
 tau_regression = 0.0
 tau_improvement = 0.0
 cost_band = [0.0, 3]
+
+[refinement]
+# OBLIQ has 101 queries outside the original 15/15/20 allocation. Reserve 15
+# of them for the non-adaptive final comparison after one candidate repair.
+enabled = true
+promotion_size = 15
+min_conditional_quality_delta = 0.02
+min_failure_rate_delta = 0.0
+failure_causes = ["wrong_format"]
+max_generations = 1
 
 # -----------------------------------------------------------------------------
 # Inert-but-mandatory below (graphwalks/oolong_pairs/oolong): schema fields

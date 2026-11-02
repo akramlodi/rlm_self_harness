@@ -45,8 +45,8 @@ from shrlm.rlm_harness import SURFACES
 # mapping changes. Bundles carrying different versions are not comparable, so
 # the frequency-before-vs-after analysis excludes bundles written under any
 # other version (``pattern_frequency_diff.bundle_completeness``).
-TAXONOMY_VERSION = "3.3.0"
-CAPABILITY_VERSION = "surface-capabilities/v1"
+TAXONOMY_VERSION = "3.4.0"
+CAPABILITY_VERSION = "surface-capabilities/v2"
 
 
 class EditableSurface(str, Enum):
@@ -219,9 +219,9 @@ class AgentMechanism(str, Enum):
 
     Cardinality is fixed by one rule: each mechanism maps to exactly one
     EditableSurface. The proposal stage requires every edit to modify a single
-    declared surface, so a mechanism spanning two surfaces would be unusable
-    downstream. Ten surfaces at one to four mechanisms each gives sixteen
-    plus OTHER, and every surface is reachable from at least one mechanism.
+    declared surface, so a mechanism spanning two primary surfaces would be
+    unusable downstream. Eighteen concrete mechanisms plus OTHER keep every
+    surface reachable while separating wrong-objective and serialization faults.
 
     Three pairs are opposite in direction and must never be merged, since a
     cluster holding both members would demand contradictory edits:
@@ -234,6 +234,7 @@ class AgentMechanism(str, Enum):
     REPL_CONTRACT_MISUSE = "repl_contract_misuse"
 
     # S2 -- decomposition instruction
+    TASK_OBJECTIVE_MISINTERPRETATION = "task_objective_misinterpretation"
     WHOLE_INPUT_SUBCALL_COLLAPSE = "whole_input_subcall_collapse"
     INCOMPLETE_COVERAGE = "incomplete_coverage"
     REDUNDANT_DECOMPOSITION = "redundant_decomposition"
@@ -261,6 +262,7 @@ class AgentMechanism(str, Enum):
     REPL_EXECUTION_FAULT = "repl_execution_fault"
 
     # S9 -- answer middleware
+    ANSWER_SERIALIZATION_FAILURE = "answer_serialization_failure"
     LOSSY_AGGREGATION = "lossy_aggregation"
 
     # S10 -- skill library (reusable procedures, available across turns)
@@ -277,6 +279,11 @@ MECHANISM_DOCS: dict[AgentMechanism, str] = {
         "The root violated or misread the documented REPL contract -- for example attempting to "
         "read the prompt variable into context wholesale, or ignoring the documented variable "
         "protocol."
+    ),
+    AgentMechanism.TASK_OBJECTIVE_MISINTERPRETATION: (
+        "The trace visibly optimized or submitted a different task or output objective than the "
+        "one requested. Cite the conflicting objective or operation. A merely wrong answer does "
+        "not establish this mechanism."
     ),
     AgentMechanism.WHOLE_INPUT_SUBCALL_COLLAPSE: (
         "The root delegated nearly the entire context to a single sub-call, or performed no "
@@ -310,6 +317,12 @@ MECHANISM_DOCS: dict[AgentMechanism, str] = {
         "An observed combine operation dropped, truncated, or mis-merged sub-call results. "
         "Cite that operation; wrong labels or missing final elements alone do not prove a merge "
         "fault. Do not claim the local results were correct unless that was verified."
+    ),
+    AgentMechanism.ANSWER_SERIALIZATION_FAILURE: (
+        "The intended semantic result is visibly present in an internal value, but the emitted "
+        "answer violates the required representation or omits that value during serialization. "
+        "Cite both the internal result and emitted answer. A wrong_format verifier cause alone "
+        "does not establish this mechanism."
     ),
     AgentMechanism.UNPARSED_CHILD_OUTPUT: (
         "The root could not reliably parse free-text sub-call returns because no return structure "
@@ -366,6 +379,7 @@ MECHANISM_DOCS: dict[AgentMechanism, str] = {
 # ``MECHANISM_SURFACES`` below; this dict is its first column.
 MECHANISM_SURFACE: dict[AgentMechanism, EditableSurface] = {
     AgentMechanism.REPL_CONTRACT_MISUSE: EditableSurface.REPL_CONTRACT,
+    AgentMechanism.TASK_OBJECTIVE_MISINTERPRETATION: EditableSurface.DECOMPOSITION_INSTRUCTION,
     AgentMechanism.WHOLE_INPUT_SUBCALL_COLLAPSE: EditableSurface.DECOMPOSITION_INSTRUCTION,
     AgentMechanism.INCOMPLETE_COVERAGE: EditableSurface.DECOMPOSITION_INSTRUCTION,
     AgentMechanism.REDUNDANT_DECOMPOSITION: EditableSurface.DECOMPOSITION_INSTRUCTION,
@@ -379,6 +393,7 @@ MECHANISM_SURFACE: dict[AgentMechanism, EditableSurface] = {
     AgentMechanism.ITERATION_BUDGET_EXHAUSTION: EditableSurface.RUNTIME_POLICY,
     AgentMechanism.UNPARSED_CHILD_OUTPUT: EditableSurface.METADATA,
     AgentMechanism.REPL_EXECUTION_FAULT: EditableSurface.REPL_HELPERS,
+    AgentMechanism.ANSWER_SERIALIZATION_FAILURE: EditableSurface.ANSWER_MIDDLEWARE,
     AgentMechanism.LOSSY_AGGREGATION: EditableSurface.EXECUTION_INSTRUCTION,
     AgentMechanism.UNCONSULTED_PROCEDURE: EditableSurface.SKILLS,
 }
@@ -401,6 +416,12 @@ MECHANISM_SURFACES: dict[AgentMechanism, tuple[EditableSurface, ...]] = {
         EditableSurface.ANSWER_MIDDLEWARE,
         EditableSurface.SKILLS,
         EditableSurface.VERIFICATION_INSTRUCTION,
+    ),
+    AgentMechanism.TASK_OBJECTIVE_MISINTERPRETATION: (
+        EditableSurface.DECOMPOSITION_INSTRUCTION,
+        EditableSurface.EXECUTION_INSTRUCTION,
+        EditableSurface.VERIFICATION_INSTRUCTION,
+        EditableSurface.SKILLS,
     ),
     AgentMechanism.WHOLE_INPUT_SUBCALL_COLLAPSE: (
         EditableSurface.DECOMPOSITION_INSTRUCTION,
@@ -472,6 +493,11 @@ MECHANISM_SURFACES: dict[AgentMechanism, tuple[EditableSurface, ...]] = {
         EditableSurface.EXECUTION_INSTRUCTION,
         EditableSurface.REPL_CONTRACT,
         EditableSurface.RECOVERY_INSTRUCTION,
+    ),
+    AgentMechanism.ANSWER_SERIALIZATION_FAILURE: (
+        EditableSurface.ANSWER_MIDDLEWARE,
+        EditableSurface.VERIFICATION_INSTRUCTION,
+        EditableSurface.SKILLS,
     ),
     AgentMechanism.LOSSY_AGGREGATION: (
         EditableSurface.EXECUTION_INSTRUCTION,

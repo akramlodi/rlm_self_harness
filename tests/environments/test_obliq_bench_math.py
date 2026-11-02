@@ -192,6 +192,7 @@ class TestObliqBenchMathVerifier:
             "pass_ndcg_threshold",
             "rank_k",
             "extraction_rule",
+            "primary_quality",
         }
 
 

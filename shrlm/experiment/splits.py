@@ -122,6 +122,80 @@ OOLONG_PAIRS_CURATED_TASK_ORDER: tuple[int, ...] = (
 )
 
 
+# The screening-tournament probe (shrlm.experiment.orchestrator): a small,
+# fixed, difficulty-informed subset of held_out used to cheaply rank several
+# independently-proposed candidates before committing full-validation spend
+# to just the best one. Derived from real pooled held_out trace data (two
+# real runs' baseline evaluations, terminal failures correctly counted as
+# zero rather than excluded): task_id 11 is unambiguously the hardest held_out
+# task_id at every length (macro F1 0.517 vs. the next-worst 0.684); task_id 6
+# is the easiest (macro F1 0.909). Mixes hard+easy per length rather than
+# always the same extreme, so the screen isn't dominated by one idiosyncratic
+# task_id's noise; weighted toward the harder end in general since an easy
+# instance where the baseline already scores ~0.95+ has little room to show a
+# candidate is better or worse.
+OOLONG_PAIRS_SCREENING_TASK_IDS: dict[int, tuple[int, ...]] = {
+    8192: (11,),  # hardest held_out task_id alone
+    16384: (11, 6),  # hard + easy
+    32768: (11, 18, 6),  # two hard (11, 18), one easy (6)
+}
+
+
+def oolong_pairs_screening_subset(heldout: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The curated screening probe: held_out instances matching (context_len, task_id)
+    in ``OOLONG_PAIRS_SCREENING_TASK_IDS``. Real oolong_pairs instances always carry
+    both fields (``shrlm/environments/oolong_pairs.py``); a held_out population without
+    them -- a test fixture standing in for oolong_pairs with a generic loader, say --
+    has no curated difficulty signal to use, so this falls back to
+    ``default_screening_subset`` instead of crashing.
+
+    A held_out population smaller than the full profile's own (fewer n_in/n_ho
+    than the 8/8 the curated task-id blocks were sized for) can carry
+    context_len/task_id yet still match nothing -- the curated block's task_ids
+    simply never land in a smaller held_out slice. When that happens but
+    context_len IS present on every instance, prefer one instance per bound
+    length over the fully-generic first-n_screen default, so screening still
+    samples across the blend rather than collapsing onto whichever length
+    happens to sort first.
+    """
+    wanted = {
+        (length, task_id)
+        for length, task_ids in OOLONG_PAIRS_SCREENING_TASK_IDS.items()
+        for task_id in task_ids
+    }
+    matched = [
+        instance
+        for instance in heldout
+        if "context_len" in instance
+        and "task_id" in instance
+        and (int(instance["context_len"]), int(instance["task_id"])) in wanted
+    ]
+    if matched:
+        return matched
+    if heldout and all("context_len" in instance for instance in heldout):
+        seen_lengths: set[int] = set()
+        one_per_length: list[dict[str, Any]] = []
+        for instance in heldout:
+            length = int(instance["context_len"])
+            if length not in seen_lengths:
+                seen_lengths.add(length)
+                one_per_length.append(instance)
+        return one_per_length
+    return default_screening_subset(heldout)
+
+
+def default_screening_subset(
+    heldout: list[dict[str, Any]], n_screen: int = 3
+) -> list[dict[str, Any]]:
+    """Generic screening-probe fallback for environments without a curated
+    difficulty constant: the first ``n_screen`` held_out instances, in
+    materialized order. Not difficulty-informed -- a reasonable default, not
+    validated against real trace data the way ``oolong_pairs_screening_subset``
+    is.
+    """
+    return heldout[:n_screen]
+
+
 class SplitsPersistenceError(ExperimentError):
     """Persisted splits contradict the configuration or were modified on disk."""
 
@@ -249,6 +323,13 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
     from the plan, so an OOLONG run never touches the GraphWalks dataset.
     """
     splits = config.splits
+    # Dormant: still materialized whenever refinement is enabled, but
+    # refinement validation now reuses `held_out` instead of this split (see
+    # RefinementSettings' docstring and Orchestrator._validate_refinement).
+    # Kept rather than deleted as a paper trail for that earlier design.
+    promotion_roles = (
+        {"promotion": config.refinement.promotion_size} if config.refinement.enabled else {}
+    )
     if config.loop.environment == "graphwalks":
         oolong_pairs = config.environments.oolong_pairs
         return {
@@ -256,6 +337,7 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "short": {
                     "held_in": splits.n_in,
                     "held_out": splits.n_ho,
+                    **promotion_roles,
                     "test": splits.test_short,
                 },
                 "long": {"test": splits.test_long},
@@ -271,6 +353,7 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "short": {
                     "held_in": splits.n_in,
                     "held_out": splits.n_ho,
+                    **promotion_roles,
                     "test": splits.test_short,
                 },
             },
@@ -288,7 +371,12 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
         # mining/promotion draw from all three, combined. ``long`` (262144)
         # stays the separate, test-only length: never mined or validated,
         # only reserved for final-harness evaluation.
-        optimization_total = splits.n_in + splits.n_ho + splits.test_short
+        optimization_total = (
+            splits.n_in
+            + splits.n_ho
+            + splits.test_short
+            + (config.refinement.promotion_size if config.refinement.enabled else 0)
+        )
         if optimization_total > oolong_pairs.n_short:
             raise ValueError(
                 "oolong_pairs optimization roles require "
@@ -305,6 +393,7 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
         optimization_roles = {
             "held_in": splits.n_in,
             "held_out": splits.n_ho,
+            **promotion_roles,
             "test": splits.test_short,
         }
         return {
@@ -321,6 +410,7 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
                 "short": {
                     "held_in": splits.n_in,
                     "held_out": splits.n_ho,
+                    **promotion_roles,
                     "test": splits.test_short,
                 },
             },
@@ -397,11 +487,12 @@ def _can_draw_oolong_pairs_with_promotion_safely(
     to the original behavior unchanged rather than guessing at a shape this
     fix was not built and verified for.
 
-    Currently unreached: ``split_plan`` never materializes a role beyond
-    held_in/held_out/test, so ``roles`` never contains ``"promotion"`` and
-    this always returns False. Written generically (it fixes a real
-    materialization bug for *any* role beyond those three, not something
-    tied to one caller) so a future role addition can reuse it unchanged.
+    Still exercised whenever refinement is enabled (the promotion role is
+    still materialized -- see ``split_plan``), even though
+    ``Orchestrator._validate_refinement`` no longer reads the resulting
+    ``promotion`` split: this function fixes a real materialization bug for
+    *any* role beyond held_in/held_out/test, not something specific to
+    refinement's now-dormant use of it.
     """
     if "promotion" not in roles:
         return False

@@ -22,9 +22,11 @@ from shrlm.experiment.splits import (
     MANIFEST_FILE,
     OOLONG_PAIRS_CURATED_TASK_ORDER,
     SplitsPersistenceError,
+    default_screening_subset,
     instance_lines,
     load_oolong_pairs_split,
     materialize_splits,
+    oolong_pairs_screening_subset,
     sha256_text,
     split_file_name,
     split_plan,
@@ -459,6 +461,14 @@ class TestOolongPairsEnvironment:
                 f"oolong_pairs_{length}_test.jsonl": config.splits.test_short
                 for length in ("short", "mid16k", "mid32k")
             }
+            | (
+                {
+                    f"oolong_pairs_{length}_promotion.jsonl": config.refinement.promotion_size
+                    for length in ("short", "mid16k", "mid32k")
+                }
+                if config.refinement.enabled
+                else {}
+            )
             | {
                 "oolong_pairs_long_test.jsonl": config.splits.test_long,
             }
@@ -498,3 +508,49 @@ class TestOolongPairsCuratedTaskOrder:
         present = [instance["task_id"] for instance in instances]
         priority = {task_id: index for index, task_id in enumerate(OOLONG_PAIRS_CURATED_TASK_ORDER)}
         assert present == sorted(present, key=lambda task_id: priority[task_id])
+
+
+class TestScreeningSubsets:
+    """``oolong_pairs_screening_subset``'s three-tier fallback
+    (shrlm.experiment.orchestrator's screening tournament): curated
+    difficulty match, then one-instance-per-length, then the fully-generic
+    default -- in that order."""
+
+    @staticmethod
+    def _instance(length: int, task_id: int, tag: str) -> dict[str, Any]:
+        return {"id": f"pairs-{length}-{task_id}-{tag}", "context_len": length, "task_id": task_id}
+
+    def test_curated_match_wins_when_present(self):
+        heldout = [
+            self._instance(8192, 11, "a"),  # curated: matches
+            self._instance(8192, 1, "b"),  # not curated
+            self._instance(16384, 6, "c"),  # curated: matches
+        ]
+        subset = oolong_pairs_screening_subset(heldout)
+        assert subset == [heldout[0], heldout[2]]
+
+    def test_falls_back_to_one_per_length_when_nothing_curated_matches(self):
+        """A held_out population smaller than the full profile's (fewer
+        n_in/n_ho than the curated blocks were sized for) can carry
+        context_len/task_id yet still miss every wanted task_id -- the
+        smaller slice simply never reaches them."""
+        heldout = [
+            self._instance(8192, 1, "a"),
+            self._instance(8192, 2, "b"),
+            self._instance(16384, 3, "c"),
+            self._instance(32768, 4, "d"),
+            self._instance(32768, 5, "e"),
+        ]
+        subset = oolong_pairs_screening_subset(heldout)
+        assert subset == [heldout[0], heldout[2], heldout[3]]
+        assert len({instance["context_len"] for instance in subset}) == len(subset)
+
+    def test_falls_back_to_the_generic_default_without_context_len(self):
+        """A held_out population with no length metadata at all (a test
+        fixture standing in for oolong_pairs via a generic loader) has no
+        length to group by, so the fully-generic default applies unchanged."""
+        heldout = [{"id": f"pairs-{i}"} for i in range(5)]
+        assert oolong_pairs_screening_subset(heldout) == default_screening_subset(heldout)
+
+    def test_empty_heldout_defers_to_the_generic_default(self):
+        assert oolong_pairs_screening_subset([]) == default_screening_subset([]) == []

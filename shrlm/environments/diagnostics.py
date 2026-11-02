@@ -16,6 +16,7 @@ TERMINAL_ZERO = {
     )
 }
 SET_QUALITY = QualityDefinition("f1", "v1", "higher", terminal_values=TERMINAL_ZERO)
+NDCG_QUALITY = QualityDefinition("ndcg_at_10", "v1", "higher", terminal_values=TERMINAL_ZERO)
 OOLONG_QUALITY = QualityDefinition("score", "v1", "higher", terminal_values=TERMINAL_ZERO)
 OOLONG_SCORE_RE = re.compile(
     r"score=(0\.\d+|1\.0+) exact=(True|False) "
