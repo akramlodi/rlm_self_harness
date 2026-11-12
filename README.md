@@ -24,27 +24,31 @@ Top-level layout (annotated):
 .gitattributes                       repository attributes
 .github/                              GitHub workflows and CI configs
 .gitignore                            ignore rules
-AGENTS.md                             agent-related documentation
-Makefile                              common tasks (install, check, quickstart)
+AGENTS.md                             contributor and coding-agent guidelines
+Makefile                              common tasks (install, lint, test, runtime examples)
 pyproject.toml                        packaging, dependencies, and extras
 uv.lock                               lockfile for the uv environment
-configs/                              optional configuration files
-docs/                                 additional documentation
-examples/                              example scripts and small demos
-paper/                                 paper source and assets
-patches/                               auxiliary patches
-rlm/                                   core RLM runtime package (clients, environments, logger, utils)
-shrlm/                                  self-harness implementation and spec (surfaces, runner, harness_identity, optimization)
-training/                               training harness, environments, and examples (rlm-train, oolong env)
-visualizer/                             web visualizer (Node.js + shadcn/ui) for run logs
-tests/                                  unit tests and test utilities
+configs/                              experiment TOMLs (one per model x environment arm; see below)
+docs/                                 dated plans and analysis notes for the experiment work
+examples/                             experiment drivers (run_experiment, run_evaluation, ...) and runtime demos
+paper/                                paper source and assets
+patches/                              auxiliary patches
+rlm/                                  core RLM runtime package (clients, environments, logger, utils)
+scripts/                              long-run supervisor and proposal-diff helpers
+shrlm/                                self-harness spec, environments, baselines, optimization loop, experiment orchestration
+third_party/                          licence and provenance of vendored code (lambda-RLM)
+training/                             training harness, environments, and examples (rlm-train, oolong env)
+visualizer/                           web visualizer (Node.js + shadcn/ui) for run logs
+tests/                                unit tests and test utilities (paid `live` tests are opt-in)
 ```
 
-How it fits together: The `rlm/` package implements the runtime client, REPL environments, logging, and utilities used when running RLMs. The `shrlm/` package provides the self-harness specification (S1–S10), structural checks (I1–I3), and helpers to build and serialize harnesses for reproducible experiments. The `training/` directory holds training harnesses and example environments (including `oolong`) that depend on the core packages. The `visualizer/` is a separate frontend that reads JSONL logs written by `RLMLogger` in order to show call graphs, code, and sub-call traces.
+How it fits together: The `rlm/` package implements the runtime client, REPL environments, logging, and utilities used when running RLMs. The `shrlm/` package provides the self-harness specification (S1–S10), structural checks (I1–I3), and helpers to build and serialize harnesses; on top of that it holds the benchmark environments (`shrlm/environments/`), fixed baselines (`shrlm/baselines/`), the mine → attribute → propose → validate → promote loop (`shrlm/optimization/`), and the experiment orchestrator and analysis tools (`shrlm/experiment/`). The `training/` directory holds training harnesses and example environments (including `oolong`) that depend on the core packages. The `visualizer/` is a separate frontend that reads JSONL logs written by `RLMLogger` in order to show call graphs, code, and sub-call traces.
 
 Where to look next:
 - rlm/Readme.md — runtime usage and REPL environments
 - shrlm/README.md — self-harness specification and examples
+- shrlm/optimization/README.md — the optimization loop, stage by stage
+- shrlm/baselines/README.md — H0, H0* and λ-RLM baselines
 - pyproject.toml — packaging, extras for sandboxes (modal, prime, ipython)
 
 ## Self-Harness experiments
@@ -57,6 +61,43 @@ Every experiment parameter lives in that TOML — the code hardcodes none of the
 loaded config is hashed into an **identity** that is stamped into the output directory.
 Re-invoking the same command resumes an interrupted experiment exactly; a changed config
 refuses to resume, so every distinct configuration gets its own fresh `--out-dir`.
+
+### Environments and configurations
+
+`[loop].environment` selects which benchmark the loop mines and validates on. Each is
+implemented in `shrlm/environments/`:
+
+| Environment | Task | Quality metric |
+|---|---|---|
+| `graphwalks` (default) | graph traversal over long edge lists | pass count |
+| `oolong_synth` | OOLONG-synth aggregation; OOLONG-real is run periodically as a generalization check only | pass count |
+| `oolong_pairs` | OOLONG-Pairs pair extraction at 8k/16k/32k; the 262k pool is test-only | pair-set F1 (`primary_quality`) |
+| `obliq_bench_math` | OBLIQ-Bench Math retrieval (151 queries) | NDCG@10 (`primary_quality`) |
+
+Each TOML in `configs/` is one model × environment arm:
+
+| Config | Environment | Model / host | Notes |
+|---|---|---|---|
+| `experiment.toml` | graphwalks | Qwen3-30B-A3B / OpenRouter | original main run; also holds the `smoke` profile |
+| `experiment_ox.toml` | graphwalks | stealth/ox-alpha / OpenRouter | free-model arm, up to 16 rounds |
+| `experiment_kimiK25.toml` | graphwalks | Kimi-K2.5 / Azure | up to 5 rounds |
+| `experiment_oolong.toml` | oolong_synth | Kimi-K2.5 / Azure | |
+| `experiment_oolong_gptoss.toml` | oolong_synth | gpt-oss-120b / Azure | see the gpt-oss ladder below |
+| `experiment_oolong_DeepSeekV4Flash.toml` | oolong_synth | DeepSeek-V4-Flash / Azure | up to 15 rounds |
+| `experiment_oolong_pairs_DeepSeekV4Flash.toml` | oolong_pairs (single length) | DeepSeek-V4-Flash / Azure | |
+| `experiment_oolong_pairs_blended_DeepSeekV4Flash.toml` | oolong_pairs (8k+16k+32k) | DeepSeek-V4-Flash / Azure | per-length τ, 3 validation reps, patience-based stop |
+| `experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml` | oolong_pairs (8k+16k+32k) | DeepSeek-V4-Flash / OpenRouter | current arm: 4 screened candidates/round, patience 3 |
+| `experiment_oolong_pairs_openrouter_DeepSeekV4Flash.toml` | oolong_pairs | DeepSeek-V4-Flash / OpenRouter | read by `examples/lambda_rlm_oolong_pairs_long_smoke.py` only |
+| `experiment_obliq_bench_math_DeepSeekV4Flash.toml` | obliq_bench_math | DeepSeek-V4-Flash / Azure | real mining loop |
+| `experiment_obliq_bench_math_DeepSeekV4Flash.*.toml` | obliq_bench_math | DeepSeek-V4-Flash / Azure | frozen copies for the qualification and matched-20 baseline studies |
+| `dataset_qualification_DeepSeekV4Flash.toml` | all | DeepSeek-V4-Flash | input to `examples/dataset_qualification.py`, not an optimization run |
+
+The header comment of each TOML records why it differs from the file it was cloned from.
+Run any loop config with:
+
+```bash
+uv run python examples/run_experiment.py --config configs/<file>.toml --out-dir ./<fresh_dir>
+```
 
 The smoke, Qwen, and Ox configurations run on OpenRouter and require
 `OPENROUTER_API_KEY` in the environment (a `.env` file at the repo root works). The
@@ -90,6 +131,9 @@ selected config's `[pricing.list_price]`:
 |---|---|
 | `configs/experiment_kimiK25.toml`, `configs/experiment_oolong.toml` (Kimi-K2.5) | `SHRLM_VERIFIED_PRICING='0.60/3.00'` |
 | `configs/experiment_oolong_gptoss.toml` (gpt-oss-120b) | `SHRLM_VERIFIED_PRICING='0.15/0.6'` |
+| Azure DeepSeek-V4-Flash configs (`*_DeepSeekV4Flash.toml` without `openrouter`) | `SHRLM_VERIFIED_PRICING='0.19/0.51'` |
+
+OpenRouter configs need no attestation: OpenRouter reports the real per-response cost.
 
 ### Live pytest tiers and the gpt-oss ladder
 
@@ -127,14 +171,14 @@ uv run python examples/run_experiment.py --dry-run \
     --out-dir ./experiment_oolong_gptoss --probe-json ./smoke_gptoss/probe.json
 ```
 
-### The four configurations
+### The original GraphWalks configurations
 
 | | Smoke | Qwen (main) | Ox | Kimi-K2.5 (Azure) |
 |---|---|---|---|---|
 | Config file | `configs/experiment.toml` | `configs/experiment.toml` | `configs/experiment_ox.toml` | `configs/experiment_kimiK25.toml` |
 | Profile | `smoke` | `full` (default) | `full` (default) | `full` (default) |
 | Model (all 3 roles) | `qwen/qwen3-30b-a3b-instruct-2507` | `qwen/qwen3-30b-a3b-instruct-2507` | `stealth/ox-alpha` (free stealth model) | `Kimi-K2.5` deployment on Azure AI Foundry |
-| Scale | tiny: 3 held-in / 3 held-out instances, 1 round, 2 candidates | 24 / 40 instances, up to 3 rounds, 4 candidates | same instances as Qwen, up to **16 rounds** | same instances as Qwen, up to 3 rounds |
+| Scale | tiny: 3 held-in / 3 held-out instances, 1 round, 2 candidates | 24 / 40 instances, up to 3 rounds, 4 candidates | same instances as Qwen, up to **16 rounds** | same instances as Qwen, up to 5 rounds |
 | Purpose | end-to-end plumbing check for cents | the 2026-08-23 comparison run | free-model comparison arm; bounded by wall clock and `patience`, not spend | Azure comparison arm; cost synthesized from `[pricing]` (no provider cost field) |
 
 The `smoke` profile is the same TOML as the Qwen run with the `[smoke.*]` tables at the
@@ -197,7 +241,28 @@ observed retry/redirect/skill-load events, and measured batch outcomes. Revisite
 interventions require a prior reference and revision explanation. Identical
 rejected evaluated harnesses under the same incumbent are refused before paid calls.
 Exact outcomes and regressions remain visible, and `v=1` provides no causal guarantee.
-Validation still uses one baseline and one combined candidate on held-out data.
+
+### Screening, validation and repair
+
+Each round proposes up to `[loop].k` independent single-surface candidates instead of
+one merged batch. When more than one is admitted, a **screening tournament** runs every
+candidate at `[loop].v_screen` attempts (strictly fewer than `v`) on a small instance
+subset, ranks them, and fully validates only the winner at `v` attempts on held-out data,
+reusing its screening runs. `[operational].screening_workers` and
+`screening_run_workers` control screening concurrency separately from validation.
+If every screened candidate is rejected and `[reattribution].enabled` is set, the same
+mining runs are re-attributed once (no new rollouts) and re-screened.
+
+For `primary_quality` metrics with a per-length `[promotion.tau_regression]` table,
+validation uses **τ early stopping**: context lengths run in order and a candidate
+stops as soon as one length's regression veto fires. An unchanged incumbent's baseline
+is reused from the previous round instead of being re-run.
+
+With `[refinement].enabled`, a rejected candidate that improves quality on answered
+instances while a listed terminal failure cause (by default `wrong_format`) gets worse
+receives one bounded **repair generation**; the repaired descendant is judged against
+the same incumbent on the same held-out split.
+
 See the [proposal contract](shrlm/docs/harness-proposal-interface.md),
 [metric definitions](shrlm/docs/experiment-metrics.md), and
 [OOLONG-Pairs investigation](docs/analysis/oolong-pairs-2026-09-13/README.md).
@@ -248,10 +313,26 @@ One caveat for any tool that resolves the config from an out-dir: the default TO
 from a config the experiment never ran under). For the Ox experiment, always pass
 `--config configs/experiment_ox.toml` where the tool accepts it.
 
+## Baselines and frozen evaluation
+
+The optimization loop starts from **H0** (sparse harness); **H0\*** (the upstream RLM
+authors' hand-written harness) and **λ-RLM** (a typed functional runtime, vendored in
+`shrlm/baselines/upstream/` with its licence under `third_party/lambda-RLM/`) are fixed comparison baselines. Details are in
+[`shrlm/baselines/README.md`](shrlm/baselines/README.md).
+
+- `examples/run_evaluation.py` evaluates saved harnesses (e.g. `initial`, `sh_rlm`) on
+  frozen test splits with resumable workers; `--dry-run` prints run counts and caps.
+- `examples/dataset_qualification.py --config configs/dataset_qualification_DeepSeekV4Flash.toml`
+  runs H0, H0\* and λ-RLM on matched instances to compare datasets; it does not optimize.
+- `examples/obliq_bench_math_smoke.py` and `examples/lambda_rlm_oolong_pairs_long_smoke.py`
+  are narrow live smoke tests for one baseline × environment slice.
+- `examples/calibrate_oolong_pairs_tau.py` measures the repeated-H0 noise floor used to
+  set the per-length OOLONG-Pairs τ.
+
 ## RLM runtime
 
 The `rlm/` package (runtime setup, REPL environments -- local, IPython, Docker, Modal,
-Prime -- model providers, trajectory logging, and the visualizer) is documented in
+Prime, Daytona, E2B -- model providers, trajectory logging, and the visualizer) is documented in
 [`rlm/Readme.md`](rlm/Readme.md). The self-harness specification (surfaces S1-S10,
 invariants I1-I3) is documented in [`shrlm/README.md`](shrlm/README.md).
 
@@ -260,4 +341,4 @@ invariants I1-I3) is documented in [`shrlm/README.md`](shrlm/README.md).
 * **[Oct '25]** [Recursive Language Models Blogpost](https://alexzhang13.github.io/blog/2025/rlm/)
 * **[Jun '26]** [Self-Harness: Harnesses That Improve Themselves](https://arxiv.org/pdf/2606.09498)
   
-If you use this code or repository in your research, please cite:
+A citation for SH-RLM will be added here once the paper is public; its source is in [`paper/`](paper/).

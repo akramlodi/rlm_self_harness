@@ -3,7 +3,7 @@
         lint format test check
 
 help:
-	@echo "RLM Examples Makefile"
+	@echo "SH-RLM Makefile (RLM runtime examples + dev tasks)"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make install        - Install base dependencies with uv"

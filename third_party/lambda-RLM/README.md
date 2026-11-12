@@ -1,6 +1,7 @@
 # λ-RLM source
 
-The file `rlm/lambda_rlm.py` is imported from the official λ-RLM repository.
+The file `shrlm/baselines/upstream/lambda_rlm.py` is imported from the official λ-RLM
+repository (`rlm/lambda_rlm.py` upstream).
 
 - Repository: https://github.com/lambda-calculus-LLM/lambda-RLM
 - Revision: `c70c6db2cf8498eaf05fa6999dc41088827158f4`
