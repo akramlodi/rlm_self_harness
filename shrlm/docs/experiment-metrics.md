@@ -9,15 +9,15 @@ The analyses in the paper are only as good as what the optimization loop wrote d
 Setup once:
 
 ```bash
-uv pip install -e ".[graphwalks,oolong]"
+uv pip install -e ".[oolong]"
 echo 'AZURE_API_KEY=...' >> .env                # Azure AI Foundry key
 echo 'AZURE_FOUNDRY_ENDPOINT=https://<resource>.services.ai.azure.com' >> .env
 ```
 
-The configured backend is `azure_foundry` serving `Kimi-K2.5`; the config's `model` value must equal your Foundry deployment name (the catalog default is `Kimi-K2.5`). Before any live spend, verify the deployment's pay-as-you-go rates in the Azure portal match `[pricing.list_price]` in `configs/experiment.toml`, then attest them:
+For an Azure config (`azure_foundry` serving `DeepSeek-V4-Flash`), the config's `model` value must equal your Foundry deployment name. Before any live spend, verify the deployment's pay-as-you-go rates in the Azure portal match the config's `[pricing.list_price]`, then attest them (OpenRouter configs need no attestation):
 
 ```bash
-export SHRLM_VERIFIED_PRICING='0.6/3.0'        # USD per 1M input/output tokens as verified
+export SHRLM_VERIFIED_PRICING='0.19/0.51'      # USD per 1M input/output tokens as verified
 ```
 
 Then, in order:
@@ -29,9 +29,9 @@ SHRLM_RUN_LIVE=1 uv run pytest tests/experiment/test_smoke_live.py tests/clients
 uv run python examples/experiment_smoke.py --live --out-dir ./smoke_$(date +%m%d)
 ```
 
-The probe confirms token usage (cost is synthesized client-side from tokens × configured pricing — Azure returns no cost field), sampling-arg acceptance, and that instant (non-thinking) mode is honored, before anything expensive. The live pytest tier proves the real deployment inside one driver round. The full live tier runs one shrunk optimization round plus evaluation; the cumulative ceiling across all live tiers is proven under $5 before any spend. Use a fresh `--out-dir`: backends, decoding, caps, and the promotion band are identity keys, so a directory built under different values (including pre-switch OpenRouter directories) refuses to resume.
+The probe confirms token usage (cost is synthesized client-side from tokens × configured pricing — Azure returns no cost field), and sampling-arg acceptance before anything expensive. The live pytest tier proves the real deployment inside one driver round. The full live tier runs one shrunk optimization round plus evaluation; the cumulative ceiling across all live tiers is proven under $5 before any spend. Use a fresh `--out-dir`: backends, decoding, caps, and the promotion band are identity keys, so a directory built under different values (including pre-switch OpenRouter directories) refuses to resume.
 
-Parameters live in `configs/experiment.toml`. The `[smoke]` table overrides scale counts only; `examples/experiment_smoke.py` carries its own tighter caps for the live tier.
+Parameters live in the experiment TOML (default `config.CONFIG_PATH`). The `[smoke]` table overrides scale counts only; `examples/experiment_smoke.py` carries its own tighter caps for the live tier.
 
 ## Where the run writes its numbers
 
@@ -120,7 +120,7 @@ sealed, so the diagnosis excerpts can be verified.
 diagnosis. Bounded verifier detail is available in held-in diagnosis even when no
 numeric adapter exists. Held-out history consumes structured verifier metrics;
 the read-only legacy adapter accepts only strict known verifier formats:
-OOLONG Pairs and GraphWalks use F1; OOLONG uses `score`. All three declare higher as
+OOLONG Pairs uses F1; OOLONG uses `score`. Both declare higher as
 better and use an all-attempt mean. OOLONG's exact verifier-authored explicit-empty-marker
 failure also contributes zero. Unknown legacy measurements remain unavailable; arbitrary
 numbers and nonfinite/out-of-range values are never interpreted as quality.

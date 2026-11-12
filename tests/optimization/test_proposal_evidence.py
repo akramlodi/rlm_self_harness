@@ -247,7 +247,6 @@ def test_heldin_evidence_uses_custom_verifier_definition(tmp_path):
     "environment,detail,name",
     [
         ("oolong_pairs", "precision=0.800 recall=0.800 f1=0.800 missing=2 extra=1", "f1"),
-        ("graphwalks", "precision=0.800 recall=0.800 f1=0.800 missing=2 extra=1", "f1"),
         ("oolong", "score=0.800 exact=False kind=numeric", "score"),
     ],
 )
@@ -430,7 +429,7 @@ def test_rejected_history_preserves_partial_gain_and_rejection_without_payloads(
     saved_paths[1].write_text("\n".join(json.dumps(e) for e in entries))
     assert validation_history_progress(tmp_path, records[1], records[0])["status"] == "not_assessed"
     saved_paths[1].write_bytes(before[1])
-    contract["verifier_config"] = {"environment": "graphwalks"}
+    contract["verifier_config"] = {"environment": "obliq_bench_math"}
     (tmp_path / "merged/evaluation.json").write_text(json.dumps(contract))
     assert validation_history_progress(tmp_path, records[1], records[0])["status"] == "not_assessed"
 
@@ -945,9 +944,9 @@ def test_history_keeps_heldout_payloads_out_and_preserves_saved_bytes(tmp_path, 
     for trace in (path / "runs").glob("*.json"):
         trace.unlink()
     assert validation_history_diagnostics(tmp_path, record) == diagnostics
-    # The same text format is also emitted by GraphWalks. Never infer a domain
+    # The same text format can come from another environment. Never infer a domain
     # from numeric fields, including when old evaluation contracts are absent.
-    contract_path.write_text(json.dumps({"verifier_config": {"environment": "graphwalks"}}))
+    contract_path.write_text(json.dumps({"verifier_config": {"environment": "obliq_bench_math"}}))
     assert "pairs" not in validation_history_diagnostics(tmp_path, record)
     contract_path.unlink()
     assert "pairs" not in validation_history_diagnostics(tmp_path, record)

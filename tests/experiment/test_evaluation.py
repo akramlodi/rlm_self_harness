@@ -32,7 +32,7 @@ from shrlm.baselines.lambda_rlm import (
     LambdaBaselineConfig,
     lambda_method_hash,
 )
-from shrlm.experiment.config import ExperimentConfig
+from shrlm.experiment.config import ExperimentConfig, load_config
 from shrlm.experiment.evaluation import (
     CONDITION_B1,
     CONDITION_H0_STAR,
@@ -69,13 +69,13 @@ from shrlm.rlm_harness import H0, H0_STAR
 from tests.experiment.test_orchestrator import fake_loader, make_config, patch_runner
 from tests.optimization.test_driver import ClientFactory, GoldVerifier, final
 
-# Only GraphWalks is materialized, so the persisted test sets are exactly two:
-# ``graphwalks_short`` and ``graphwalks_long`` (one instance each at the
-# template's scale).
-LOADERS: dict[str, LoaderFn] = {"graphwalks": fake_loader("graphwalks")}
+# Only OOLONG-Pairs is materialized. Its persisted test sets are the three
+# blended short lengths plus the test-only long length (one instance each at
+# the template's scale); these tests exercise the ``short`` and ``long`` sets.
+LOADERS: dict[str, LoaderFn] = {"oolong_pairs": fake_loader("oolong_pairs")}
 
-SET_SHORT = "graphwalks_short"
-SET_LONG = "graphwalks_long"
+SET_SHORT = "oolong_pairs_short"
+SET_LONG = "oolong_pairs_long"
 # Execution order, not just membership: eval runs long sets first so a tripped
 # breaker truncates the cheap, plentiful short measurements rather than the
 # scarce long ones the report's validity gate depends on.
@@ -93,7 +93,16 @@ def eval_config(tmp_path: Path, *, repetitions: int = 1, **kwargs: Any) -> Exper
     to be resumed at another (``TestEvalRepetitionsIdentity``). Each test here
     therefore uses one count per ``out_dir``.
     """
-    config = make_config(tmp_path, **kwargs)
+    make_config(tmp_path, **kwargs)
+    # Switch the written TOML itself (not just the loaded object) so that a
+    # CLI reloading it from disk sees the same identity. n_in + n_ho +
+    # test_short instances must fit the pinned OOLONG-Pairs short pool.
+    path = tmp_path / "experiment.toml"
+    text = path.read_text()
+    text = text.replace('environment = "oolong_synth"', 'environment = "oolong_pairs"', 1)
+    text = text.replace("\nn_short = 1\n", "\nn_short = 5\n", 1)
+    path.write_text(text)
+    config = load_config("full", path=path)
     return replace(config, operational=replace(config.operational, eval_repetitions=repetitions))
 
 
@@ -115,8 +124,9 @@ def evaluate(
         config,
         conditions,
         out_dir,
-        verifiers={"graphwalks": GoldVerifier()},
+        verifiers={"oolong_pairs": GoldVerifier()},
         loaders=LOADERS,
+        test_set_ids=list(BOTH_SETS),
     )
 
 
@@ -144,7 +154,7 @@ def test_select_long_only_with_three_attempts_and_resume(tmp_path, monkeypatch):
     factory = scripted(monkeypatch, *(["RIGHT"] * 6))
     kwargs = {
         "test_set_ids": [SET_LONG],
-        "verifiers": {"graphwalks": GoldVerifier()},
+        "verifiers": {"oolong_pairs": GoldVerifier()},
         "loaders": LOADERS,
     }
     result = run_evaluation(config, BOTH_CONDITIONS, out, **kwargs)
@@ -159,7 +169,7 @@ def test_select_long_only_with_three_attempts_and_resume(tmp_path, monkeypatch):
     assert result.summary_path.read_bytes() == summary
 
 
-@pytest.mark.parametrize("sets", [[], [SET_LONG, SET_LONG], ["oolong_pairs_long"]])
+@pytest.mark.parametrize("sets", [[], [SET_LONG, SET_LONG], ["oolong_synth_short"]])
 def test_invalid_test_selection_spends_nothing(tmp_path, monkeypatch, sets):
     factory = scripted(monkeypatch, "RIGHT")
     with pytest.raises(ValueError, match="test set"):
@@ -186,7 +196,7 @@ def test_initial_condition_uses_exact_round_one_harness(tmp_path, monkeypatch):
         ("initial",),
         out,
         test_set_ids=[SET_LONG],
-        verifiers={"graphwalks": GoldVerifier()},
+        verifiers={"oolong_pairs": GoldVerifier()},
         loaders=LOADERS,
     )
     assert result.conditions[0].method_hash == harness_hash(original)
@@ -228,7 +238,7 @@ def test_three_evaluation_workers_run_and_resume_real_child_processes(tmp_path, 
     monkeypatch.setattr(evaluation_module, "run_governed_round", governed)
     kwargs = {
         "test_set_ids": [SET_LONG],
-        "verifiers": {"graphwalks": GoldVerifier()},
+        "verifiers": {"oolong_pairs": GoldVerifier()},
         "loaders": LOADERS,
     }
     result = run_evaluation(config, (CONDITION_B1,), out, run_workers=3, **kwargs)
@@ -306,7 +316,7 @@ def test_evaluation_cli_dry_run_checks_frozen_inputs_without_model_calls(
     assert factory.total_calls == 0
     assert not (out / EVAL_DIR).exists()
     output = capsys.readouterr().out
-    assert "graphwalks_long: 1 tasks; 2 runs" in output
+    assert "oolong_pairs_long: 1 tasks; 2 runs" in output
     assert "3 workers" in output
 
 
@@ -712,7 +722,9 @@ class TestSpendBreaker:
             # long measurement survives, which is the point of the ordering.
             assert condition.test_sets[SET_LONG]["n_runs"] == 1
             assert condition.test_sets[SET_SHORT]["n_runs"] == 0
-            assert condition.test_sets[SET_SHORT]["skipped_run_ids"] == ["graphwalks-short-4__a01"]
+            assert condition.test_sets[SET_SHORT]["skipped_run_ids"] == [
+                "oolong_pairs-short-4__a01"
+            ]
             assert condition.test_sets[SET_SHORT]["pass_rate"] is None
 
         idle = scripted(monkeypatch)
@@ -741,7 +753,7 @@ class TestInstanceIdentityGuard:
     def build_round(
         self, tmp_path: Path, split_text: str, persisted_text: str
     ) -> tuple[Path, Path]:
-        split_path = tmp_path / "graphwalks_short_test.jsonl"
+        split_path = tmp_path / "oolong_pairs_short_test.jsonl"
         split_path.write_text(split_text)
         set_path = tmp_path / CONDITION_B1 / SET_SHORT
         (set_path / "round_00").mkdir(parents=True)
@@ -802,10 +814,10 @@ class TestPersistedSplitsGuards:
                 {
                     "sample_seed": 0,
                     "environments": {
-                        "graphwalks": {
-                            "revision": "rev-gw",
+                        "oolong_pairs": {
+                            "revision": "rev-oolong",
                             "files": {
-                                "graphwalks_short_held_in.jsonl": {"sha256": "x", "count": 1}
+                                "oolong_pairs_short_held_in.jsonl": {"sha256": "x", "count": 1}
                             },
                         }
                     },
@@ -824,7 +836,7 @@ class TestPersistedSplitsGuards:
                 config,
                 (CONDITION_B1,),
                 out,
-                verifiers={"oolong_pairs": GoldVerifier()},
+                verifiers={"oolong_synth": GoldVerifier()},
                 loaders=LOADERS,
             )
         assert factory.total_calls == 0

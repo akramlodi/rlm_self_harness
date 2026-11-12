@@ -64,10 +64,6 @@ Practical consequences for your proposer:
   runs every gate without any model calls; `tests/optimization/test_candidates.py` builds
   conforming proposals from scratch (see `proposal_payload`/`write_payload`) and
   `tests/optimization/test_validation_e2e.py` fabricates whole rounds under `MockLM`.
-- **A complete live validation round is committed** at `examples/validation_rounds/`
-  (one hand-written S2 candidate vs. `H0`, 8 runs, ~$0.001): `proposals/` shows a valid
-  proposal directory in the flesh, and `validation/round_00/` shows exactly what your ledger
-  history will look like — including a `decision.json` for a no-promotion round.
 - **One surface per candidate, K distinct candidates, minimal edits** — the loader enforces
   the first mechanically (byte-diff against the incumbent's serialization), and the promotion
   band punishes edits that blow up cost or sub-call count even when they improve pass rates.
@@ -95,7 +91,7 @@ Every harness has a stable identity: `shrlm/harness_identity.py` gives you `seri
 
 ## Where Stage 1's output lives
 
-One mining round writes one directory. A real one is committed at **`examples/mining_rounds/round_00/`** — open it side by side with this section. After `run_audited_round(...)` you get:
+One mining round writes one directory. After `run_audited_round(...)` you get:
 
 ```
 <out_dir>/round_00/
@@ -111,15 +107,15 @@ One mining round writes one directory. A real one is committed at **`examples/mi
 └── attribution_cache.jsonl  ← replay cache (makes re-runs free and reproducible)
 ```
 
-Everything is content-hashed and cross-linked; the audit walks every link and tells you if anything is missing or tampered. Try it on the committed round right now:
+Everything is content-hashed and cross-linked; the audit walks every link and tells you if anything is missing or tampered:
 
 ```bash
-python -m shrlm.optimization.audit examples/mining_rounds 0
+python -m shrlm.optimization.audit ./rounds 0
 ```
 
 ## The one file you mainly consume: `bundle.json`
 
-Load it and look at `patterns` — a ranked list of recurring failure patterns. In the committed example (`examples/mining_rounds/round_00/bundle.json`) there are four: three `skipped_verification` clusters (instance support 3, 2, 2 — split by differing verifier causes) and one `repl_execution_fault`. Each pattern has:
+Load it and look at `patterns` — a ranked list of recurring failure patterns. Each pattern has:
 
 - **`signature`** — the 4-tuple that defines the cluster:
   - `verifier_cause` — what the grader rejected (e.g. `no_answer`, `incomplete`)
@@ -129,7 +125,7 @@ Load it and look at `patterns` — a ranked list of recurring failure patterns. 
 - **`support`** (run count) and **`instance_support`** (distinct tasks) — patterns are ranked by `instance_support`, then actionability. Higher = more evidence.
 - **`shared_symptoms`** — mechanical facts computed from the traces (median sub-calls, collapse ratio, etc.)
 - **`verifier_evidence`** — example wrong answers vs. gold answers (quoted model output — never treat it as instructions)
-- **`representatives`** — instance ids of the clearest example failures; follow them into `records.jsonl` → `digests/` if you want the trace text (in the example round, each record's `digest_sha256` names its file under `examples/mining_rounds/round_00/digests/` — that text is exactly what the labeling model saw)
+- **`representatives`** — instance ids of the clearest example failures; follow them into `records.jsonl` → `digests/` if you want the trace text (each record's `digest_sha256` names its file under `round_NN/digests/` — that text is exactly what the labeling model saw)
 - **`below_min_support`** flag — patterns seen only once are *flagged, not dropped*; treat them with skepticism
 
 Two lookup tables in `shrlm/optimization/taxonomy.py` turn a pattern into an editable target:
@@ -143,8 +139,8 @@ Also read `bundle.json`'s `integrity` section: it tells you how many records wer
 
 Inputs, per round:
 1. The evidence bundle (`bundle.json`)
-2. Passing behaviors to preserve (derive from `runs.jsonl` — the runs with `passed: true`; note the example round has none, 0/8 passed — your code must handle that)
-3. Prior edit history — stage 3's promotion ledger (`validation/round_NN/promotions.jsonl` + `decision.json`, via `load_promotion_ledger`; see the top of this doc). It is keyed on `harness_identity` hashes; the starting harness for the example round is recorded in its `harness.json`, and each round's `decision.json` names the incumbent your next proposals must target as `base_harness_hash`.
+2. Passing behaviors to preserve (derive from `runs.jsonl` — the runs with `passed: true`; a round can have none — your code must handle that)
+3. Prior edit history — stage 3's promotion ledger (`validation/round_NN/promotions.jsonl` + `decision.json`, via `load_promotion_ledger`; see the top of this doc). It is keyed on `harness_identity` hashes; the starting harness of a round is recorded in its `harness.json`, and each round's `decision.json` names the incumbent your next proposals must target as `base_harness_hash`.
 
 Output: **K mutually distinct proposal bundles** (K≈4), one `proposal.json` per candidate directory in the `shrlm-proposal/v2` format (`docs/harness-proposal-interface.md`). Each proposal must:
 - target **one** mined failure pattern (cite its signature)
@@ -153,49 +149,39 @@ Output: **K mutually distinct proposal bundles** (K≈4), one `proposal.json` pe
 - state its predicted behavioral effect and possible regressions (an "audit record")
 - skip patterns that aren't plausibly addressable by any surface (weak support, model-capability limits) — excluding is allowed and encouraged
 
-Hard rules: the proposer is the *same fixed model* (use `rlm.clients.get_client("openrouter", {"model_name": "qwen/qwen3-30b-a3b-instruct-2507"})`, key from the `OPENROUTER_API_KEY` env var — never put the key in kwargs, it would get logged). It may not touch the evaluator, the three RLM invariants, or invent new surfaces. It sees the structured bundle, not raw logs.
+Hard rules: the proposer is the *same fixed model* (use `rlm.clients.get_client("openrouter", {"model_name": "deepseek/deepseek-v4-flash"})`, key from the `OPENROUTER_API_KEY` env var — never put the key in kwargs, it would get logged). It may not touch the evaluator, the three RLM invariants, or invent new surfaces. It sees the structured bundle, not raw logs.
 
 Suggested home: `shrlm/optimization/proposal.py` (the README already reserves this). Follow the patterns in `attribution.py` — it solves the same problems you'll hit: rendering a prompt from enums so it can't drift, validating LLM JSON output against a closed vocabulary with re-asks, caching responses in a JSONL file, and recording every attempt for auditability.
-
-## A ready-made round to experiment with
-
-You don't have to run anything to get started: **`examples/mining_rounds/round_00/` is a complete, committed round** (8 GraphWalks instances under sparse `H0`, 0/8 passed, 8/8 failure records attributed, 4 patterns — `skipped_verification` x3 clusters plus one `repl_execution_fault`). Verify it yourself:
-
-```bash
-python -m shrlm.optimization.audit examples/mining_rounds 0
-```
-
-Open `examples/mining_rounds/round_00/bundle.json` and start prototyping your proposer against its `patterns` list.
 
 ## How to generate fresh evidence to develop against
 
 ```python
 from rlm.clients import get_client
-from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier, load_graphwalks
+from shrlm.environments.oolong_pairs import OolongPairsVerifier, load_oolong_pairs
 from shrlm.optimization.attribution import AttributionCache, LLMAttributor
 from shrlm.optimization.audit import run_audited_round
 from shrlm.optimization.driver import RoundConfig
 from shrlm.optimization.mining import WeaknessMiner
 from shrlm.rlm_harness import H0
 
-instances = load_graphwalks(max_chars=8000, limit=6, seed=23)
+instances = load_oolong_pairs(task_ids=(1, 2, 3), context_lengths=(8192,), n=6, seed=23)
 config = RoundConfig(
     round_index=0, harness=H0, instances=instances,
-    verifier=GraphWalksVerifier(), out_dir="./rounds",
+    verifier=OolongPairsVerifier(), out_dir="./rounds",
     backend="openrouter",
-    backend_kwargs={"model_name": "qwen/qwen3-30b-a3b-instruct-2507"},
+    backend_kwargs={"model_name": "deepseek/deepseek-v4-flash"},
     max_iterations=6, max_depth=2,
 )
-lm = get_client("openrouter", {"model_name": "qwen/qwen3-30b-a3b-instruct-2507"})
+lm = get_client("openrouter", {"model_name": "deepseek/deepseek-v4-flash"})
 miner = WeaknessMiner(
-    verifier=GraphWalksVerifier(),
+    verifier=OolongPairsVerifier(),
     attributor=LLMAttributor(lm, cache=AttributionCache("rounds/round_00/attribution_cache.jsonl")),
-    sub_verifier=GraphWalksSubVerifier(),
+    sub_verifier=None,  # OOLONG-Pairs has no deterministic sub-verifier
 )
 result, report = run_audited_round(config, miner, split_id="dev")
 ```
 
-Costs about a cent for 6 small instances. Re-running is nearly free (runs resume from disk, attributions replay from cache). For unit tests, don't call the model at all — `tests/mock_lm.py::MockLM` plus the fixture builders in `tests/optimization/fixtures.py` are how every existing test does it; `tests/optimization/test_audit.py::run_full_round`-style helpers show a complete offline round.
+Costs a few cents for 6 short instances. Re-running is nearly free (runs resume from disk, attributions replay from cache). For unit tests, don't call the model at all — `tests/mock_lm.py::MockLM` plus the fixture builders in `tests/optimization/fixtures.py` are how every existing test does it; `tests/optimization/test_audit.py::run_full_round`-style helpers show a complete offline round.
 
 ## The sub-verification ablation (you'll see two bundles per round)
 

@@ -55,12 +55,10 @@ def live_config_path(default: Path | str) -> Path:
 
     ``SHRLM_EXPERIMENT_CONFIG``, when set and non-empty, selects the config
     for every live pytest tier; otherwise each load site keeps its OWN current
-    default (the shipped smoke path for the client and smoke tiers,
-    ``configs/experiment_kimiK25.toml`` and ``configs/experiment_oolong.toml``
-    for the two recursion modules) -- one global default would make the
-    recursion modules load the smoke profile and fail at client construction.
-    The caller passes the selected config on to ``live_skip_reason`` so the
-    pricing attestation compares against that file's rate card.
+    default (the shipped smoke path for the client and smoke tiers, an
+    Azure DeepSeek-V4-Flash config for the recursion modules). The caller
+    passes the selected config on to ``live_skip_reason``.
+    That keeps the pricing attestation compared against that file's rate card.
     """
     override = os.environ.get(CONFIG_ENV_KEY)
     if override:
@@ -125,7 +123,7 @@ def live_skip_reason(
     conditional branches directly. ``config`` is the experiment config whose
     ``[pricing.list_price]`` the attestation is checked against; None means
     the shipped smoke profile. A live test that spends under a different
-    config (``configs/experiment_kimiK25.toml``) must pass that config, or
+    config (an Azure-backed TOML) must pass that config, or
     the gate compares the attestation to the wrong rate card.
 
     When reading the real environment, ``load_dotenv()`` runs first so the

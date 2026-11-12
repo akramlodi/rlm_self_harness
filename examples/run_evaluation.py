@@ -2,7 +2,7 @@
 
 Example (uses the experiment's saved repetition count and spend limits)::
 
-    uv run python examples/run_evaluation.py --config configs/experiment.toml \
+    uv run python examples/run_evaluation.py --config configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml \
         --out-dir experiment_full --conditions initial sh_rlm \
         --test-sets oolong_pairs_long --workers 3
 

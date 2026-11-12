@@ -11,8 +11,8 @@
 #   scripts/diff_proposal.sh <proposals_dir>/<candidate_id>
 #   scripts/diff_proposal.sh <round_dir> <candidate_id>
 #
-#   scripts/diff_proposal.sh experiment_kimi/opt/round_02/proposals/r02-c02-s2
-#   scripts/diff_proposal.sh experiment_kimi/opt/round_02 r02-c02-s2
+#   scripts/diff_proposal.sh experiment_oolong_pairs_openrouter/opt/round_02/proposals/r02-c02-s2
+#   scripts/diff_proposal.sh experiment_oolong_pairs_openrouter/opt/round_02 r02-c02-s2
 #
 # Options:
 #   --summary        Only print the surface table, the declared-vs-actual surface

@@ -7,7 +7,7 @@ public dataset: it is recreated by filtering the upstream OOLONG data
 distinct context windows and asking 20 fixed pairwise questions over each. The
 model must return the exact set of valid ``(user_id_1, user_id_2)`` pairs, one
 per line, lower id first. Set-valued gold with a deterministic extraction rule
-makes it a drop-in peer of GraphWalks for the weakness miner.
+makes it a deterministic, set-scored target for the weakness miner.
 
 The generation, task, and grading logic here is PORTED (copied and adapted)
 from ``examples/oolong_pairs/dataset.py``, ``examples/oolong_pairs/tasks.py``,

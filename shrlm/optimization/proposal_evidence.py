@@ -881,7 +881,7 @@ def load_proposal_evidence(
                 context["quality_diagnostics"] = quality
             if quality["n_measured"]:
                 del context["verifier_detail"]
-            if environment in {"oolong_pairs", "graphwalks"}:
+            if environment == "oolong_pairs":
                 context["pair_diagnostics"] = pair_diagnostics(verdict)
             if is_pairs:
                 if context["pair_diagnostics"]["scored"]:
@@ -1049,10 +1049,8 @@ def history_diagnostics_from_data(
     diagnostics["quality"] = aggregate_quality_diagnostics(
         verdicts, contract.get("verifier_config")
     )
-    if environment in {"oolong_pairs", "graphwalks"}:
-        diagnostics["pairs" if environment == "oolong_pairs" else "sets"] = (
-            aggregate_pair_diagnostics(verdicts)
-        )
+    if environment == "oolong_pairs":
+        diagnostics["pairs"] = aggregate_pair_diagnostics(verdicts)
     diagnostics["first_runtime_error"] = next(
         (
             structural_execution_error(verdict)

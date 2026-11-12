@@ -83,13 +83,12 @@ from tests.experiment.test_smoke_mock import (
 # is visible in the arithmetic; the smoke profile's counts are all 1.
 PROFILE = "full"
 
-# The committed pre-S10 mining round (a ``shrlm-harness/v1`` envelope declaring
-# S1-S9 and nothing else). Read-only: it is the repo's pinned evidence of what a
-# round written before the tenth surface actually persisted, and the one
-# document the current writer can no longer produce.
-PRE_S10_HARNESS_PATH = (
-    Path(__file__).resolve().parents[2] / "examples" / "mining_rounds" / "round_00" / HARNESS_FILE
-)
+# The harness document of a committed pre-S10 mining round (a
+# ``shrlm-harness/v1`` envelope declaring S1-S9 and nothing else). Read-only: it
+# is the repo's pinned evidence of what a round written before the tenth surface
+# actually persisted, and the one document the current writer can no longer
+# produce.
+PRE_S10_HARNESS_PATH = Path(__file__).parent / "fixtures" / "pre_s10_harness.json"
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +284,7 @@ def write_eval_summary(out_dir: Path, conditions: dict[str, Any]) -> None:
 
 
 def eval_set_payload(
-    environment: str = "graphwalks",
+    environment: str = "oolong_synth",
     length: str = "short",
     *,
     outcome: str = OUTCOME_COMPLETED,
@@ -300,7 +299,12 @@ def eval_set_payload(
 
 
 def write_bundle(
-    path: Path, round_index: int, *, support: int, n_runs: int = 10, environment: str = "graphwalks"
+    path: Path,
+    round_index: int,
+    *,
+    support: int,
+    n_runs: int = 10,
+    environment: str = "oolong_synth",
 ) -> Path:
     """A ``bundle.json`` carrying one mined pattern, in mining's own shape."""
     write_json(
@@ -587,7 +591,8 @@ class TestExpectedRunCounts:
         assert inventory.rounds[0].mining_runs.n_expected == 3 * config.loop.m
 
     def test_repetition_counts_are_read_per_stage(self):
-        config = load_config(PROFILE)
+        # The loader fixture's full profile, whose m, v and eval_repetitions differ.
+        config = load_config(PROFILE, path=PRE_S10_HARNESS_PATH.with_name("experiment_config.toml"))
         repetitions = stage_repetitions(config)
 
         assert repetitions.for_stage(STAGE_MINING) == config.loop.m
@@ -605,14 +610,14 @@ class TestExpectedRunCounts:
 class TestEvaluationInventory:
     def test_every_condition_and_test_set_in_the_summary_is_returned(self, experiment: Path):
         for condition_id in ("b1", "sh_rlm"):
-            for set_id in ("graphwalks_short", "oolong_pairs_long"):
+            for set_id in ("oolong_synth_short", "oolong_pairs_long"):
                 write_eval_set(experiment, condition_id, set_id)
         write_eval_summary(
             experiment,
             {
                 condition_id: {
                     "test_sets": {
-                        "graphwalks_short": eval_set_payload("graphwalks", "short"),
+                        "oolong_synth_short": eval_set_payload("oolong_synth", "short"),
                         "oolong_pairs_long": eval_set_payload("oolong_pairs", "long"),
                     }
                 }
@@ -622,10 +627,10 @@ class TestEvaluationInventory:
 
         sets = discover_rounds(experiment).eval_sets
         assert [(record.condition_id, record.set_id) for record in sets] == [
-            ("b1", "graphwalks_short"),
             ("b1", "oolong_pairs_long"),
-            ("sh_rlm", "graphwalks_short"),
+            ("b1", "oolong_synth_short"),
             ("sh_rlm", "oolong_pairs_long"),
+            ("sh_rlm", "oolong_synth_short"),
         ]
         for record in sets:
             assert record.round_path == round_dir(
@@ -636,13 +641,15 @@ class TestEvaluationInventory:
             assert record.complete is True
 
     def test_a_set_with_skipped_runs_is_flagged_incomplete_not_dropped(self, experiment: Path):
-        write_eval_set(experiment, "b1", "graphwalks_short", n_runs=4)
+        write_eval_set(experiment, "b1", "oolong_synth_short", n_runs=4)
         write_eval_summary(
             experiment,
             {
                 "b1": {
                     "test_sets": {
-                        "graphwalks_short": eval_set_payload(skipped=("inst01__a03", "inst01__a02"))
+                        "oolong_synth_short": eval_set_payload(
+                            skipped=("inst01__a03", "inst01__a02")
+                        )
                     }
                 }
             },
@@ -654,12 +661,14 @@ class TestEvaluationInventory:
         assert record.complete is False
 
     def test_an_over_budget_set_is_incomplete(self, experiment: Path):
-        write_eval_set(experiment, "b1", "graphwalks_short")
+        write_eval_set(experiment, "b1", "oolong_synth_short")
         write_eval_summary(
             experiment,
             {
                 "b1": {
-                    "test_sets": {"graphwalks_short": eval_set_payload(outcome=OUTCOME_OVER_BUDGET)}
+                    "test_sets": {
+                        "oolong_synth_short": eval_set_payload(outcome=OUTCOME_OVER_BUDGET)
+                    }
                 }
             },
         )
@@ -669,14 +678,14 @@ class TestEvaluationInventory:
         assert record.complete is False
 
     def test_a_set_on_disk_but_absent_from_the_summary_is_unknown(self, experiment: Path):
-        write_eval_set(experiment, "b1", "graphwalks_short")
+        write_eval_set(experiment, "b1", "oolong_synth_short")
         write_eval_set(experiment, "b1", "oolong_pairs_long")
         write_eval_summary(
-            experiment, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}}
+            experiment, {"b1": {"test_sets": {"oolong_synth_short": eval_set_payload()}}}
         )
 
         by_set = {record.set_id: record for record in discover_rounds(experiment).eval_sets}
-        assert set(by_set) == {"graphwalks_short", "oolong_pairs_long"}
+        assert set(by_set) == {"oolong_synth_short", "oolong_pairs_long"}
         orphan = by_set["oolong_pairs_long"]
         assert orphan.in_summary is False
         assert orphan.outcome is None
@@ -684,10 +693,10 @@ class TestEvaluationInventory:
         assert orphan.complete is not False
 
     def test_a_set_with_no_summary_at_all_is_still_discovered(self, experiment: Path):
-        write_eval_set(experiment, "b1", "graphwalks_short")
+        write_eval_set(experiment, "b1", "oolong_synth_short")
 
         (record,) = discover_rounds(experiment).eval_sets
-        assert record.set_id == "graphwalks_short"
+        assert record.set_id == "oolong_synth_short"
         assert record.complete is None
 
     def test_expected_eval_runs_use_the_evaluation_repetition_count(self, experiment: Path):
@@ -695,12 +704,12 @@ class TestEvaluationInventory:
         write_eval_set(
             experiment,
             "b1",
-            "graphwalks_short",
+            "oolong_synth_short",
             n_instances=2,
             attempts=config.operational.eval_repetitions,
         )
         write_eval_summary(
-            experiment, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}}
+            experiment, {"b1": {"test_sets": {"oolong_synth_short": eval_set_payload()}}}
         )
 
         (record,) = discover_rounds(experiment).eval_sets
@@ -723,13 +732,13 @@ class TestEvaluationInventory:
         write_eval_set(
             experiment,
             "b1",
-            "graphwalks_short",
+            "oolong_synth_short",
             n_instances=2,
             attempts=config.operational.eval_repetitions,
             n_runs=2,
         )
         write_eval_summary(
-            experiment, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}}
+            experiment, {"b1": {"test_sets": {"oolong_synth_short": eval_set_payload()}}}
         )
 
         (record,) = discover_rounds(experiment).eval_sets
@@ -746,8 +755,10 @@ class TestEvaluationInventory:
     ):
         """KTD9: no config means unmeasurable, which is neither complete nor failed."""
         legacy = tmp_path / "legacy"
-        write_eval_set(legacy, "b1", "graphwalks_short", n_instances=2, attempts=3)
-        write_eval_summary(legacy, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}})
+        write_eval_set(legacy, "b1", "oolong_synth_short", n_instances=2, attempts=3)
+        write_eval_summary(
+            legacy, {"b1": {"test_sets": {"oolong_synth_short": eval_set_payload()}}}
+        )
         assert not (legacy / CONFIG_FILENAME).exists()
 
         (record,) = discover_rounds(legacy).eval_sets
@@ -757,11 +768,11 @@ class TestEvaluationInventory:
         assert record.complete is not False
 
     def test_a_condition_work_directory_is_not_a_test_set(self, experiment: Path):
-        write_eval_set(experiment, "sh_rlm", "graphwalks_short")
+        write_eval_set(experiment, "sh_rlm", "oolong_synth_short")
         (experiment / EVAL_DIR / "sh_rlm" / "work").mkdir(parents=True)
 
         assert [record.set_id for record in discover_rounds(experiment).eval_sets] == [
-            "graphwalks_short"
+            "oolong_synth_short"
         ]
 
 
@@ -866,7 +877,7 @@ class TestDiscoveryAgainstTheMockSmokeTree:
         self,
         smoke: SmokeRun,  # noqa: F811
     ):
-        inventory = discover_rounds(smoke.out_dir)
+        inventory = discover_rounds(smoke.out_dir, config=smoke.config)
 
         assert [record.round_index for record in inventory.rounds] == [1]
         (record,) = inventory.rounds
@@ -887,7 +898,7 @@ class TestDiscoveryAgainstTheMockSmokeTree:
         smoke: SmokeRun,  # noqa: F811
     ):
         """m=1 attempt over the three held-in instances, all of them persisted."""
-        (record,) = discover_rounds(smoke.out_dir).rounds
+        (record,) = discover_rounds(smoke.out_dir, config=smoke.config).rounds
         n_instances = len((record.mining_round_path / INSTANCES_FILE).read_text().splitlines())
 
         assert record.mining_runs.n_expected == n_instances * smoke.config.loop.m
@@ -905,7 +916,7 @@ class TestDiscoveryAgainstTheMockSmokeTree:
             for set_id in condition["test_sets"]
         }
 
-        sets = discover_rounds(smoke.out_dir).eval_sets
+        sets = discover_rounds(smoke.out_dir, config=smoke.config).eval_sets
         assert {(record.condition_id, record.set_id) for record in sets} == expected
         for record in sets:
             assert record.in_summary is True

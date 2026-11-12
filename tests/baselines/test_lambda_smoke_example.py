@@ -47,9 +47,9 @@ def entry(
 def test_config_flag_defaults_to_shared_experiment_config() -> None:
     assert DEFAULT_CONFIG == CONFIG_PATH
     assert parse_args([]).config == CONFIG_PATH
-    assert parse_args(["--config", "configs/experiment_ox.toml"]).config == Path(
-        "configs/experiment_ox.toml"
-    )
+    assert parse_args(
+        ["--config", "configs/experiment_oolong_pairs_openrouter_DeepSeekV4Flash.toml"]
+    ).config == Path("configs/experiment_oolong_pairs_openrouter_DeepSeekV4Flash.toml")
 
 
 def test_compare_flag_preserves_lambda_only_default() -> None:

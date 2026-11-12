@@ -4,7 +4,7 @@ The round is built exactly the way ``tests/optimization/test_driver.py`` builds
 its real (non-mocked) rounds -- baseline harness ``H0`` through
 ``build_harnessed_rlm`` with the REPL, a ``Verifier``-protocol verifier, and
 ``run_round``'s persist-first contract -- except the client is the real
-azure_foundry Kimi-K2.5 deployment with the REAL configured backend_kwargs
+azure_foundry DeepSeek-V4-Flash deployment with the REAL configured backend_kwargs
 (``backend_kwargs_for`` over the smoke profile, runner role forced to
 azure_foundry when the shipped config selects another backend).
 
@@ -54,7 +54,7 @@ from shrlm.optimization.driver import (
 from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import Verdict
 from shrlm.rlm_harness import H0
-from tests.conftest import AZURE_KIMI, CONFIG_DIR, PROJECT_ROOT, SENTINEL_ENV, ProviderCase
+from tests.conftest import AZURE_DSV4F, CONFIG_DIR, PROJECT_ROOT, SENTINEL_ENV, ProviderCase
 from tests.optimization.test_driver import read_manifest
 
 # The credentials the azure_foundry gate path demands.
@@ -144,12 +144,13 @@ class ContainsGoldVerifier:
 
 
 def smoke_config_for(provider: ProviderCase) -> Any:
-    """The shipped smoke profile with the runner role switched to ``provider``.
+    """The smoke profile whose runner is ``provider``.
 
-    A no-op when the shipped config already selects the row's backend and
-    model; otherwise the runner endpoint is replaced, the row's ``azure_table``
-    overrides (if any) are applied to ``[backends.azure_foundry]``, and the
-    shipped provider tables and ``[pricing.list_price]`` supply the rest.
+    The default config's smoke profile when it already selects the row's
+    backend and model; otherwise the smoke profile of the row's own shipped
+    ``config_path`` (whose provider tables and ``[pricing.list_price]`` are that
+    deployment's), with the row's ``azure_table`` overrides (if any) applied to
+    ``[backends.azure_foundry]``.
     """
     from dataclasses import replace
 
@@ -159,31 +160,34 @@ def smoke_config_for(provider: ProviderCase) -> Any:
     runner = config.backends.runner
     if (runner.backend, runner.model) == (provider.backend, provider.model):
         return config
-    backends = replace(
-        config.backends,
-        runner=replace(runner, backend=provider.backend, model=provider.model),
-    )
+    config = load_config(profile="smoke", path=provider.config_path)
+    runner = config.backends.runner
+    assert (runner.backend, runner.model) == (provider.backend, provider.model)
     if provider.azure_table:
-        assert backends.azure_foundry is not None
-        backends = replace(
-            backends, azure_foundry=replace(backends.azure_foundry, **provider.azure_table)
+        assert config.backends.azure_foundry is not None
+        config = replace(
+            config,
+            backends=replace(
+                config.backends,
+                azure_foundry=replace(config.backends.azure_foundry, **provider.azure_table),
+            ),
         )
-    return replace(config, backends=backends)
+    return config
 
 
 def azure_smoke_config() -> Any:
     """The smoke profile the paid azure tier runs (KTD7).
 
     The env-selected config (``SHRLM_EXPERIMENT_CONFIG``) is used as-is when
-    its runner already selects azure_foundry (e.g. the gpt-oss profile). With
-    the env unset the shipped smoke profile runs openrouter, so -- exactly as
-    before -- the runner role is forced to the Kimi row."""
+    its runner already selects azure_foundry. With the env unset the shipped
+    smoke profile runs openrouter, so the runner role is forced to the Azure
+    DeepSeek-V4-Flash row."""
     from shrlm.experiment.config import CONFIG_PATH, load_config
 
     config = load_config(profile="smoke", path=live_config_path(CONFIG_PATH))
     if config.backends.runner.backend == "azure_foundry":
         return config
-    return smoke_config_for(AZURE_KIMI)
+    return smoke_config_for(AZURE_DSV4F)
 
 
 def make_live_round_config(out_dir: Path, config: Any = None) -> RoundConfig:
@@ -307,7 +311,7 @@ class TestLiveRoundConstructionOffline:
     smoke-profile backend_kwargs), run through the scripted-client seam every
     driver test uses -- so a backend_kwargs shape error, a sensitive-kwarg
     refusal, or a broken resume would surface here for free, never on the
-    paid tier. The Kimi row is byte-for-byte the round the azure tier pays for.
+    paid tier. The Azure row is byte-for-byte the round the azure tier pays for.
     """
 
     def test_live_config_runs_and_resumes_through_run_round(
@@ -328,8 +332,7 @@ class TestLiveRoundConstructionOffline:
         assert config.backend_kwargs["model_name"] == provider.model
         # The real configured kwargs the live tier sends: nested pricing (which
         # the driver's sensitive-kwarg scan must accept) exactly when the row
-        # carries pricing, and the row's extra_body (instant mode for Kimi:
-        # chat_template_kwargs == {"thinking": False}).
+        # carries pricing, and the row's extra_body.
         assert ("pricing" in config.backend_kwargs) == (provider.pricing is not None)
         if provider.pricing is not None:
             assert set(config.backend_kwargs["pricing"]) == {
@@ -353,22 +356,22 @@ class TestLiveRoundConstructionOffline:
         assert len(resumed) == len(entries)
         assert idle.total_calls == 0
 
-    def test_kimi_row_is_the_round_the_azure_tier_pays_for(self, tmp_path, monkeypatch):
-        """The paid azure tier's default construction and the matrix's Kimi
+    def test_azure_row_is_the_round_the_azure_tier_pays_for(self, tmp_path, monkeypatch):
+        """The paid azure tier's default construction and the matrix's Azure
         row build the same round: same backend and byte-identical kwargs.
 
         Offline and always-run (no live opt-in required), so it must pin the
-        default Kimi config regardless of any ``SHRLM_EXPERIMENT_CONFIG``
+        default config regardless of any ``SHRLM_EXPERIMENT_CONFIG``
         left set in the environment.
         """
         monkeypatch.delenv(CONFIG_ENV_KEY, raising=False)
         paid = make_live_round_config(tmp_path)
-        matrix = make_live_round_config(tmp_path, smoke_config_for(AZURE_KIMI))
+        matrix = make_live_round_config(tmp_path, smoke_config_for(AZURE_DSV4F))
         assert paid.backend == matrix.backend == "azure_foundry"
         assert paid.backend_kwargs == matrix.backend_kwargs
-        assert matrix.backend_kwargs["sampling_args"]["extra_body"]["chat_template_kwargs"] == {
-            "thinking": False
-        }
+        assert (
+            matrix.backend_kwargs["sampling_args"]["extra_body"] == AZURE_DSV4F.expected_extra_body
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +497,7 @@ class TestPricingAttestationOffline:
 
     def test_live_gate_checks_the_attestation_against_the_caller_s_config(self) -> None:
         """A live test spending under a different config must pass that config:
-        the Kimi rate card (0.6/3.0) is not the shipped smoke card (0.1/0.3)."""
+        another rate card (0.6/3.0) is not the shipped smoke card."""
         from dataclasses import replace
 
         from shrlm.experiment.config import load_config
@@ -527,40 +530,41 @@ class TestLiveConfigPathOffline:
     def test_env_unset_resolves_each_live_module_default(self, monkeypatch):
         """Each live module resolves the config it loads today: the shipped
         smoke path for the client-live and smoke-live tiers (and the smoke
-        script), the Kimi and OOLONG TOMLs for the two recursion modules."""
+        script), the OOLONG-synth DeepSeek TOML for the recursion module."""
         from shrlm.experiment.config import CONFIG_PATH
         from tests.experiment.test_oolong_recursion_live import OOLONG_CONFIG
-        from tests.experiment.test_recursion_live import KIMI_CONFIG
 
         monkeypatch.delenv(CONFIG_ENV_KEY, raising=False)
         assert live_config_path(CONFIG_PATH) == CONFIG_PATH
         assert (
-            live_config_path(KIMI_CONFIG) == KIMI_CONFIG == Path("configs/experiment_kimiK25.toml")
-        )
-        assert (
             live_config_path(OOLONG_CONFIG)
             == OOLONG_CONFIG
-            == Path("configs/experiment_oolong.toml")
+            == Path("configs/experiment_oolong_DeepSeekV4Flash.toml")
         )
 
     def test_empty_env_resolves_the_default(self, monkeypatch):
         monkeypatch.setenv(CONFIG_ENV_KEY, "")
-        default = Path("configs/experiment.toml")
+        default = Path("configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml")
         assert live_config_path(default) == default
 
     def test_env_set_wins_over_every_default(self, monkeypatch):
-        selected = "configs/experiment_oolong_gptoss.toml"
+        selected = "configs/experiment_oolong_pairs_blended_DeepSeekV4Flash.toml"
         monkeypatch.setenv(CONFIG_ENV_KEY, selected)
-        for default in ("configs/experiment.toml", Path("configs/experiment_kimiK25.toml")):
+        for default in (
+            "configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml",
+            Path("configs/experiment_oolong_DeepSeekV4Flash.toml"),
+        ):
             assert live_config_path(default) == Path(selected)
 
-    def test_gptoss_attestation_is_checked_against_its_own_rate_card(self):
-        """Proof-first (U6): attesting the KIMI rates ('0.60/3.00') against
-        the gpt-oss config must be refused with a reason naming the gpt-oss
-        card 0.15/0.6 -- the gate compares against the SELECTED config."""
+    def test_azure_attestation_is_checked_against_its_own_rate_card(self):
+        """Proof-first (U6): attesting a foreign rate card ('0.60/3.00') against
+        the Azure DeepSeek config must be refused with a reason naming its
+        card 0.19/0.51 -- the gate compares against the SELECTED config."""
         from shrlm.experiment.config import load_config
 
-        config = load_config("full", path=CONFIG_DIR / "experiment_oolong_gptoss.toml")
+        config = load_config(
+            "full", path=CONFIG_DIR / "experiment_oolong_pairs_blended_DeepSeekV4Flash.toml"
+        )
         env = {
             "AZURE_API_KEY": "sentinel-key",
             "AZURE_FOUNDRY_ENDPOINT": "https://sentinel.services.ai.azure.com",
@@ -569,9 +573,9 @@ class TestLiveConfigPathOffline:
         }
         reason = live_skip_reason(env, config=config)
         assert reason is not None and "does not match" in reason
-        assert "0.15/0.6" in reason
+        assert "0.19/0.51" in reason
 
-        env["SHRLM_VERIFIED_PRICING"] = "0.15/0.6"
+        env["SHRLM_VERIFIED_PRICING"] = "0.19/0.51"
         assert live_skip_reason(env, config=config) is None
 
 

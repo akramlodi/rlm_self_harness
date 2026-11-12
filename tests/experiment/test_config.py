@@ -12,7 +12,7 @@ import pytest
 
 from shrlm.experiment.config import (
     CLIENT_ROLES,
-    CONFIG_PATH,
+    LoopConfig,
     OperationalConfig,
     ReattributionSettings,
     backend_kwargs_for,
@@ -31,13 +31,16 @@ from shrlm.optimization.driver import RoundConfig
 from shrlm.optimization.promotion import Band, PromotionConfig
 from shrlm.optimization.proposal import ProposerConfig
 from shrlm.optimization.validation import EvaluationConfig, ValidationSplits
-from tests.conftest import AZURE_KIMI, OPENROUTER_QWEN, ProviderCase
+from tests.conftest import AZURE_DSV4F, OPENROUTER_DSV4F, ProviderCase
 
 DUMMY_VERIFIER = cast(Any, lambda *args, **kwargs: None)
 
+# The loader tests run against a stable fixture, not a shipped experiment arm.
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "experiment_config.toml"
+
 
 def shipped_text() -> str:
-    return CONFIG_PATH.read_text()
+    return FIXTURE_PATH.read_text()
 
 
 def write_config(tmp_path: Path, text: str) -> Path:
@@ -86,13 +89,13 @@ def drop_caps_key(text: str, key: str) -> str:
 
 
 def test_full_profile_ships_draft_defaults() -> None:
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     assert config.profile == "full"
     assert config.splits.n_in == 24
     assert config.splits.n_ho == 40
     assert config.splits.test_short == 40
     assert config.splits.test_long == 150
-    # t = 3 for the 2026-08-23 Qwen comparison run (was 15; identity key).
+    # t is an identity key.
     assert (config.loop.m, config.loop.v, config.loop.k, config.loop.t) == (2, 4, 4, 3)
     assert config.loop.patience == 3
     assert config.decoding.temperature == 0.7
@@ -101,14 +104,11 @@ def test_full_profile_ships_draft_defaults() -> None:
     assert config.decoding.min_p == 0.0
     assert config.decoding.max_output_tokens == 4096
     assert config.promotion.cost_band == (0.5, 1.25)
-    assert config.environments.graphwalks.dataset_file_short == (
-        "graphwalks_128k_and_shorter.parquet"
-    )
     assert config.environments.oolong_pairs.task_ids == tuple(range(1, 21))
 
 
 def test_operational_and_provider_defaults() -> None:
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     assert config.operational.eval_repetitions == 3
     assert isinstance(config.operational.eval_repetitions, int)
     assert config.backends.openrouter is not None
@@ -118,16 +118,16 @@ def test_operational_and_provider_defaults() -> None:
 
 
 @pytest.mark.parametrize("profile", ["full", "smoke"])
-def test_shipped_backends_are_openrouter_qwen_for_all_roles(profile: str) -> None:
-    config = load_config(profile)
+def test_fixture_backends_are_openrouter_deepseek_for_all_roles(profile: str) -> None:
+    config = load_config(profile, path=FIXTURE_PATH)
     for role in CLIENT_ROLES:
         endpoint = getattr(config.backends, role)
         assert endpoint.backend == "openrouter"
-        assert endpoint.model == "qwen/qwen3-30b-a3b-instruct-2507"
+        assert endpoint.model == "deepseek/deepseek-v4-flash"
 
 
 def test_eval_repetitions_must_be_a_positive_integer() -> None:
-    operational = load_config().operational
+    operational = load_config(path=FIXTURE_PATH).operational
     with pytest.raises(ValueError, match="eval_repetitions"):
         dataclasses.replace(operational, eval_repetitions=0)
     with pytest.raises(ValueError, match="eval_repetitions"):
@@ -137,16 +137,16 @@ def test_eval_repetitions_must_be_a_positive_integer() -> None:
 
 def test_validation_workers_defaults_to_one_and_is_identity_exempt() -> None:
     """``operational.validation_workers`` scales wall clock, never behavior (R4, R5)."""
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     assert config.operational.validation_workers == 1
-    assert load_config("smoke").operational.validation_workers == 1
+    assert load_config("smoke", path=FIXTURE_PATH).operational.validation_workers == 1
     base = identity_hash(config)
     wider = dataclasses.replace(config.operational, validation_workers=5)
     assert identity_hash(dataclasses.replace(config, operational=wider)) == base
 
 
 def test_validation_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
-    operational = load_config().operational
+    operational = load_config(path=FIXTURE_PATH).operational
     with pytest.raises(ValueError, match="validation_workers"):
         dataclasses.replace(operational, validation_workers=0)
     with pytest.raises(ValueError, match="validation_workers"):
@@ -166,27 +166,32 @@ def test_smoke_may_override_validation_workers(tmp_path: Path) -> None:
     path = write_config(tmp_path, text)
     assert load_config("smoke", path=path).operational.validation_workers == 3
     assert load_config("full", path=path).operational.validation_workers == 1
-    assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
+    assert identity_hash(load_config("full", path=path)) == identity_hash(
+        load_config("full", path=FIXTURE_PATH)
+    )
 
 
-def test_environment_selector_defaults_to_graphwalks_and_is_identity_covered(
+def test_environment_selector_defaults_to_oolong_pairs_and_is_identity_covered(
     tmp_path: Path,
 ) -> None:
-    config = load_config()
-    assert config.loop.environment == "graphwalks"
-    for environment in ("oolong_synth", "oolong_pairs"):
+    assert LoopConfig(m=1, v=1, k=1, t=1, patience=1).environment == "oolong_pairs"
+    config = load_config(path=FIXTURE_PATH)
+    assert config.loop.environment == "oolong_synth"
+    for environment in ("oolong_pairs", "obliq_bench_math"):
         switched = dataclasses.replace(config.loop, environment=environment)
         assert identity_hash(dataclasses.replace(config, loop=switched)) != identity_hash(config)
 
 
 def test_unknown_environment_selector_is_rejected(tmp_path: Path) -> None:
-    text = shipped_text().replace('environment = "graphwalks"', 'environment = "bogus"')
+    text = shipped_text().replace('environment = "oolong_synth"', 'environment = "bogus"')
     with pytest.raises(ValueError, match=r"\[loop\] environment must be one of"):
         load_config(path=write_config(tmp_path, text))
 
 
 def test_oolong_environment_table_parses() -> None:
-    oolong = load_config("full", path=Path("configs/experiment_oolong.toml")).environments.oolong
+    oolong = load_config(
+        "full", path=Path("configs/experiment_oolong_DeepSeekV4Flash.toml")
+    ).environments.oolong
     assert oolong.synth.dataset_repo == "oolongbench/oolong-synth"
     assert 131072 in oolong.synth.context_lengths
     assert oolong.real.config_name == "dnd"
@@ -194,7 +199,7 @@ def test_oolong_environment_table_parses() -> None:
 
 
 def test_real_check_cadence_is_identity_exempt() -> None:
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     assert config.operational.real_check_every_n_rounds == 0
     base = identity_hash(config)
     with_check = dataclasses.replace(config.operational, real_check_every_n_rounds=3)
@@ -202,7 +207,7 @@ def test_real_check_cadence_is_identity_exempt() -> None:
 
 
 def test_real_check_cadence_must_be_a_non_negative_integer() -> None:
-    operational = load_config().operational
+    operational = load_config(path=FIXTURE_PATH).operational
     with pytest.raises(ValueError, match="real_check_every_n_rounds"):
         dataclasses.replace(operational, real_check_every_n_rounds=-1)
     with pytest.raises(ValueError, match="real_check_every_n_rounds"):
@@ -213,7 +218,7 @@ def test_reattribution_defaults_to_disabled_and_is_identity_significant() -> Non
     """Unlike worker-count knobs, ``reattribution.enabled`` changes what gets
     promoted (a fresh candidate pool, not just wall clock/cost), so it must
     affect ``identity_hash`` rather than be exempt."""
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     assert config.reattribution == ReattributionSettings(enabled=False)
     base = identity_hash(config)
     toggled = dataclasses.replace(config, reattribution=ReattributionSettings(enabled=True))
@@ -239,16 +244,16 @@ def test_validation_run_workers_defaults_to_one_and_is_identity_exempt() -> None
     charges every run through one breaker, so a round produces the same runs at
     any worker count -- which is why this may change under an existing out-dir.
     """
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     assert config.operational.validation_run_workers == 1
-    assert load_config("smoke").operational.validation_run_workers == 1
+    assert load_config("smoke", path=FIXTURE_PATH).operational.validation_run_workers == 1
     base = identity_hash(config)
     wider = dataclasses.replace(config.operational, validation_run_workers=4)
     assert identity_hash(dataclasses.replace(config, operational=wider)) == base
 
 
 def test_validation_run_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
-    operational = load_config().operational
+    operational = load_config(path=FIXTURE_PATH).operational
     with pytest.raises(ValueError, match="validation_run_workers"):
         dataclasses.replace(operational, validation_run_workers=0)
     with pytest.raises(ValueError, match="validation_run_workers"):
@@ -264,16 +269,16 @@ def test_screening_workers_default_matches_the_shipped_config_and_is_identity_ex
     candidates) is structurally larger than full validation's (at most 2),
     so it doesn't inherit validation_workers. Changes wall clock and peak
     request rate only, same identity exemption as the other worker counts."""
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     assert config.operational.screening_workers == 1
-    assert load_config("smoke").operational.screening_workers == 1
+    assert load_config("smoke", path=FIXTURE_PATH).operational.screening_workers == 1
     base = identity_hash(config)
     wider = dataclasses.replace(config.operational, screening_workers=4)
     assert identity_hash(dataclasses.replace(config, operational=wider)) == base
 
 
 def test_screening_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
-    operational = load_config().operational
+    operational = load_config(path=FIXTURE_PATH).operational
     with pytest.raises(ValueError, match="screening_workers"):
         dataclasses.replace(operational, screening_workers=0)
     with pytest.raises(ValueError, match="screening_workers"):
@@ -283,16 +288,16 @@ def test_screening_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
 def test_screening_run_workers_default_matches_the_shipped_config_and_is_identity_exempt() -> None:
     """The run-level half of the same pair: within-subject concurrency during
     screening, independent of validation_run_workers/_warm."""
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     assert config.operational.screening_run_workers == 3
-    assert load_config("smoke").operational.screening_run_workers == 3
+    assert load_config("smoke", path=FIXTURE_PATH).operational.screening_run_workers == 3
     base = identity_hash(config)
     wider = dataclasses.replace(config.operational, screening_run_workers=5)
     assert identity_hash(dataclasses.replace(config, operational=wider)) == base
 
 
 def test_screening_run_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
-    operational = load_config().operational
+    operational = load_config(path=FIXTURE_PATH).operational
     with pytest.raises(ValueError, match="screening_run_workers"):
         dataclasses.replace(operational, screening_run_workers=0)
     with pytest.raises(ValueError, match="screening_run_workers"):
@@ -300,7 +305,7 @@ def test_screening_run_workers_must_be_a_positive_integer(tmp_path: Path) -> Non
 
 
 def test_mining_run_workers_defaults_to_one_and_is_identity_exempt(tmp_path: Path) -> None:
-    configured = load_config()
+    configured = load_config(path=FIXTURE_PATH)
     text = shipped_text().replace("mining_run_workers = 5\n", "")
     defaulted = load_config(path=write_config(tmp_path, text))
     assert defaulted.operational.mining_run_workers == 1
@@ -308,7 +313,7 @@ def test_mining_run_workers_defaults_to_one_and_is_identity_exempt(tmp_path: Pat
 
 
 def test_mining_run_workers_must_be_a_positive_integer(tmp_path: Path) -> None:
-    operational = load_config().operational
+    operational = load_config(path=FIXTURE_PATH).operational
     with pytest.raises(ValueError, match="mining_run_workers"):
         dataclasses.replace(operational, mining_run_workers=0)
     with pytest.raises(ValueError, match="mining_run_workers"):
@@ -326,7 +331,9 @@ def test_smoke_may_override_mining_run_workers(tmp_path: Path) -> None:
     path = write_config(tmp_path, text)
     assert load_config("smoke", path=path).operational.mining_run_workers == 2
     assert load_config("full", path=path).operational.mining_run_workers == 5
-    assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
+    assert identity_hash(load_config("full", path=path)) == identity_hash(
+        load_config("full", path=FIXTURE_PATH)
+    )
 
 
 @pytest.mark.parametrize(
@@ -352,7 +359,9 @@ def test_smoke_may_override_validation_run_workers(tmp_path: Path) -> None:
     path = write_config(tmp_path, text)
     assert load_config("smoke", path=path).operational.validation_run_workers == 2
     assert load_config("full", path=path).operational.validation_run_workers == 1
-    assert identity_hash(load_config("full", path=path)) == identity_hash(load_config("full"))
+    assert identity_hash(load_config("full", path=path)) == identity_hash(
+        load_config("full", path=FIXTURE_PATH)
+    )
 
 
 def test_the_shipped_profile_keeps_subject_workers_at_one() -> None:
@@ -362,12 +371,12 @@ def test_the_shipped_profile_keeps_subject_workers_at_one() -> None:
     above 1 alongside it would multiply the in-flight request rate against a
     provider that already logs retries at three concurrent runs.
     """
-    assert load_config().operational.validation_workers == 1
+    assert load_config(path=FIXTURE_PATH).operational.validation_workers == 1
 
 
 def test_the_run_worker_count_reaches_the_evaluation_config() -> None:
     """A knob that stops at the config object changes nothing."""
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     wider = dataclasses.replace(config.operational, validation_run_workers=3)
     kwargs = evaluation_config_kwargs(dataclasses.replace(config, operational=wider))
     assert kwargs["run_workers"] == 3
@@ -384,8 +393,8 @@ def test_unknown_profile_raises() -> None:
 
 
 def test_smoke_overrides_scale_counts_only() -> None:
-    full = load_config("full")
-    smoke = load_config("smoke")
+    full = load_config("full", path=FIXTURE_PATH)
+    smoke = load_config("smoke", path=FIXTURE_PATH)
     assert smoke.splits.n_in == 3
     assert smoke.splits.n_ho == 3
     assert smoke.splits.test_short == 4
@@ -398,7 +407,9 @@ def test_smoke_overrides_scale_counts_only() -> None:
     assert smoke.promotion == full.promotion
     assert smoke.backends == full.backends
     assert smoke.loop.patience == full.loop.patience
-    assert smoke.environments.graphwalks == full.environments.graphwalks
+    assert smoke.environments.oolong.synth.dataset_revision == (
+        full.environments.oolong.synth.dataset_revision
+    )
     assert smoke.splits.seed == full.splits.seed
 
 
@@ -443,7 +454,7 @@ def test_unknown_key_inside_azure_foundry_table_raises(tmp_path: Path) -> None:
         load_config(path=path)
 
 
-def with_azure_table(text: str, *, thinking: bool, reasoning_effort: str | None) -> str:
+def with_azure_table(text: str, *, thinking: bool, reasoning_effort: str | None = None) -> str:
     """``text`` with the shipped ``[backends.azure_foundry]`` table rewritten."""
     anchor = "\nthinking = false\n"
     assert anchor in text
@@ -515,14 +526,7 @@ class TestReasoningEffort:
 
 @pytest.mark.parametrize(
     "config_path",
-    [
-        "configs/experiment.toml",
-        "configs/experiment_kimiK25.toml",
-        "configs/experiment_ox.toml",
-        "configs/experiment_oolong.toml",
-        "configs/experiment_oolong_pairs_DeepSeekV4Flash.toml",
-        "configs/experiment_oolong_gptoss.toml",
-    ],
+    sorted(str(path) for path in Path("configs").glob("experiment_*.toml")),
 )
 @pytest.mark.parametrize("profile", ["full", "smoke"])
 def test_every_shipped_config_loads_under_the_current_schema(
@@ -550,25 +554,26 @@ def test_deepseek_oolong_pairs_config_uses_the_complete_finite_inventory() -> No
 
 
 def role_text(text: str, role: str, provider: ProviderCase) -> str:
-    """``text`` with one role's shipped (openrouter Qwen) table switched to
+    """``text`` with one role's fixture (openrouter DeepSeek) table switched to
     ``provider``'s table."""
-    before = OPENROUTER_QWEN.role_table_text(role)
+    before = OPENROUTER_DSV4F.role_table_text(role)
     assert before in text, f"no openrouter table found for role {role!r}"
     return text.replace(before, provider.role_table_text(role))
 
 
 def azure_role_text(text: str, role: str) -> str:
     """``text`` with one role's table switched to the azure_foundry backend
-    (the Kimi row of the provider matrix)."""
-    return role_text(text, role, AZURE_KIMI)
+    (the Azure row of the provider matrix)."""
+    return role_text(text, role, AZURE_DSV4F)
 
 
 def all_roles_text(provider: ProviderCase) -> str:
-    """Shipped text with every role switched to ``provider``'s table, plus the
+    """Fixture text with every role switched to ``provider``'s table, plus the
     row's ``[backends.azure_foundry]`` overrides (``azure_table``) when it has
-    any. The shipped ``[decoding]`` is untouched, so every row sends the same
-    decoding knobs and differs only in its provider contract."""
-    text = shipped_text()
+    any. The optional ``top_k``/``min_p`` knobs are dropped to match the
+    shipped DeepSeek-V4-Flash decoding, so every row sends the same decoding
+    knobs and differs only in its provider contract."""
+    text = drop_optional_decoding_knobs(shipped_text())
     for role in CLIENT_ROLES:
         text = role_text(text, role, provider)
     if provider.azure_table:
@@ -577,17 +582,22 @@ def all_roles_text(provider: ProviderCase) -> str:
 
 
 def all_azure_roles_text() -> str:
-    """Shipped text with every role switched to the azure_foundry backend."""
-    return all_roles_text(AZURE_KIMI)
+    """Fixture text with every role switched to the azure_foundry backend; the
+    fixture's decoding and ``[backends.azure_foundry]`` table are untouched."""
+    text = shipped_text()
+    for role in CLIENT_ROLES:
+        text = azure_role_text(text, role)
+    return text
 
 
 def test_matrix_row_table_text_is_the_shipped_openrouter_table() -> None:
-    """The Qwen row's table text IS the shipped role table, so the matrix
-    surgery replaces exactly what ships (an edit to either side fails here)."""
+    """The OpenRouter row's table text IS the fixture's role table, so the
+    matrix surgery replaces exactly what is there (an edit to either side fails
+    here)."""
     text = shipped_text()
     for role in CLIENT_ROLES:
-        assert OPENROUTER_QWEN.role_table_text(role) in text
-    assert all_roles_text(OPENROUTER_QWEN) == text
+        assert OPENROUTER_DSV4F.role_table_text(role) in text
+    assert all_roles_text(OPENROUTER_DSV4F) == drop_optional_decoding_knobs(text)
 
 
 def test_matrix_row_roles_load_and_route(provider: ProviderCase, tmp_path: Path) -> None:
@@ -750,7 +760,7 @@ def test_check_keys_optional_parameter() -> None:
 
 
 def test_identity_hash_changes_with_behavior_changing_values() -> None:
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     base = identity_hash(config)
     assert len(base) == 64
     assert set(base) <= set("0123456789abcdef")
@@ -792,8 +802,8 @@ def test_identity_hash_changes_with_behavior_changing_values() -> None:
             config,
             environments=dataclasses.replace(
                 config.environments,
-                graphwalks=dataclasses.replace(
-                    config.environments.graphwalks, dataset_revision="deadbeef"
+                oolong_pairs=dataclasses.replace(
+                    config.environments.oolong_pairs, dataset_revision="deadbeef"
                 ),
             ),
         ),
@@ -805,7 +815,7 @@ def test_identity_hash_changes_with_behavior_changing_values() -> None:
 
 
 def test_identity_hash_ignores_operational_values() -> None:
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     base = identity_hash(config)
     pricier_gpu = dataclasses.replace(config.gpu_scenarios[0], hourly_rate_usd=9.99)
     assert identity_hash(dataclasses.replace(config, gpu_scenarios=(pricier_gpu,))) == base
@@ -830,7 +840,7 @@ def test_identity_hash_covers_eval_repetitions_in_both_directions() -> None:
     otherwise reuse a higher count's persisted attempts while rewriting the
     summary as if the smaller plan had been run.
     """
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     base = identity_hash(config)
     assert config.operational.eval_repetitions == 3
     lowered = dataclasses.replace(
@@ -846,12 +856,14 @@ def test_identity_hash_covers_eval_repetitions_in_both_directions() -> None:
 
 def test_smoke_profile_still_shrinks_eval_repetitions() -> None:
     """Identity protection must not cost the smoke profile its scale key (R2)."""
-    assert load_config("smoke").operational.eval_repetitions == 1
-    assert load_config("full").operational.eval_repetitions == 3
+    assert load_config("smoke", path=FIXTURE_PATH).operational.eval_repetitions == 1
+    assert load_config("full", path=FIXTURE_PATH).operational.eval_repetitions == 3
 
 
 def test_identity_hash_differs_between_profiles() -> None:
-    assert identity_hash(load_config("full")) != identity_hash(load_config("smoke"))
+    assert identity_hash(load_config("full", path=FIXTURE_PATH)) != identity_hash(
+        load_config("smoke", path=FIXTURE_PATH)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +872,7 @@ def test_identity_hash_differs_between_profiles() -> None:
 
 
 def test_promotion_config_factory() -> None:
-    promotion = promotion_config(load_config())
+    promotion = promotion_config(load_config(path=FIXTURE_PATH))
     assert isinstance(promotion, PromotionConfig)
     assert promotion.tau_regression == 0.0
     assert promotion.tau_improvement == 0.0
@@ -870,7 +882,7 @@ def test_promotion_config_factory() -> None:
 
 
 def test_validation_caps_factory() -> None:
-    caps = validation_caps(load_config())
+    caps = validation_caps(load_config(path=FIXTURE_PATH))
     assert isinstance(caps, ValidationCaps)
     assert caps.max_budget == 0.5
     assert caps.max_timeout == 1800.0
@@ -880,7 +892,7 @@ def test_validation_caps_factory() -> None:
 
 
 def test_proposer_config_factory() -> None:
-    proposer = proposer_config(load_config())
+    proposer = proposer_config(load_config(path=FIXTURE_PATH))
     assert isinstance(proposer, ProposerConfig)
     assert proposer.k == 4
     assert proposer.iterative_slot_filling is True
@@ -892,8 +904,8 @@ def test_blended_oolong_uses_three_candidates_in_full_and_smoke() -> None:
     assert load_config("smoke", path=path).loop.k == 3
 
 
-def test_shipped_sampling_args_route_qwen_knobs_and_omit_provider() -> None:
-    kwargs = backend_kwargs_for(load_config(), "runner")
+def test_fixture_sampling_args_route_optional_knobs_and_omit_provider() -> None:
+    kwargs = backend_kwargs_for(load_config(path=FIXTURE_PATH), "runner")
     args = kwargs["sampling_args"]
     assert args["temperature"] == 0.7
     assert args["top_p"] == 0.8
@@ -911,11 +923,11 @@ def test_shipped_sampling_args_route_qwen_knobs_and_omit_provider() -> None:
 
 def test_shipped_openrouter_backend_kwargs_omit_pricing() -> None:
     """OpenRouter reports provider costs directly, so no pricing rides along."""
-    config = load_config()
+    config = load_config(path=FIXTURE_PATH)
     for role in CLIENT_ROLES:
         kwargs = backend_kwargs_for(config, role)
         assert "pricing" not in kwargs
-        assert kwargs["model_name"] == "qwen/qwen3-30b-a3b-instruct-2507"
+        assert kwargs["model_name"] == "deepseek/deepseek-v4-flash"
 
 
 def drop_optional_decoding_knobs(text: str) -> str:
@@ -927,7 +939,7 @@ def drop_optional_decoding_knobs(text: str) -> str:
 def test_azure_surgered_sampling_args_carry_instant_mode_and_omit_absent_knobs(
     tmp_path: Path,
 ) -> None:
-    """The Kimi card specifies neither top_k nor min_p: with the knobs absent,
+    """With top_k and min_p absent (as in the shipped DeepSeek configs),
     nothing enters extra_body (the Foundry v1 route's handling of unknown body
     params is unconfirmed) and instant mode rides chat_template_kwargs."""
     text = drop_optional_decoding_knobs(all_azure_roles_text())
@@ -948,7 +960,7 @@ def test_azure_surgered_backend_kwargs_carry_list_price_pricing(tmp_path: Path) 
     for role in CLIENT_ROLES:
         kwargs = backend_kwargs_for(config, role)
         assert kwargs["pricing"] == {"input_per_million": 0.10, "output_per_million": 0.30}
-        assert kwargs["model_name"] == "Kimi-K2.5"
+        assert kwargs["model_name"] == "DeepSeek-V4-Flash"
 
 
 def test_surgered_absent_top_k_and_min_p_are_omitted(tmp_path: Path) -> None:
@@ -963,11 +975,11 @@ def test_surgered_absent_top_k_and_min_p_are_omitted(tmp_path: Path) -> None:
 
 def test_sampling_args_unknown_role_raises() -> None:
     with pytest.raises(ValueError, match="unknown client role"):
-        sampling_args(load_config(), "judge")
+        sampling_args(load_config(path=FIXTURE_PATH), "judge")
 
 
 def test_round_config_kwargs_accepted_by_round_config(tmp_path: Path) -> None:
-    config = load_config("smoke")
+    config = load_config("smoke", path=FIXTURE_PATH)
     round_config = RoundConfig(
         round_index=0,
         harness=cast(Any, object()),
@@ -985,7 +997,7 @@ def test_round_config_kwargs_accepted_by_round_config(tmp_path: Path) -> None:
 
 
 def test_evaluation_config_kwargs_accepted_by_evaluation_config(tmp_path: Path) -> None:
-    config = load_config("smoke")
+    config = load_config("smoke", path=FIXTURE_PATH)
     splits = ValidationSplits(
         heldin=[{"id": "a", "prompt": "p"}],
         heldout=[{"id": "b", "prompt": "q"}],
@@ -1005,7 +1017,7 @@ def test_evaluation_config_kwargs_accepted_by_evaluation_config(tmp_path: Path) 
 
 def test_unknown_client_role_raises() -> None:
     with pytest.raises(ValueError, match="unknown client role"):
-        backend_kwargs_for(load_config(), "judge")
+        backend_kwargs_for(load_config(path=FIXTURE_PATH), "judge")
 
 
 # ---------------------------------------------------------------------------
@@ -1020,8 +1032,8 @@ def _with_initial_harness(text: str, value: str) -> str:
 
 
 def test_initial_harness_defaults_to_h0() -> None:
-    assert load_config().loop.initial_harness == "H0"
-    assert load_config("smoke").loop.initial_harness == "H0"
+    assert load_config(path=FIXTURE_PATH).loop.initial_harness == "H0"
+    assert load_config("smoke", path=FIXTURE_PATH).loop.initial_harness == "H0"
 
 
 # ---------------------------------------------------------------------------
@@ -1036,8 +1048,8 @@ def _with_loop_v_screen(text: str, value: int) -> str:
 
 
 def test_v_screen_defaults_to_one_with_no_config_present() -> None:
-    assert load_config().loop.v_screen == 1
-    assert load_config("smoke").loop.v_screen == 1
+    assert load_config(path=FIXTURE_PATH).loop.v_screen == 1
+    assert load_config("smoke", path=FIXTURE_PATH).loop.v_screen == 1
 
 
 def test_v_screen_must_be_strictly_less_than_v(tmp_path: Path) -> None:
@@ -1063,8 +1075,8 @@ def test_v_screen_has_no_floor_to_clear_when_v_is_one(tmp_path: Path) -> None:
     # v<=1 leaves no room for a strictly cheaper probe; the validator treats
     # this as "no cheap screen possible" instead of refusing the config.
     base = shipped_text()
-    assert "v = 4 #" in base
-    text = _with_loop_v_screen(base.replace("v = 4 #", "v = 1 #", 1), 5)
+    assert "\nv = 4\n" in base
+    text = _with_loop_v_screen(base.replace("\nv = 4\n", "\nv = 1\n", 1), 5)
     path = write_config(tmp_path, text)
     config = load_config("full", path=path)
     assert config.loop.v == 1
@@ -1079,63 +1091,9 @@ def test_smoke_loop_may_override_v_screen(tmp_path: Path) -> None:
 
 
 def test_v_screen_is_an_identity_key(tmp_path: Path) -> None:
-    base = identity_hash(load_config())
+    base = identity_hash(load_config(path=FIXTURE_PATH))
     changed = write_config(tmp_path, _with_loop_v_screen(shipped_text(), 2))
     assert identity_hash(load_config("full", path=changed)) != base
-
-
-class TestGptOssOolongConfig:
-    """configs/experiment_oolong_gptoss.toml (U2: R1, R2)."""
-
-    PATH = Path("configs/experiment_oolong_gptoss.toml")
-    KIMI_PATH = Path("configs/experiment_oolong.toml")
-
-    @pytest.mark.parametrize("profile", ["full", "smoke"])
-    def test_loads_with_every_role_on_azure_gpt_oss(self, profile: str) -> None:
-        config = load_config(profile, path=self.PATH)
-        for role in CLIENT_ROLES:
-            endpoint = getattr(config.backends, role)
-            assert (endpoint.backend, endpoint.model) == ("azure_foundry", "gpt-oss-120b")
-
-    def test_every_role_carries_the_gpt_oss_rate_card(self) -> None:
-        config = load_config("full", path=self.PATH)
-        for role in CLIENT_ROLES:
-            kwargs = backend_kwargs_for(config, role)
-            assert kwargs["pricing"] == {"input_per_million": 0.15, "output_per_million": 0.60}
-        assert config.pricing.promo == config.pricing.list_price
-
-    def test_decoding_and_reasoning_knob_reach_sampling_args(self) -> None:
-        config = load_config("full", path=self.PATH)
-        args = sampling_args(config, "runner")
-        assert args["temperature"] == 0
-        assert args["top_p"] == 1.0
-        assert args["max_tokens"] == 16384
-        assert args["reasoning_effort"] == "medium"
-        assert "chat_template_kwargs" not in args["extra_body"]
-
-    def test_full_profile_uses_its_own_experiment_settings(self) -> None:
-        config = load_config("full", path=self.PATH)
-        assert config.caps.max_budget == 1.0
-        assert config.caps.max_timeout == 1800.0
-        assert (
-            config.splits.n_in,
-            config.splits.n_ho,
-            config.splits.test_short,
-            config.splits.test_long,
-        ) == (24, 24, 24, 0)
-        assert config.loop.v == 4
-        assert config.loop.environment == "oolong_synth"
-        assert config.loop.initial_harness == "H0*R"
-
-    def test_identity_differs_from_the_kimi_profile(self) -> None:
-        gptoss = load_config("full", path=self.PATH)
-        kimi = load_config("full", path=self.KIMI_PATH)
-        assert identity_hash(gptoss) != identity_hash(kimi)
-
-
-def test_kimi_config_starts_from_h0_star() -> None:
-    config = load_config("full", path=Path("configs/experiment_kimiK25.toml"))
-    assert config.loop.initial_harness == "H0*"
 
 
 def test_initial_harness_outside_the_registry_is_rejected_at_load(tmp_path: Path) -> None:
@@ -1145,14 +1103,16 @@ def test_initial_harness_outside_the_registry_is_rejected_at_load(tmp_path: Path
 
 
 def test_initial_harness_is_an_identity_key(tmp_path: Path) -> None:
-    base = identity_hash(load_config())
+    base = identity_hash(load_config(path=FIXTURE_PATH))
     star = write_config(tmp_path, _with_initial_harness(shipped_text(), "H0*"))
     assert identity_hash(load_config("full", path=star)) != base
 
 
 def test_explicit_h0_hashes_identically_to_the_default(tmp_path: Path) -> None:
     explicit = write_config(tmp_path, _with_initial_harness(shipped_text(), "H0"))
-    assert identity_hash(load_config("full", path=explicit)) == identity_hash(load_config())
+    assert identity_hash(load_config("full", path=explicit)) == identity_hash(
+        load_config(path=FIXTURE_PATH)
+    )
 
 
 @pytest.mark.parametrize("previous_protocol", [None, "heldout-batch/v1"])
@@ -1160,7 +1120,7 @@ def test_validation_protocol_changes_identity_even_with_one_repetition(previous_
     from shrlm.experiment.config import IDENTITY_OPERATIONAL_KEYS, IDENTITY_SECTIONS
     from shrlm.harness_identity import canonical_json_sha256
 
-    config = load_config("smoke")
+    config = load_config("smoke", path=FIXTURE_PATH)
     assert config.loop.v == 1
     legacy = {name: dataclasses.asdict(getattr(config, name)) for name in IDENTITY_SECTIONS}
     legacy["operational"] = {

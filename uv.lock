@@ -3007,10 +3007,6 @@ e2b = [
     { name = "dill" },
     { name = "e2b-code-interpreter" },
 ]
-graphwalks = [
-    { name = "huggingface-hub" },
-    { name = "pyarrow" },
-]
 ipython = [
     { name = "dill" },
     { name = "ipykernel" },
@@ -3060,7 +3056,6 @@ requires-dist = [
     { name = "dill", marker = "extra == 'prime'", specifier = ">=0.3.7" },
     { name = "e2b-code-interpreter", marker = "extra == 'e2b'", specifier = ">=0.0.11" },
     { name = "google-genai", specifier = ">=1.56.0" },
-    { name = "huggingface-hub", marker = "extra == 'graphwalks'", specifier = ">=0.20" },
     { name = "huggingface-hub", marker = "extra == 'obliq-bench'", specifier = ">=0.20" },
     { name = "ipykernel", marker = "extra == 'ipython'", specifier = ">=6.0.0" },
     { name = "ipython", marker = "extra == 'ipython'", specifier = ">=8.0.0" },
@@ -3070,13 +3065,12 @@ requires-dist = [
     { name = "openai", specifier = ">=2.14.0" },
     { name = "portkey-ai", specifier = ">=2.1.0" },
     { name = "prime-sandboxes", marker = "extra == 'prime'", specifier = ">=0.2.0" },
-    { name = "pyarrow", marker = "extra == 'graphwalks'", specifier = ">=15" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "rich", specifier = ">=13.0.0" },
 ]
-provides-extras = ["modal", "e2b", "daytona", "prime", "oolong", "ipython", "graphwalks", "obliq-bench", "plotting"]
+provides-extras = ["modal", "e2b", "daytona", "prime", "oolong", "ipython", "obliq-bench", "plotting"]
 
 [package.metadata.requires-dev]
 dev = [

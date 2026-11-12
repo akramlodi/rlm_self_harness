@@ -258,7 +258,7 @@ def recorded_identity(out_dir: Path | str) -> str | None:
     Taken verbatim from the marker rather than re-derived from the TOML (which
     is what ``rounds.resolve_config`` does, for a different question): the
     directory's own claim about which experiment it is stays true even if the
-    profile in ``configs/experiment.toml`` has since drifted, and provenance
+    profile in the experiment TOML has since drifted, and provenance
     wants exactly that claim.
     """
     path = Path(out_dir) / CONFIG_FILENAME

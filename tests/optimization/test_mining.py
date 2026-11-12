@@ -200,7 +200,7 @@ class TestPrecomputedVerdicts:
 
 @dataclass
 class ConfiguredVerifier(CountingVerifier):
-    """A verifier that also exposes its configuration, GraphWalks-style."""
+    """A verifier that also exposes its configuration, like OolongPairsVerifier."""
 
     threshold: float = 1.0
 

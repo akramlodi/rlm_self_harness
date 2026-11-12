@@ -113,7 +113,6 @@ from typing import TYPE_CHECKING, Any
 from rlm.clients import get_client
 from rlm.clients.base_lm import BaseLM
 from rlm.core.llm_observation import ObservationPersistenceError
-from shrlm.environments.graphwalks import GraphWalksSubVerifier, GraphWalksVerifier
 from shrlm.environments.obliq_bench_math import ObliqBenchMathVerifier
 from shrlm.environments.oolong import (
     OolongSubVerifier,
@@ -260,8 +259,8 @@ INITIAL_INCUMBENT = "H0"
 
 # The optimization loop mines and validates one environment's held-in/held-out
 # splits. Which environment (and its verifier pair) is ``config.loop.environment``
-# -- ``graphwalks`` (default), ``oolong_pairs``, or ``oolong_synth`` -- resolved by
-# ``resolve_env_binding``. The length label is ``short`` for both (OOLONG-synth's
+# -- ``oolong_pairs`` (default), ``oolong_synth``, or ``obliq_bench_math`` --
+# resolved by ``resolve_env_binding``. The length label is ``short`` for both (OOLONG-synth's
 # held-in/held-out/test partition is one length-diverse pool, not a short/long
 # pair).
 SPLIT_LENGTH = "short"
@@ -299,7 +298,6 @@ STAGE_REAL_CHECK = "real_check"
 
 
 # The verifier dotted paths handed to validation subject workers, per environment.
-GRAPHWALKS_VERIFIER_FACTORY = "shrlm.environments.graphwalks:GraphWalksVerifier"
 OOLONG_PAIRS_VERIFIER_FACTORY = "shrlm.environments.oolong_pairs:OolongPairsVerifier"
 OOLONG_SYNTH_VERIFIER_FACTORY = "shrlm.environments.oolong:make_synth_verifier"
 OBLIQ_BENCH_MATH_VERIFIER_FACTORY = (
@@ -338,14 +336,6 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
     ``SELECTABLE_ENVIRONMENTS``; an unexpected value here is a programming error.
     """
     environment = config.loop.environment
-    if environment == "graphwalks":
-        return EnvBinding(
-            name="graphwalks",
-            lengths=(SPLIT_LENGTH,),
-            verifier=GraphWalksVerifier(),
-            sub_verifier=GraphWalksSubVerifier(),
-            verifier_factory=GRAPHWALKS_VERIFIER_FACTORY,
-        )
     if environment == "oolong_synth":
         return EnvBinding(
             name="oolong_synth",
@@ -909,8 +899,6 @@ class _Experiment:
         operational = self.config.operational
         if operational.validation_workers <= 1 and operational.screening_workers <= 1:
             return None
-        if type(self.verifier) is GraphWalksVerifier:
-            return GRAPHWALKS_VERIFIER_FACTORY
         if type(self.verifier) is OolongPairsVerifier:
             return OOLONG_PAIRS_VERIFIER_FACTORY
         if isinstance(self.verifier, OolongVerifier) and self.verifier.task_set == "synth":
@@ -2401,8 +2389,8 @@ def run_experiment(
         config: The loaded experiment configuration (one profile).
         out_dir: The experiment directory; created if absent.
         verifier: The environment verifier for mining and validation runs;
-            defaults to ``GraphWalksVerifier()`` (the held-in/held-out splits
-            are GraphWalks source-short).
+            defaults to the ``config.loop.environment`` verifier
+            (``resolve_env_binding``).
         sub_verifier: Optional sub-call verifier for grounded attribution.
         attributor_lm: The attributor client; defaults to the configured
             backend via ``rlm.clients.get_client``.
@@ -2412,7 +2400,7 @@ def run_experiment(
         verifier_factory: Dotted path of a zero-argument callable returning
             ``verifier``, for the child processes a parallel validation stage
             (``operational.validation_workers > 1``) spawns. Defaults to the
-            ``GraphWalksVerifier`` path when ``verifier`` is the default; an
+            environment's verifier path when ``verifier`` is the default; an
             injected verifier needs it whenever workers exceed 1.
         client_factory: Test-only seam for run children: a dotted path plus an
             argument mapping. ``"mining"`` is reserved for mining children;
@@ -2437,8 +2425,7 @@ def run_experiment(
     # The sub-verifier pairs with the verifier: when the caller takes the
     # selected environment's default for one, it gets that environment's default
     # for the other (``resolve_env_binding`` keyed on ``config.loop.environment``
-    # -- GraphWalksVerifier/GraphWalksSubVerifier for "graphwalks",
-    # OolongVerifier/OolongSubVerifier for "oolong_synth", or
+    # -- OolongVerifier/OolongSubVerifier for "oolong_synth", or
     # OolongPairsVerifier/no sub-verifier for "oolong_pairs"). experiment_kimi ran
     # with neither passed and therefore no grounding at all (bundle config
     # sub_verifier_enabled=False). The ablation is still one call away -- pass

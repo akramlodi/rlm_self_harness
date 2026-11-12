@@ -215,7 +215,7 @@ class TestCoverage:
 
 
 class TestRenderedSections:
-    @pytest.mark.parametrize("environment", ["oolong_pairs", "graphwalks", None])
+    @pytest.mark.parametrize("environment", ["oolong_pairs", "obliq_bench_math", None])
     def test_pair_metrics_are_specific_to_the_verifier_environment(self, environment):
         from shrlm.environments.oolong_pairs import OolongPairsVerifier
 

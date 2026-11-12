@@ -19,7 +19,7 @@ haystack = "\n".join(filler_lines)
 rlm = RLM(
     backend="openrouter",
     backend_kwargs={
-        "model_name": "qwen/qwen3-30b-a3b",
+        "model_name": "deepseek/deepseek-v4-flash",
         "api_key": os.getenv("OPENROUTER-API-KEY"),
         "sampling_args": {"max_tokens": 2000},
     },

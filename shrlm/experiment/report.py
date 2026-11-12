@@ -28,9 +28,8 @@ Measured section
     lower-bound and resumed annotations) aggregated from ``stage_usage.jsonl``
     through ``read_stage_usage``'s exactly-once rule, plus the extrapolation
     basis: per-run means split by environment AND length. Optimization runs
-    are graphwalks source-short by construction (the orchestrator mines and
-    validates that split alone); evaluation runs carry their environment and
-    length in ``eval_summary.json``.
+    belong to ``[loop].environment``; evaluation runs carry their environment
+    and length in ``eval_summary.json``.
 
 Extrapolation (KTD6)
     Run counts are derived from config, never hardcoded::
@@ -44,7 +43,7 @@ Extrapolation (KTD6)
     lambda-RLM, SH-RLM)
     and is deliberately independent of how many conditions the scaffold
     actually evaluated. The experiment evaluates every configured
-    environment -- source GraphWalks and target OOLONG-Pairs -- so each
+    environment in the split plan, so each
     eval leg sums the test-role size across every environment at that
     length rather than the source split alone. Those counts multiply
     measured per-run means *at each length* -- long-run cost is superlinear

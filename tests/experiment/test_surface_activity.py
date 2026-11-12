@@ -389,7 +389,7 @@ def harness_path(out_dir: Path, round_index: int) -> Path:
 def make_pre_s10(out_dir: Path, round_index: int) -> None:
     """Replace the round's harness document with the pinned pre-S10 one.
 
-    The committed ``examples/mining_rounds/round_00/harness.json`` is the one
+    The committed ``tests/experiment/fixtures/pre_s10_harness.json`` is the one
     nine-surface document the current writer can no longer produce; copying its
     bytes (never editing them) is how a fabricated round becomes a round of that
     vintage.

@@ -10,14 +10,14 @@ actually runs end to end against a live model before trusting it inside a
 full experiment run.
 
 It reuses the real production wiring -- ``round_config_kwargs`` for the
-backend/model/sampling args from ``configs/experiment.toml``, and
+backend/model/sampling args from the experiment TOML, and
 ``run_lambda_round``/``LambdaRoundConfig`` (the exact code path
 ``shrlm/experiment/evaluation.py`` uses for the λ-RLM condition) for
 execution, persistence, and per-run budget/timeout enforcement -- so a green
 run here is a faithful signal, not a simulation.
 
 Cost: bounded at ``n x conditions x caps.max_budget`` (shipped config:
-$0.50/run), and the shipped Qwen3-30B-A3B-Instruct-2507 pricing puts a real
+$0.50/run), and DeepSeek-V4-Flash pricing puts a real
 262k-token pairwise run far under that (classification batches cost
 proportionally to input tokens; output per batch is a few short lines, not a
 full completion).

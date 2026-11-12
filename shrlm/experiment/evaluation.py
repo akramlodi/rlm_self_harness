@@ -82,7 +82,6 @@ from shrlm.baselines.lambda_runner import (
     LambdaRoundConfig,
     run_governed_lambda_round,
 )
-from shrlm.environments.graphwalks import GraphWalksVerifier
 from shrlm.environments.obliq_bench_math import ObliqBenchMathVerifier
 from shrlm.environments.oolong import OolongVerifier
 from shrlm.environments.oolong_pairs import OolongPairsVerifier
@@ -443,7 +442,6 @@ DEFAULT_CONDITIONS: tuple[str, ...] = (
 )
 
 DEFAULT_VERIFIERS: dict[str, Verifier] = {
-    "graphwalks": GraphWalksVerifier(),
     "oolong_pairs": OolongPairsVerifier(),
     "oolong_synth": OolongVerifier(task_set="synth"),
     "oolong_real": OolongVerifier(task_set="real"),

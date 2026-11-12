@@ -3,8 +3,8 @@
 Tier 1 is the $0 mock smoke in ``tests/experiment/test_smoke_mock.py``, which
 runs the identical pipeline over checked-in split fixtures with a scripted
 client and never touches the network. This file is tier 2: the same ``[smoke]``
-config profile (R2) against the CONFIGURED runner backend -- the shipped
-config serves Kimi-K2.5 from Azure AI Foundry -- with the configured
+config profile (R2) against the CONFIGURED runner backend -- DeepSeek-V4-Flash
+on OpenRouter or Azure AI Foundry, per ``--config`` -- with the configured
 ``sampling_args``, run once by hand to turn the scaffold's plumbing into real
 token, time, and cost numbers.
 
@@ -85,23 +85,20 @@ Spend control (KTD7; hard ceiling $5 across the smoke tiers)
     ``PYTEST_LIVE_RESERVE_USD = $0.60``).
 
     ``check_budget_arithmetic`` re-derives every term from the LOADED config
-    (``--config``), so the one proof covers both shipped profiles. At the
-    gpt-oss config's $0.15/$0.60 per 1M with ``max_output_tokens = 16384``
-    and the eight-call reasoning probe:
+    (``--config``), so the one proof covers every shipped config. At the Azure
+    DeepSeek-V4-Flash rate ($0.19/$0.51 per 1M) with ``max_output_tokens =
+    8192`` and the two-call probe:
 
-        per stage call      $0.0172 = 49,152 x $0.15/1M + 16,384 x $0.60/1M
-        stage ceiling       42 x $0.0172032 = $0.7225
-        probe bound         7 x $0.009984 + $0.0001632 = $0.0701
-        cumulative ceiling  governed + $0.7225 + 2 x $0.0701 + $0.60 < $5.00
+        per stage call      $0.0135 = 49,152 x $0.19/1M + 8,192 x $0.51/1M
+        stage ceiling       42 x $0.0135 = $0.5677
+        cumulative ceiling  ~$4.27 < $5.00
 
-    At the shipped Qwen config's $0.10/$0.30 per 1M with 4,096 output tokens
-    and the two-call probe, the same arithmetic gives $0.0061 per stage call
-    (42 calls, $0.2580), a $0.0027 probe bound, and a cumulative ceiling
-    likewise under $5.00.
+    At the OpenRouter rate ($0.009/$1.28 per 1M) the same arithmetic gives
+    $0.0109 per stage call and a cumulative ceiling of ~$4.18.
 
-    Why ``UNGOVERNED_INPUT_TOKENS`` and not the full context window: at the
-    Kimi list price a full 262,144-token input bound prices 29 calls at $4.92
-    on its own. The ungoverned calls are single, non-REPL completions whose
+    Why ``UNGOVERNED_INPUT_TOKENS`` and not the full context window: a full
+    262,144-token input bound per call would dominate the whole ceiling on
+    its own. The ungoverned calls are single, non-REPL completions whose
     prompts this repo constructs mechanically and char-caps: the probe prompt
     is a constant in this file (~30 chars); an attribution prompt is the
     attributor system prompt (~6.5k chars) plus a digest hard-capped at
@@ -128,29 +125,23 @@ Live scale (LIVE_* overrides; identity note above)
     The live smoke shrinks the smoke profile's counts, not its semantics:
     n_in 3 -> 2 (cuts the worst-case attribution transport calls from 27 to
     18 -- ungoverned headroom the proof needs), test_short 4 -> 2 and
-    oolong n_short 4 -> 2 with test_long 2 -> 1 and oolong n_long 2 -> 1 (so
-    one evaluation condition's cumulative spend before its final long set --
-    ~4 short runs x ~$0.02 + one GraphWalks long ~$0.09, ~$0.17 -- clears the
-    $0.24 breaker budget instead of tripping it before the OOLONG long run).
+    oolong n_short 4 -> 2 with test_long 2 -> 1 and oolong n_long 2 -> 1 --
+    except that when OOLONG-Pairs is the loop environment its pool ceilings
+    are kept large enough for every optimization role (so
+    one evaluation condition's cumulative spend before its final long set
+    clears the $0.24 breaker budget instead of tripping it before the OOLONG
+    long run).
     Decoding, promotion rule, environments, loop shape (m, v, k, t), and
     n_ho are the shipped smoke profile, byte-identical.
 
-Long runs (KTD6, re-derived for Kimi-K2.5 pricing $0.60/$3.00 per 1M)
-    Both environments contribute long instances. The per-run budget is sized
-    so at least one uncapped long run completes per environment: one full
-    pass of the 262,144-token OOLONG window ($0.157 in) plus one max-length
-    4,096-token output ($0.012) is ~$0.17 against the $0.20 budget, and the
-    measured profile is far smaller -- prior-provider smoke means
-    ($0.0024-$0.0134/run) imply ~130k effective input tokens on a long run,
-    ~$0.09 at Kimi rates. The old sizing figure -- ~3 context passes plus 30
-    max-length outputs -- reprices to ~$0.84 at Kimi rates and is
-    deliberately NOT cleared: a budget clearing it would put the governed
-    ceiling alone past $5 (7 breakers x >$1). A run that heavy is
-    budget-terminated, lands flagged ``usage_lower_bound`` -- named, never
-    silently zeroed -- and the KTD6 gate below adjudicates. GraphWalks long
-    instances range up to ~1M tokens; a maximal draw exceeds the per-run
-    budget by construction and lands as a lower bound, which the gate
-    likewise catches if the whole long sample ends up censored.
+Long runs (KTD6)
+    Every environment in the split plan with a long length contributes long
+    instances. The per-run budget is sized so at least one uncapped long run
+    completes: one full pass of the 262,144-token OOLONG-Pairs window plus one
+    max-length output stays within the $0.20 budget at the DeepSeek-V4-Flash
+    rates. A heavier run is budget-terminated, lands flagged
+    ``usage_lower_bound`` -- named, never silently zeroed -- and the KTD6 gate
+    below adjudicates.
 
     An environment whose long runs were *all* capped (or all skipped by a
     tripped breaker) fails the smoke: long-run cost is superlinear, so a fully
@@ -162,19 +153,19 @@ Long runs (KTD6, re-derived for Kimi-K2.5 pricing $0.60/$3.00 per 1M)
 Usage:
     # ~$0.01: the R10 execution-note probe, run this FIRST. --config selects
     # the experiment TOML whose [smoke] profile (backends, pricing, probe
-    # expectation) the smoke runs; the default is configs/experiment.toml.
+    # expectation) the smoke runs; the default is config.CONFIG_PATH.
     # The verdict and every probe payload land in <out-dir>/probe.json.
     AZURE_API_KEY=... AZURE_FOUNDRY_ENDPOINT=... \\
         uv run python examples/experiment_smoke.py --probe \\
-        --config configs/experiment_oolong_gptoss.toml --out-dir ./smoke_gptoss
+        --config configs/experiment_oolong_pairs_DeepSeekV4Flash.toml --out-dir ./smoke_dsv4f
 
     # bounded by the arithmetic above, up to a few hours: the full tier-2 smoke.
     AZURE_API_KEY=... AZURE_FOUNDRY_ENDPOINT=... \\
         uv run python examples/experiment_smoke.py --live
 
-The live run materializes real splits, so it downloads the pinned GraphWalks
-parquets (including the 256k-1M long file) and streams the OOLONG-Pairs
-upstream dataset -- install the ``graphwalks`` and ``oolong`` extras first.
+The live run materializes real splits, so it streams the pinned OOLONG-Pairs
+upstream dataset (including the 262k test-only length) -- install the
+``oolong`` extra first.
 Artifacts land under ``--out-dir`` (default ``./experiment_smoke``); the run is
 resumable, so a re-invocation completes only what is missing.
 """
@@ -248,7 +239,7 @@ SPEND_CEILING_USD = 5.0
 # $5 stays a ceiling on the plan's total live spend, never a per-tier bound.
 PYTEST_LIVE_RESERVE_USD = 0.60
 
-# Live-smoke caps, sized by the module docstring's re-derived Kimi arithmetic.
+# Live-smoke caps, sized by the module docstring's arithmetic.
 # They replace the smoke profile's pilot-sized caps; decoding, promotion rule,
 # environments, and loop shape stay the shipped smoke profile. The per-run
 # budget is load-bearing for KTD6 (it must clear one full 262,144-token input
@@ -283,12 +274,13 @@ VALIDATION_FIXED_BREAKERS = 2  # baseline and the combined candidate
 # constructs, so a change there moves this arithmetic.
 PROBE_CALLS = 2
 
-# A reasoning config (gpt-oss) runs the seven-call probe sequence instead --
+# A reasoning config (one that sets ``reasoning_effort``) runs the seven-call
+# probe sequence instead --
 # configured effort, low, high, the 16-token length case, and three
 # informational calls -- plus the client-path completion that both modes
 # issue, so its probe budget is eight paid calls. ``probe_call_count`` picks
-# per config, which keeps the cumulative $5 proof true for BOTH the shipped
-# config (2 calls) and the gpt-oss config (8 calls).
+# per config, which keeps the cumulative $5 proof true for both a plain
+# config (2 calls) and a reasoning config (8 calls).
 REASONING_PROBE_RAW_CALLS = 7
 REASONING_PROBE_CALLS = REASONING_PROBE_RAW_CALLS + 1
 
@@ -298,8 +290,8 @@ REASONING_PROBE_CALLS = REASONING_PROBE_RAW_CALLS + 1
 # ~41k chars including its <=2,000-char truncated rejection), and one BPE
 # token never encodes less than one character, so this is
 # a true bound with ~20% margin -- unlike the model's full 262,144-token
-# context window, which at Kimi list prices would price the ungoverned class
-# alone past the $5 ceiling. The output side is bounded by
+# context window, which would price the ungoverned class alone past the $5
+# ceiling. The output side is bounded by
 # decoding.max_output_tokens (sent as ``max_tokens``).
 UNGOVERNED_INPUT_TOKENS = 49_152
 
@@ -343,8 +335,7 @@ PROBE_COMPLETION_TOKEN_CEILING = 64
 PROBE_JSON_FILENAME = "probe.json"
 
 # Markers that must never appear in a probe response's visible content:
-# ``<think>`` (Kimi/Qwen thinking markup) plus the harmony control tokens
-# (gpt-oss). The client strips these on the run path; the probe reads the RAW
+# ``<think>`` (thinking markup) plus the harmony control tokens. The client strips these on the run path; the probe reads the RAW
 # response on purpose, so a leak fails here instead of being repaired
 # silently.
 FORBIDDEN_CONTENT_MARKERS: tuple[str, ...] = ("<think>", *_HARMONY_CONTROL_TOKENS)
@@ -366,7 +357,7 @@ class ProbeExpectation:
     Derived from the config, never from a provider name: a config whose
     ``[backends.azure_foundry]`` sets a real ``reasoning_effort`` expects a
     reasoning signal in the response; every other config (the shipped
-    openrouter profile, Kimi's instant mode, ``reasoning_effort = "none"``)
+    DeepSeek profiles, instant mode, ``reasoning_effort = "none"``)
     expects none. The default instance reproduces today's no-reasoning checks.
     """
 
@@ -400,8 +391,8 @@ def probe_expectation(config: ExperimentConfig) -> ProbeExpectation:
 def live_config(path: Path | str = CONFIG_PATH) -> ExperimentConfig:
     """A config file's ``[smoke]`` profile with live-smoke caps and counts (R2).
 
-    ``path`` defaults to the shipped ``configs/experiment.toml``; ``--config``
-    threads any other experiment TOML (e.g. the gpt-oss profile) through the
+    ``path`` defaults to ``config.CONFIG_PATH``; ``--config``
+    threads any other experiment TOML through the
     same shrink. Semantics -- decoding, promotion rule, environments,
     backends, loop shape -- are byte-identical to that file's smoke profile;
     only spend caps and instance counts move (see the module docstring's
@@ -410,6 +401,21 @@ def live_config(path: Path | str = CONFIG_PATH) -> ExperimentConfig:
     profile created, and vice versa.
     """
     config = load_config("smoke", path)
+    splits = replace(
+        config.splits,
+        n_in=LIVE_HELD_IN,
+        test_short=LIVE_TEST_SHORT,
+        test_long=LIVE_TEST_LONG,
+    )
+    n_short, n_long = LIVE_OOLONG_SHORT, LIVE_OOLONG_LONG
+    if config.loop.environment == "oolong_pairs":
+        # n_short/n_long are pinned-pool ceilings. When OOLONG-Pairs is the
+        # loop environment the pool must still hold every optimization role at
+        # each blended length (split_plan refuses otherwise); raising a ceiling
+        # adds no runs -- run counts come from the split sizes above.
+        promotion = config.refinement.promotion_size if config.refinement.enabled else 0
+        n_short = max(n_short, splits.n_in + splits.n_ho + promotion + splits.test_short)
+        n_long = max(n_long, splits.test_long)
     return replace(
         config,
         caps=replace(
@@ -418,19 +424,10 @@ def live_config(path: Path | str = CONFIG_PATH) -> ExperimentConfig:
             max_timeout=LIVE_MAX_TIMEOUT_SECONDS,
             candidate_budget=LIVE_CANDIDATE_BUDGET_USD,
         ),
-        splits=replace(
-            config.splits,
-            n_in=LIVE_HELD_IN,
-            test_short=LIVE_TEST_SHORT,
-            test_long=LIVE_TEST_LONG,
-        ),
+        splits=splits,
         environments=replace(
             config.environments,
-            oolong_pairs=replace(
-                config.environments.oolong_pairs,
-                n_short=LIVE_OOLONG_SHORT,
-                n_long=LIVE_OOLONG_LONG,
-            ),
+            oolong_pairs=replace(config.environments.oolong_pairs, n_short=n_short, n_long=n_long),
         ),
     )
 
@@ -450,7 +447,7 @@ def probe_call_count(config: ExperimentConfig) -> int:
     """Paid calls one probe invocation issues under this config.
 
     Two for a config that expects no reasoning (the raw completion plus the
-    client-path one); eight for a reasoning config (the seven-call gpt-oss
+    client-path one); eight for a reasoning config (the seven-call reasoning
     sequence plus the client-path one).
     """
     if probe_expectation(config).expects_reasoning:
@@ -732,7 +729,7 @@ def _probe_record(name: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 # The three INFORMATIONAL probe calls: their status codes / error codes and
 # token counts are recorded in probe.json, never asserted -- they map the
-# route's behavior at the knob's edges (an unsupported effort, the Kimi
+# route's behavior at the knob's edges (an unsupported effort, the
 # instant-mode switch) for the operator's go/no-go read.
 INFORMATIONAL_PROBE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("none", {"reasoning_effort": "none"}),
@@ -744,7 +741,7 @@ INFORMATIONAL_PROBE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
 def probe_reasoning_sequence(
     lm: Any, config: ExperimentConfig, expectation: ProbeExpectation
 ) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
-    """The seven-call gpt-oss probe: prove the reasoning contract before spending more.
+    """The seven-call reasoning probe: prove the reasoning contract before spending more.
 
     One call each, all on the client's raw request path (``raw_completion``
     does not travel ``_validate_response``, so every check reads the raw
@@ -1364,7 +1361,7 @@ def main(argv: list[str] | None = None) -> int:
         "--config",
         default=str(CONFIG_PATH),
         help="path to the experiment TOML whose [smoke] profile the smoke runs "
-        "(default: configs/experiment.toml); env gating, the pricing "
+        "(default: configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml); env gating, the pricing "
         "attestation, and the probe expectation all derive from it",
     )
     args = parser.parse_args(argv)

@@ -12,9 +12,9 @@
       },
       "spent": 0.064,
       "test_sets": {
-        "graphwalks_long": {
+        "oolong_synth_long": {
           "attempts": 1,
-          "environment": "graphwalks",
+          "environment": "oolong_synth",
           "method_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "method_kind": "harness",
           "input_tokens": 30000,
@@ -29,17 +29,17 @@
           "output_tokens": 1500,
           "pass_count": 3,
           "pass_rate": 1.0,
-          "round_path": "graphwalks_long/round_00",
+          "round_path": "oolong_synth_long/round_00",
           "skipped_run_ids": [],
-          "split_file": "graphwalks_long_test.jsonl",
+          "split_file": "oolong_synth_long_test.jsonl",
           "total_cost": 0.03,
           "total_sub_calls": 0,
           "usage_lower_bound": false,
           "wall_seconds": 300.0
         },
-        "graphwalks_short": {
+        "oolong_synth_short": {
           "attempts": 1,
-          "environment": "graphwalks",
+          "environment": "oolong_synth",
           "method_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "method_kind": "harness",
           "input_tokens": 2000,
@@ -54,9 +54,9 @@
           "output_tokens": 200,
           "pass_count": 2,
           "pass_rate": 1.0,
-          "round_path": "graphwalks_short/round_00",
+          "round_path": "oolong_synth_short/round_00",
           "skipped_run_ids": [],
-          "split_file": "graphwalks_short_test.jsonl",
+          "split_file": "oolong_synth_short_test.jsonl",
           "total_cost": 0.002,
           "total_sub_calls": 0,
           "usage_lower_bound": false,
@@ -125,9 +125,9 @@
       },
       "spent": 0.064,
       "test_sets": {
-        "graphwalks_long": {
+        "oolong_synth_long": {
           "attempts": 1,
-          "environment": "graphwalks",
+          "environment": "oolong_synth",
           "method_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "method_kind": "harness",
           "input_tokens": 30000,
@@ -142,17 +142,17 @@
           "output_tokens": 1500,
           "pass_count": 3,
           "pass_rate": 1.0,
-          "round_path": "graphwalks_long/round_00",
+          "round_path": "oolong_synth_long/round_00",
           "skipped_run_ids": [],
-          "split_file": "graphwalks_long_test.jsonl",
+          "split_file": "oolong_synth_long_test.jsonl",
           "total_cost": 0.03,
           "total_sub_calls": 0,
           "usage_lower_bound": false,
           "wall_seconds": 300.0
         },
-        "graphwalks_short": {
+        "oolong_synth_short": {
           "attempts": 1,
-          "environment": "graphwalks",
+          "environment": "oolong_synth",
           "method_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "method_kind": "harness",
           "input_tokens": 2000,
@@ -167,9 +167,9 @@
           "output_tokens": 200,
           "pass_count": 2,
           "pass_rate": 1.0,
-          "round_path": "graphwalks_short/round_00",
+          "round_path": "oolong_synth_short/round_00",
           "skipped_run_ids": [],
-          "split_file": "graphwalks_short_test.jsonl",
+          "split_file": "oolong_synth_short_test.jsonl",
           "total_cost": 0.002,
           "total_sub_calls": 0,
           "usage_lower_bound": false,
@@ -233,8 +233,8 @@
   "identity_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "profile": "smoke",
   "test_sets": [
-    "graphwalks_short",
-    "graphwalks_long",
+    "oolong_synth_short",
+    "oolong_synth_long",
     "oolong_pairs_short",
     "oolong_pairs_long"
   ]

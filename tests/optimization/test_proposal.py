@@ -953,7 +953,7 @@ def test_explicit_absent_behavioral_change_is_rejected(change):
         validate_candidate_spec(item, ALL_PATTERNS)
 
 
-@pytest.mark.parametrize("environment", ["oolong_pairs", "oolong", "graphwalks"])
+@pytest.mark.parametrize("environment", ["oolong_pairs", "oolong", "obliq_bench_math"])
 def test_task_guidance_compares_execution_and_preserves_information(environment):
     prompt, _ = render_prompt(
         [PATTERN_TEXT],
@@ -2054,7 +2054,7 @@ def test_skills_pedagogy_only_rendered_when_an_s10_pattern_is_addressable():
 
 def test_render_prompt_names_the_verifier_contract_when_the_bundle_carries_it():
     contract = {
-        "environment": "graphwalks",
+        "environment": "oolong_synth",
         "extraction_rule": "trailing-bracket-list;marker-optional;quotes-stripped",
         "gold_ordering": "sorted",
         "pass_f1_threshold": 1.0,

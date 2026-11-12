@@ -439,7 +439,7 @@ class WeaknessMiner:
         )
 
         # The verifier's own configuration is provenance when it exposes one
-        # (duck-typed ``config()``, as GraphWalksVerifier does): two rounds
+        # (duck-typed ``config()``, as OolongPairsVerifier does): two rounds
         # judged under different verifier settings must not share a bundle id.
         config_method = getattr(self.verifier, "config", None)
         verifier_config: dict[str, Any] = dict(config_method()) if callable(config_method) else {}

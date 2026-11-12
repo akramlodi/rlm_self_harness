@@ -65,6 +65,7 @@ from shrlm.experiment.splits import (
     LoaderFn,
     dataset_revision_for,
     split_file_name,
+    split_plan,
 )
 from shrlm.experiment.usage import STAGE_USAGE_FILE, read_stage_usage
 from tests.experiment.test_orchestrator import MockLM, attribution, proposer_batch
@@ -72,17 +73,25 @@ from tests.optimization.test_driver import ClientFactory, final
 
 FIXTURES = Path(__file__).parent / "fixtures" / "smoke_splits"
 
+# The offline smoke's own config: the loader fixture switched to OOLONG-Pairs,
+# one instance per role per blended length (see the file's header).
+SMOKE_CONFIG_PATH = Path(__file__).parent / "fixtures" / "smoke_mock_experiment.toml"
+
+OOLONG_PAIRS_ROLES = ("held_in", "held_out", "test")
+
 # The split files the smoke profile's plan calls for, per environment.
 FIXTURE_ROLES: dict[str, dict[str, tuple[str, ...]]] = {
-    "graphwalks": {"short": ("held_in", "held_out", "test"), "long": ("test",)},
-    "oolong_pairs": {"short": ("test",), "long": ("test",)},
+    "oolong_pairs": {
+        "short": OOLONG_PAIRS_ROLES,
+        "mid16k": OOLONG_PAIRS_ROLES,
+        "mid32k": OOLONG_PAIRS_ROLES,
+        "long": ("test",),
+    },
 }
 
 # The evaluation grid, in the order the runner executes it: environments
 # sorted, lengths short then long, conditions in DEFAULT_CONDITIONS order.
 EVAL_SET_ORDER: tuple[tuple[str, str], ...] = (
-    ("graphwalks", "short"),
-    ("graphwalks", "long"),
     ("oolong_pairs", "short"),
     ("oolong_pairs", "long"),
 )
@@ -128,9 +137,8 @@ def pre_materialize_splits(config: ExperimentConfig, out_dir: Path) -> None:
     """Copy the fixture splits in and write the manifest ``materialize_splits`` verifies.
 
     Written here rather than checked in so the manifest always carries the
-    configured dataset revision pins: an edit to a pin in
-    ``configs/experiment.toml`` is a live-loader concern, not a reason for the
-    offline smoke to go red.
+    configured dataset revision pins: an edit to a pin in the config is a
+    live-loader concern, not a reason for the offline smoke to go red.
     """
     splits_dir = out_dir / SPLITS_DIR
     splits_dir.mkdir(parents=True, exist_ok=True)
@@ -186,7 +194,6 @@ def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse_fetch(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("the mock smoke attempted a dataset download")
 
-    monkeypatch.setattr("shrlm.environments.graphwalks.fetch_rows", refuse_fetch)
     monkeypatch.setattr("shrlm.environments.oolong_pairs.iter_dataset_rows", refuse_fetch)
 
 
@@ -207,8 +214,9 @@ def optimization_script() -> list[str]:
     since the screening subset and attempt count equal the full set here.
     Pass/fail drives the promotion path; this tests wiring only.
     """
-    held_in = fixture_instances("graphwalks", "short", "held_in")
-    held_out = fixture_instances("graphwalks", "short", "held_out")
+    lengths = ("short", "mid16k", "mid32k")
+    held_in = [i for n in lengths for i in fixture_instances("oolong_pairs", n, "held_in")]
+    held_out = [i for n in lengths for i in fixture_instances("oolong_pairs", n, "held_out")]
 
     script = [final(WRONG_ANSWER) for _ in held_in]  # mining: 3 failures
     script += [final(WRONG_ANSWER) for _ in held_out]  # screening baseline
@@ -292,7 +300,7 @@ def smoke(tmp_path_factory: pytest.TempPathFactory) -> SmokeRun:
     import rlm.core.rlm as rlm_module
 
     out_dir = tmp_path_factory.mktemp("smoke") / "exp"
-    config = load_config("smoke")
+    config = load_config("smoke", path=SMOKE_CONFIG_PATH)
     config = replace(
         config,
         operational=replace(
@@ -622,7 +630,7 @@ class TestLiveSmokeStructuralChecks:
 
     def test_long_coverage_and_measured_spend_read_the_smoke_artifacts(self, smoke: SmokeRun):
         coverage = experiment_smoke.long_run_coverage(smoke.config, smoke.out_dir)
-        assert set(coverage) == {"graphwalks", "oolong_pairs"}
+        assert set(coverage) == {"oolong_pairs"}
         for environment, counts in coverage.items():
             assert counts["runs"] > 0, environment
             assert counts["uncapped"] == counts["runs"], environment
@@ -674,13 +682,11 @@ class TestLiveSmokeLongRunGate:
         coverage = experiment_smoke.long_run_coverage(smoke.config, out_dir)
         assert coverage["oolong_pairs"]["runs"] > 0
         assert coverage["oolong_pairs"]["uncapped"] == 0
-        assert coverage["graphwalks"]["uncapped"] > 0
 
         with pytest.raises(experiment_smoke.SmokeError) as excinfo:
             experiment_smoke.check_long_run_coverage(smoke.config, coverage)
         message = str(excinfo.value)
         assert "oolong_pairs" in message
-        assert "graphwalks" not in message
         assert "FRESH --out-dir" in message
         assert "LIVE_MAX_BUDGET_USD" in message
 
@@ -705,7 +711,7 @@ class TestLiveSmokeLongRunGate:
         stub_live_stages(monkeypatch)
 
         with pytest.raises(experiment_smoke.SmokeError, match="no uncapped long run"):
-            experiment_smoke.run_live(experiment_smoke.live_config(), out_dir)
+            experiment_smoke.run_live(experiment_smoke.live_config(SMOKE_CONFIG_PATH), out_dir)
 
         out = capsys.readouterr().out
         assert report_path.exists(), "the report must be on disk before the failure"
@@ -723,7 +729,9 @@ class TestLiveSmokeLongRunGate:
         out_dir = doctored_experiment(smoke, tmp_path, lambda summary: None)
         stub_live_stages(monkeypatch)
 
-        assert experiment_smoke.run_live(experiment_smoke.live_config(), out_dir) == 0
+        assert (
+            experiment_smoke.run_live(experiment_smoke.live_config(SMOKE_CONFIG_PATH), out_dir) == 0
+        )
         assert "SMOKE PASSED" in capsys.readouterr().out
 
 
@@ -745,15 +753,15 @@ class TestLiveSmokeGuards:
         ) / 1_000_000
         assert experiment_smoke.ungoverned_call_count(config) == 44
         assert experiment_smoke.ungoverned_call_ceiling(config) == pytest.approx(per_call)
-        assert per_call == pytest.approx(0.0061440)
+        assert per_call == pytest.approx(0.010928128)
 
         probe_spend = experiment_smoke.probe_spend_bound_usd(config)
-        assert probe_spend == pytest.approx(0.0026624)
+        assert probe_spend == pytest.approx(0.020989952)
         ungoverned = 42 * experiment_smoke.ungoverned_call_ceiling(config) + probe_spend
-        assert ungoverned == pytest.approx(0.2607104)
+        assert ungoverned == pytest.approx(0.479971328)
 
         assert experiment_smoke.spend_ceiling(config) == pytest.approx(governed + ungoverned)
-        assert experiment_smoke.spend_ceiling(config) == pytest.approx(3.3407104)
+        assert experiment_smoke.spend_ceiling(config) == pytest.approx(3.559971328)
 
         # The standalone --probe invocation is additional to the probe already
         # included in the full --live invocation.
@@ -766,7 +774,7 @@ class TestLiveSmokeGuards:
             + experiment_smoke.PYTEST_LIVE_RESERVE_USD
         )
 
-        assert cumulative == pytest.approx(3.9433728)
+        assert cumulative == pytest.approx(4.18096128)
         assert cumulative < experiment_smoke.SPEND_CEILING_USD
         assert experiment_smoke.check_budget_arithmetic(config) == pytest.approx(cumulative)
 
@@ -826,13 +834,19 @@ class TestLiveSmokeGuards:
         assert config.splits.n_ho == smoke_profile.splits.n_ho
         assert config.splits.seed == smoke_profile.splits.seed
         oolong = config.environments.oolong_pairs
-        assert oolong.n_short == experiment_smoke.LIVE_OOLONG_SHORT == 2
-        assert oolong.n_long == experiment_smoke.LIVE_OOLONG_LONG == 1
+        # OOLONG-Pairs is the loop environment here, so its pool ceiling is
+        # raised to hold every optimization role at each blended length.
+        promotion = config.refinement.promotion_size if config.refinement.enabled else 0
+        assert oolong.n_short == max(
+            experiment_smoke.LIVE_OOLONG_SHORT,
+            config.splits.n_in + config.splits.n_ho + promotion + config.splits.test_short,
+        )
+        assert oolong.n_long == max(experiment_smoke.LIVE_OOLONG_LONG, config.splits.test_long)
+        split_plan(config)  # the live profile's plan is valid
         smoke_oolong = smoke_profile.environments.oolong_pairs
         assert oolong.dataset_repo == smoke_oolong.dataset_repo
         assert oolong.dataset_revision == smoke_oolong.dataset_revision
         assert oolong.task_ids == smoke_oolong.task_ids
-        assert config.environments.graphwalks == smoke_profile.environments.graphwalks
 
     def test_a_budget_over_the_ceiling_is_refused(self):
         from dataclasses import replace

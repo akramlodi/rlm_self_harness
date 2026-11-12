@@ -38,7 +38,7 @@ Usage:
     # generic λ-RLM combinator pipeline on one cheap matched instance.
     uv run python examples/obliq_bench_math_smoke.py --live \\
         --method lambda_rlm --query-ids q01522 --candidate-pool-size 200 \\
-        --config configs/experiment.toml \\
+        --config configs/experiment_obliq_bench_math_DeepSeekV4Flash.toml \\
         --max-budget 0.10 --max-timeout 900 \\
         --out-dir ./experiment_obliq_math_lambda_sanity
 

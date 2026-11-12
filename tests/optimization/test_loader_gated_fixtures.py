@@ -3,7 +3,7 @@
 Two tracked ``proposal.json`` documents exercise the candidate loader's gates:
 a synthetic S4 candidate under ``tests/optimization/data/loader_gated/`` and
 the live validation smoke's hand-written candidate under
-``examples/validation_rounds/proposals/``.
+``tests/optimization/data/loader_gated/smoke-s2-restate/``.
 Both must carry the ``shrlm-harness/v2`` envelope with the full surface key
 set, store a hash that recomputes from their stored serialization, and be
 byte-for-byte what the production writers emit -- never hand-edited JSON.
@@ -11,9 +11,8 @@ byte-for-byte what the production writers emit -- never hand-edited JSON.
 The synthetic fixture was generated once with ``write_proposal`` and
 ``load_candidate`` against H0. Its rendered module is stored as text data to
 preserve the generator's exact output independently of Python formatters.
-Expected files are never regenerated during tests. Historical evidence under
-``examples/mining_rounds/`` remains unchanged; ``tests/experiment/test_rounds.py``
-pins its pre-S10 ``round_00/harness.json`` on purpose.
+Expected files are never regenerated during tests. ``tests/experiment/test_rounds.py``
+separately pins a pre-S10 harness document on purpose.
 """
 
 import json
@@ -35,15 +34,9 @@ from shrlm.optimization.candidates import (
 from shrlm.optimization.proposal import EDIT_KIND_TEXT, CandidateSpec, write_proposal
 from shrlm.rlm_harness import H0
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 S4_PROPOSAL = Path(__file__).parent / "data" / "loader_gated" / "r01-c01-s4" / PROPOSAL_FILENAME
 VALIDATION_PROPOSAL = (
-    REPO_ROOT
-    / "examples"
-    / "validation_rounds"
-    / "proposals"
-    / "smoke-s2-restate"
-    / PROPOSAL_FILENAME
+    Path(__file__).parent / "data" / "loader_gated" / "smoke-s2-restate" / PROPOSAL_FILENAME
 )
 LOADER_GATED_FIXTURES = (
     pytest.param((S4_PROPOSAL, S4_PROPOSAL.with_name("surfaces.py.txt")), id="synthetic-s4"),

@@ -231,7 +231,7 @@ class TestProvenance:
 
         snapshot = allocate_snapshot(experiment, now=FROZEN)
         snapshot.record_rounds([1])
-        snapshot.record_eval_sets(["b1/graphwalks_short"])
+        snapshot.record_eval_sets(["b1/oolong_synth_short"])
         snapshot.record_source(ledger)
         snapshot.run_tool("surface_activity", lambda: None)
         snapshot.publish()
@@ -244,7 +244,7 @@ class TestProvenance:
         assert payload["created_at"].startswith("2026-08-18T16:48:00")
         assert "analysis_revision" in payload
         assert payload["rounds"] == [1]
-        assert payload["eval_sets"] == ["b1/graphwalks_short"]
+        assert payload["eval_sets"] == ["b1/oolong_synth_short"]
         assert [entry["name"] for entry in payload["tools"]] == ["surface_activity"]
         entry = sources_by_path(payload)["opt/round_01/validation/round_01/promotions.jsonl"]
         assert entry["sha256"] == hashlib.sha256(ledger.read_bytes()).hexdigest()
@@ -521,7 +521,7 @@ class TestIncumbentQualityCli:
 class TestCollapseAndAttributionCli:
     def test_the_evaluation_phase_writes_into_a_published_snapshot(self, experiment: Path) -> None:
         write_eval_summary(
-            experiment, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}}
+            experiment, {"b1": {"test_sets": {"oolong_synth_short": eval_set_payload()}}}
         )
 
         assert collapse_main([str(experiment), "--phase", "evaluation"]) == 0
@@ -529,7 +529,7 @@ class TestCollapseAndAttributionCli:
         snapshot = only_snapshot(experiment / ANALYSIS_DIR)
         assert (snapshot / EVALUATION_FILENAME).exists()
         payload = json.loads((snapshot / PROVENANCE_FILENAME).read_text())
-        assert payload["eval_sets"] == ["b1/graphwalks_short"]
+        assert payload["eval_sets"] == ["b1/oolong_synth_short"]
         assert (snapshot / PUBLISHED_FILENAME).exists()
 
 

@@ -26,7 +26,7 @@ from shrlm.experiment.live_gates import CONFIG_ENV_KEY, live_config_path, live_s
 def _selected_config() -> Any:
     """The env-selected smoke-profile config the live tier runs against
     (KTD7): ``SHRLM_EXPERIMENT_CONFIG`` when set, else the shipped
-    ``configs/experiment.toml``."""
+    ``config.CONFIG_PATH``."""
     from shrlm.experiment.config import CONFIG_PATH, load_config
 
     return load_config(profile="smoke", path=live_config_path(CONFIG_PATH))
@@ -275,33 +275,33 @@ class TestLiveRowSelectionOffline:
     and a mismatching provider row reports a skip reason naming the runner
     mismatch while the matching row runs."""
 
-    def _gptoss_config(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+    def _azure_config(self, monkeypatch: pytest.MonkeyPatch) -> Any:
         from tests.conftest import CONFIG_DIR
 
         monkeypatch.setenv(
-            "SHRLM_EXPERIMENT_CONFIG", str(CONFIG_DIR / "experiment_oolong_gptoss.toml")
+            "SHRLM_EXPERIMENT_CONFIG",
+            str(CONFIG_DIR / "experiment_oolong_pairs_blended_DeepSeekV4Flash.toml"),
         )
         return _selected_config()
 
     def test_mismatching_rows_name_the_runner_mismatch(self, monkeypatch):
-        from tests.conftest import AZURE_KIMI, OPENROUTER_QWEN
+        from tests.conftest import OPENROUTER_DSV4F
 
-        config = self._gptoss_config(monkeypatch)
-        for row in (AZURE_KIMI, OPENROUTER_QWEN):
-            reason = _runner_mismatch(row, config)
-            assert reason is not None
-            assert row.id in reason and row.model in reason
-            assert "gpt-oss-120b" in reason
+        config = self._azure_config(monkeypatch)
+        reason = _runner_mismatch(OPENROUTER_DSV4F, config)
+        assert reason is not None
+        assert OPENROUTER_DSV4F.id in reason and OPENROUTER_DSV4F.model in reason
+        assert "DeepSeek-V4-Flash" in reason
 
     def test_the_selected_configs_own_row_does_not_skip(self, monkeypatch):
-        from tests.conftest import AZURE_GPTOSS
+        from tests.conftest import AZURE_DSV4F
 
-        config = self._gptoss_config(monkeypatch)
-        assert _runner_mismatch(AZURE_GPTOSS, config) is None
+        config = self._azure_config(monkeypatch)
+        assert _runner_mismatch(AZURE_DSV4F, config) is None
 
     def test_env_unset_selects_the_shipped_smoke_profile(self, monkeypatch):
         """With the env unset this module resolves the config it loads today:
-        the shipped configs/experiment.toml smoke profile (openrouter runner,
+        the shipped default config's smoke profile (openrouter runner,
         so every azure row mismatches and the module-level gate skips)."""
         from shrlm.experiment.config import CONFIG_PATH
 

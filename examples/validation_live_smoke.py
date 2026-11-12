@@ -1,6 +1,6 @@
 """Live smoke for the proposal-validation stage: one hand-written candidate, end to end.
 
-One ``validate_round`` call against OpenRouter ``qwen/qwen3-30b-a3b-instruct-2507``:
+One ``validate_round`` call against OpenRouter ``deepseek/deepseek-v4-flash``:
 a hand-written S2 candidate (a decomposition-instruction edit to ``H0``) is
 written as a real ``shrlm-proposal/v1`` artifact, gated by the loader, and
 evaluated with the incumbent on two fabricated held-out instances,
@@ -52,7 +52,7 @@ from shrlm.rlm_harness import H0
 
 load_dotenv()
 
-MODEL = "qwen/qwen3-30b-a3b-instruct-2507"
+MODEL = "deepseek/deepseek-v4-flash"
 CANDIDATE_ID = "smoke-s2-restate"
 
 # The stated ceiling: 8 tiny runs of a cheap model cost well under this; the

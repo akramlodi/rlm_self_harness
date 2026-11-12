@@ -48,7 +48,7 @@ Denominators, deliberately different per metric
     (root + child + no_recursion + ungrounded) exhaustive over ``n_failures``.
 
 ``sub_verifier_available`` -- environment coverage, not a per-run fact
-    Only GraphWalks has a registered ``SubVerifier``; OOLONG-Pairs deliberately
+    No environment currently registers a ``SubVerifier`` here; OOLONG-Pairs deliberately
     has none ("child correctness here is a semantic-labeling judgment no
     deterministic check can recompute" -- its own module docstring). A group
     with ``sub_verifier_available=False`` shows ``ungrounded_share=1.0``
@@ -96,7 +96,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shrlm.environments.graphwalks import GraphWalksSubVerifier
 from shrlm.experiment.analysis_io import (
     Snapshot,
     add_snapshot_parent_argument,
@@ -133,7 +132,7 @@ from shrlm.optimization.walker import walk
 # together instead of silently diverging.
 
 # oolong_pairs deliberately has no SubVerifier; see this module's docstring.
-SUB_VERIFIERS: dict[str, SubVerifier] = {"graphwalks": GraphWalksSubVerifier()}
+SUB_VERIFIERS: dict[str, SubVerifier] = {}
 
 PHASE_OPTIMIZATION = "optimization"
 PHASE_EVALUATION = "evaluation"

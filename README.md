@@ -34,7 +34,7 @@ examples/                             experiment drivers (run_experiment, run_ev
 paper/                                paper source and assets
 patches/                              auxiliary patches
 rlm/                                  core RLM runtime package (clients, environments, logger, utils)
-scripts/                              long-run supervisor and proposal-diff helpers
+scripts/                              proposal-diff helper
 shrlm/                                self-harness spec, environments, baselines, optimization loop, experiment orchestration
 third_party/                          licence and provenance of vendored code (lambda-RLM)
 training/                             training harness, environments, and examples (rlm-train, oolong env)
@@ -69,153 +69,86 @@ implemented in `shrlm/environments/`:
 
 | Environment | Task | Quality metric |
 |---|---|---|
-| `graphwalks` (default) | graph traversal over long edge lists | pass count |
+| `oolong_pairs` (default) | OOLONG-Pairs pair extraction at 8k/16k/32k; the 262k pool is test-only | pair-set F1 (`primary_quality`) |
 | `oolong_synth` | OOLONG-synth aggregation; OOLONG-real is run periodically as a generalization check only | pass count |
-| `oolong_pairs` | OOLONG-Pairs pair extraction at 8k/16k/32k; the 262k pool is test-only | pair-set F1 (`primary_quality`) |
 | `obliq_bench_math` | OBLIQ-Bench Math retrieval (151 queries) | NDCG@10 (`primary_quality`) |
 
-Each TOML in `configs/` is one model × environment arm:
+Every config runs **DeepSeek-V4-Flash** for all three roles (runner, attributor,
+proposer), hosted either on OpenRouter or on Azure AI Foundry. Each TOML in `configs/` is
+one environment × host arm:
 
-| Config | Environment | Model / host | Notes |
+| Config | Environment | Host | Notes |
 |---|---|---|---|
-| `experiment.toml` | graphwalks | Qwen3-30B-A3B / OpenRouter | original main run; also holds the `smoke` profile |
-| `experiment_ox.toml` | graphwalks | stealth/ox-alpha / OpenRouter | free-model arm, up to 16 rounds |
-| `experiment_kimiK25.toml` | graphwalks | Kimi-K2.5 / Azure | up to 5 rounds |
-| `experiment_oolong.toml` | oolong_synth | Kimi-K2.5 / Azure | |
-| `experiment_oolong_gptoss.toml` | oolong_synth | gpt-oss-120b / Azure | see the gpt-oss ladder below |
-| `experiment_oolong_DeepSeekV4Flash.toml` | oolong_synth | DeepSeek-V4-Flash / Azure | up to 15 rounds |
-| `experiment_oolong_pairs_DeepSeekV4Flash.toml` | oolong_pairs (single length) | DeepSeek-V4-Flash / Azure | |
-| `experiment_oolong_pairs_blended_DeepSeekV4Flash.toml` | oolong_pairs (8k+16k+32k) | DeepSeek-V4-Flash / Azure | per-length τ, 3 validation reps, patience-based stop |
-| `experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml` | oolong_pairs (8k+16k+32k) | DeepSeek-V4-Flash / OpenRouter | current arm: 4 screened candidates/round, patience 3 |
-| `experiment_oolong_pairs_openrouter_DeepSeekV4Flash.toml` | oolong_pairs | DeepSeek-V4-Flash / OpenRouter | read by `examples/lambda_rlm_oolong_pairs_long_smoke.py` only |
-| `experiment_obliq_bench_math_DeepSeekV4Flash.toml` | obliq_bench_math | DeepSeek-V4-Flash / Azure | real mining loop |
-| `experiment_obliq_bench_math_DeepSeekV4Flash.*.toml` | obliq_bench_math | DeepSeek-V4-Flash / Azure | frozen copies for the qualification and matched-20 baseline studies |
-| `dataset_qualification_DeepSeekV4Flash.toml` | all | DeepSeek-V4-Flash | input to `examples/dataset_qualification.py`, not an optimization run |
+| `experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml` | oolong_pairs (8k+16k+32k) | OpenRouter | **default** (`config.CONFIG_PATH`) and current arm: 4 screened candidates/round, patience 3 |
+| `experiment_oolong_pairs_blended_DeepSeekV4Flash.toml` | oolong_pairs (8k+16k+32k) | Azure | per-length τ, 3 validation reps, patience-based stop |
+| `experiment_oolong_pairs_DeepSeekV4Flash.toml` | oolong_pairs (single length) | Azure | |
+| `experiment_oolong_pairs_openrouter_DeepSeekV4Flash.toml` | oolong_pairs | OpenRouter | read by `examples/lambda_rlm_oolong_pairs_long_smoke.py` only |
+| `experiment_oolong_DeepSeekV4Flash.toml` | oolong_synth | Azure | up to 15 rounds |
+| `experiment_obliq_bench_math_DeepSeekV4Flash.toml` | obliq_bench_math | Azure | real mining loop |
+| `experiment_obliq_bench_math_DeepSeekV4Flash.*.toml` | obliq_bench_math | Azure | frozen copies for the qualification and matched-20 baseline studies |
+| `dataset_qualification_DeepSeekV4Flash.toml` | all | Azure | input to `examples/dataset_qualification.py`, not an optimization run |
 
-The header comment of each TOML records why it differs from the file it was cloned from.
-Run any loop config with:
+Every config also carries a `smoke` profile: its `[smoke.*]` tables override **scale
+counts only** (instance counts, repetitions, candidate width, rounds, spend caps); every
+other semantic is identical to `full`. The header comment of each TOML records why it
+differs from the file it was cloned from.
+
+### Running an experiment
+
+Append `--dry-run` first: it checks credentials, loads the config, and prints the
+identity and per-role backends without creating anything or spending anything.
 
 ```bash
+# Smoke: end-to-end plumbing check on the default config (small, but spends real money)
+uv run python examples/run_experiment.py --profile smoke --out-dir ./experiment_smoke
+
+# The default arm (blended OOLONG-Pairs on OpenRouter)
+uv run python examples/run_experiment.py --out-dir ./experiment_oolong_pairs_openrouter
+
+# Any other arm
 uv run python examples/run_experiment.py --config configs/<file>.toml --out-dir ./<fresh_dir>
 ```
 
-The smoke, Qwen, and Ox configurations run on OpenRouter and require
-`OPENROUTER_API_KEY` in the environment (a `.env` file at the repo root works). The
-Azure Kimi-K2.5 configuration instead requires:
+Interrupting with Ctrl-C loses nothing — re-run the same command and the experiment
+resumes at its exact stage boundary. Two arms can run concurrently from the same
+checkout as long as each has its own `--out-dir`.
+
+### Credentials and pricing attestation
+
+OpenRouter configs need `OPENROUTER_API_KEY` (a `.env` file at the repo root works);
+OpenRouter reports the real per-response cost, so nothing else is required. Azure
+configs instead need:
 
 ```bash
 echo 'AZURE_API_KEY=...' >> .env
 echo 'AZURE_FOUNDRY_ENDPOINT=https://<your-resource>.services.ai.azure.com' >> .env
 # Verify the deployment's pay-as-you-go rates in the Azure portal match the
-# config's [pricing] tables ($0.60 in / $3.00 out per 1M), then attest them --
+# config's [pricing.list_price] ($0.19 in / $0.51 out per 1M), then attest them --
 # Azure returns no per-response cost, so cost is synthesized from these rates
 # and the launcher refuses any live spend until the attestation matches:
-export SHRLM_VERIFIED_PRICING='0.6/3.0'
+export SHRLM_VERIFIED_PRICING='0.19/0.51'
 ```
 
-The config's `model` value must equal your Foundry **deployment name** (the catalog
-default is `Kimi-K2.5`). In every configuration the launcher refuses to start — and
-spends nothing — if a required credential or attestation is missing.
+The config's `model` value must equal your Foundry **deployment name**
+(`DeepSeek-V4-Flash`). In every configuration the launcher refuses to start — and spends
+nothing — if a required credential or attestation is missing.
 
-Note (applies to every Azure Foundry deployment, Kimi-K2.5 included): an empty
-completion arriving with `finish_reason='length'` is classified once as token-limit
-exhaustion (`TokenLimitExceededError` -> `resource_terminated`, spend kept) instead of
-entering the empty-content retry ladder — a length cut is deterministic for the prompt,
-so a retry only re-bills the same outcome. Empty completions with other finish reasons
-keep the retry ladder as before.
+Note for Azure Foundry: an empty completion arriving with `finish_reason='length'` is
+classified once as token-limit exhaustion (`TokenLimitExceededError` ->
+`resource_terminated`, spend kept) instead of entering the empty-content retry ladder —
+a length cut is deterministic for the prompt, so a retry only re-bills the same outcome.
+Empty completions with other finish reasons keep the retry ladder.
 
-The `SHRLM_VERIFIED_PRICING` attestation is **per config**, matched against the
-selected config's `[pricing.list_price]`:
-
-| Config | Attestation |
-|---|---|
-| `configs/experiment_kimiK25.toml`, `configs/experiment_oolong.toml` (Kimi-K2.5) | `SHRLM_VERIFIED_PRICING='0.60/3.00'` |
-| `configs/experiment_oolong_gptoss.toml` (gpt-oss-120b) | `SHRLM_VERIFIED_PRICING='0.15/0.6'` |
-| Azure DeepSeek-V4-Flash configs (`*_DeepSeekV4Flash.toml` without `openrouter`) | `SHRLM_VERIFIED_PRICING='0.19/0.51'` |
-
-OpenRouter configs need no attestation: OpenRouter reports the real per-response cost.
-
-### Live pytest tiers and the gpt-oss ladder
+### Live pytest tiers
 
 Paid pytest items are marked `live` and are **deselected** (never executed) unless
 `SHRLM_RUN_LIVE=1` is exported and `CI` is unset; once selected, module-level skip
 gates still name any missing credential or attestation in `-rs` output.
 `SHRLM_EXPERIMENT_CONFIG=<path-to-toml>` points every live tier — the client live
-class, the smoke live round, both recursion tiers, and
-`examples/experiment_smoke.py` via `--config` — at that config; unset, each tier
-keeps its own default (the shipped smoke profile, `configs/experiment_kimiK25.toml`,
-or `configs/experiment_oolong.toml`).
-
-The gpt-oss live gate ladder (run the steps in order; each must pass before the
-next spends more):
-
-```bash
-export AZURE_API_KEY=... AZURE_FOUNDRY_ENDPOINT=https://<your-resource>.services.ai.azure.com
-export SHRLM_RUN_LIVE=1 SHRLM_VERIFIED_PRICING='0.15/0.6'   # verify in the portal first
-export SHRLM_EXPERIMENT_CONFIG=configs/experiment_oolong_gptoss.toml
-
-# 1. Probe (~7 calls, < $0.05): reasoning contract, sampling args, cost synthesis
-uv run python examples/experiment_smoke.py --probe \
-    --config configs/experiment_oolong_gptoss.toml --out-dir ./smoke_gptoss
-# 2. Client live (~4 calls, < $0.05): azure_gptoss rows must show PASSED in -rs
-uv run pytest -rs -m live tests/clients/test_azure_foundry.py
-# 3. Recursion live (4 runs x $0.40 max, budgeted separately -- up to $1.60 on
-#    top of the $5 smoke-tier ceiling): sub-calls, token and wall-time columns
-uv run pytest -rs -m live tests/experiment/test_oolong_recursion_live.py -s
-# 4. Smoke live: the whole loop, three roles, cost provenance
-uv run python examples/experiment_smoke.py --live \
-    --config configs/experiment_oolong_gptoss.toml --out-dir ./smoke_gptoss_live
-# 5. Dry run ($0): identity, model @ rate, probe verdict round-trip
-uv run python examples/run_experiment.py --dry-run \
-    --config configs/experiment_oolong_gptoss.toml \
-    --out-dir ./experiment_oolong_gptoss --probe-json ./smoke_gptoss/probe.json
-```
-
-### The original GraphWalks configurations
-
-| | Smoke | Qwen (main) | Ox | Kimi-K2.5 (Azure) |
-|---|---|---|---|---|
-| Config file | `configs/experiment.toml` | `configs/experiment.toml` | `configs/experiment_ox.toml` | `configs/experiment_kimiK25.toml` |
-| Profile | `smoke` | `full` (default) | `full` (default) | `full` (default) |
-| Model (all 3 roles) | `qwen/qwen3-30b-a3b-instruct-2507` | `qwen/qwen3-30b-a3b-instruct-2507` | `stealth/ox-alpha` (free stealth model) | `Kimi-K2.5` deployment on Azure AI Foundry |
-| Scale | tiny: 3 held-in / 3 held-out instances, 1 round, 2 candidates | 24 / 40 instances, up to 3 rounds, 4 candidates | same instances as Qwen, up to **16 rounds** | same instances as Qwen, up to 5 rounds |
-| Purpose | end-to-end plumbing check for cents | the 2026-08-23 comparison run | free-model comparison arm; bounded by wall clock and `patience`, not spend | Azure comparison arm; cost synthesized from `[pricing]` (no provider cost field) |
-
-The `smoke` profile is the same TOML as the Qwen run with the `[smoke.*]` tables at the
-bottom overriding **scale counts only** (instance counts, repetitions, candidate width,
-rounds, spend caps); every other semantic is identical. The Ox config is a fork of the
-Qwen TOML that changes the role models, `loop.t = 16`, `max_output_tokens` (ox-alpha is a
-reasoning model; see the comment in `[decoding]`), zeroes the `[pricing]` tables (the
-model bills $0), and gives the attribution/proposal caches `_ox`-suffixed paths so two
-experiments running concurrently from this directory never append to the same cache file.
-The Kimi config is likewise a fork of the Qwen TOML that switches the three roles to the
-`azure_foundry` backend, restores the Kimi-K2.5 instant-mode decoding defaults
-(temperature 0.6, top_p 0.95, no top_k/min_p), sets both `[pricing]` tables to the Azure
-rate ($0.60/$3.00 per 1M — these arm the spend breaker, since Azure reports no cost), and
-uses `_kimi`-suffixed cache paths.
-
-### Exact commands
-
-Append `--dry-run` to any of these first: it checks credentials, loads the config, and
-prints the identity and per-role backends without creating anything or spending anything.
-
-```bash
-# Smoke: end-to-end plumbing check (small, but spends real money)
-uv run python examples/run_experiment.py --profile smoke --out-dir ./experiment_smoke
-
-# Qwen: the main comparison run
-uv run python examples/run_experiment.py --out-dir ./experiment_qwen_
-
-# Ox: the stealth/ox-alpha free-model arm
-uv run python examples/run_experiment.py --config configs/experiment_ox.toml --out-dir ./experiment_ox
-
-# Azure: KimiK-2.5
-uv run python examples/run_experiment.py --config configs/experiment_kimiK25.toml --out-dir ./experiment_kimi
-```
-
-Interrupting with Ctrl-C loses nothing — re-run the same command and the experiment
-resumes at its exact stage boundary. The Qwen and Ox experiments can run concurrently
-from the same checkout: they share nothing but the (read-only) datasets and the API key.
+class, the smoke live round, the OOLONG recursion tier, and
+`examples/experiment_smoke.py` via `--config` — at that config; unset, each tier keeps
+its own default (the default config's smoke profile, or
+`configs/experiment_oolong_DeepSeekV4Flash.toml` for the recursion tier).
 
 ### Proposal quality and OOLONG-Pairs feedback
 
@@ -308,10 +241,10 @@ optimization runs and selects their projection basis using `[loop].environment`
 from the supplied config; evaluation results keep their recorded environments.
 
 One caveat for any tool that resolves the config from an out-dir: the default TOML is
-`configs/experiment.toml`, and a config that no longer hashes to the identity recorded in
-`<out_dir>/config.json` resolves to "unknown" (deliberately — no numbers are invented
-from a config the experiment never ran under). For the Ox experiment, always pass
-`--config configs/experiment_ox.toml` where the tool accepts it.
+`config.CONFIG_PATH` (the blended OpenRouter OOLONG-Pairs arm), and a config that no
+longer hashes to the identity recorded in `<out_dir>/config.json` resolves to "unknown"
+(deliberately — no numbers are invented from a config the experiment never ran under).
+For any other arm, always pass `--config configs/<file>.toml` where the tool accepts it.
 
 ## Baselines and frozen evaluation
 

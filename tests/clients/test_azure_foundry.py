@@ -67,9 +67,9 @@ def _make_client(monkeypatch, response=None, pricing="default", **kwargs):
             mock_sync.chat.completions.create.return_value = response
         mock_openai.return_value = mock_sync
         if pricing is None:
-            client = AzureFoundryClient(model_name="kimi-k2.5", **kwargs)
+            client = AzureFoundryClient(model_name="deepseek-v4-flash", **kwargs)
         else:
-            client = AzureFoundryClient(model_name="kimi-k2.5", pricing=pricing, **kwargs)
+            client = AzureFoundryClient(model_name="deepseek-v4-flash", pricing=pricing, **kwargs)
     return client
 
 
@@ -92,7 +92,7 @@ def _make_async_client(monkeypatch, response=None, create=None, **kwargs):
         mock_async = MagicMock()
         mock_async.chat.completions.create = create
         mock_async_openai.return_value = mock_async
-        kwargs.setdefault("model_name", "kimi-k2.5")
+        kwargs.setdefault("model_name", "deepseek-v4-flash")
         kwargs.setdefault("pricing", dict(VALID_PRICING))
         return AzureFoundryClient(**kwargs)
 
@@ -198,7 +198,7 @@ class TestCostSynthesis:
 
         summary = client.get_usage_summary()
         assert summary.total_cost == pytest.approx(expected)
-        assert summary.model_usage_summaries["kimi-k2.5"].cost_source == "synthesized"
+        assert summary.model_usage_summaries["deepseek-v4-flash"].cost_source == "synthesized"
 
     def test_acompletion_synthesizes_cost(self, monkeypatch):
         response = _make_response(prompt_tokens=1000, completion_tokens=500)
@@ -221,7 +221,7 @@ class TestCostSynthesis:
 
         summary = client.get_usage_summary()
         assert summary.total_cost == pytest.approx(0.01)
-        assert summary.model_usage_summaries["kimi-k2.5"].cost_source == "provider"
+        assert summary.model_usage_summaries["deepseek-v4-flash"].cost_source == "provider"
 
     def test_costs_accumulate_across_calls(self, monkeypatch):
         response = _make_response(prompt_tokens=1000, completion_tokens=500)
@@ -294,7 +294,7 @@ class TestResponseValidation:
         expected = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
         summary = client.get_usage_summary()
         assert summary.total_cost == pytest.approx(expected)
-        model_summary = summary.model_usage_summaries["kimi-k2.5"]
+        model_summary = summary.model_usage_summaries["deepseek-v4-flash"]
         assert model_summary.total_input_tokens == 1000
         assert model_summary.total_output_tokens == 500
         assert model_summary.cost_source == "synthesized"
@@ -348,7 +348,7 @@ class TestReasoningExhaustion:
         expected = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
         summary = client.get_usage_summary()
         assert summary.total_cost == pytest.approx(expected)
-        assert summary.model_usage_summaries["kimi-k2.5"].total_output_tokens == 500
+        assert summary.model_usage_summaries["deepseek-v4-flash"].total_output_tokens == 500
 
     def test_length_without_token_details_terminates_the_same_way(self, monkeypatch):
         from rlm.utils.exceptions import TokenLimitExceededError
@@ -528,7 +528,7 @@ class TestHarmonyMarkerStripping:
         expected = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
         summary = client.get_usage_summary()
         assert summary.total_cost == pytest.approx(expected)
-        assert summary.model_usage_summaries["kimi-k2.5"].total_output_tokens == 500
+        assert summary.model_usage_summaries["deepseek-v4-flash"].total_output_tokens == 500
 
     def test_analysis_only_stop_is_retried_then_raises_runtime_error(self, monkeypatch):
         """Same shape with finish_reason='stop': behaves exactly like the raw
@@ -628,10 +628,10 @@ class TestThreadSafety:
         cost_a = 1000 * 0.60 / 1e6 + 500 * 3.00 / 1e6
         cost_b = 7000 * 0.60 / 1e6 + 900 * 3.00 / 1e6
         expected = calls_per_thread * (cost_a + cost_b)
-        assert client.model_costs["kimi-k2.5"] == pytest.approx(expected)
+        assert client.model_costs["deepseek-v4-flash"] == pytest.approx(expected)
         summary = client.get_usage_summary()
         assert summary.total_cost == pytest.approx(expected)
-        assert summary.model_usage_summaries["kimi-k2.5"].total_input_tokens == (
+        assert summary.model_usage_summaries["deepseek-v4-flash"].total_input_tokens == (
             calls_per_thread * (1000 + 7000)
         )
 
@@ -759,7 +759,7 @@ class TestGetClientRegistration:
         ):
             client = get_client(
                 "azure_foundry",
-                {"model_name": "kimi-k2.5", "pricing": dict(VALID_PRICING)},
+                {"model_name": "deepseek-v4-flash", "pricing": dict(VALID_PRICING)},
             )
         assert isinstance(client, AzureFoundryClient)
 

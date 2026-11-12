@@ -77,7 +77,7 @@ One candidate = one directory = one `proposal.json`:
   "predicted_effect": "The root re-checks accumulated results against the frontier before flipping ready.",
   "regression_risks": ["One extra turn per run; may over-trigger on short tasks."],
   "provenance": {
-    "model": "qwen/qwen3-30b-a3b-instruct-2507",
+    "model": "deepseek/deepseek-v4-flash",
     "prompt_sha256": "<sha256 of the exact proposer prompt used>"
   }
 }

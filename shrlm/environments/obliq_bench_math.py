@@ -36,8 +36,8 @@ from math import log2
 from random import Random
 from typing import Any
 
-from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.environments.diagnostics import NDCG_QUALITY
+from shrlm.optimization.taxonomy import VerifierCause
 from shrlm.optimization.types import QualityMeasurement, Verdict
 
 DATASET_REPO = "dianetc/OBLIQ-Bench"
@@ -279,7 +279,7 @@ class ObliqBenchMathVerifier:
     baseline run on this brand-new benchmark to calibrate a pass bar against.
 
     Cause mapping, decided on the top-K predicted set vs. gold set (the
-    GraphWalks/OolongVerifier list-answer-kind convention):
+    OolongVerifier list-answer-kind convention):
 
     * no ``RANKED: [...]`` JSON/Python string list anywhere -> WRONG_FORMAT.
     * an explicit empty ranking ("RANKED: []") -> NO_ANSWER.

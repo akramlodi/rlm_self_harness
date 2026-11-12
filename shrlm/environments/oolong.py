@@ -6,11 +6,10 @@ Long Context Reasoning and Aggregation Capabilities") asks a *distributional*
 question over a long context of many discrete labelled examples -- count a label
 class, name the user/date with the most instances, decide whether a label was
 more common before or after a date. The answer is a property of the whole input,
-so unlike GraphWalks it cannot be shortcut by a regex-and-scan single pass: a
+so it cannot be shortcut by a regex-and-scan single pass: a
 faithful solver has to classify every chunk and aggregate across all of them.
 That is what makes OOLONG the environment where the recursion taxonomy and the
-sub-call surfaces actually have something to exercise (experiment_kimi's
-POST_MORTEM: GraphWalks-short fits one REPL BFS, so 0 of 5,104 runs recursed).
+sub-call surfaces actually have something to exercise.
 
 Two task sets, both under ``oolongbench`` on Hugging Face:
 
@@ -163,8 +162,7 @@ class ParsedAnswer:
     ``empty`` distinguishes "the final line carried an explicit empty marker"
     (an intentional empty answer -> NO_ANSWER against a non-empty gold) from
     ``None`` at the call site, which means "no answer token at all" ->
-    WRONG_FORMAT. Mirrors the None-vs-``[]`` split in
-    ``shrlm.environments.graphwalks.extract_answer_nodes``.
+    WRONG_FORMAT.
     """
 
     kind: str
@@ -384,8 +382,7 @@ def serialize_answer(value: Any, answer_kind: str) -> str:
 
     The Verdict gold feeds the digest sha and the attribution cache key, so an
     order-dependent rendering would split cache entries for byte-identical
-    problems -- lists are sorted here for the same reason
-    ``graphwalks.serialize_nodes`` sorts.
+    problems -- so lists are sorted here.
     """
     if answer_kind == "list":
         items = sorted(value) if isinstance(value, (list, set, tuple)) else [str(value)]
@@ -404,16 +401,16 @@ class OolongVerifier:
     """
     Deterministic outcome for a whole run: full credit (score == 1.0).
 
-    Partial credit is reported in ``detail`` (``score=0.83 exact=False``) the way
-    ``GraphWalksVerifier`` reports ``f1=...`` -- the promotion gate compares pass
-    counts, so a binary pass keeps that machinery untouched.
+    Partial credit is reported in ``detail`` (``score=0.83 exact=False``) --
+    the promotion gate compares pass counts, so a binary pass keeps that
+    machinery untouched.
 
     Cause mapping:
 
     * no answer token on the final line -> WRONG_FORMAT.
     * an explicit empty marker against a non-empty gold -> NO_ANSWER.
     * a ``list`` answer with missing items only -> INCOMPLETE, extra only ->
-      SPURIOUS, both -> MIXED_SET_ERROR (the GraphWalks set-cause mapping).
+      SPURIOUS, both -> MIXED_SET_ERROR.
     * every other scored miss -> WRONG_VALUE.
     """
 

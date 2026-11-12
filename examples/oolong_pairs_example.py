@@ -16,7 +16,7 @@ data, parses out the ground-truth labels, and computes gold pairs programmatical
 of the 20 tasks (`examples/oolong_pairs/tasks.py`, verbatim from Appendix D.1). This file
 (Stage 2) is the RLM harness that answers those questions.
 
-Unlike GraphWalks, there is no deterministic algorithm for the underlying operation here --
+There is no deterministic algorithm for the underlying operation here --
 mapping a TREC question to one of six semantic categories is a judgment call, not something
 code can verify. So the strategy below has no `verify_child`-style self-verification: the
 root RLM

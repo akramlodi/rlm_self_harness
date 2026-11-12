@@ -65,6 +65,7 @@ from shrlm.experiment.pattern_frequency_diff import (
     BUNDLES_FILENAME,
     run_pattern_frequency_diff,
 )
+from shrlm.experiment.rounds import discover_rounds
 from shrlm.experiment.surface_activity import (
     SURFACE_ACTIVITY_FILENAME,
     surface_activity_over_rounds,
@@ -260,13 +261,15 @@ class TestEvaluationCompleteness:
     def test_a_set_with_skipped_runs_is_flagged_not_dropped(
         self, experiment: Path, snapshot: Snapshot
     ) -> None:
-        write_eval_set(experiment, "b1", "graphwalks_short", n_runs=4)
+        write_eval_set(experiment, "b1", "oolong_synth_short", n_runs=4)
         write_eval_summary(
             experiment,
             {
                 "b1": {
                     "test_sets": {
-                        "graphwalks_short": eval_set_payload(skipped=("inst01__a02", "inst01__a03"))
+                        "oolong_synth_short": eval_set_payload(
+                            skipped=("inst01__a02", "inst01__a03")
+                        )
                     }
                 }
             },
@@ -274,7 +277,7 @@ class TestEvaluationCompleteness:
 
         (row,) = written_evaluation(snapshot, experiment)
         assert row["condition_id"] == "b1"
-        assert row["test_set_id"] == "graphwalks_short"
+        assert row["test_set_id"] == "oolong_synth_short"
         assert row["outcome"] == OUTCOME_COMPLETED
         assert row["n_skipped"] == "2"
         assert row["complete"] == TRISTATE_FALSE
@@ -282,12 +285,14 @@ class TestEvaluationCompleteness:
     def test_an_over_budget_set_is_flagged_incomplete(
         self, experiment: Path, snapshot: Snapshot
     ) -> None:
-        write_eval_set(experiment, "b1", "graphwalks_short")
+        write_eval_set(experiment, "b1", "oolong_synth_short")
         write_eval_summary(
             experiment,
             {
                 "b1": {
-                    "test_sets": {"graphwalks_short": eval_set_payload(outcome=OUTCOME_OVER_BUDGET)}
+                    "test_sets": {
+                        "oolong_synth_short": eval_set_payload(outcome=OUTCOME_OVER_BUDGET)
+                    }
                 }
             },
         )
@@ -299,15 +304,15 @@ class TestEvaluationCompleteness:
     def test_a_completed_set_with_no_skips_is_complete(
         self, experiment: Path, snapshot: Snapshot
     ) -> None:
-        write_eval_set(experiment, "b1", "graphwalks_short")
+        write_eval_set(experiment, "b1", "oolong_synth_short")
         write_eval_summary(
-            experiment, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}}
+            experiment, {"b1": {"test_sets": {"oolong_synth_short": eval_set_payload()}}}
         )
 
         (row,) = written_evaluation(snapshot, experiment)
         assert row["complete"] == TRISTATE_TRUE
         assert row["n_skipped"] == "0"
-        assert row["environment"] == "graphwalks"
+        assert row["environment"] == "oolong_synth"
         assert row["length"] == "short"
 
     def test_a_set_short_on_runs_is_not_published_complete(
@@ -324,13 +329,13 @@ class TestEvaluationCompleteness:
         write_eval_set(
             experiment,
             "b1",
-            "graphwalks_short",
+            "oolong_synth_short",
             n_instances=2,
             attempts=config.operational.eval_repetitions,
             n_runs=2,
         )
         write_eval_summary(
-            experiment, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}}
+            experiment, {"b1": {"test_sets": {"oolong_synth_short": eval_set_payload()}}}
         )
 
         (row,) = written_evaluation(snapshot, experiment)
@@ -346,8 +351,10 @@ class TestEvaluationCompleteness:
     ) -> None:
         """KTD9 again, on the evaluation side: unmeasurable is not failed."""
         legacy = tmp_path / "legacy"
-        write_eval_set(legacy, "b1", "graphwalks_short", n_instances=2, attempts=3)
-        write_eval_summary(legacy, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}})
+        write_eval_set(legacy, "b1", "oolong_synth_short", n_instances=2, attempts=3)
+        write_eval_summary(
+            legacy, {"b1": {"test_sets": {"oolong_synth_short": eval_set_payload()}}}
+        )
 
         (row,) = written_evaluation(allocate_snapshot(legacy, now=FROZEN), legacy)
         assert row["outcome"] == OUTCOME_COMPLETED
@@ -360,14 +367,14 @@ class TestEvaluationCompleteness:
         self, experiment: Path, snapshot: Snapshot
     ) -> None:
         """Only possible once the phase reads the inventory, not the summary's grid."""
-        write_eval_set(experiment, "b1", "graphwalks_short")
+        write_eval_set(experiment, "b1", "oolong_synth_short")
         write_eval_set(experiment, "b1", "oolong_pairs_long")
         write_eval_summary(
-            experiment, {"b1": {"test_sets": {"graphwalks_short": eval_set_payload()}}}
+            experiment, {"b1": {"test_sets": {"oolong_synth_short": eval_set_payload()}}}
         )
 
         by_set = {row["test_set_id"]: row for row in written_evaluation(snapshot, experiment)}
-        assert set(by_set) == {"graphwalks_short", "oolong_pairs_long"}
+        assert set(by_set) == {"oolong_synth_short", "oolong_pairs_long"}
         orphan = by_set["oolong_pairs_long"]
         assert orphan["outcome"] == ""
         assert orphan["complete"] == TRISTATE_UNKNOWN
@@ -377,15 +384,19 @@ class TestEvaluationCompleteness:
         self, experiment: Path, snapshot: Snapshot
     ) -> None:
         """The spend breaker tripped before the set ran: nulls, not a missing row."""
-        write_eval_set(experiment, "b1", "graphwalks_short")
+        write_eval_set(experiment, "b1", "oolong_synth_short")
         write_eval_summary(
             experiment,
             {
                 "b1": {
-                    "test_sets": {"graphwalks_short": eval_set_payload(outcome=OUTCOME_OVER_BUDGET)}
+                    "test_sets": {
+                        "oolong_synth_short": eval_set_payload(outcome=OUTCOME_OVER_BUDGET)
+                    }
                 },
                 "sh_rlm": {
-                    "test_sets": {"graphwalks_short": eval_set_payload(outcome=OUTCOME_OVER_BUDGET)}
+                    "test_sets": {
+                        "oolong_synth_short": eval_set_payload(outcome=OUTCOME_OVER_BUDGET)
+                    }
                 },
             },
         )
@@ -546,7 +557,9 @@ class TestAgainstTheMockSmokeTree:
         self,
         smoke: SmokeRun,  # noqa: F811
     ) -> None:
-        (row,) = collapse_and_attribution_optimization(smoke.out_dir)
+        (row,) = collapse_and_attribution_optimization(
+            smoke.out_dir, inventory=discover_rounds(smoke.out_dir, config=smoke.config)
+        )
 
         assert row.round_index == 1
         assert row.completeness.round_complete is True
@@ -568,7 +581,9 @@ class TestAgainstTheMockSmokeTree:
             for set_id in condition["test_sets"]
         }
 
-        rows = collapse_and_attribution_evaluation(smoke.out_dir)
+        rows = collapse_and_attribution_evaluation(
+            smoke.out_dir, inventory=discover_rounds(smoke.out_dir, config=smoke.config)
+        )
 
         assert {(row.condition_id, row.test_set_id) for row in rows} == expected
         for row in rows:

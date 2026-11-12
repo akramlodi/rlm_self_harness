@@ -200,7 +200,7 @@ round.
 `validate_round` runs loader → batch composition → held-out evaluation → decision → ledger.
 Each round admits at most one proposal per surface; `k` is a maximum, never a quota. If only
 one surface has a justified edit, propose one edit. All admitted edits form one candidate
-before any validation results are observed. Baseline and that candidate are the only subjects; with `operational.validation_workers > 1` (`configs/experiment.toml`) it does so
+before any validation results are observed. Baseline and that candidate are the only subjects; with `operational.validation_workers > 1` (in the experiment TOML) it does so
 concurrently, one **child process per subject**, at most that many alive at once:
 
 ```

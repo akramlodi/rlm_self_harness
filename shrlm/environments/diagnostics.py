@@ -29,7 +29,7 @@ def legacy_quality(
 ) -> tuple[QualityDefinition | None, QualityMeasurement | None]:
     """Only known verifier contracts and exact historical detail grammars."""
     environment = config.get("environment")
-    if environment in {"oolong_pairs", "graphwalks"}:
+    if environment == "oolong_pairs":
         from shrlm.environments.oolong_pairs import recorded_pair_metrics
 
         metrics = recorded_pair_metrics(verdict) if verdict is not None else None

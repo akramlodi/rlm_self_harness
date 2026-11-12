@@ -198,6 +198,7 @@ v = {v}
 k = 2
 t = {t}
 patience = {patience}
+environment = "oolong_synth"
 
 [promotion]
 tau_regression = 0.0
@@ -211,15 +212,6 @@ max_depth = 2
 max_budget = 0.01
 max_timeout = 60.0
 candidate_budget = {candidate_budget}
-
-[environments.graphwalks]
-dataset_repo = "openai/graphwalks"
-dataset_file_short = "short.parquet"
-dataset_file_long = "long.parquet"
-dataset_revision = "{graphwalks_revision}"
-max_chars = 128000
-min_chars = 0
-problem_types = ["bfs", "parents"]
 
 [environments.oolong_pairs]
 dataset_repo = "oolongbench/oolong-synth"
@@ -235,7 +227,7 @@ n_long = 1
 [environments.oolong.synth]
 dataset_repo = "oolongbench/oolong-synth"
 split = "test"
-dataset_revision = "rev-oolong-synth"
+dataset_revision = "{synth_revision}"
 subsets = []
 task_groups = ["counting", "user", "timeline"]
 context_lengths = [1024, 4096]
@@ -301,7 +293,7 @@ def make_config(
     t: int = 1,
     patience: int = 3,
     candidate_budget: float = 1.0,
-    graphwalks_revision: str = "rev-gw",
+    synth_revision: str = "rev-oolong-synth",
     proposer_model: str = "proposer-test",
     mining_run_workers: int = 1,
     validation_workers: int = 1,
@@ -316,7 +308,7 @@ def make_config(
         t=t,
         patience=patience,
         candidate_budget=candidate_budget,
-        graphwalks_revision=graphwalks_revision,
+        synth_revision=synth_revision,
         proposer_model=proposer_model,
     ).replace(
         "eval_repetitions = 1\n",
@@ -353,7 +345,7 @@ def fake_loader(environment: str) -> LoaderFn:
 
 
 LOADERS: dict[str, LoaderFn] = {
-    "graphwalks": fake_loader("graphwalks"),
+    "oolong_synth": fake_loader("oolong_synth"),
     "oolong_pairs": fake_loader("oolong_pairs"),
 }
 
@@ -578,8 +570,8 @@ class TestFullExperiment:
         self.run_two_promoted_rounds(config, out, monkeypatch)
 
         assert (out / CONFIG_FILENAME).exists()
-        assert (out / "splits" / "graphwalks_short_held_in.jsonl").exists()
-        assert (out / "splits" / "graphwalks_short_held_out.jsonl").exists()
+        assert (out / "splits" / "oolong_synth_short_held_in.jsonl").exists()
+        assert (out / "splits" / "oolong_synth_short_held_out.jsonl").exists()
         assert (out / STAGE_USAGE_FILE).exists()
         assert (out / FROZEN_DIR / FROZEN_HARNESS_FILENAME).exists()
         for round_index in (1, 2):
@@ -713,8 +705,8 @@ class TestResumeMidMining:
         assert resumed.total_calls == 5  # 1 mining + 8 validation, run 1 never re-ran
         entries = mining_manifest(out, 1)
         assert [entry["run_id"] for entry in entries] == [
-            "graphwalks-short-0__a01",
-            "graphwalks-short-1__a01",
+            "oolong_synth-short-0__a01",
+            "oolong_synth-short-1__a01",
         ]
         assert result.rounds[0].promoted
 
@@ -1185,19 +1177,19 @@ class TestScreeningWorkersDecoupling:
         assert (validation_round / "baseline" / LOG_FILENAME).exists()
 
     def test_screening_workers_alone_resolves_the_verifier_factory(self, tmp_path):
-        from shrlm.environments.graphwalks import GraphWalksVerifier
-        from shrlm.experiment.orchestrator import GRAPHWALKS_VERIFIER_FACTORY, _Experiment
+        from shrlm.environments.oolong_pairs import OolongPairsVerifier
+        from shrlm.experiment.orchestrator import OOLONG_PAIRS_VERIFIER_FACTORY, _Experiment
 
         experiment = _Experiment(
             config=make_config(tmp_path, validation_workers=1, screening_workers=3),
             out_dir=tmp_path / "exp",
-            verifier=GraphWalksVerifier(),
+            verifier=OolongPairsVerifier(),
             sub_verifier=None,
             attributor_lm=None,
             proposer_lm=None,
             loaders=None,
         )
-        assert experiment.verifier_factory == GRAPHWALKS_VERIFIER_FACTORY
+        assert experiment.verifier_factory == OOLONG_PAIRS_VERIFIER_FACTORY
 
     def test_screening_workers_alone_refuses_an_injected_verifier_without_a_factory(
         self, tmp_path, monkeypatch
@@ -1222,7 +1214,7 @@ class TestIdentityMismatch:
             ("changed_temperature", {}, {"temperature": 0.9}),
             ("lowered_v", {"v": 2}, {"v": 1}),
             ("changed_proposer_model", {}, {"proposer_model": "other-proposer"}),
-            ("changed_dataset_revision", {}, {"graphwalks_revision": "rev-gw-2"}),
+            ("changed_dataset_revision", {}, {"synth_revision": "rev-oolong-synth-2"}),
         ],
     )
     def test_mismatch_raises_before_any_run_executes(
@@ -1411,10 +1403,10 @@ class TestParallelMiningStage:
             client_factory=mining_client_factory(tmp_path, [final("WRONG")]),
         )
         experiment.splits = orchestrator_module.ValidationSplits(
-            heldin=fake_loader("graphwalks")(
+            heldin=fake_loader("oolong_synth")(
                 config, "short", config.splits.n_in, config.splits.seed
             ),
-            heldout=fake_loader("graphwalks-heldout")(
+            heldout=fake_loader("oolong_synth-heldout")(
                 config, "short", config.splits.n_ho, config.splits.seed
             ),
         )
@@ -1504,8 +1496,8 @@ class TestParallelMiningStage:
             client_factory=mining_client_factory(tmp_path, [final("WRONG")], cost_per_call=0.03),
         )
         experiment.splits = orchestrator_module.ValidationSplits(
-            heldin=fake_loader("graphwalks")(config, "short", 3, config.splits.seed),
-            heldout=fake_loader("graphwalks-heldout")(config, "short", 1, config.splits.seed),
+            heldin=fake_loader("oolong_synth")(config, "short", 3, config.splits.seed),
+            heldout=fake_loader("oolong_synth-heldout")(config, "short", 1, config.splits.seed),
         )
 
         with pytest.raises(MiningBudgetExceededError, match=r"1 run\(s\) were skipped"):
@@ -1514,8 +1506,8 @@ class TestParallelMiningStage:
         manifest = load_manifest(out / "mining", 1)
         assert len(manifest) == 2
         assert sorted(entry["instance_id"] for entry in manifest) == [
-            "graphwalks-short-0",
-            "graphwalks-short-1",
+            "oolong_synth-short-0",
+            "oolong_synth-short-1",
         ]
 
     def test_actual_overspend_raises_even_when_every_run_completed(self, tmp_path, monkeypatch):
@@ -1745,19 +1737,19 @@ class TestParallelValidationStage:
         assert not out.exists()
 
     def test_default_verifier_resolves_its_own_factory(self, tmp_path):
-        from shrlm.environments.graphwalks import GraphWalksVerifier
-        from shrlm.experiment.orchestrator import GRAPHWALKS_VERIFIER_FACTORY, _Experiment
+        from shrlm.environments.oolong_pairs import OolongPairsVerifier
+        from shrlm.experiment.orchestrator import OOLONG_PAIRS_VERIFIER_FACTORY, _Experiment
 
         experiment = _Experiment(
             config=make_config(tmp_path, validation_workers=3),
             out_dir=tmp_path / "exp",
-            verifier=GraphWalksVerifier(),
+            verifier=OolongPairsVerifier(),
             sub_verifier=None,
             attributor_lm=None,
             proposer_lm=None,
             loaders=None,
         )
-        assert experiment.verifier_factory == GRAPHWALKS_VERIFIER_FACTORY
+        assert experiment.verifier_factory == OOLONG_PAIRS_VERIFIER_FACTORY
         sequential = make_config(tmp_path / "seq")
         assert sequential.operational.validation_workers == 1
         assert (
@@ -1870,11 +1862,11 @@ class TestContradictoryPersistedState:
         out = tmp_path / "exp"
         complete_one_promoted_round(config, out, monkeypatch)
         splits_dir = out / SPLITS_DIR
-        file_name = split_file_name("graphwalks", "short", "held_in")
+        file_name = split_file_name("oolong_synth", "short", "held_in")
         (splits_dir / file_name).write_text("")
         manifest_path = splits_dir / MANIFEST_FILE
         manifest = json.loads(manifest_path.read_text())
-        manifest["environments"]["graphwalks"]["files"][file_name] = {
+        manifest["environments"]["oolong_synth"]["files"][file_name] = {
             "sha256": sha256_text(""),
             "count": 0,
         }
@@ -2810,7 +2802,7 @@ class TestOolongEnvironment:
         )
         splits = out / SPLITS_DIR
         assert (splits / split_file_name("oolong_synth", "short", "held_in")).exists()
-        assert not (splits / split_file_name("graphwalks", "short", "held_in")).exists()
+        assert not (splits / split_file_name("oolong_pairs", "short", "held_in")).exists()
         assert result.frozen_path.exists()
 
     def test_real_check_writes_summary_without_touching_promotion(self, tmp_path, monkeypatch):
@@ -2888,7 +2880,7 @@ class TestObliqBenchMathEnvironment:
         )
         splits = out / SPLITS_DIR
         assert (splits / split_file_name("obliq_bench_math", "short", "held_in")).exists()
-        assert not (splits / split_file_name("graphwalks", "short", "held_in")).exists()
+        assert not (splits / split_file_name("oolong_synth", "short", "held_in")).exists()
 
     def test_load_config_rejects_obliq_bench_math_without_its_table(self, tmp_path):
         text = TOML_TEMPLATE.format(
@@ -2897,7 +2889,7 @@ class TestObliqBenchMathEnvironment:
             t=1,
             patience=3,
             candidate_budget=1.0,
-            graphwalks_revision="rev-gw",
+            synth_revision="rev-oolong-synth",
             proposer_model="proposer-test",
         ).replace(
             '[environments.obliq_bench_math]\ndataset_revision = "rev-obliq"\n'
@@ -2905,7 +2897,7 @@ class TestObliqBenchMathEnvironment:
             "",
             1,
         )
-        text = text.replace("[loop]\n", '[loop]\nenvironment = "obliq_bench_math"\n', 1)
+        text = text.replace('environment = "oolong_synth"', 'environment = "obliq_bench_math"', 1)
         path = tmp_path / "experiment.toml"
         path.write_text(text)
         with pytest.raises(ValueError, match="obliq_bench_math"):

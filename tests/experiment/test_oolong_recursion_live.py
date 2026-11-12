@@ -31,7 +31,7 @@ from shrlm.rlm_harness import HARNESSES
 from shrlm.runner import run_metrics
 from tests.experiment.oolong_recursion_instances import load_oolong_recursion_instances
 
-OOLONG_CONFIG = Path("configs/experiment_oolong.toml")
+OOLONG_CONFIG = Path("configs/experiment_oolong_DeepSeekV4Flash.toml")
 
 N_INSTANCES = 4
 LIVE_MAX_BUDGET_USD = 0.40
@@ -39,9 +39,8 @@ LIVE_MAX_TIMEOUT_SECONDS = 900.0
 
 
 def _config() -> Any:
-    """The env-selected experiment config (KTD7); the OOLONG Kimi TOML by
-    default -- ``SHRLM_EXPERIMENT_CONFIG=configs/experiment_oolong_gptoss.toml``
-    points this tier at the gpt-oss deployment."""
+    """The env-selected experiment config (KTD7); the OOLONG-synth
+    DeepSeek-V4-Flash TOML by default."""
     return load_config("full", path=live_config_path(OOLONG_CONFIG))
 
 

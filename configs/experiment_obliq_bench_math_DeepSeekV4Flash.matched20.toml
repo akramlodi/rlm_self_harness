@@ -54,18 +54,9 @@ tau_improvement = 0.0
 cost_band = [0.0, 3]
 
 # -----------------------------------------------------------------------------
-# Inert-but-mandatory below (graphwalks/oolong_pairs/oolong): schema fields
+# Inert-but-mandatory below (oolong_pairs/oolong): schema fields
 # other environments own; this file's [caps] is what the smoke script reads.
 # -----------------------------------------------------------------------------
-
-[environments.graphwalks]
-dataset_repo = "openai/graphwalks"
-dataset_file_short = "graphwalks_128k_and_shorter.parquet"
-dataset_file_long = "graphwalks_256k_to_1mil.parquet"
-dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead"
-max_chars = 128000
-min_chars = 0
-problem_types = ["bfs", "parents"]
 
 [environments.oolong_pairs]
 dataset_repo = "oolongbench/oolong-synth"

@@ -1,0 +1,179 @@
+# Test fixture for the offline mock smoke (tests/experiment/test_smoke_mock.py).
+# Not an experiment arm: the loader fixture (experiment_config.toml) switched to
+# OOLONG-Pairs, with a smoke profile of one instance per role per length so the
+# scripted client stays small. Shipped configs live in configs/.
+
+[decoding]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.0
+max_output_tokens = 4096
+
+[splits]
+n_in = 24
+n_ho = 40
+test_short = 40
+test_long = 150
+seed = 0
+
+[loop]
+m = 2
+v = 4
+k = 4
+t = 3
+patience = 3
+environment = "oolong_pairs"
+initial_harness = "H0"
+
+[promotion]
+tau_regression = 0.0
+tau_improvement = 0.0
+cost_band = [0.5, 1.25]
+
+[caps]
+attempts = 1
+max_iterations = 30
+max_depth = 3
+max_budget = 0.5
+max_timeout = 1800.0
+candidate_budget = 60.0
+
+[environments.oolong_pairs]
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192
+context_length_long = 262144
+max_scan = 50000
+n_short = 40
+n_long = 40
+
+[environments.oolong]
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+subsets = []
+task_groups = ["counting", "user", "timeline"]
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd"
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb"
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
+
+[backends.runner]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+
+[backends.attributor]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+
+[backends.proposer]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+
+[backends.openrouter]
+provider_order = []
+allow_fallbacks = true
+
+[backends.azure_foundry]
+thinking = false
+
+[pricing.promo]
+input_per_million = 0.08
+output_per_million = 0.29
+
+[pricing.list_price]
+input_per_million = 0.10
+output_per_million = 0.30
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true
+sensitivity_range = [1.99, 3.49]
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2400.0
+long = 700.0
+
+[[gpu_scenarios]]
+name = "2x_a100_tp2_rented"
+hourly_rate_usd = 2.58
+provenance = "Unvalidated estimate from A100 80GB marketplace rates 2026-08; BF16 needs 2xA100 at 262k (weights ~61GB + KV ~24.6GB/seq)"
+provenance_validated = false
+sensitivity_range = [0.94, 4.12]
+precision_note = "bf16 weights, tensor-parallel 2, vLLM serving"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2000.0
+long = 500.0
+
+[[gpu_scenarios]]
+name = "1x_a100_int4"
+hourly_rate_usd = 1.29
+provenance = "Unvalidated estimate; AWQ/GPTQ-INT4 weights ~17GB fit 262k KV on one A100 80GB"
+provenance_validated = false
+sensitivity_range = [0.47, 2.06]
+precision_note = "INT4 quantized weights change model numerics; measurements and comparability do not transfer (report prefers precision-preserving scenarios)"
+changes_numerics = true
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 1800.0
+long = 450.0
+
+[report]
+p_merge = 0.5
+eval_conditions = 4
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals.jsonl"
+eval_repetitions = 3
+validation_workers = 1
+
+validation_run_workers = 1
+
+mining_run_workers = 5
+
+real_check_every_n_rounds = 0
+
+[smoke.splits]
+n_in = 1
+n_ho = 1
+test_short = 1
+test_long = 1
+
+[smoke.loop]
+m = 1
+v = 1
+k = 2
+t = 1
+
+[smoke.caps]
+max_budget = 0.5
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+
+[smoke.environments.oolong_pairs]
+n_short = 4
+n_long = 2

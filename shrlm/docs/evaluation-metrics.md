@@ -33,7 +33,7 @@ stage, round_index, attempt_index, cost, input_tokens, output_tokens, cache_hits
 6. audit.py doesn't track new data — it verifies the whole chain above is self-consistent (hashes match, no orphaned references), so results can be trusted after the fact.
 
 Evaluation loop (shrlm/experiment/evaluation.py)
-Runs each condition (b1 = baseline H0, sh_rlm = frozen optimized harness) against each test set (graphwalks_short/long, oolong_pairs_short/long — the short/long split you asked about), reusing the same runs.jsonl/stage_usage.jsonl machinery as mining. Aggregated into eval/eval_summary.json per condition × test set:
+Runs each condition (b1 = baseline H0, sh_rlm = frozen optimized harness) against each test set (e.g. oolong_pairs_short/long), reusing the same runs.jsonl/stage_usage.jsonl machinery as mining. Aggregated into eval/eval_summary.json per condition × test set:
 
 pass_count, pass_rate, n_runs, n_instances, n_resource_terminated
 total_cost, mean_cost, input_tokens, output_tokens, wall_seconds

@@ -1,11 +1,12 @@
 """Run the REAL Self-Harness experiment: the full profile, end to end (R7).
 
 A thin CLI over ``shrlm.experiment.orchestrator.run_experiment``: it loads one
-config profile from ``configs/experiment.toml``, refuses to start unless every
+config profile from an experiment TOML (default:
+``configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml``), refuses to start unless every
 credential the configured backends read is present (nothing is created and
 nothing is spent on the decline path), prints the experiment identity, and
-hands off to the orchestrator with the real defaults (GraphWalksVerifier,
-configured attributor/proposer clients, real dataset loaders).
+hands off to the orchestrator with the real defaults (the configured
+environment's verifier, configured attributor/proposer clients, real dataset loaders).
 
 There is deliberately NO script-level spend ceiling here -- this is the real
 experiment, and the configured caps govern: every run is cut off at
@@ -152,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--config",
         default=str(CONFIG_PATH),
-        help="path to the experiment TOML (default: configs/experiment.toml); a "
+        help="path to the experiment TOML (default: configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml); a "
         "second concurrent experiment runs from its own TOML + fresh --out-dir",
     )
     parser.add_argument(

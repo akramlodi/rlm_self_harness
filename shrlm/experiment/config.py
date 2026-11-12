@@ -1,4 +1,4 @@
-"""Typed, fail-fast loading of ``configs/experiment.toml`` (R1; KTD1).
+"""Typed, fail-fast loading of an experiment TOML in ``configs/`` (R1; KTD1).
 
 This module is the only file in the repository that reads the experiment
 TOML. Every experiment parameter lives in that one file; the scaffold code
@@ -67,7 +67,11 @@ from shrlm.optimization.promotion import Band, PromotionConfig
 from shrlm.optimization.proposal import ProposerConfig
 from shrlm.optimization.validation import VALIDATION_PROTOCOL
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "experiment.toml"
+CONFIG_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "configs"
+    / "experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml"
+)
 
 PROFILES: tuple[str, ...] = ("full", "smoke")
 
@@ -201,13 +205,13 @@ class LoopConfig:
     t: int
     patience: int
     initial_harness: str = "H0"
-    # Which environment the loop mines and validates: ``graphwalks`` (default),
-    # ``oolong_synth``, ``oolong_pairs``, or ``obliq_bench_math``. Identity key
+    # Which environment the loop mines and validates: ``oolong_pairs`` (default),
+    # ``oolong_synth``, or ``obliq_bench_math``. Identity key
     # like the counts -- which environment round 1 mines decides every run that
     # lands on disk -- so a run against a different environment gets a distinct
     # experiment identity and its own out-dir. ``load_config`` validates it
     # before any spend.
-    environment: str = "graphwalks"
+    environment: str = "oolong_pairs"
     # Screening-tournament attempt count, strictly less than ``v``: when a
     # round admits more than one candidate, every candidate is first screened
     # independently at this (cheap) attempt count on a small instance subset
@@ -335,19 +339,6 @@ class CapsConfig:
 
 
 @dataclass(frozen=True)
-class GraphWalksConfig:
-    """Source environment: dataset files, revision pin, and filters."""
-
-    dataset_repo: str
-    dataset_file_short: str
-    dataset_file_long: str
-    dataset_revision: str
-    max_chars: int
-    min_chars: int
-    problem_types: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class OolongPairsConfig:
     """Pair-task environment: tasks, context lengths, and pool-size ceilings.
 
@@ -431,7 +422,6 @@ class ObliqBenchMathConfig:
 
 @dataclass(frozen=True)
 class EnvironmentsConfig:
-    graphwalks: GraphWalksConfig
     oolong_pairs: OolongPairsConfig
     oolong: OolongConfig
     obliq_bench_math: ObliqBenchMathConfig | None = None
@@ -620,7 +610,7 @@ class OperationalConfig:
     # after every Nth executed round plus once for the final incumbent. It never
     # feeds the promotion gate, so like the worker counts it changes what a run
     # costs, not what it decides -- identity-exempt, may change under an existing
-    # out-dir. Ignored entirely for ``environment == "graphwalks"``.
+    # out-dir. Ignored for every other environment.
     real_check_every_n_rounds: int = 0
 
     def __post_init__(self) -> None:
@@ -720,7 +710,6 @@ def _validate_initial_harness(loop: LoopConfig) -> LoopConfig:
 
 
 SELECTABLE_ENVIRONMENTS: tuple[str, ...] = (
-    "graphwalks",
     "oolong_pairs",
     "oolong_synth",
     "obliq_bench_math",
@@ -730,7 +719,7 @@ SELECTABLE_ENVIRONMENTS: tuple[str, ...] = (
 def _validate_environment(loop: LoopConfig) -> LoopConfig:
     """Reject a ``[loop] environment`` the orchestrator cannot mine/validate.
 
-    ``graphwalks``, ``oolong_pairs``, ``oolong_synth``, and ``obliq_bench_math``
+    ``oolong_pairs``, ``oolong_synth``, and ``obliq_bench_math``
     are supported as the mined/validated pool. The OOLONG-real check remains
     evaluation-only.
     """
@@ -812,7 +801,7 @@ def apply_override(raw: dict[str, Any], dotted: str, value: Any) -> None:
 
 
 def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> ExperimentConfig:
-    """Parse ``configs/experiment.toml`` into an ``ExperimentConfig``.
+    """Parse an experiment TOML (default ``CONFIG_PATH``) into an ``ExperimentConfig``.
 
     Raises ``ValueError`` for an unknown profile, an unknown top-level key, a
     missing table, an unknown or missing key inside any table (mandatory caps
@@ -852,12 +841,10 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
     env_table = raw["environments"]
     check_keys(
         env_table,
-        ("graphwalks", "oolong_pairs", "oolong"),
+        ("oolong_pairs", "oolong"),
         "environments",
         optional=("obliq_bench_math",),
     )
-    graphwalks_table = dict(env_table["graphwalks"])
-    tuplify(graphwalks_table, "problem_types")
     oolong_pairs_table = dict(env_table["oolong_pairs"])
     tuplify(oolong_pairs_table, "task_ids")
     obliq_bench_math_table = (
@@ -949,7 +936,6 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         ),
         caps=build_section(CapsConfig, raw["caps"], "caps"),
         environments=EnvironmentsConfig(
-            graphwalks=build_section(GraphWalksConfig, graphwalks_table, "environments.graphwalks"),
             oolong_pairs=build_section(
                 OolongPairsConfig, oolong_pairs_table, "environments.oolong_pairs"
             ),
@@ -1122,7 +1108,7 @@ def validation_caps(config: ExperimentConfig) -> ValidationCaps:
     caps = config.caps
     if caps.max_depth is None:
         raise ValueError(
-            "caps.max_depth must be set in configs/experiment.toml to build ValidationCaps: "
+            "caps.max_depth must be set in the experiment TOML to build ValidationCaps: "
             "validation runs under experiment-owned limits, never under S6's declaration."
         )
     return ValidationCaps(

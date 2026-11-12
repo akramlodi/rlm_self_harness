@@ -3,7 +3,7 @@
 # profile of the Self-Harness experiment. The loop mines and validates the
 # finite 8k OOLONG-Pairs pool; the independent 262k pool remains test-only.
 #
-# Run separately from GraphWalks -- its own --out-dir, its own identity:
+# Run with its own --out-dir (a distinct identity):
 #   uv run python examples/run_experiment.py \
 #       --config configs/experiment_oolong_pairs_DeepSeekV4Flash.toml --out-dir ./experiment_oolong_pairs_dsv4f
 #
@@ -110,16 +110,6 @@ max_timeout = 3600.0 # seconds per run
 # $0.30/run, plus per-run-ceiling charges for crashed children; 100 leaves
 # real headroom. Identity key (R3).
 candidate_budget = 100.0 # USD across all of one subject's runs
-
-[environments.graphwalks]
-# Source environment, section 3.1.
-dataset_repo = "openai/graphwalks"
-dataset_file_short = "graphwalks_128k_and_shorter.parquet"
-dataset_file_long = "graphwalks_256k_to_1mil.parquet"
-dataset_revision = "f338bb265735a56a79f4b0f5def722c9c3268ead" # HF main, pinned 2026-08-12
-max_chars = 128000 # inclusive upper bound on prompt_chars for the short split
-min_chars = 0 # inclusive lower bound on prompt_chars
-problem_types = ["bfs", "parents"]
 
 [environments.oolong_pairs]
 # Selected environment. The short pool is partitioned for optimization; long is test-only.

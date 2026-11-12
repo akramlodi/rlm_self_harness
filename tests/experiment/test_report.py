@@ -1,37 +1,29 @@
 """Tests for U7's cost/time report and full-experiment extrapolation (R6).
 
 Every number below is hand-computable from the checked-in fixture experiment
-(``tests/experiment/fixtures/report_experiment``) and the shipped
-``configs/experiment.toml``. The fixture measures:
+(``tests/experiment/fixtures/report_experiment``) and the ``config`` fixture
+below. The fixture measures:
 
-    optimization (graphwalks/short)  4 runs  x 1000 in / 100 out / 10 s
-    eval graphwalks_short   2 conditions x 2 runs x 1000 in / 100 out
-    eval oolong_pairs_short 2 conditions x 2 runs x 1000 in / 100 out
-    eval graphwalks_long    2 conditions x 3 runs x 10000 in / 500 out
-    eval oolong_pairs_long  2 conditions x 3 runs x 10000 in / 500 out
+    optimization (oolong_pairs/short)  4 runs  x 1000 in / 100 out / 10 s
+    eval oolong_synth_short   2 conditions x 2 runs x 1000 in / 100 out
+    eval oolong_pairs_short   2 conditions x 2 runs x 1000 in / 100 out
+    eval oolong_synth_long    2 conditions x 3 runs x 10000 in / 500 out
+    eval oolong_pairs_long    2 conditions x 3 runs x 10000 in / 500 out
 
 so every short bucket has a per-run mean of 1000 in / 100 out and every long
-bucket 10000 in / 500 out, whichever way the buckets are pooled.
+bucket 10000 in / 500 out, whichever way the buckets are pooled. (Optimization
+runs are attributed to the config's ``[loop].environment``; evaluation runs
+keep the environment their summary records.)
 
-Full-profile config arithmetic (m=2, n_in=24, v=4, K=4, n_ho=40, p_merge=0.5,
-T=3, eval_conditions=4, eval_repetitions=3). The evaluation grid covers both
-configured environments: source GraphWalks (test_short=40, test_long=150) and
-target OOLONG-Pairs (n_short=40, n_long=40), so each length's eval run count
-sums both environments' test-role size, not GraphWalks alone (see
-``shrlm.experiment.report.eval_test_sizes``):
+Config arithmetic: the loader test fixture's full profile (m=2, n_in=24, v=4,
+K=4, n_ho=40, p_merge=0.5, T=3, eval_conditions=4, eval_repetitions=3) on
+OOLONG-Pairs, with test_short=80 and test_long=190 (pool ceilings raised to
+fit). Evaluation covers the ``short`` and ``long`` test lengths
+(``shrlm.experiment.report.eval_test_sizes``):
 
     runs/round = 2*24 + 2*4*40 = 368
     optimization runs = 368 * 3 = 1104
-    eval short size = 40 (graphwalks) + 40 (oolong_pairs) = 80
-    eval long size  = 150 (graphwalks) + 40 (oolong_pairs) = 190
     eval runs = 4 * (80 + 190) * 3 = 3240  (960 short + 2,280 long)
-
-The long leg is smaller than the 2,700 runs quoted in ``paper/proposal.tex``
-(Section: Feasibility and Cost): that figure assumed 150 OOLONG-Pairs long
-instances, but the pinned ``trec_coarse`` validation split ships only 2 distinct
-context windows at 262,144 tokens, so 2 x 20 task_ids = 40 is the entire
-available pool (see ``DATASET_INVENTORY.md``) and ``n_long`` is configured at
-that ceiling.
 """
 
 import json
@@ -92,9 +84,21 @@ POINT_OUTPUT_TOKENS = (
 )  # 1_672_800
 
 
+CONFIG_FIXTURE = Path(__file__).parent / "fixtures" / "experiment_config.toml"
+
+
 @pytest.fixture
 def config() -> ExperimentConfig:
-    return load_config("full")
+    base = load_config("full", path=CONFIG_FIXTURE)
+    return replace(
+        base,
+        loop=replace(base.loop, environment="oolong_pairs"),
+        splits=replace(base.splits, test_short=80, test_long=190),
+        environments=replace(
+            base.environments,
+            oolong_pairs=replace(base.environments.oolong_pairs, n_short=144, n_long=190),
+        ),
+    )
 
 
 @pytest.fixture
@@ -278,21 +282,22 @@ class TestMeasured:
         buckets = {(b.environment, b.length): b for b in report.buckets}
 
         assert sorted(buckets) == [
-            ("graphwalks", "long"),
-            ("graphwalks", "short"),
             ("oolong_pairs", "long"),
             ("oolong_pairs", "short"),
+            ("oolong_synth", "long"),
+            ("oolong_synth", "short"),
         ]
-        graphwalks_short = buckets[("graphwalks", "short")]
-        assert graphwalks_short.n_runs == 8  # 4 optimization + 4 evaluation
-        assert graphwalks_short.mean_input_tokens == SHORT_MEAN_INPUT
-        assert graphwalks_short.mean_output_tokens == SHORT_MEAN_OUTPUT
-        assert graphwalks_short.sources == {"optimization": 4, "eval": 4}
+        pairs_short = buckets[("oolong_pairs", "short")]
+        assert pairs_short.n_runs == 8  # 4 optimization + 4 evaluation
+        assert pairs_short.mean_input_tokens == SHORT_MEAN_INPUT
+        assert pairs_short.mean_output_tokens == SHORT_MEAN_OUTPUT
+        assert pairs_short.sources == {"optimization": 4, "eval": 4}
+        assert buckets[("oolong_synth", "short")].sources == {"eval": 4}
 
-        graphwalks_long = buckets[("graphwalks", "long")]
-        assert graphwalks_long.n_runs == 6
-        assert graphwalks_long.mean_input_tokens == LONG_MEAN_INPUT
-        assert graphwalks_long.mean_output_tokens == LONG_MEAN_OUTPUT
+        pairs_long = buckets[("oolong_pairs", "long")]
+        assert pairs_long.n_runs == 6
+        assert pairs_long.mean_input_tokens == LONG_MEAN_INPUT
+        assert pairs_long.mean_output_tokens == LONG_MEAN_OUTPUT
 
     def test_lower_bound_flag_propagates_from_a_manifest_line(self, config, experiment):
         manifest = next(experiment.glob("opt/round_*/mining/round_*/runs.jsonl"))
@@ -303,7 +308,7 @@ class TestMeasured:
         report = build_report(config, experiment)
         buckets = {(b.environment, b.length): b for b in report.buckets}
 
-        assert buckets[("graphwalks", "short")].lower_bound is True
+        assert buckets[("oolong_pairs", "short")].lower_bound is True
         assert any("lower-bound" in warning for warning in report.warnings)
 
     def test_disk_footprint_projects_from_measured_bytes_per_run(self, config, experiment):
@@ -348,20 +353,6 @@ class TestRunCounts:
         assert counts.runs_per_round == expected == RUNS_PER_ROUND
         assert counts.rounds == loop.t
         assert counts.optimization_runs == OPTIMIZATION_RUNS
-
-    def test_shipped_config_eval_projection_matches_the_paper(self, config):
-        """Pins the full-experiment evaluation projection so an omitted
-        environment cannot silently regress it. The eval grid covers BOTH
-        configured environments -- source GraphWalks and target OOLONG-Pairs
-        -- not the source split alone: 4 conditions x 2 environments x
-        (40 short + 150 long graphwalks, 40 short + 40 long oolong_pairs)
-        x 3 repetitions = 960 short and 2,280 long
-        runs, matching paper/proposal.tex's Feasibility and Cost section.
-        """
-        counts = run_counts(config)
-
-        assert counts.eval_short_runs == 960.0
-        assert counts.eval_long_runs == 2280.0
 
     def test_eval_grid_uses_configured_conditions_not_measured_conditions(self, config, experiment):
         report = build_report(config, experiment)
@@ -547,19 +538,19 @@ class TestRecommendationPolicy:
         assert report.recommendation.failing_gates == []
         eligible = [s for s in report.scenarios if s.eligible and not s.changes_numerics]
         assert report.recommendation.scenario == min(eligible, key=lambda s: s.usd_point).name
-        # At OpenRouter Qwen rates ($0.08/$0.29 promo per 1M) the promo API
+        # At the fixture's rates ($0.08/$0.29 promo per 1M) the promo API
         # tier undercuts the rented H100 on this fixture's token volumes.
         assert report.recommendation.scenario == "api_promo"
 
     def test_lower_bound_long_mean_yields_a_provisional_label(self, config, experiment):
-        edit_sets(experiment, "graphwalks_long", usage_lower_bound=True)
+        edit_sets(experiment, "oolong_synth_long", usage_lower_bound=True)
 
         report = build_report(config, experiment)
 
         assert report.recommendation.status == STATUS_PROVISIONAL
         assert report.recommendation.scenario is None
         assert gate_names(report) == ["long_run_lower_bound"]
-        assert "graphwalks/long" in report.recommendation.failing_gates[0]["detail"]
+        assert "oolong_synth/long" in report.recommendation.failing_gates[0]["detail"]
 
     def test_missing_long_coverage_is_named_and_the_estimate_is_short_only(
         self, config, experiment
@@ -574,9 +565,10 @@ class TestRecommendationPolicy:
         )
         assert any("long unmeasured" in warning for warning in report.warnings)
         assert report.recommendation.status == STATUS_PROVISIONAL
-        assert gate_names(report) == ["long_coverage", "long_coverage"]
+        # Only the configured environment (OOLONG-Pairs) is planned with a long
+        # test set, so it is the one coverage gate.
+        assert gate_names(report) == ["long_coverage"]
         details = " ".join(gate["detail"] for gate in report.recommendation.failing_gates)
-        assert "graphwalks" in details
         assert "oolong_pairs" in details
 
     def test_one_environment_missing_long_coverage_still_gates(self, config, experiment):
@@ -589,10 +581,10 @@ class TestRecommendationPolicy:
 
         assert gate_names(report) == ["long_coverage"]
         assert "oolong_pairs" in report.recommendation.failing_gates[0]["detail"]
-        assert report.point.long_measured is True  # graphwalks still measures long
+        assert report.point.long_measured is True  # oolong_synth still measures long
 
     def test_thin_long_sample_is_flagged_but_does_not_gate(self, config, experiment):
-        edit_sets(experiment, "graphwalks_long", n_runs=1)
+        edit_sets(experiment, "oolong_synth_long", n_runs=1)
 
         report = build_report(config, experiment)
 
@@ -644,7 +636,7 @@ def test_batch_projection_is_independent_of_k_and_legacy_merge_probability(confi
     assert run_counts(changed) == run_counts(config)
 
 
-@pytest.mark.parametrize("environment", ["graphwalks", "oolong_pairs", "oolong_synth"])
+@pytest.mark.parametrize("environment", ["oolong_pairs", "oolong_synth"])
 def test_optimization_environment_comes_from_config(config, experiment, environment):
     shutil.rmtree(experiment / "eval")
     config = replace(
@@ -668,9 +660,9 @@ def test_optimization_environment_comes_from_config(config, experiment, environm
     assert any(
         f"lower-bound usage in {environment}/short" in warning for warning in report.warnings
     )
-    if environment != "graphwalks":
+    if environment != "oolong_pairs":
         assert not any(
-            "graphwalks" in gate["detail"] for gate in report.recommendation.failing_gates
+            "oolong_pairs" in gate["detail"] for gate in report.recommendation.failing_gates
         )
     if environment == "oolong_synth":
         assert report.run_counts.eval_long_runs == 0
@@ -687,8 +679,8 @@ def test_configured_optimization_bucket_preserves_evaluation_environments(config
     buckets = {(bucket.environment, bucket.length): bucket for bucket in report.buckets}
 
     assert buckets[("oolong_pairs", "short")].sources == {"optimization": 4, "eval": 4}
-    assert buckets[("graphwalks", "short")].sources == {"eval": 4}
-    assert buckets[("graphwalks", "long")].n_runs == 6
+    assert buckets[("oolong_synth", "short")].sources == {"eval": 4}
+    assert buckets[("oolong_synth", "long")].n_runs == 6
     assert buckets[("oolong_pairs", "long")].n_runs == 6
     optimization = next(leg for leg in report.point.legs if leg.name == "optimization")
     assert optimization.basis == "oolong_pairs/short (8 run(s))"

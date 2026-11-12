@@ -9,7 +9,7 @@ a provider name (branching on the row id is forbidden; a guard test enforces it)
 Provider-specific divergence belongs in a row field or in an
 ``xfail(strict=True)`` attached from ``pytest_collection_modifyitems``.
 
-Three rows: ``azure_kimi``, ``azure_gptoss``, ``openrouter_qwen``.
+Two rows, both DeepSeek-V4-Flash: ``azure_dsv4f`` and ``openrouter_dsv4f``.
 """
 
 from __future__ import annotations
@@ -150,75 +150,48 @@ def _openrouter_client(
     return make_client(response=response, sampling_args=sampling_args)
 
 
-AZURE_KIMI_PRICING: dict[str, float] = {"input_per_million": 0.60, "output_per_million": 3.00}
-AZURE_GPTOSS_PRICING: dict[str, float] = {"input_per_million": 0.15, "output_per_million": 0.60}
+AZURE_DSV4F_PRICING: dict[str, float] = {"input_per_million": 0.19, "output_per_million": 0.51}
 
 # The OpenAI client renames max_tokens -> max_completion_tokens itself.
 _OPENAI_SURFACE_KEYS = frozenset({"temperature", "top_p", "max_completion_tokens"})
 
-AZURE_KIMI = ProviderCase(
-    id="azure_kimi",
+AZURE_DSV4F = ProviderCase(
+    id="azure_dsv4f",
     backend="azure_foundry",
-    model="Kimi-K2.5",
+    model="DeepSeek-V4-Flash",
     env_keys=("AZURE_API_KEY", "AZURE_FOUNDRY_ENDPOINT"),
-    pricing=AZURE_KIMI_PRICING,
-    make_client=partial(_azure_client, pricing=AZURE_KIMI_PRICING),
+    pricing=AZURE_DSV4F_PRICING,
+    make_client=partial(_azure_client, pricing=AZURE_DSV4F_PRICING),
     expected_sampling_keys=_OPENAI_SURFACE_KEYS,
     forbidden_sampling_keys=frozenset({"max_tokens", "reasoning_effort", "pricing"}),
-    # Instant mode rides chat_template_kwargs; the shipped decoding knobs
-    # top_k/min_p ride extra_body for every backend.
-    expected_extra_body={"top_k": 20, "min_p": 0.0, "chat_template_kwargs": {"thinking": False}},
+    # thinking = true sends no chat_template_kwargs, and the shipped decoding
+    # sets neither top_k nor min_p, so extra_body stays empty.
+    expected_extra_body={},
     cost_source="synthesized",
-    config_path=CONFIG_DIR / "experiment_kimiK25.toml",
+    config_path=CONFIG_DIR / "experiment_oolong_pairs_blended_DeepSeekV4Flash.toml",
     config_max_output_tokens=8192,
     response_defaults={"content": "hello from foundry"},
+    azure_table={"thinking": True},
 )
 
-AZURE_GPTOSS = ProviderCase(
-    id="azure_gptoss",
-    backend="azure_foundry",
-    model="gpt-oss-120b",
-    env_keys=("AZURE_API_KEY", "AZURE_FOUNDRY_ENDPOINT"),
-    pricing=AZURE_GPTOSS_PRICING,
-    make_client=partial(_azure_client, pricing=AZURE_GPTOSS_PRICING),
-    # reasoning_effort is a TOP-LEVEL request parameter, never extra_body.
-    expected_sampling_keys=_OPENAI_SURFACE_KEYS | {"reasoning_effort"},
-    forbidden_sampling_keys=frozenset({"max_tokens", "pricing"}),
-    # Same convention as the Kimi row: the shipped [decoding] (top_k/min_p)
-    # after role surgery, so extra_body carries those two knobs and NO
-    # chat_template_kwargs (thinking = true sends nothing). The gpt-oss TOML
-    # itself sets neither top_k nor min_p; the config_path tests cover that.
-    expected_extra_body={"top_k": 20, "min_p": 0.0},
-    cost_source="synthesized",
-    config_path=CONFIG_DIR / "experiment_oolong_gptoss.toml",
-    config_max_output_tokens=16384,
-    response_defaults={
-        "content": "hello from gpt-oss",
-        "reasoning_content": "thinking about hi",
-        "completion_tokens_details": {"reasoning_tokens": 100},
-    },
-    azure_table={"thinking": True, "reasoning_effort": "medium"},
-    expects_reasoning_fields=True,
-)
-
-OPENROUTER_QWEN = ProviderCase(
-    id="openrouter_qwen",
+OPENROUTER_DSV4F = ProviderCase(
+    id="openrouter_dsv4f",
     backend="openrouter",
-    model="qwen/qwen3-30b-a3b-instruct-2507",
+    model="deepseek/deepseek-v4-flash",
     env_keys=("OPENROUTER_API_KEY",),
     pricing=None,
     make_client=_openrouter_client,
     expected_sampling_keys=_OPENAI_SURFACE_KEYS,
     forbidden_sampling_keys=frozenset({"max_tokens", "reasoning_effort", "pricing"}),
     # Empty provider_order: no routing dict; no azure-only chat_template_kwargs.
-    expected_extra_body={"top_k": 20, "min_p": 0.0},
+    expected_extra_body={},
     cost_source="provider",
-    config_path=CONFIG_DIR / "experiment.toml",
-    config_max_output_tokens=4096,
+    config_path=CONFIG_DIR / "experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml",
+    config_max_output_tokens=8192,
     response_defaults={"content": "ok", "cost": 0.001},
 )
 
-PROVIDER_CASES: tuple[ProviderCase, ...] = (AZURE_KIMI, AZURE_GPTOSS, OPENROUTER_QWEN)
+PROVIDER_CASES: tuple[ProviderCase, ...] = (AZURE_DSV4F, OPENROUTER_DSV4F)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -229,7 +202,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 
 # Provider-specific divergence hooks go here as xfail(strict=True) marks keyed
-# on (test name, row id); none exist for the three-row table.
+# on (test name, row id); none exist for the two-row table.
 _ROW_XFAILS: dict[tuple[str, str], str] = {}
 
 
@@ -261,11 +234,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 __all__: list[str] = [
-    "AZURE_GPTOSS",
-    "AZURE_GPTOSS_PRICING",
-    "AZURE_KIMI",
-    "AZURE_KIMI_PRICING",
-    "OPENROUTER_QWEN",
+    "AZURE_DSV4F",
+    "AZURE_DSV4F_PRICING",
+    "OPENROUTER_DSV4F",
     "PROVIDER_CASES",
     "SENTINEL_ENV",
     "ProviderCase",

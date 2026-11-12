@@ -1,9 +1,9 @@
-"""One-shot, hash-pinned split materialization (R11; R9 GraphWalks half).
+"""One-shot, hash-pinned split materialization (R11).
 
 ``materialize_splits`` draws one seeded sample per environment per length and
-partitions it disjointly by slicing in order: the source-short sample splits
-into held-in / held-out / test (24/40/40 at the shipped config), while
-source-long and both target lengths are test-only sets. Each subset is written
+partitions it disjointly by slicing in order: each optimization length's
+sample splits into held-in / held-out / test, while evaluation-only lengths
+(e.g. OOLONG-Pairs 262k) are test-only sets. Each subset is written
 as ``splits/<env>_<length>_<role>.jsonl`` -- one canonically serialized
 instance per line, the same rendering ``instances.jsonl`` uses in
 ``shrlm.optimization.driver`` -- next to a ``manifest.json`` recording the
@@ -23,12 +23,11 @@ Downstream consumers (orchestrator, eval runner) read only the persisted files,
 so every condition sees byte-identical splits (R8).
 
 Loaders are an injectable mapping ``{environment_name: loader_fn}`` where a
-loader is ``loader(config, length, limit, seed) -> instances``. The GraphWalks
-loader is registered in ``DEFAULT_LOADERS``; the OOLONG-Pairs environment (a
-parallel unit) wires in by adding its own one-line entry. An environment is
+loader is ``loader(config, length, limit, seed) -> instances``; each
+environment registers one entry in ``DEFAULT_LOADERS``. An environment is
 only materialized when its loader is present, and a manifest grows
-per-environment, so registering a second environment later extends the splits
-directory without touching the frozen GraphWalks files.
+per-environment, so registering another environment later extends the splits
+directory without touching already-frozen files.
 """
 
 import hashlib
@@ -37,7 +36,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from shrlm.environments.graphwalks import load_graphwalks
 from shrlm.environments.obliq_bench_math import load_obliq_bench_math_from_config
 from shrlm.environments.oolong import (
     load_oolong_real_from_config,
@@ -200,33 +198,6 @@ class SplitsPersistenceError(ExperimentError):
     """Persisted splits contradict the configuration or were modified on disk."""
 
 
-def load_graphwalks_split(
-    config: ExperimentConfig, length: str, limit: int, seed: int
-) -> list[dict[str, Any]]:
-    """The GraphWalks loader wiring: config -> ``load_graphwalks`` arguments.
-
-    Short reads the 128k-and-shorter file under the configured
-    [min_chars, max_chars] window; long reads the native 256k-1M file (KTD5)
-    under the same floor with no upper cap -- the file's own range is the cap.
-    Both are pinned to the configured dataset revision.
-    """
-    env = config.environments.graphwalks
-    if length not in LENGTHS:
-        raise ValueError(f"unknown split length {length!r}; expected one of {LENGTHS}")
-    dataset_file = env.dataset_file_short if length == "short" else env.dataset_file_long
-    max_chars = env.max_chars if length == "short" else None
-    return load_graphwalks(
-        problem_types=env.problem_types,
-        max_chars=max_chars,
-        limit=limit,
-        seed=seed,
-        dataset_repo=env.dataset_repo,
-        dataset_file=dataset_file,
-        min_chars=env.min_chars,
-        revision=env.dataset_revision,
-    )
-
-
 def load_oolong_pairs_split(
     config: ExperimentConfig, length: str, limit: int, seed: int
 ) -> list[dict[str, Any]]:
@@ -296,7 +267,6 @@ def load_obliq_bench_math_split(
 
 
 DEFAULT_LOADERS: dict[str, LoaderFn] = {
-    "graphwalks": load_graphwalks_split,
     "oolong_pairs": load_oolong_pairs_split,
     "oolong_synth": load_oolong_synth_split,
     "oolong_real": load_oolong_real_split,
@@ -311,16 +281,14 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
     sliced sequentially, so held-in comes first, then held-out, then test.
 
     The plan holds only the environments a run actually uses:
-    ``loop.environment == "graphwalks"`` (the default) materializes GraphWalks
-    (the mined/validated source) plus OOLONG-Pairs (evaluation-only), exactly as
-    before; ``"oolong_pairs"`` partitions its finite short pool for optimization
+    ``loop.environment == "oolong_pairs"`` partitions its finite short pool for optimization
     and keeps its long pool test-only; ``"oolong_synth"`` materializes the
     OOLONG-synth pool and -- when
     ``operational.real_check_every_n_rounds > 0`` -- the OOLONG-real check set,
     and nothing else; ``"obliq_bench_math"`` materializes one seeded query-id
     pool (no length axis, same single-pool shape as ``oolong_synth``) and
     nothing else. ``materialize_splits`` skips any registered loader absent
-    from the plan, so an OOLONG run never touches the GraphWalks dataset.
+    from the plan, so a run never touches a dataset it does not use.
     """
     splits = config.splits
     # Dormant: still materialized whenever refinement is enabled, but
@@ -330,23 +298,6 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
     promotion_roles = (
         {"promotion": config.refinement.promotion_size} if config.refinement.enabled else {}
     )
-    if config.loop.environment == "graphwalks":
-        oolong_pairs = config.environments.oolong_pairs
-        return {
-            "graphwalks": {
-                "short": {
-                    "held_in": splits.n_in,
-                    "held_out": splits.n_ho,
-                    **promotion_roles,
-                    "test": splits.test_short,
-                },
-                "long": {"test": splits.test_long},
-            },
-            "oolong_pairs": {
-                "short": {"test": oolong_pairs.n_short},
-                "long": {"test": oolong_pairs.n_long},
-            },
-        }
     if config.loop.environment == "oolong_synth":
         plan: dict[str, dict[str, dict[str, int]]] = {
             "oolong_synth": {
@@ -689,7 +640,7 @@ def materialize_splits(
     for environment in sorted(loaders):
         if environment not in plan and environment in DEFAULT_LOADERS:
             # A recognized loader the selected ``loop.environment`` does not use
-            # (e.g. graphwalks on an OOLONG run). Skip it entirely -- its
+            # (e.g. oolong_real on an OOLONG-Pairs run). Skip it entirely -- its
             # dataset is never downloaded and no split file is written. An
             # unrecognized name still falls through to dataset_revision_for,
             # which raises "unknown environment".

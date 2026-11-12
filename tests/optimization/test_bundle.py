@@ -129,7 +129,7 @@ class TestBundleIdentity:
     def test_verifier_config_changes_the_id(self):
         records = make_records()
         assert compute_bundle_id(make_config(), records) != compute_bundle_id(
-            make_config(verifier_config={"environment": "graphwalks", "pass_f1_threshold": 1.0}),
+            make_config(verifier_config={"environment": "oolong_pairs", "pass_f1_threshold": 1.0}),
             records,
         )
 

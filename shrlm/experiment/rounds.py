@@ -86,8 +86,8 @@ Expected run counts, and why nothing is inferred from the runs (KTD6)
     false completeness this module exists to remove.
 
     Resolving the config from disk means reading the profile from
-    ``<out_dir>/config.json`` and re-loading that profile from
-    ``configs/experiment.toml``, then checking the reloaded config still hashes
+    ``<out_dir>/config.json`` and re-loading that profile from the experiment
+    TOML (default ``config.CONFIG_PATH``), then checking the reloaded config still hashes
     to the identity the directory recorded. A drifted TOML therefore yields
     "unknown" rather than counts from a configuration this experiment never
     ran under. A caller that already holds the config (the loop itself) passes

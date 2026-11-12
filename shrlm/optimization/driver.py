@@ -1172,7 +1172,7 @@ def load_round(
 def _sampling_seed(runs: list[tuple[dict[str, Any], RLMChatCompletion]]) -> int | None:
     """The dataset sampling seed the instances carry as provenance.
 
-    Environment loaders (see ``graphwalks.row_to_instance``) stamp each
+    Environment loaders stamp each
     sampled instance with its ``sample_seed``. One round samples once, so a
     mix of seeds means the instance list was assembled from two samplings --
     that is a provenance contradiction, not something to average away.

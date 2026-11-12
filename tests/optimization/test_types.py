@@ -130,7 +130,7 @@ def leaf(node_id: str, parent_id: str, depth: int) -> CallNode:
 class TestMiningConfigProvenance:
     def test_round_trips_with_all_provenance_fields(self):
         config = make_config(
-            verifier_config={"environment": "graphwalks", "pass_f1_threshold": 1.0},
+            verifier_config={"environment": "oolong_pairs", "pass_f1_threshold": 1.0},
             sampling_seed=7,
             validator_version="1.0.0",
             attribution_cache_path="attribution_cache.jsonl",
