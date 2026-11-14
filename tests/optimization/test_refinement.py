@@ -41,11 +41,13 @@ def test_promising_but_brittle_candidate_is_admitted() -> None:
     assert diagnostic.failure_rate_delta == pytest.approx(0.2)
 
 
-def test_quality_gain_without_new_failure_is_not_admitted() -> None:
+def test_quality_gain_without_new_failure_is_admitted() -> None:
+    """Admission depends solely on conditional quality now -- a candidate
+    whose failure rate held steady is still eligible if quality improved."""
     diagnostic = assess_refinement(summary(0.5, 1), summary(0.7, 1), settings())
 
-    assert not diagnostic.admitted
-    assert "candidate did not increase" in " ".join(diagnostic.reasons)
+    assert diagnostic.admitted
+    assert diagnostic.reasons == ()
 
 
 def test_failure_without_conditional_gain_is_not_admitted() -> None:

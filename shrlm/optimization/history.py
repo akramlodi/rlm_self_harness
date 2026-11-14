@@ -9,7 +9,7 @@ from shrlm.harness_identity import canonical_json_sha256
 from shrlm.optimization.candidates import SURFACE_SERIALIZATION_KEYS
 
 HISTORY_BUDGET_CHARS = 12000
-HISTORY_SCHEMA = "proposal-history/v4"
+HISTORY_SCHEMA = "proposal-history/v5"
 
 
 def surface_fingerprint(serialization: dict[str, Any], surface: str) -> str:
@@ -178,7 +178,7 @@ def compact_history(
             str(risk)[:240] for risk in record.get("regression_risks", [])[:3]
         ]
         if record.get("merge"):
-            result["constituent_ids"] = record["merge"].get("constituent_ids", [])
+            result["constituent_ids"] = record["merge"].get("constituent_ids") or []
         result["observed_failure"] = str(record.get("observed_failure", "not_assessed"))[:240]
         activation = record.get("activation") or {"status": "not_assessed"}
         result["activation"] = {
@@ -211,6 +211,33 @@ def compact_history(
         return result
 
     rows = {(record["round"], record.get("subject_id")): row(record) for record in attempts}
+
+    # A mechanism re-proposed on a new surface never trips select_predecessor's
+    # revisited-intervention check (it keys on surface + mechanism together, by
+    # design -- the proposer is meant to try one mechanism on several surfaces).
+    # That leaves the cross-surface case invisible unless it's called out
+    # separately: group every mechanism that recurs across more than one
+    # surface so the proposer can see the pattern even if the individual old
+    # rows were evicted by the budget below.
+    by_mechanism: dict[str, list[dict[str, Any]]] = {}
+    for record in attempts:
+        mechanism = record.get("mechanism")
+        if not mechanism:
+            continue
+        by_mechanism.setdefault(mechanism, []).append(
+            {
+                "round": record["round"],
+                "subject_id": record.get("subject_id"),
+                "surface": record.get("surface"),
+                "decision": record.get("decision"),
+            }
+        )
+    recurring_mechanisms = {
+        mechanism: sorted(occurrences, key=lambda o: o["round"])
+        for mechanism, occurrences in by_mechanism.items()
+        if len({o["surface"] for o in occurrences}) > 1
+    }
+
     summaries = {}
     for position, (records, decision) in enumerate(history):
         label = decision.get("round", position)
@@ -270,6 +297,7 @@ def compact_history(
         content = {
             "rounds": [summaries[i] for i in sorted(selected_rounds)],
             "attempts": list(selected.values()),
+            "recurring_mechanisms": recurring_mechanisms,
         }
         serialized = json.dumps(content, sort_keys=True)
         header = {

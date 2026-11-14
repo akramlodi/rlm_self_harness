@@ -271,6 +271,13 @@ ROLE_PROMOTION = "promotion"
 REFINEMENT_DIR = "refinement"
 REFINEMENT_MARKER_FILENAME = "refinement.json"
 REFINEMENT_MARKER_FORMAT = "shrlm-refinement/v1"
+# A refinement generation spends real money on a round that the ordinary
+# promotion rule already rejected, so an admitted diagnostic alone never
+# triggers it: a human must explicitly confirm or decline before this file
+# exists, and _finalize_round halts the whole run (RefinementConfirmationRequired)
+# until it does.
+REFINEMENT_CONFIRMATION_FILENAME = "refinement_confirmed.json"
+REFINEMENT_CONFIRMATION_FORMAT = "shrlm-refinement-confirmation/v1"
 STAGE_REFINEMENT_MINING = "refinement_mining"
 STAGE_REFINEMENT_ATTRIBUTION = "refinement_attribution"
 STAGE_REFINEMENT_PROPOSAL = "refinement_proposal"
@@ -377,6 +384,19 @@ class MiningBudgetExceededError(ExperimentError):
 
 class MiningDispatchStoppedError(ExperimentError):
     """Mining's reservation gate left a resumable tail without overspending."""
+
+
+class RefinementConfirmationRequired(ExperimentError):
+    """A refinement generation is eligible but awaits explicit human confirmation.
+
+    Refinement spends a full mining/proposal/validation cycle trying to repair
+    a candidate the ordinary promotion rule already rejected. An admitted
+    diagnostic is necessary but not sufficient: the run halts here, leaving
+    the round unfinalized, until a human writes
+    ``refinement/refinement_confirmed.json`` recording ``{"confirmed": true}``
+    (run it) or ``{"confirmed": false}`` (accept the rejection as final, no
+    repair attempt) and re-invokes.
+    """
 
 
 @dataclass(frozen=True)
@@ -1004,7 +1024,7 @@ class _Experiment:
             # outcome, the ledger, or the patience counter.
             if not replayed and self._real_check_due(round_index):
                 self._real_generalization_check(round_index, f"round_{round_index:02d}", incumbent)
-            if without_promotion >= self.config.loop.patience:
+            if self.config.loop.enforce_patience and without_promotion >= self.config.loop.patience:
                 stopped = STOP_PATIENCE
                 break
 
@@ -1096,11 +1116,24 @@ class _Experiment:
                 round_path, round_index, branch_base, diagnostic.to_dict()
             )
             if diagnostic.admitted:
-                repaired_validation = self._refine(
-                    round_path, round_index, incumbent, branch_base
-                )
-                if repaired_validation.ledger is not None:
-                    validation = repaired_validation
+                confirmed = self._refinement_confirmation(round_path)
+                if confirmed is None:
+                    raise RefinementConfirmationRequired(
+                        f"round {round_index}: refinement is eligible (conditional-quality delta "
+                        f"{diagnostic.conditional_quality_delta:+.6f}, configured failure-rate "
+                        f"delta {diagnostic.failure_rate_delta:+.6f} on causes "
+                        f"{list(diagnostic.failure_causes)}) but awaits explicit confirmation. "
+                        f"Write {round_path / REFINEMENT_DIR / REFINEMENT_CONFIRMATION_FILENAME} "
+                        f'as {{"format": "{REFINEMENT_CONFIRMATION_FORMAT}", "confirmed": true}} '
+                        'to run it, or with "confirmed": false to accept the rejection as final, '
+                        "and re-invoke."
+                    )
+                if confirmed:
+                    repaired_validation = self._refine(
+                        round_path, round_index, incumbent, branch_base
+                    )
+                    if repaired_validation.ledger is not None:
+                        validation = repaired_validation
 
         outcome = RoundOutcome(
             round_index=round_index,
@@ -1133,6 +1166,25 @@ class _Experiment:
             self.config.refinement,
         )
         return validation.plan.harness, diagnostic
+
+    def _refinement_confirmation(self, round_path: Path) -> bool | None:
+        """A human's recorded yes/no on spending for this round's refinement.
+
+        ``None`` means no decision has been written yet. The file is read
+        fresh on every invocation (never cached) so a decision written between
+        two re-invocations of a halted run is picked up without restarting
+        anything upstream of it.
+        """
+        path = round_path / REFINEMENT_DIR / REFINEMENT_CONFIRMATION_FILENAME
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text())
+        if payload.get("format") != REFINEMENT_CONFIRMATION_FORMAT:
+            raise ValueError(f"{path} is not a {REFINEMENT_CONFIRMATION_FORMAT} document")
+        confirmed = payload.get("confirmed")
+        if not isinstance(confirmed, bool):
+            raise ValueError(f"{path}['confirmed'] must be a bool, got {confirmed!r}")
+        return confirmed
 
     def _persist_refinement_diagnostic(
         self,

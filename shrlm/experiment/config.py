@@ -222,6 +222,12 @@ class LoopConfig:
     # cares about this cost tradeoff sets it explicitly. Identity key like
     # the other counts -- ``_validate_screening`` enforces ``1 <= v_screen < v``.
     v_screen: int = 1
+    # Whether ``patience`` consecutive no-promotion rounds actually stops the
+    # loop. Default True preserves the paper's stopping rule; a run that
+    # wants ``patience`` recorded (for history/reporting) without it cutting
+    # the loop short before ``t`` sets this False explicitly. Identity key
+    # like ``patience`` itself -- it changes how many rounds land on disk.
+    enforce_patience: bool = True
 
 
 @dataclass(frozen=True)
@@ -242,6 +248,20 @@ class PromotionSettings:
     cost_band: tuple[float, float]
     sub_call_band: tuple[float, float] | None = None
     metric: str = "pass_count"
+    # Whether a candidate outside ``cost_band`` is actually rejected for it.
+    # Default True preserves the existing gate; a run that wants the band
+    # computed and reported (``promotions.jsonl``'s ``band`` block) without
+    # it being a rejection reason sets this False explicitly.
+    cost_band_enforced: bool = True
+    # Whether ``tau_regression`` also gates full validation's run-level
+    # concurrency: True (default) forces the candidate's run_workers to 1 so
+    # a completed length's regression can stop the remaining tail before it
+    # is paid for (see ``evaluate_subject``). False disables that early-stop
+    # optimization so the candidate can use the same run-level concurrency as
+    # the baseline -- ``tau_regression`` still gates the final promotion
+    # decision either way; this only controls whether evaluation can exit
+    # early on a clear mid-validation regression.
+    tau_early_stopping_enabled: bool = True
 
     def __post_init__(self) -> None:
         for name in ("cost_band", "sub_call_band"):
@@ -1171,6 +1191,8 @@ def promotion_config(config: ExperimentConfig) -> PromotionConfig:
         "tau_improvement": settings.tau_improvement,
         "metric": settings.metric,
         "cost_band": Band(lower=settings.cost_band[0], upper=settings.cost_band[1]),
+        "cost_band_enforced": settings.cost_band_enforced,
+        "tau_early_stopping_enabled": settings.tau_early_stopping_enabled,
         "failure_nonregression_causes": (
             config.refinement.failure_causes if config.refinement.enabled else ()
         ),

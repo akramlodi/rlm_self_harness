@@ -475,13 +475,13 @@ def test_simultaneous_reason_and_behavior_overruns_are_both_reported():
     selection = {
         "pattern_index": 0,
         "surface": "S4",
-        "reason": "x" * 601,
+        "reason": "x" * 1001,
         "evidence_refs": ["fixture-0"],
     }
     accepted, rejected = validate_batch_members([item], [pattern], H0, None, [], [selection])
     assert not accepted and len(rejected) == 1
     message = rejected[0]["reason"]
-    assert "reason must contain 1-600 characters" in message
+    assert "reason must contain 1-1000 characters" in message
     assert "behavioral_change must contain" in message
 
 
@@ -500,13 +500,13 @@ def test_a_single_overrun_is_still_reported_alone():
     selection = {
         "pattern_index": 0,
         "surface": "S4",
-        "reason": "x" * 601,
+        "reason": "x" * 1001,
         "evidence_refs": ["fixture-0"],
     }
     accepted, rejected = validate_batch_members([item], [pattern], H0, None, [], [selection])
     assert not accepted and len(rejected) == 1
     message = rejected[0]["reason"]
-    assert message == "selection reason must contain 1-600 characters"
+    assert message == "selection reason must contain 1-1000 characters"
 
 
 def test_an_orphan_placeholder_still_reports_no_matching_candidate_first():

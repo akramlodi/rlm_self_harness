@@ -167,6 +167,14 @@ class PromotionConfig:
     # Candidate-owned terminal failures which may not become more frequent
     # than under the incumbent. An empty tuple preserves the legacy rule.
     failure_nonregression_causes: tuple[str, ...] = ()
+    # False: cost_band is still computed and recorded in the decision's
+    # ``band`` block, but an out-of-band candidate is not rejected for it.
+    cost_band_enforced: bool = True
+    # False: disables tau_regression's full-validation early-stop optimization
+    # (see ``evaluate_subject``/``validate_ranked_candidate``), letting the
+    # candidate evaluate at the same run-level concurrency as the baseline.
+    # The final promotion decision's tau_regression check is unaffected.
+    tau_early_stopping_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.metric not in PROMOTION_METRICS:
@@ -490,7 +498,8 @@ def score_candidate(
             "upper": _recorded_bound(metric_band.upper),
             "within": within,
         }
-        if not within:
+        enforced = config.cost_band_enforced if band_field == "cost_band" else True
+        if not within and enforced:
             reasons.append(
                 f"{metric} {candidate_mean} is outside the band "
                 f"[{metric_band.lower}, {metric_band.upper}] x baseline {baseline_mean}"

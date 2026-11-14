@@ -640,6 +640,21 @@ worked example when its return contract conflicts with the procedure needed here
 do not append another rule while leaving an incompatible example as the default. \
 Preserve an explicitly scoped example when it remains correct for simpler tasks.
 
+Optional phrasing is evidence-backed to fail: a wording of "consider doing X" or \
+"you may want to X" measurably does not change root behavior. Traced executions \
+confirm the mechanism -- the root's own turn is pure code with no visible \
+deliberation, so a suggestion competing against an already-habitual pattern (e.g. \
+plain llm_query for a classification task) is never actually weighed; it is simply \
+not followed. State a forcing rule instead: a concrete trigger condition (the input \
+shape or task phrasing that applies) paired with a required action and the concrete \
+consequence of not acting on it, the same shape as an existing working rule (e.g. S2 \
+on H0*R: "use rlm_query whenever a sub-task must COMPUTE over many items ... a bare \
+completion asked to count hundreds of items counts in its head and is wrong past a \
+few dozen" -- a trigger, a required tool, and why the default fails). A worked \
+example tied to the trigger strengthens this further. If the mechanism cannot be \
+stated as a forcing rule the root will actually hit on a real input, do not phrase it \
+as a suggestion anyway -- withdraw the candidate instead.
+
 For each pattern-surface hypothesis you choose to address, propose exactly one minimal edit on one of \
 its eligible surfaces, naming that surface in the candidate's "surface" field -- \
 change only what is needed to address that specific mechanism, never a broad rewrite. You do not have to address every pattern: skip a pattern if no \
@@ -818,7 +833,7 @@ empty selections and candidates lists. Example shape:
   }]
 }
 ```
-Selection reasons and each explanation field must contain 1-600 characters.
+Selection reasons and each explanation field must contain 1-1000 characters.
 Multiple singleton hypotheses may target different eligible surfaces of one pattern.
 An activation pair remains one atomic joint hypothesis:
 exactly one S8/S10 capability plus one S2/S3 caller for the same evidenced pattern.
@@ -985,7 +1000,11 @@ def render_prompt(
         "predicted effect, and outcome; do not repeat an approach already rejected "
         "for the same reason). A candidate identical to the current surface is "
         "refused before validation and must not be re-proposed: a not_materialized "
-        "entry below means the incumbent already contained that edit.\n"
+        "entry below means the incumbent already contained that edit. "
+        "recurring_mechanisms, when present, lists a mechanism already attempted on "
+        "multiple surfaces across rounds -- its rejections apply to the mechanism, "
+        "not to the one surface you are now considering; do not retarget a rejected "
+        "mechanism onto yet another surface without a materially different hypothesis.\n"
         "A rejected but potentially_promising direction may merit a materially different "
         "refinement. Keep its rejection reasons and contrary metrics in view; do not replay "
         "the same edit or attribute a combined gain to one member. Mining and history "
@@ -1762,7 +1781,7 @@ def validate_batch_members(
             # kills the next one. Content checks combine after every structural
             # /orphan-exclusion guard below has already passed.
             reason_violation = (
-                not isinstance(reason, str) or not reason.strip() or len(reason) > 600
+                not isinstance(reason, str) or not reason.strip() or len(reason) > 1000
             )
             refs = selection.get("evidence_refs", [])
             if (
@@ -1813,7 +1832,7 @@ def validate_batch_members(
             # surface together.
             content_violations: list[str] = []
             if reason_violation:
-                content_violations.append("selection reason must contain 1-600 characters")
+                content_violations.append("selection reason must contain 1-1000 characters")
             behavior_violation = behavioral_difference_violation(item, required=True)
             if behavior_violation:
                 content_violations.append(behavior_violation)
