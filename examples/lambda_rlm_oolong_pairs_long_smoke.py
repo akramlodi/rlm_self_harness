@@ -126,6 +126,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="where to persist the round (resumable, like a real evaluation round)",
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--attempts",
+        type=int,
+        default=1,
+        help="repetitions per instance per condition (default: 1)",
+    )
     return parser.parse_args(argv)
 
 
@@ -163,9 +169,11 @@ def resolve_conditions(
     return tuple(condition for condition in KNOWN_CONDITIONS if condition in requested)
 
 
-def worst_case_spend(n: int, max_budget: float | None, conditions: tuple[str, ...]) -> float:
+def worst_case_spend(
+    n: int, attempts: int, max_budget: float | None, conditions: tuple[str, ...]
+) -> float:
     """Return the sum of configured per-run caps for the selected conditions."""
-    return n * len(conditions) * (max_budget or 0.0)
+    return n * attempts * len(conditions) * (max_budget or 0.0)
 
 
 def summarize_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -283,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.context_length == "short"
         else oolong_cfg.context_length_long
     )
-    kwargs = round_config_kwargs(config)
+    kwargs = {**round_config_kwargs(config), "attempts": args.attempts}
 
     round_config = LambdaRoundConfig(
         round_index=0,
@@ -293,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
         method=LambdaBaselineConfig(),
         backend=kwargs["backend"],
         backend_kwargs=kwargs["backend_kwargs"],
-        attempts=1,
+        attempts=args.attempts,
         max_budget=kwargs["max_budget"],
         max_timeout=kwargs["max_timeout"],
     )
@@ -310,7 +318,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"per-run cap: max_budget=${round_config.max_budget} max_timeout={round_config.max_timeout}s"
     )
-    print(f"worst-case spend: ${worst_case_spend(args.n, round_config.max_budget, conditions):.2f}")
+    print(
+        f"worst-case spend: "
+        f"${worst_case_spend(args.n, args.attempts, round_config.max_budget, conditions):.2f}"
+    )
     print(f"out_dir={args.out_dir.resolve()}")
 
     if not args.live:
