@@ -16,7 +16,15 @@ TERMINAL_ZERO = {
     )
 }
 SET_QUALITY = QualityDefinition("f1", "v1", "higher", terminal_values=TERMINAL_ZERO)
-NDCG_QUALITY = QualityDefinition("ndcg_at_10", "v1", "higher", terminal_values=TERMINAL_ZERO)
+# obliq_bench_math's verifier never attaches a quality measurement to a
+# NO_ANSWER verdict (an explicit empty ranking), unlike oolong_pairs/oolong's
+# legacy path, which detects some empty-answer detail strings itself and
+# deliberately leaves others unscored rather than guessing. NDCG_QUALITY has
+# no legacy path to defer to, so NO_ANSWER needs its own terminal zero here or
+# split_aggregate raises on any split containing one.
+NDCG_QUALITY = QualityDefinition(
+    "ndcg_at_10", "v1", "higher", terminal_values={**TERMINAL_ZERO, VerifierCause.NO_ANSWER.value: 0.0}
+)
 OOLONG_QUALITY = QualityDefinition("score", "v1", "higher", terminal_values=TERMINAL_ZERO)
 OOLONG_SCORE_RE = re.compile(
     r"score=(0\.\d+|1\.0+) exact=(True|False) "

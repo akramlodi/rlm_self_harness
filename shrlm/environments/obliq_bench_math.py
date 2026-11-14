@@ -275,8 +275,16 @@ class ObliqBenchMathVerifier:
     Deterministic outcome for a whole run: NDCG@10 against the gold set of
     problems sharing the query's underlying reasoning technique.
 
-    ``PASS_NDCG_THRESHOLD`` is an unfitted placeholder -- there is no prior
-    baseline run on this brand-new benchmark to calibrate a pass bar against.
+    ``PASS_NDCG_THRESHOLD`` is raised to 0.9: real round-1 validation data
+    (43 runs) showed a near-perfect cluster (0.927-1.000, 10/43) separated
+    from the rest by a real gap down to 0.836 -- 0.9 sits in that gap, so
+    only the genuinely-nailed-it runs count as passing. Prime Intellect's
+    Prime-Agent reports 0.669-0.802 NDCG@10 on OBLIQ-Bench Math with
+    GLM-5.2/Opus 5 backbones (primeintellect.ai/blog/prime-agent), though on
+    a different backbone and likely a different (easier) eval protocol than
+    this harness's own pool-based setup, so it's directional context, not a
+    verified transplant -- the 0.9 value itself comes from this harness's
+    own data, not that comparison.
 
     Cause mapping, decided on the top-K predicted set vs. gold set (the
     GraphWalks/OolongVerifier list-answer-kind convention):
@@ -294,7 +302,7 @@ class ObliqBenchMathVerifier:
     ever reached with a nonempty missing or extra set.
     """
 
-    PASS_NDCG_THRESHOLD: float = 0.5
+    PASS_NDCG_THRESHOLD: float = 0.9
     EXTRACTION_RULE: str = "RANKED: [...] JSON or Python string list, last occurrence"
 
     def config(self) -> dict[str, Any]:
