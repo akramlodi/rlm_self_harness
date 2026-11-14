@@ -457,10 +457,22 @@ class ObliqBenchMathConfig:
     seeded query-id pool over the dataset's 151 queries -- like oolong_synth,
     there is no short/long context-length axis to split on; ``candidate_pool_size``
     is a per-instance cost ceiling (gold ids plus that many random negatives),
-    not a difficulty split. None uses the full ~277k-token corpus per query."""
+    not a difficulty split. None uses the full ~277k-token corpus per query.
+
+    ``blend_pool_sizes``: False (default) keeps the single-pool-size shape
+    above, driven by ``candidate_pool_size`` alone. True switches
+    ``split_plan``/``resolve_env_binding`` to the blended shape mirroring
+    OOLONG-Pairs' three blended context lengths: the same seeded held_in/
+    held_out/test query ids are drawn once and then evaluated at each of
+    ``splits.OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES`` (200/500/1000)
+    simultaneously -- held_in and held_out become the concatenation across
+    all three pool sizes, one combined mining/validation pool rather than one
+    fixed difficulty. ``candidate_pool_size`` itself is ignored in this mode.
+    """
 
     dataset_revision: str
     candidate_pool_size: int | None = None
+    blend_pool_sizes: bool = False
 
 
 @dataclass(frozen=True)
@@ -974,9 +986,7 @@ def load_config(profile: str = "full", path: Path | str = CONFIG_PATH) -> Experi
         loop=loop,
         promotion=build_section(PromotionSettings, promotion_table, "promotion"),
         refinement=build_section(RefinementSettings, refinement_table, "refinement"),
-        reattribution=build_section(
-            ReattributionSettings, reattribution_table, "reattribution"
-        ),
+        reattribution=build_section(ReattributionSettings, reattribution_table, "reattribution"),
         caps=build_section(CapsConfig, raw["caps"], "caps"),
         environments=EnvironmentsConfig(
             oolong_pairs=build_section(
