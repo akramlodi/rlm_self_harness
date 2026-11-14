@@ -34,9 +34,14 @@ import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
+from random import Random
 from typing import Any
 
-from shrlm.environments.obliq_bench_math import load_obliq_bench_math_from_config
+from shrlm.environments.obliq_bench_math import (
+    _load_queries,
+    load_obliq_bench_math,
+    load_obliq_bench_math_from_config,
+)
 from shrlm.environments.oolong import (
     load_oolong_real_from_config,
     load_oolong_synth_from_config,
@@ -68,6 +73,29 @@ OOLONG_PAIRS_OPTIMIZATION_LENGTHS: tuple[str, ...] = ("short", "mid16k", "mid32k
 # ``evaluation.py``) assumes is exactly two long, so widening it here would
 # have silently broken those unrelated environments' reporting.
 OOLONG_PAIRS_LENGTHS: tuple[str, ...] = (*OOLONG_PAIRS_OPTIMIZATION_LENGTHS, "long")
+
+# OBLIQ-Bench Math's three blended optimization pool sizes (held_in/held_out/
+# test), mirroring OOLONG_PAIRS_OPTIMIZATION_LENGTHS: each pool size draws its
+# own disjoint set of queries (see load_obliq_bench_math_split's docstring),
+# combined into one mining/validation pool. Only bound when
+# ``environments.obliq_bench_math.blend_pool_sizes`` is true -- the default
+# single-pool-size shape keeps using the plain "short" length unchanged.
+OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES: tuple[str, ...] = ("pool200", "pool500", "pool1000")
+OBLIQ_BENCH_MATH_POOL_SIZE_VALUES: dict[str, int] = {
+    "pool200": 200,
+    "pool500": 500,
+    "pool1000": 1000,
+}
+
+# The 40-query frozen OBLIQ-Bench Math test split already used for the
+# shrlm/H0/H0*/lambda-RLM full-corpus comparison
+# (scratch/run_obliq_fullcorpus_testsplit*.py). The blended config's own
+# "test" role draws from this same set (see load_obliq_bench_math_split), so
+# this optimization loop's held-out final evaluation overlaps with queries
+# that already have those four methods' baselines measured.
+OBLIQ_BENCH_MATH_FROZEN_TEST_SPLIT_PATH = Path(
+    "experiment_obliq_bench/calib_stage1/splits/obliq_bench_math_short_test.jsonl"
+)
 
 # loader(config, length, limit, seed) -> exactly ``limit`` instance dicts.
 LoaderFn = Callable[[ExperimentConfig, str, int, int], list[dict[str, Any]]]
@@ -194,6 +222,44 @@ def default_screening_subset(
     return heldout[:n_screen]
 
 
+# The OBLIQ-Bench Math screening-tournament probe, mirroring
+# ``OOLONG_PAIRS_SCREENING_TASK_IDS``: 2 held_out queries per pool size (6
+# total across pool200/500/1000) -- the hardest-scoring query and the
+# median-scoring query, not an even or rank-weighted split. Derived from
+# round 1's real baseline validation data (experiment_real_runs/
+# experiment_obliq_bench_math_openrouter_dsv4f_blended_h0init/opt/round_01/
+# validation/round_01/baseline/heldout, 8 held_out queries x 3 attempts per
+# pool size, 2026-11-12): per-query mean NDCG@10, terminal failures counted
+# as zero. Within each pool size the 8 queries were ranked by that mean and
+# the lowest-scoring (hardest) plus the index-4-of-8 (lower-median) query
+# selected -- ties at the hardest end (two pool1000 queries both scored
+# 0.0) broken by the loader's own id order.
+OBLIQ_BENCH_MATH_SCREENING_QUERY_IDS: dict[int, tuple[str, ...]] = {
+    200: ("q03180__pool200", "q00604__pool200"),  # hardest 0.0000, median 0.3333
+    500: ("q00880__pool500", "q02765__pool500"),  # hardest 0.0000, median 0.2600
+    1000: ("q01210__pool1000", "q00740__pool1000"),  # hardest 0.0000, median 0.3697
+}
+
+
+def obliq_bench_math_screening_subset(
+    heldout: list[dict[str, Any]], n_screen: int = 6
+) -> list[dict[str, Any]]:
+    """The screening probe for OBLIQ-Bench Math: held_out instances matching
+    an id in ``OBLIQ_BENCH_MATH_SCREENING_QUERY_IDS`` -- one hardest and one
+    median query per pool size, 6 total at the shipped 3-pool-size shape.
+    Falls back to ``default_screening_subset`` when none of ``heldout``'s
+    ids match the curated set (a held_out population drawn under a
+    different seed/corpus, or the single-pool-size shape, has no curated
+    difficulty signal to use), exactly as ``oolong_pairs_screening_subset``
+    falls back for OOLONG-Pairs.
+    """
+    wanted = {qid for ids in OBLIQ_BENCH_MATH_SCREENING_QUERY_IDS.values() for qid in ids}
+    matched = [instance for instance in heldout if instance.get("id") in wanted]
+    if matched:
+        return matched
+    return default_screening_subset(heldout, n_screen=n_screen)
+
+
 class SplitsPersistenceError(ExperimentError):
     """Persisted splits contradict the configuration or were modified on disk."""
 
@@ -258,12 +324,115 @@ def load_oolong_real_split(
 def load_obliq_bench_math_split(
     config: ExperimentConfig, length: str, limit: int, seed: int
 ) -> list[dict[str, Any]]:
-    """OBLIQ-Bench Math loader wiring. Only the ``short`` length is used: like
-    oolong_synth, held_in / held_out / test is one seeded query-id pool over
-    the dataset's 151 queries -- there is no context-length axis to split on."""
-    if length != "short":
-        raise ValueError(f"obliq_bench_math has only a 'short' pool; got length {length!r}")
-    return load_obliq_bench_math_from_config(config, n=limit, seed=seed)
+    """OBLIQ-Bench Math loader wiring.
+
+    ``"short"`` (the default, single-pool-size shape): held_in / held_out /
+    test is one seeded query-id pool over the dataset's 151 queries, at
+    ``environments.obliq_bench_math.candidate_pool_size`` -- there is no
+    context-length axis to split on.
+
+    ``"pool200"``/``"pool500"``/``"pool1000"`` (the blended shape, only bound
+    when ``blend_pool_sizes`` is true): each pool size draws a DISJOINT set of
+    queries from the other two, not the same queries at three difficulties.
+    Two disjoint pools feed this, by role:
+
+    - ``test`` (the last ``splits.test_short`` queries in role order -- see
+      ``OBLIQ_BENCH_MATH_FROZEN_TEST_SPLIT_PATH``'s docstring): drawn from the
+      40-query frozen test split already used for the earlier shrlm/H0/H0*/
+      lambda-RLM full-corpus comparison (``scratch/run_obliq_fullcorpus_testsplit*.py``),
+      so this optimization loop's own held-out final evaluation overlaps with
+      queries that already have those baselines measured, instead of a fresh
+      eval set needing all four reference runs repeated.
+    - ``held_in``/``held_out`` (everything else): a full, seeded shuffle of
+      every OTHER query in the corpus (the frozen 40 excluded entirely, so no
+      query ever serves double duty as both a mining/validation instance and
+      a reserved test instance).
+
+    Both pools are sliced the same way: one seeded shuffle, computed
+    identically by every independent per-length call (deterministic from
+    ``seed`` alone, no shared mutable state needed), then each length takes
+    its own position's slice from ``OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES``
+    (pool200 gets ``shuffled[0:n]``, pool500 ``shuffled[n:2n]``, pool1000
+    ``shuffled[2n:3n]``) -- the same disjoint-slicing idea
+    ``materialize_environment`` already uses for held_in/held_out/test within
+    one length, just applied across lengths too. Raises if either pool's
+    three-length combined need exceeds its available query count. A round's
+    instance list must have unique ids regardless (``_validate_config``
+    enforces this), so each instance's ``id`` here is still suffixed with its
+    pool size (``f"{query_id}__pool{size}"``) for safety even though the
+    underlying query ids are now already disjoint across lengths --
+    verification only ever reads ``gold_relevant_ids``/``excluded_ids`` off
+    the instance dict directly, never re-looks-up by id, so the suffix is
+    inert everywhere except the id itself.
+    """
+    if length == "short":
+        return load_obliq_bench_math_from_config(config, n=limit, seed=seed)
+    if length in OBLIQ_BENCH_MATH_POOL_SIZE_VALUES:
+        env = config.environments.obliq_bench_math
+        assert env is not None
+        pool_size = OBLIQ_BENCH_MATH_POOL_SIZE_VALUES[length]
+        position = OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES.index(length)
+        n_lengths = len(OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES)
+
+        test_short = config.splits.test_short
+        non_test_limit = limit - test_short
+
+        frozen_test_ids = sorted(
+            {
+                json.loads(line)["id"]
+                for line in OBLIQ_BENCH_MATH_FROZEN_TEST_SPLIT_PATH.read_text().splitlines()
+            }
+        )
+        needed_test = test_short * n_lengths
+        if needed_test > len(frozen_test_ids):
+            raise ValueError(
+                f"blended obliq_bench_math test role needs {needed_test} disjoint queries "
+                f"({test_short} x {n_lengths} pool sizes) from the frozen 40-query test "
+                f"split, but it only has {len(frozen_test_ids)}"
+            )
+        shuffled_test = frozen_test_ids.copy()
+        Random(seed).shuffle(shuffled_test)
+        test_ids = shuffled_test[position * test_short : (position + 1) * test_short]
+
+        all_query_ids = sorted(_load_queries(env.dataset_revision))
+        non_test_pool = [q for q in all_query_ids if q not in set(frozen_test_ids)]
+        needed_non_test = non_test_limit * n_lengths
+        if needed_non_test > len(non_test_pool):
+            raise ValueError(
+                f"blended obliq_bench_math held_in/held_out needs {needed_non_test} "
+                f"disjoint queries ({non_test_limit} x {n_lengths} pool sizes) outside the "
+                f"frozen test split, but only {len(non_test_pool)} remain"
+            )
+        shuffled_non_test = non_test_pool.copy()
+        Random(seed).shuffle(shuffled_non_test)
+        non_test_ids = shuffled_non_test[position * non_test_limit : (position + 1) * non_test_limit]
+
+        # Role order (materialize_environment slices positionally): held_in,
+        # held_out, [promotion], test -- test is always last, so the frozen
+        # test ids must come last here too.
+        query_ids = non_test_ids + test_ids
+        instances = load_obliq_bench_math(
+            seed=seed,
+            query_ids=query_ids,
+            candidate_pool_size=pool_size,
+            revision=env.dataset_revision,
+        )
+        # "context_len" (not "pool_size") is the generic stratification key
+        # ``shrlm.optimization.validation`` and ``shrlm.optimization.promotion``
+        # already read for every environment's per-length primary_quality
+        # breakdown and per-length tau_regression lookup (see
+        # load_oolong_pairs_split's own "context_len" field) -- tagging it
+        # here with the pool size lets a ``[promotion.tau_regression]``
+        # sub-table keyed "200"/"500"/"1000" work for OBLIQ-Bench Math with
+        # no changes to that shared machinery.
+        return [
+            {**instance, "id": f"{instance['id']}__pool{pool_size}", "context_len": pool_size}
+            for instance in instances
+        ]
+    raise ValueError(
+        f"unknown obliq_bench_math split length {length!r}; expected 'short' or one of "
+        f"{OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES}"
+    )
 
 
 DEFAULT_LOADERS: dict[str, LoaderFn] = {
@@ -356,14 +525,30 @@ def split_plan(config: ExperimentConfig) -> dict[str, dict[str, dict[str, int]]]
             }
         }
     if config.loop.environment == "obliq_bench_math":
+        obliq = config.environments.obliq_bench_math
+        assert obliq is not None
+        optimization_roles = {
+            "held_in": splits.n_in,
+            "held_out": splits.n_ho,
+            **promotion_roles,
+            "test": splits.test_short,
+        }
+        if obliq.blend_pool_sizes:
+            # Blended mining/validation: the same held_in/held_out/test query
+            # ids, evaluated at each of 200/500/1000 candidate-pool
+            # difficulty -- see OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES and
+            # load_obliq_bench_math_split's docstring. Mirrors oolong_pairs'
+            # blended-length branch above exactly; there is no separate
+            # test-only tier the way oolong_pairs has "long".
+            return {
+                "obliq_bench_math": {
+                    length: dict(optimization_roles)
+                    for length in OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES
+                }
+            }
         return {
             "obliq_bench_math": {
-                "short": {
-                    "held_in": splits.n_in,
-                    "held_out": splits.n_ho,
-                    **promotion_roles,
-                    "test": splits.test_short,
-                },
+                "short": optimization_roles,
             },
         }
     raise ValueError(f"unsupported loop.environment {config.loop.environment!r} in split_plan")

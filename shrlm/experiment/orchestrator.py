@@ -133,10 +133,12 @@ from shrlm.experiment.config import (
 )
 from shrlm.experiment.errors import ExperimentError
 from shrlm.experiment.splits import (
+    OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES,
     OOLONG_PAIRS_OPTIMIZATION_LENGTHS,
     LoaderFn,
     default_screening_subset,
     materialize_splits,
+    obliq_bench_math_screening_subset,
     oolong_pairs_screening_subset,
     split_file_name,
 )
@@ -360,9 +362,13 @@ def resolve_env_binding(config: ExperimentConfig) -> EnvBinding:
             verifier_factory=OOLONG_PAIRS_VERIFIER_FACTORY,
         )
     if environment == "obliq_bench_math":
+        obliq = config.environments.obliq_bench_math
+        assert obliq is not None
         return EnvBinding(
             name="obliq_bench_math",
-            lengths=(SPLIT_LENGTH,),
+            lengths=(
+                OBLIQ_BENCH_MATH_OPTIMIZATION_POOL_SIZES if obliq.blend_pool_sizes else (SPLIT_LENGTH,)
+            ),
             verifier=ObliqBenchMathVerifier(),
             sub_verifier=None,
             verifier_factory=OBLIQ_BENCH_MATH_VERIFIER_FACTORY,
@@ -1863,13 +1869,18 @@ class _Experiment:
     def _screening_subset(self) -> list[dict[str, Any]]:
         """The small, difficulty-informed instance subset screening runs
         against -- oolong_pairs gets the curated hard/easy mix derived from
-        real trace data; every other environment gets the generic fallback.
+        real trace data; obliq_bench_math gets 6, round-robinned across every
+        distinct pool_size present (200/500/1000 when blend_pool_sizes is
+        set, covering the full difficulty range rather than collapsing onto
+        whichever pool size sorts first); every other environment gets the
+        generic 3-instance fallback.
         """
-        subset = (
-            oolong_pairs_screening_subset(self.splits.heldout)
-            if self.binding.name == "oolong_pairs"
-            else default_screening_subset(self.splits.heldout)
-        )
+        if self.binding.name == "oolong_pairs":
+            subset = oolong_pairs_screening_subset(self.splits.heldout)
+        elif self.binding.name == "obliq_bench_math":
+            subset = obliq_bench_math_screening_subset(self.splits.heldout, n_screen=6)
+        else:
+            subset = default_screening_subset(self.splits.heldout)
         heldout_by_id = {str(instance["id"]): instance for instance in self.splits.heldout}
         if len(heldout_by_id) != len(self.splits.heldout):
             raise ValueError("held-out instance ids must be unique before screening")

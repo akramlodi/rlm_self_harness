@@ -1,0 +1,270 @@
+# =============================================================================
+# configs/experiment_obliq_bench_math_openrouter_DeepSeekV4Flash_blended_h0init.toml --
+# forked from experiment_obliq_bench_math_openrouter_DeepSeekV4Flash_blended.toml
+# on 2026-11-12, switching loop.initial_harness from "H0*" to "H0".
+#
+# The blended config's own H0* choice was deliberate and evidence-backed:
+# direct, repeated evidence showed H0 burns its whole 30-iteration budget on
+# correct reasoning but never reaches the line that submits an answer, so
+# mining started from H0* instead to put that exact failure pattern in front
+# of the proposer. This fork asks the opposite question: can mining fix that
+# "never commits" pathology starting from H0 itself, rather than starting
+# from a harness that already works around it? A fresh round 1 -- a
+# different initial_harness changes the whole mining trajectory from the
+# start, so there is nothing to carry forward from the H0*-rooted runs.
+#
+# Differences from the blended config, and why:
+#   [loop]      initial_harness "H0*" -> "H0" (the registry default).
+#   [operational] cache paths renamed with an _h0init suffix so this fork's
+#               attribution/proposal caches never collide with the
+#               H0*-rooted blended config's, letting both run concurrently
+#               against independent --out-dirs.
+#
+# Everything else (splits, pool-size blending, v/v_screen, caps) is unchanged
+# from the blended config.
+#
+# Recalibrated 2026-11-12 after round 1 promoted r01-c03-s9 on a thin pooled
+# margin (+0.0139 macro, masking a mid-run dip to -0.0020 driven entirely by
+# pool1000's volatility -- see [promotion.tau_regression] below) and round 2
+# mining was killed before attribution to redo this properly:
+#   [promotion] tau_regression: single pooled scalar (0.227763) -> a
+#               [promotion.tau_regression] table, one noise floor per pool
+#               size (200/500/1000). A single pooled margin let pool1000's
+#               much higher between-instance variance (0.060897 vs pool200's
+#               0.024174) hide inside a macro average; per-pool-size gating
+#               checks each pool size's own regression against its own
+#               noise floor instead. Parametric variance-decomposition
+#               method (examples/obliq_two_stage/calibrate_obliq_tau.py's
+#               own formula, applied per pool size instead of pooled),
+#               quantile=0.95, source: round 1's real baseline validation
+#               (experiment_real_runs/experiment_obliq_bench_math_openrouter_
+#               dsv4f_blended_h0init/opt/round_01/validation/round_01/
+#               baseline/heldout, 8 held_out queries x 3 attempts per pool
+#               size).
+#   [promotion] tau_early_stopping_enabled true -> false, same reasoning as
+#               oolong_pairs' own "_relaxed" config fork: with it true, the
+#               candidate's run_workers is unconditionally forced to 1
+#               (evaluate_subject's stop_predicate branch) regardless of
+#               validation_run_workers, so the worker-count changes below
+#               would otherwise have no effect on the candidate at all.
+#   [operational] mining_run_workers, validation_workers,
+#               validation_run_workers, screening_workers,
+#               screening_run_workers: all set to 2, uniformly across every
+#               phase (previously 3/5/3/1/3 -- an unevaluated mix).
+#   splits.py   obliq_bench_math_screening_subset's old 1/2/3 rank-weighted
+#               split -> 2/2/2, one hardest- and one median-scoring query
+#               per pool size (OBLIQ_BENCH_MATH_SCREENING_QUERY_IDS), sourced
+#               from the same round 1 baseline data above. load_obliq_bench_
+#               math_split now also tags every blended instance with
+#               "context_len" = its pool size, the generic stratification
+#               key the per-pool-size tau_regression table above needs.
+#
+# These changes alter [promotion] (an identity-covered section) and the
+# splits-loader's own instance shape, so round 1 restarts from scratch under
+# a fresh --out-dir rather than resuming the prior run's (now-superseded)
+# round 1 promotion decision.
+#
+# Run (real mining round, fresh):
+#   uv run python examples/run_experiment.py \
+#       --config configs/experiment_obliq_bench_math_openrouter_DeepSeekV4Flash_blended_h0init.toml \
+#       --out-dir ./experiment_obliq_bench_math_openrouter_dsv4f_blended_h0init
+# =============================================================================
+
+[decoding]
+temperature = 0
+top_p = 0.95
+max_output_tokens = 8192
+
+[splits]
+n_in = 8
+n_ho = 8 # raised from 4 on 2026-11-12: match held_in's instance count so
+# held_out also draws 8 distinct queries per pool size (24 total across the
+# 3 blended pool sizes), not 4.
+test_short = 4
+test_long = 1
+seed = 0
+
+[loop]
+m = 2
+v = 3
+v_screen = 1
+k = 4
+t = 10
+patience = 5 # raised from 3 on 2026-11-13: the run stopped on patience after
+# rounds 1-3 were all rejected (see experiment_obliq_bench_math_openrouter_
+# dsv4f_blended_h0init/opt/round_0{1,2,3}/round.json); this reuses those 3
+# already-paid-for rounds (ROUND_MARKER_FILENAME-based replay) under a fresh
+# --out-dir and gives mining 2 more rounds before patience can stop it again.
+enforce_patience = true
+environment = "obliq_bench_math"
+initial_harness = "H0" # changed from "H0*" -- see header comment.
+
+[promotion]
+metric = "primary_quality"
+tau_improvement = 0.01
+cost_band = [0.0, 3]
+cost_band_enforced = true
+tau_early_stopping_enabled = false # see header comment: forced run_workers=1
+# on the candidate otherwise, defeating the worker-count changes below.
+
+[promotion.tau_regression]
+# Per-pool-size noise floor -- see header comment for provenance.
+200 = 0.227469
+500 = 0.197966
+1000 = 0.265998
+
+[refinement]
+# Disabled on 2026-11-12: no bounded repair-generation stage, and no
+# disjoint "promotion" split reserved for it -- frees those queries back
+# into the unused pool (105 -> 60 distinct queries consumed: 8+8+4=20 per
+# pool size x 3, down from 8+8+15+4=35 per pool size x 3).
+enabled = false
+promotion_size = 0
+min_conditional_quality_delta = 0.02
+min_failure_rate_delta = 0.0
+failure_causes = ["wrong_format"]
+max_generations = 1
+
+# -----------------------------------------------------------------------------
+# Inert-but-mandatory below (oolong_pairs/oolong): schema fields other
+# environments own; loop.environment = "obliq_bench_math" never reads them.
+# Copied verbatim from the blended config. The real, live table is
+# [environments.obliq_bench_math] further down.
+# -----------------------------------------------------------------------------
+
+[environments.oolong_pairs]
+dataset_repo = "oolongbench/oolong-synth"
+subset = "trec_coarse"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+task_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+context_length_short = 8192
+context_length_long = 262144
+max_scan = 50000
+n_short = 40
+n_long = 40
+
+[environments.oolong]
+
+[environments.oolong.synth]
+dataset_repo = "oolongbench/oolong-synth"
+split = "test"
+dataset_revision = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
+subsets = []
+task_groups = ["counting", "user", "timeline"]
+context_lengths = [1024, 4096, 16384, 65536, 131072]
+max_scan = 40000
+
+[environments.oolong.real]
+dataset_repo = "oolongbench/oolong-real"
+config_name = "dnd"
+split = "test"
+dataset_revision = "6bc9ef04866fcf005c9749b70649be69dd37fffb"
+question_types = []
+episode_counts = [1, 2, 3]
+max_scan = 40000
+n_check = 20
+
+[environments.obliq_bench_math]
+dataset_revision = "4ebee29f68ceeb62ca00bd73d5478acdd3cd7764"
+candidate_pool_size = 200
+blend_pool_sizes = true
+
+# -----------------------------------------------------------------------------
+# Live sections: these are what the smoke script actually reads.
+# -----------------------------------------------------------------------------
+
+[caps]
+attempts = 1
+max_iterations = 30
+max_depth = 3
+max_budget = 2.0 # USD per run
+max_timeout = 3600.0 # seconds per run
+candidate_budget = 100.0 # USD
+
+[backends.runner]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash" # OpenRouter slug for "DeepSeek V4 Flash 0423"
+
+[backends.attributor]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+
+[backends.proposer]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+
+[backends.openrouter]
+provider_order = []
+allow_fallbacks = true
+
+[pricing.promo]
+input_per_million = 0.009
+output_per_million = 1.28
+
+[pricing.list_price]
+input_per_million = 0.009
+output_per_million = 1.28
+
+[[gpu_scenarios]]
+name = "h100_sxm_rented"
+hourly_rate_usd = 2.49
+provenance = "Median H100 SXM on-demand marketplace rate, 2026-08 (Lambda/RunPod listings)"
+provenance_validated = true
+sensitivity_range = [1.99, 3.49]
+precision_note = "bf16 weights, vLLM serving, no speculative decoding"
+changes_numerics = false
+
+[gpu_scenarios.throughput_tokens_per_second]
+short = 2400.0
+long = 700.0
+
+[report]
+p_merge = 0.5
+eval_conditions = 3
+
+[operational]
+loader_timeout_seconds = 120.0
+attribution_cache_path = ".cache/shrlm/attribution_obliq_bench_math_openrouter_blended_h0init.jsonl"
+proposal_cache_path = ".cache/shrlm/proposals_obliq_bench_math_openrouter_blended_h0init.jsonl"
+eval_repetitions = 3
+# Matched to configs/experiment_oolong_pairs_blended_openrouter_
+# DeepSeekV4Flash_relaxed.toml's own [operational] worker counts on
+# 2026-11-12 (that config's values, not the uniform-2 this file briefly
+# used): validation_workers=5 (baseline+candidate headroom, though only one
+# of the two is ever actually live at a time -- see that config's own
+# comment), validation_run_workers=3 (needs tau_early_stopping_enabled=false
+# above to actually reach the candidate), screening_workers=2 (observed
+# 429-free at mining/screening_run_workers=3 on OpenRouter),
+# screening_run_workers=3, mining_run_workers=3. Operational, non-identity
+# (only eval_repetitions is) -- safe to change under the existing --out-dir,
+# resuming round 1 mining exactly where it left off.
+validation_workers = 5
+validation_run_workers = 3
+mining_run_workers = 3
+screening_workers = 2
+screening_run_workers = 3
+real_check_every_n_rounds = 0
+
+[smoke.splits]
+n_in = 3
+n_ho = 3
+test_short = 4
+test_long = 2
+
+[smoke.loop]
+m = 1
+v = 1
+k = 2
+t = 1
+
+[smoke.caps]
+max_budget = 0.5
+max_timeout = 300.0
+candidate_budget = 3.0
+
+[smoke.operational]
+eval_repetitions = 1
+real_check_every_n_rounds = 0
+
+[smoke.environments.obliq_bench_math]
+candidate_pool_size = 20
