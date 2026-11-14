@@ -283,3 +283,49 @@ def test_activation_keeps_detector_counts_and_intended_behavior_uncertainty():
     )
     row = json.loads(text.splitlines()[1])["attempts"][0]
     assert row["activation"] == activation
+
+
+def test_recurring_mechanisms_groups_cross_surface_attempts_only():
+    """A mechanism re-proposed on a new surface never trips select_predecessor's
+    revisited-intervention check (it keys on surface + mechanism together), so
+    compact_history surfaces cross-surface recurrence separately."""
+    from shrlm.optimization.history import compact_history
+
+    history = [
+        (
+            [
+                {
+                    "subject_id": "s2-attempt",
+                    "surface": "S2",
+                    "mechanism": "batch_before_count",
+                    "decision": "rejected",
+                }
+            ],
+            {"round": 1},
+        ),
+        (
+            [
+                {
+                    "subject_id": "s3-attempt",
+                    "surface": "S3",
+                    "mechanism": "batch_before_count",
+                    "decision": "rejected",
+                },
+                {
+                    "subject_id": "s9-attempt",
+                    "surface": "S9",
+                    "mechanism": "single_surface_only",
+                    "decision": "rejected",
+                },
+            ],
+            {"round": 2},
+        ),
+    ]
+    text, _ = compact_history(history)
+    facts = json.loads(text.splitlines()[1])
+    recurring = facts["recurring_mechanisms"]
+    assert "batch_before_count" in recurring
+    assert "single_surface_only" not in recurring
+    occurrences = recurring["batch_before_count"]
+    assert [o["round"] for o in occurrences] == [1, 2]
+    assert {o["surface"] for o in occurrences} == {"S2", "S3"}
