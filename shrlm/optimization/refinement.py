@@ -2,11 +2,14 @@
 
 Refinement is deliberately not a second promotion metric.  A candidate can
 enter the repair branch only after the ordinary, unconditional promotion gate
-rejects it.  Conditional quality supplies evidence that the proposed mechanism
-works when an answer is measurable; an increased configured failure rate
-supplies evidence that the candidate introduced a separate reliability defect.
-The repaired descendant must still pass the normal promotion rule on fresh
-instances before it can become the incumbent.
+rejects it.  Admission depends solely on conditional quality: evidence that
+the proposed mechanism works when an answer is measurable, regardless of why
+the ordinary gate rejected the candidate.  The configured failure rate is
+still computed and reported (it supplies evidence of what, if anything, the
+repair branch needs to fix), but it no longer gates admission -- a candidate
+whose conditional quality improved is eligible even if its failure rate held
+steady or fell.  The repaired descendant must still pass the normal promotion
+rule on fresh instances before it can become the incumbent.
 """
 
 from dataclasses import dataclass
@@ -97,14 +100,6 @@ def assess_refinement(
             f"conditional-quality delta {quality_delta:+.6f} is below "
             f"{settings.min_conditional_quality_delta}"
         )
-    if failure_delta < settings.min_failure_rate_delta:
-        reasons.append(
-            f"configured failure-rate delta {failure_delta:+.6f} is below "
-            f"{settings.min_failure_rate_delta}"
-        )
-    if candidate_failure <= baseline_failure:
-        reasons.append("candidate did not increase the configured failure rate")
-
     return RefinementDiagnostic(
         admitted=not reasons,
         reasons=tuple(reasons),
