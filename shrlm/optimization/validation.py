@@ -1601,7 +1601,9 @@ def validate_round(
             config,
             baseline_seed=baseline_seed,
             tau_regression=(
-                pconfig.tau_regression if pconfig.metric == METRIC_PRIMARY_QUALITY else None
+                pconfig.tau_regression
+                if pconfig.metric == METRIC_PRIMARY_QUALITY and pconfig.tau_early_stopping_enabled
+                else None
             ),
         )
         if evaluation.baseline.over_budget:
@@ -1775,7 +1777,9 @@ def validate_ranked_candidate(
         if screening_seed is not None
         else None,
         tau_regression=(
-            pconfig.tau_regression if pconfig.metric == METRIC_PRIMARY_QUALITY else None
+            pconfig.tau_regression
+            if pconfig.metric == METRIC_PRIMARY_QUALITY and pconfig.tau_early_stopping_enabled
+            else None
         ),
     )
     if evaluation.baseline.over_budget:
