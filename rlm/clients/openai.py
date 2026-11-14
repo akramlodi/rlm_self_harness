@@ -22,6 +22,8 @@ DEFAULT_OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 DEFAULT_VERCEL_API_KEY = os.getenv("AI_GATEWAY_API_KEY")
 DEFAULT_PRIME_API_KEY = os.getenv("PRIME_API_KEY")
 DEFAULT_PRIME_INTELLECT_BASE_URL = "https://api.pinference.ai/api/v1/"
+DEFAULT_BEDROCK_API_KEY = os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+DEFAULT_BEDROCK_BASE_URL = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"
 
 
 def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
@@ -221,6 +223,8 @@ class OpenAIClient(BaseLM):
                 api_key = DEFAULT_VERCEL_API_KEY
             elif base_url == DEFAULT_PRIME_INTELLECT_BASE_URL:
                 api_key = DEFAULT_PRIME_API_KEY
+            elif base_url == DEFAULT_BEDROCK_BASE_URL:
+                api_key = DEFAULT_BEDROCK_API_KEY
 
         # Pass through arbitrary kwargs to the OpenAI client (e.g. default_headers, default_query, max_retries).
         # Exclude model_name since it is not an OpenAI client constructor argument.

@@ -13,6 +13,7 @@ ClientBackend = Literal[
     "azure_openai",
     "azure_foundry",
     "gemini",
+    "bedrock",
 ]
 EnvironmentType = Literal["local", "ipython", "docker", "modal", "prime", "daytona", "e2b"]
 
