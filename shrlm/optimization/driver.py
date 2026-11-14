@@ -168,8 +168,9 @@ class RoundObservationPersistenceError(RoundPersistenceError, ObservationPersist
 class RoundConfig:
     """Everything one round needs: what to run, under what, and where to persist.
 
-    ``max_iterations``, ``max_depth``, ``max_budget``, and ``max_timeout`` are
-    experiment-owned RLM limits, forwarded to ``build_harnessed_rlm``; leave
+    ``max_iterations``, ``max_depth``, ``max_budget``, ``max_timeout``, and the
+    finalization reserves are experiment-owned RLM limits, forwarded to
+    ``build_harnessed_rlm``; leave
     ``max_depth`` unset when the harness's S6 policy declares it, since the
     runner rejects a double declaration.
     """
@@ -186,6 +187,8 @@ class RoundConfig:
     max_depth: int | None = None
     max_budget: float | None = None
     max_timeout: float | None = None
+    finalization_iterations: int = 0
+    finalization_timeout: float = 0.0
     # How many of this round's runs may execute concurrently. 1 is the
     # sequential path. Recorded in the execution sidecar so a reader of the
     # aggregate can tell what conditions produced it -- a subject evaluated
@@ -868,10 +871,18 @@ def build_round_rlm(config: RoundConfig) -> HarnessedRLM:
     require_backend_credential(config)
 
     rlm_kwargs: dict[str, Any] = {"max_iterations": config.max_iterations}
-    for name in ("max_depth", "max_budget", "max_timeout"):
+    for name in (
+        "max_depth",
+        "max_budget",
+        "max_timeout",
+    ):
         value = getattr(config, name)
         if value is not None:
             rlm_kwargs[name] = value
+    if config.finalization_iterations:
+        rlm_kwargs["finalization_iterations"] = config.finalization_iterations
+    if config.finalization_timeout:
+        rlm_kwargs["finalization_timeout"] = config.finalization_timeout
 
     harnessed = build_harnessed_rlm(
         config.harness,

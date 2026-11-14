@@ -1,6 +1,7 @@
 import textwrap
 from typing import Any
 
+from rlm.core.run_control import RunPhase
 from rlm.core.types import QueryMetadata
 
 # DEPRECATED: not used anywhere. Kept for reference only. The current default
@@ -133,6 +134,8 @@ To use the REPL, you need to write code in ```repl``` blocks; the REPL persists 
 - `rlm_query(prompt, model=None)` / `rlm_query_batched(prompts, model=None)`: recursive RLM sub-calls. Fall back to `llm_query` / `llm_query_batched` when recursion is disabled.
 - `SHOW_VARS() -> str`: list every variable currently in the REPL.
 - `answer`: dict initialized to `{{"content": "", "ready": False}}`. To submit, set `answer["content"]` to the final answer and `answer["ready"] = True` inside a ```repl``` block.
+- `submit(value)`: atomically set the final answer and terminate the run. Prefer this when
+  the answer is ready, especially during the finalization phase.
 {custom_tools_section}
 
 REPL outputs over ~20K characters are truncated, so for longer payloads slice `context` and pass slices through `llm_query` rather than `print`-ing them whole. The REPL is NOT a Jupyter cell — only `print(...)` output (stdout) is shown back to you between turns; a bare expression on the last line is silently discarded. Always wrap inspections in `print(...)`.
@@ -205,7 +208,7 @@ ORCHESTRATOR_ADDENDUM = "\n\n".join(
 )
 
 
-_DEFAULT_MAX_ITERATIONS = 30
+_DEFAULT_MAX_ITERATIONS = 45
 
 # S6: the stated sub-call capacity. It lives in the metadata user message, which
 # ``custom_system_prompt`` cannot reach, so it is injectable — the stated
@@ -260,6 +263,7 @@ def build_user_prompt(
     context_count: int = 1,
     history_count: int = 0,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+    run_phase: RunPhase = RunPhase.WORK,
 ) -> dict[str, str]:
     iter_1 = iteration + 1
     body = USER_PROMPT.format(iter_1=iter_1, max_iter=max_iterations)
@@ -271,6 +275,13 @@ def build_user_prompt(
         prompt = safeguard + body
     else:
         prompt = body
+
+    if run_phase is RunPhase.FINALIZE:
+        prompt += (
+            "\n\nFINALIZATION PHASE: do not start any new `llm_query` or `rlm_query` "
+            "calls. Use the evidence and variables already in the REPL, assemble the best "
+            "available answer, and submit it atomically with `submit(value)` in this turn."
+        )
 
     if context_count > 1:
         prompt += (

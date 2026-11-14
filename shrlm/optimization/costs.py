@@ -206,9 +206,10 @@ class ValidationCaps:
     """The experiment-owned evaluation limits (R3; KTD3).
 
     ``max_budget`` and ``max_timeout`` are per run; ``candidate_budget`` is the
-    cumulative circuit-breaker budget across all of one candidate's runs. All
-    five are mandatory: a validation stage without a binding cap is exactly the
-    unbounded spend KTD3 exists to prevent.
+    cumulative circuit-breaker budget across all of one candidate's runs. The
+    five original resource caps are mandatory. The two finalization reserves
+    default to zero for backward compatibility and are explicit experiment
+    controls when enabled.
     """
 
     max_depth: int
@@ -216,6 +217,8 @@ class ValidationCaps:
     max_budget: float
     max_timeout: float
     candidate_budget: float
+    finalization_iterations: int = 0
+    finalization_timeout: float = 0.0
 
     def __post_init__(self) -> None:
         for name in ("max_depth", "max_iterations"):
@@ -226,6 +229,24 @@ class ValidationCaps:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
                 raise ValueError(f"{name} must be a positive number, got {value!r}")
+        if (
+            isinstance(self.finalization_iterations, bool)
+            or not isinstance(self.finalization_iterations, int)
+            or not 0 <= self.finalization_iterations < self.max_iterations
+        ):
+            raise ValueError(
+                "finalization_iterations must be an integer in "
+                f"[0, max_iterations), got {self.finalization_iterations!r}"
+            )
+        if (
+            isinstance(self.finalization_timeout, bool)
+            or not isinstance(self.finalization_timeout, int | float)
+            or not 0 <= self.finalization_timeout < self.max_timeout
+        ):
+            raise ValueError(
+                "finalization_timeout must be a number in [0, max_timeout), got "
+                f"{self.finalization_timeout!r}"
+            )
 
     def s6_caps(self) -> dict[str, int | float]:
         """The caps an S6 policy can express, as ``cap_violations`` input.

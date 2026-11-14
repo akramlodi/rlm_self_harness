@@ -132,6 +132,7 @@ SMOKE_SCALE_KEYS: frozenset[str] = frozenset(
         "caps.attempts",
         "caps.max_budget",
         "caps.max_timeout",
+        "caps.finalization_timeout",
         "caps.candidate_budget",
         "operational.eval_repetitions",
         "operational.mining_run_workers",
@@ -336,6 +337,28 @@ class CapsConfig:
     attempts: int
     max_iterations: int
     max_depth: int | None = None
+    finalization_iterations: int = 0
+    finalization_timeout: float = 0.0
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.finalization_iterations, bool)
+            or not isinstance(self.finalization_iterations, int)
+            or not 0 <= self.finalization_iterations < self.max_iterations
+        ):
+            raise ValueError(
+                "caps.finalization_iterations must be an integer in "
+                f"[0, max_iterations), got {self.finalization_iterations!r}"
+            )
+        if (
+            isinstance(self.finalization_timeout, bool)
+            or not isinstance(self.finalization_timeout, int | float)
+            or not 0 <= self.finalization_timeout < self.max_timeout
+        ):
+            raise ValueError(
+                "caps.finalization_timeout must be a number in [0, max_timeout), got "
+                f"{self.finalization_timeout!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -1081,6 +1104,8 @@ GOVERNED_ROUND_KEYS: tuple[str, ...] = (
     "max_depth",
     "max_budget",
     "max_timeout",
+    "finalization_iterations",
+    "finalization_timeout",
 )
 
 
@@ -1100,6 +1125,8 @@ def round_config_kwargs(config: ExperimentConfig) -> dict[str, Any]:
         "max_depth": caps.max_depth,
         "max_budget": caps.max_budget,
         "max_timeout": caps.max_timeout,
+        "finalization_iterations": caps.finalization_iterations,
+        "finalization_timeout": caps.finalization_timeout,
     }
 
 
@@ -1117,6 +1144,8 @@ def validation_caps(config: ExperimentConfig) -> ValidationCaps:
         max_budget=caps.max_budget,
         max_timeout=caps.max_timeout,
         candidate_budget=caps.candidate_budget,
+        finalization_iterations=caps.finalization_iterations,
+        finalization_timeout=caps.finalization_timeout,
     )
 
 

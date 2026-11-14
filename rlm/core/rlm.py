@@ -15,6 +15,7 @@ from rlm.core.llm_observation import (
     observe_call,
 )
 from rlm.core.lm_handler import LMHandler
+from rlm.core.run_control import RunControl, RunDeadlines
 from rlm.core.types import (
     ANSWER_REDIRECTED,
     ANSWER_SUBMITTED,
@@ -118,6 +119,8 @@ class RLM:
         max_iterations: int = 30,
         max_budget: float | None = None,
         max_timeout: float | None = None,
+        finalization_iterations: int = 0,
+        finalization_timeout: float = 0.0,
         max_tokens: int | None = None,
         max_errors: int | None = None,
         custom_system_prompt: str | None = None,
@@ -145,6 +148,7 @@ class RLM:
         runtime_policy: dict[str, Any] | None = None,
         capacity_sentence: str | None = None,
         observation_recorder: ObservationRecorder | None = None,
+        run_deadlines: RunDeadlines | None = None,
     ):
         """
         Args:
@@ -157,6 +161,10 @@ class RLM:
             max_iterations: The maximum number of iterations of the RLM.
             max_budget: Maximum budget in USD. Execution stops if exceeded. Requires cost-tracking backend (e.g., OpenRouter).
             max_timeout: Maximum execution time in seconds. Execution stops if exceeded, returning best answer if available.
+            finalization_iterations: Number of final executable turns reserved for submitting
+                from existing state. Sub-calls are refused during these turns.
+            finalization_timeout: Wall-clock seconds reserved for finalization. Sub-calls are
+                refused once this reserve begins; it does not reduce the hard timeout.
             max_tokens: Maximum total tokens (input + output). Execution stops if exceeded, returning best answer if available.
             max_errors: Maximum consecutive errors before stopping. Execution stops if exceeded, returning best answer if available.
             custom_system_prompt: The custom system prompt to use for the RLM.
@@ -197,6 +205,9 @@ class RLM:
                 ``rlm_query`` build their own. Defaults to unbounded pass-through.
             capacity_sentence: Optional S6 sentence stating sub-call capacity in the
                 metadata user message. Defaults to the shipped ~100k tokens string.
+            run_deadlines: Shared wall-clock deadlines inherited from a parent RLM
+                in the same completion tree. None for the root, which derives its
+                own deadlines from ``max_timeout``/``finalization_timeout``.
         """
         # Sampling args plumbed into backend_kwargs / other_backend_kwargs
         # before the clients are constructed, so they reach the chat-completions
@@ -254,6 +265,27 @@ class RLM:
         self.max_iterations = max_iterations
         self.max_budget = max_budget
         self.max_timeout = max_timeout
+        if (
+            isinstance(finalization_iterations, bool)
+            or not isinstance(finalization_iterations, int)
+            or not 0 <= finalization_iterations < max_iterations
+        ):
+            raise ValueError(
+                "finalization_iterations must be an integer in "
+                f"[0, max_iterations), got {finalization_iterations!r}"
+            )
+        if (
+            isinstance(finalization_timeout, bool)
+            or not isinstance(finalization_timeout, int | float)
+            or finalization_timeout < 0
+        ):
+            raise ValueError(
+                f"finalization_timeout must be a non-negative number, got {finalization_timeout!r}"
+            )
+        self.finalization_iterations = finalization_iterations
+        self.finalization_timeout = finalization_timeout
+        self.run_deadlines = run_deadlines
+        self.run_control: RunControl | None = None
         self.max_tokens = max_tokens
         self.max_errors = max_errors
         self.system_prompt = custom_system_prompt if custom_system_prompt else RLM_SYSTEM_PROMPT
@@ -412,6 +444,7 @@ class RLM:
                 if self.compaction and self.environment_type in ("local", "docker"):
                     env_kwargs["compaction"] = True
                 env_kwargs["max_concurrent_subcalls"] = self.max_concurrent_subcalls
+                env_kwargs["run_control"] = self.run_control
                 # S6 runtime policy is enforced by the local REPL's sub-call helpers.
                 if self.runtime_policy is not None and self.environment_type == "local":
                     env_kwargs["runtime_policy"] = self.runtime_policy
@@ -504,6 +537,13 @@ class RLM:
         self._last_error = None
         self._best_partial_answer = None
         self._reset_completion_accounting()
+        self.run_control = RunControl.create(
+            max_iterations=self.max_iterations,
+            finalization_iterations=self.finalization_iterations,
+            max_timeout=self.max_timeout,
+            finalization_timeout=self.finalization_timeout,
+            inherited_deadlines=self.run_deadlines,
+        )
         # If we're at max depth, the RLM is an LM, so we fallback to the regular LM.
         if self.depth >= self.max_depth:
             return self._fallback_answer(prompt)
@@ -521,6 +561,7 @@ class RLM:
                 for i in range(self.max_iterations):
                     # Check timeout before each iteration
                     self._check_timeout(i, time_start)
+                    self.run_control.update_iteration(i)
 
                     # Compaction: check if context needs summarization
                     if self.compaction and hasattr(environment, "append_compaction_entry"):
@@ -558,6 +599,7 @@ class RLM:
                             context_count,
                             history_count,
                             max_iterations=self.max_iterations,
+                            run_phase=self.run_control.phase,
                         )
                     )
 
@@ -1194,6 +1236,9 @@ class RLM:
             max_iterations=self.max_iterations,
             max_budget=remaining_budget,
             max_timeout=remaining_timeout,
+            finalization_iterations=self.finalization_iterations,
+            finalization_timeout=self.finalization_timeout,
+            run_deadlines=self.run_control.deadlines if self.run_control is not None else None,
             max_tokens=self.max_tokens,
             max_errors=self.max_errors,
             custom_system_prompt=self.system_prompt,
