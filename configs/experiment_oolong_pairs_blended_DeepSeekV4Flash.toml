@@ -235,6 +235,7 @@ enabled = true
 # across all of one candidate's validation runs.
 attempts = 1 # default per-round attempts; stages override with m / v / eval_repetitions
 max_iterations = 45
+finalization_iterations = 3
 # Raised from 1 to 3 on 2026-08-22 alongside the S10 skills surface: at depth 1
 # every sub-call is a bare completion (no system prompt, no REPL), so a child
 # could never see the skills index or call the loader. At 2, rlm_query children
@@ -246,6 +247,7 @@ max_depth = 3
 # exceeds this, so run exposure is bounded by total_runs x max_budget.
 max_budget = 2.0 # USD per run
 max_timeout = 3600.0 # seconds per run
+finalization_timeout = 600.0
 # Applies to EVERY validation subject, the baseline included: an over-budget
 # baseline makes the round unscorable (promotion.assess_round raises).
 candidate_budget = 100.0 # USD across all of one subject's runs
@@ -469,6 +471,7 @@ t = 1
 [smoke.caps]
 max_budget = 0.5
 max_timeout = 300.0
+finalization_timeout = 60.0
 candidate_budget = 3.0
 
 [smoke.operational]

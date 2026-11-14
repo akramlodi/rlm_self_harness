@@ -3,6 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from rlm.core.run_control import RunControl
 from rlm.core.types import REPLResult
 
 # =============================================================================
@@ -17,6 +18,7 @@ RESERVED_TOOL_NAMES: frozenset[str] = frozenset(
         "llm_query_batched",
         "rlm_query",
         "rlm_query_batched",
+        "submit",
         "SHOW_VARS",
         "answer",
         "context",
@@ -222,6 +224,7 @@ class SupportsCustomTools(Protocol):
         The following names cannot be used as custom tool names:
         - llm_query, llm_query_batched: Single LM completion functions (no tool access)
         - rlm_query, rlm_query_batched: Recursive RLM calls for deeper thinking subtasks
+        - submit: Atomically publish the final answer and terminate the run
         - SHOW_VARS: Built-in helper for listing REPL variables
         - answer: The final-answer dict ({"content": ..., "ready": False})
         - context, history: The input context and conversation history variables
@@ -260,11 +263,17 @@ class BaseEnv(ABC):
     """
 
     def __init__(
-        self, persistent: bool = False, depth: int = 1, max_concurrent_subcalls: int = 4, **kwargs
+        self,
+        persistent: bool = False,
+        depth: int = 1,
+        max_concurrent_subcalls: int = 4,
+        run_control: RunControl | None = None,
+        **kwargs,
     ):
         self.persistent = persistent
         self.depth = depth
         self.max_concurrent_subcalls = max_concurrent_subcalls
+        self.run_control = run_control
         self.kwargs = kwargs
 
     @abstractmethod

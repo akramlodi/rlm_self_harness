@@ -246,6 +246,7 @@ class LocalREPL(NonIsolatedEnv):
         self.globals["llm_query_batched"] = self._llm_query_batched
         self.globals["rlm_query"] = self._rlm_query
         self.globals["rlm_query_batched"] = self._rlm_query_batched
+        self.globals["submit"] = self._submit
 
         # The model marks completion via ``answer["ready"] = True``; the
         # custom dict captures the content as soon as that happens so we
@@ -433,10 +434,25 @@ class LocalREPL(NonIsolatedEnv):
     # Sub-call helpers exposed in the REPL
     # -------------------------------------------------------------------
 
+    def _subcall_refusal(self) -> str | None:
+        """Return the shared controller's refusal once finalization begins."""
+        if self.run_control is None:
+            return None
+        return self.run_control.subcall_refusal()
+
+    def _submit(self, value: object) -> None:
+        """Atomically publish a final answer from one REPL call."""
+        answer = self.locals["answer"]
+        answer["content"] = str(value)
+        answer["ready"] = True
+
     def _llm_query_once(
         self, prompt: str, model: str | None = None
     ) -> tuple[str, RLMChatCompletion | None]:
         """One plain LM call. Returns (result_text, completion_or_None)."""
+        refusal = self._subcall_refusal()
+        if refusal is not None:
+            return refusal, None
         if not self.lm_handler_address:
             return "Error: No LM handler configured", None
 
@@ -488,6 +504,10 @@ class LocalREPL(NonIsolatedEnv):
         Returns:
             List of responses in the same order as input prompts.
         """
+        refusal = self._subcall_refusal()
+        if refusal is not None:
+            return [refusal] * len(prompts)
+
         width_refusal = self._batch_width_refusal(prompts)
         if width_refusal is not None:
             return width_refusal
@@ -569,6 +589,9 @@ class LocalREPL(NonIsolatedEnv):
         self, prompt: str, model: str | None = None
     ) -> tuple[str, RLMChatCompletion | None]:
         """One recursive sub-call. Returns (result_text, completion_or_None)."""
+        refusal = self._subcall_refusal()
+        if refusal is not None:
+            return refusal, None
         try:
             completion = self.subcall_fn(prompt, model)
             return completion.response, completion
@@ -787,6 +810,8 @@ class LocalREPL(NonIsolatedEnv):
                 self.globals["rlm_query"] = self._rlm_query
             elif name == "rlm_query_batched":
                 self.globals["rlm_query_batched"] = self._rlm_query_batched
+            elif name == "submit":
+                self.globals["submit"] = self._submit
             elif name == "SHOW_VARS":
                 self.globals["SHOW_VARS"] = self._show_vars
             elif name == "answer":
