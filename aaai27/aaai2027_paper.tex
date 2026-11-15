@@ -1,0 +1,302 @@
+%% =====================================================================
+%% Self-Harnessing Recursive Language Models — AAAI 2027 version
+%% Adapted from proposal.tex (NeurIPS 2026 workshop version).
+%% =====================================================================
+%% The block marked "DO NOT CHANGE" must match the preamble of
+%% AnonymousSubmission2027.tex in your AuthorKit exactly. If anything
+%% differs (e.g. the \pdfinfo TemplateVersion), copy it from there.
+%% =====================================================================
+
+\documentclass[letterpaper]{article} % DO NOT CHANGE THIS
+\usepackage[submission]{aaai2027}  % DO NOT CHANGE THIS
+% times/helvet/courier are NOT loaded here: aaai2027.sty already loads
+% newtxtext, helvet and courier, and forbids \usepackage{times}.
+\usepackage[hyphens]{url}  % DO NOT CHANGE THIS
+\usepackage{graphicx} % DO NOT CHANGE THIS
+\urlstyle{rm} % DO NOT CHANGE THIS
+\def\UrlFont{\rm}  % DO NOT CHANGE THIS
+\usepackage{natbib}  % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
+\usepackage{caption} % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
+\frenchspacing  % DO NOT CHANGE THIS
+\setlength{\pdfpagewidth}{8.5in} % DO NOT CHANGE THIS
+\setlength{\pdfpageheight}{11in} % DO NOT CHANGE THIS
+
+% Recommended by the template for listings
+\usepackage{newfloat}
+\usepackage{listings}
+\DeclareCaptionStyle{ruled}{labelfont=normalfont,labelsep=colon,strut=off} % DO NOT CHANGE THIS
+\lstset{%
+	basicstyle={\footnotesize\ttfamily},
+	numbers=left,numberstyle=\footnotesize,xleftmargin=2em,
+	aboveskip=0pt,belowskip=0pt,
+	showstringspaces=false,tabsize=2,breaklines=true}
+
+\pdfinfo{
+/TemplateVersion (2027.1)
+}
+
+% Section numbers are needed because the text uses Appendix~\ref{...}.
+% The template allows changing this to 1 or 2.
+\setcounter{secnumdepth}{0}
+
+%% ---------------------------------------------------------------------
+%% Your packages (only AAAI-allowed ones).
+%% Removed from the NeurIPS version: neurips_2026, natbib options,
+%% inputenc, fontenc (forbidden), microtype, hyperref (forbidden),
+%% duplicate booktabs/array, float-fraction overrides.
+%% ---------------------------------------------------------------------
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,fit,backgrounds,arrows.meta,calc,shadows}
+\usepackage{cleveref} % works without hyperref
+\usepackage{xspace}
+
+% Personal comment commands (comment out the color versions before submitting)
+\newcommand{\SC}[1]{\textcolor{violet}{Simon: #1}}
+\newcommand{\JB}[1]{\textcolor{teal}{Jaloliddin: #1}}
+% \renewcommand{\SC}[1]{}
+% \renewcommand{\JB}[1]{}
+
+% Convenience macros
+\newcommand{\rlm}{\textsc{RLM}\xspace}
+\newcommand{\rlms}{\textsc{RLM}s\xspace}
+\newcommand{\sh}{\textsc{Self-Harness}\xspace}
+\newcommand{\sid}[1]{\textbf{\texttt{#1}}}
+\newcommand{\hzero}{\ensuremath{\mathrm{H}_{0}}\xspace}
+\newcommand{\hzerostar}{\ensuremath{\mathrm{H}_{0}^{*}}\xspace}
+
+% ---- styling for the RLM edit-space figure (fig:surfaces) ----
+\definecolor{editgreen}{HTML}{2E7D5B}
+\definecolor{editfill}{HTML}{E7F5EE}
+\definecolor{fixgrey}{HTML}{8A8F98}
+\definecolor{fixfill}{HTML}{F1F2F4}
+\definecolor{envtint}{HTML}{EAF1FB}
+\definecolor{subtint}{HTML}{FCF1E7}
+\definecolor{inkcol}{HTML}{2B2F36}
+\newcommand{\cardhd}{\bfseries}
+\newcommand{\cardsb}{\normalfont\scriptsize\color{black!62}}
+\tikzset{
+  penbadge/.pic={
+    \fill[editgreen] (0,0) circle (0.095);
+    \draw[white, line width=0.55pt, line cap=round] (-0.045,-0.045) -- (0.03,0.03);
+    \fill[white] (-0.052,-0.052) circle (0.017);
+  },
+  lockbadge/.pic={
+    \fill[fixgrey] (0,0) circle (0.095);
+    \draw[white, line width=0.6pt] (-0.032,0.006) arc (180:0:0.032);
+    \fill[white, rounded corners=0.2pt] (-0.05,-0.05) rectangle (0.05,0.014);
+  },
+}
+
+% ---- code-listing style for the initial-harness figure (Figure_1.tex) ----
+\definecolor{lstbg}{HTML}{FAFAFB}
+\definecolor{lstframe}{HTML}{D5D8DD}
+\definecolor{lstkw}{HTML}{1052B8}
+\definecolor{lststr}{HTML}{B25A05}
+\definecolor{lstnum}{HTML}{9AA0A8}
+\definecolor{lstcom}{HTML}{6B7280}
+\lstdefinestyle{harness}{
+  language=Python,
+  basicstyle=\ttfamily\scriptsize\linespread{0.88}\selectfont,
+  keywordstyle=\color{lstkw},
+  stringstyle=\color{lststr},
+  commentstyle=\color{lstcom},
+  deletekeywords={None,True,False},
+  emph={str,list,dict,int,tuple},
+  emphstyle=\color{lstkw},
+  numbers=left,
+  numberstyle=\ttfamily\tiny\color{lstnum},
+  numbersep=9pt,
+  backgroundcolor=\color{lstbg},
+  frame=single,
+  rulecolor=\color{lstframe},
+  framesep=5pt,
+  breaklines=true,
+  breakindent=14pt,
+  breakautoindent=false,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  xleftmargin=20pt,
+  xrightmargin=1pt,
+  aboveskip=2pt,
+  belowskip=2pt,
+}
+
+%% ---------------------------------------------------------------------
+\title{Self-Harnessing Recursive Language Models}
+% Anonymous submission: keep the author block exactly as in
+% AnonymousSubmission2027.tex if it differs from this.
+\author{
+    Anonymous Submission
+}
+\affiliations{
+}
+
+\begin{document}
+
+\maketitle
+% ================================================================================================
+%-------------------------------------- Abstract -------------------------------------------------
+% ================================================================================================
+
+% \begin{abstract}
+% Recursive language models (\rlms) use a persistent execution environment and
+% recursive model calls to work over inputs larger than a single model context.
+% Their performance depends on the surrounding harness. We adapt
+% \sh{}~\citep{zhang2026selfharness} to this setting: a fixed model diagnoses failed
+% executions, proposes bounded edits to declared harness surfaces, and compares
+% one combined candidate with the incumbent on validation tasks. The current gate
+% allows ties in verifier-pass count within configured resource bands. We describe
+% the implemented loop and a forthcoming OOLONG-Pairs study comparing the saved
+% initial and final harnesses on held-out task instances and larger record
+% collections. Results and cross-environment transfer evaluation remain forthcoming.
+% \end{abstract}
+
+
+\begin{abstract}
+\JB{Abstract from Short paper}
+Recursive language models (\rlms) let a bounded-context model operate over inputs larger
+than its context window by offloading the input, decomposing it, invoking recursive model
+calls, and aggregating their outputs. Vanilla RLMs suffer from many failure
+modes, necessitating the need to fine-tune LLMs or extend the RLM harness by hand to overcome limitations in specific tasks. We propose adapting the \sh{} framework to \rlms, so that a fixed model improves its own recursive harness from evidence produced while running: it mines recurring failure mechanisms from verifier-grounded execution traces, proposes minimal edits to declared harness surfaces, and promotes only edits that survive non-regressive
+validation. The optimized harness is frozen and evaluated on instances $8$--$32\times$
+longer than any seen during optimization and in new target environments. Results forthcoming.
+\end{abstract}
+
+% ================================================================================================
+%------------------------------------- Introduction ----------------------------------------------
+% ================================================================================================
+
+\section{Introduction}
+Frontier language models are bounded by a fixed context window, and quality degrades on
+inputs longer than what the model was effectively trained and evaluated on, well before the
+window limit is reached, a failure mode termed \emph{context rot}~\citep{hong2025contextrot}.
+An input is called \emph{in-distribution} when its length and structure resemble what the model reliably handles, and \emph{out-of-distribution} otherwise, where behavior degrades unpredictably. Recursive language models (\rlms) scale inference-time compute instead of the
+context window~\citep{snell2024scaling}: a model decomposes its own context and invokes fresh
+copies of itself on the pieces~\citep{zhang2025rlm}, turning a long out-of-distribution input
+into sub-calls that are individually shorter~\citep{zhang2026harness}; shortening addresses
+the length dimension of the mismatch, though it does not by itself guarantee a sub-call's
+content is otherwise in-distribution.
+Performance therefore depends on the harness governing recursion, not just the model, and multiple possible failure modes implicate the harness:
+policies collapse into a single sub-call~\citep{zhang2026harness},
+deeper recursion degrades accuracy while inflating cost~\citep{wang2026overthink}, and recursion
+halts by heuristic rather than evidence~\citep{guha2026termination}.
+
+Three approaches are mainly used today.
+Fine-tuning the model to work within the
+harness~\citep{zhang2026harness,yang2026recursive} ties any gain to a specific checkpoint.
+Hand-engineering the harness~\citep{alizadeh2026srlm,roy2026ycombinator,lumer2026rah} requires
+frequent expert work that a new model family can outpace.
+The third, \emph{meta-agent} approach edits the scaffold directly by inspecting an agent's own trajectories, as in \sh{}~\citep{zhang2026selfharness}, which mines execution traces for recurring failures, proposes minimal edits, and promotes only non-regressive ones. We adapt \sh{} to \rlms (SH-RLM). \rlms are a natural but untested setting for this third approach: final answers can be checked by an environment verifier, while execution traces support model-inferred diagnoses of recursive behavior.
+We ask: \emph{can a language model
+identify recurring failures in its own recursive behavior, convert them into targeted harness
+edits, and build a harness that keeps performing when applied to inputs longer than those it was optimized on? Is a SH-RLM competitive against a hand designed harness-RLM?}
+
+% ================================================================================================
+%----------------------------------- Related Work ------------------------------------------------
+% ================================================================================================
+
+\section{Related Work}
+
+\paragraph{Harness engineering for recursive agents.}
+Recent work has explored harnesses as an important component of recursive language models (RLMs). Prime Agent extends the RLM framework with a persistent execution environment and a Continual Harness that maintains histories, memories, skills, and subagent specifications across trajectories~\citep{karten2026primeagent}. This improves the ability of a fixed RLM harness to accumulate state over time, but does not directly optimize the control logic of the harness. Our work instead studies whether targeted edits to the recursive control loop can be discovered from failure evidence and validated before deployment.
+
+\paragraph{Self-optimizing harnesses.}
+Several recent works treat the harness itself as an object of optimization. Agentic Harness Engineering uses execution traces, an explicit representation of editable components, and outcome-based validation to iteratively improve coding-agent harnesses~\citep{lin2026agenticharness}. Self-Harness similarly explores automatic harness improvement for agentic coding tasks~\citep{zhang2026selfharness}. These works demonstrate that harness changes can transfer across tasks and model families, but focus on coding agents with relatively fixed tool and action structures. Our work extends this direction to RLMs, where recursion depth and sub-call decomposition are themselves part of the editable control loop.
+
+\paragraph{Harness optimization through model co-evolution.}
+Another line of work uses a separate model or joint optimization to improve harnesses. Harness-R1 trains a dedicated harness engineer using reinforcement learning to generate executable harness patches from agent failures~\citep{shao2026harnessr1}. HarnessForge and HarnessX further investigate joint harness and policy evolution, using failure signals and structured harness components to guide optimization~\citep{chen2026harnessforge,chen2026harnessx}. In contrast, our approach uses the same frozen model for proposing and executing harness changes, with no weight updates or auxiliary trained engineer. This isolates the contribution of harness optimization itself.
+
+\paragraph{Evaluating harness evolution.}
+Recent work has also highlighted the difficulty of evaluating automatically evolved harnesses. Rethinking the Evaluation of Harness Evolution argues that improvements should be compared against task-level search under matched inference and feedback budgets, since iterative harness evolution may otherwise benefit from additional search~\citep{wang2026rethinkeval}. Harness-Bench provides a shared benchmark for evaluating harness effects across models and execution environments~\citep{yao2026harnessbench}. Our evaluation addresses these concerns by freezing the optimized harness before testing and evaluating on longer, held-out instances and a disjoint target environment.
+
+\paragraph{Harness benefit and model capability.}
+Finally, Disentangling Harness Evolution separates harness-updating from harness-benefit: models may differ in their ability to produce useful harness updates and in their ability to correctly use those updates~\citep{lin2026disentangling}. This is relevant to our setting because both harness proposal and execution use a single frozen backbone. Consequently, performance may depend not only on the quality of the discovered harness, but also on the model's ability to follow and benefit from its changes.
+
+\section{Our Contributions}
+
+Our work makes the following contributions:
+
+\begin{itemize}
+    \item \textbf{\sh{} for recursive language models.}
+    Adapting \sh{} \citep{zhang2026selfharness} to \rlms by declaring ten editable harness surfaces keyed to phases of the \rlm{} loop, starting from a deliberately sparse initial harness and letting a fixed model mine its own traces, propose targeted edits, and validate them without weight updates or a stronger external model.
+
+    \item \textbf{Failure-driven harness optimization.}
+    We introduce a propose--validate--promote loop that uses execution failures to identify weaknesses in the harness, generate targeted modifications, and retain only validated improvements.
+
+    \item \textbf{Length generalization.}
+    We evaluate whether harnesses optimized on shorter contexts continue to improve performance on substantially longer inputs, testing whether the learned harness improvements generalize beyond the context lengths used during optimization.
+
+    \item \textbf{Empirical evaluation.}
+    We evaluate self-harnessing across long-context benchmarks and compare optimized harnesses against fixed-harness baselines to measure the effectiveness of automatically discovered harness improvements.
+\end{itemize}
+
+% \section{Our Contributions}
+% \JB{Contributions from short paper. Are we not planning to do cross-environment transfer?}
+% \begin{enumerate}
+% \setlength{\itemsep}{1pt}
+% \setlength{\topsep}{2pt}
+% \setlength{\parskip}{0pt}
+% \item \textbf{\sh{} for recursive language models.}
+% Adapting \sh{} \citep{zhang2026selfharness} to \rlms by declaring ten editable harness surfaces keyed to phases of the \rlm{} loop, starting from a deliberately sparse initial harness and letting a fixed model mine its own traces, propose targeted edits, and validate them without weight updates or a stronger external model.
+
+% \item \textbf{Evidence of length generalization.}
+% Optimising only on short source instances, freeze the harness, and evaluate on source instances $8$--$32\times$ longer.
+
+% \item \textbf{Evidence of cross-environment transfer.}
+% Applying the same frozen harness to an unseen target environment's short and long splits.
+% \end{enumerate}
+
+
+% Paths are prefixed with aaai27/ because Overleaf compiles from the project
+% root, where the NeurIPS files with the same names live.
+% (\textwidth -> \linewidth, or figure -> figure* for full-width).
+\input{aaai27/optimization_method.tex}
+\input{aaai27/figures/Figure_2}
+\input{aaai27/experiment_protocol.tex}
+\input{aaai27/eliaz_experiments.tex}   % <- new
+\section{Limitations and Future Work}
+\label{sec:limitations}
+
+Diagnoses and behavioral predictions are model judgments constrained by observed
+operations, not causal proofs. Joint promotion measures a batch, and an
+exact-pass tie can promote despite a decrease in an optional dense metric.
+Validation is reused adaptively, and the short roles share record collections.
+The study starts from hand-authored H0*R guidance and uses only two contexts per
+length. These choices define the scope of the evaluation; stronger claims about
+individual edits or unseen source data would need additional evidence.
+
+All optimization stages and evaluation infrastructure are implemented. The next
+step is to freeze the study configuration, run optimization, and evaluate the
+saved initial and final harnesses under the declared protocol. Completed results,
+resource totals, and any uncertainty analysis will be reported with their actual
+coverage. Cross-environment transfer, weight training, and optional ablations
+remain separate future studies (Appendix~\ref{app:extensions}).
+
+\paragraph{Broader impacts.}
+Harness optimization could reduce manual engineering and improve the use of
+fixed models, but a benchmark pass does not measure safe deployment or resistance
+to misuse. Automatically edited instructions may change behavior outside the
+benchmark; the optional safety analysis in Appendix~\ref{app:alignment} is not
+part of the current promotion gate. This study uses public benchmark data and
+no human-subject experiment or deployed decision system.
+
+% AAAI sets the bibliography style itself (aaai2027.bst) — no \bibliographystyle.
+\bibliography{aaai27/references}
+
+% Check the call for papers: AAAI may require the appendix as a separate
+% supplementary file instead of after the references.
+\clearpage
+\appendix
+\input{aaai27/optimization_appendix.tex}
+
+% Reproducibility checklist: if ReproducibilityChecklist.tex has its own
+% \documentclass, compile and submit it separately instead of \input-ing it.
+% \input{ReproducibilityChecklist.tex}
+
+\end{document}
