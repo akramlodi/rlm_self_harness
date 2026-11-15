@@ -2,63 +2,98 @@
 \section{Experiments}
 \label{sec:setup}
 
-The forthcoming study uses the current OOLONG-Pairs profile. Runner, attributor,
-and proposer use the same frozen \textbf{DeepSeek-V4-Flash} deployment and
-decoding settings. Mining, proposal, validation, checkpointing, and final
-evaluation are implemented; results for this study remain forthcoming.
+We optimize a harness separately in two long-input environments and then
+evaluate the frozen result against three fixed-harness references. Runner,
+attributor, and proposer use the same frozen \textbf{DeepSeek-V4-Flash} model,
+served through OpenRouter with identical decoding settings. Optimization and
+evaluation are implemented. This is a work in progress, and results and
+analysis will be added once the runs complete. Preliminary runs from an earlier
+configuration are reported in Appendix~\ref{sec:diag} and are not part of this
+study.
 
-\paragraph{Data and splits.}
+\paragraph{Environments.}
 \label{sec:envs-and-splits}
-OOLONG-Pairs is reconstructed from the \texttt{trec\_coarse} portion of
-OOLONG-synth~\citep{bertsch2025oolong}, using twenty predicates over each record
-collection and a deterministic scorer for sets of \emph{user-ID pairs}.
-Table~\ref{tab:study-settings} gives the configured allocation. Mining,
-validation, and short test contain disjoint task instances on shared
-short-context records. Short-test results therefore measure performance on
-held-out task instances. The separate long evaluation assesses performance on
-larger record collections, without claiming entirely unseen underlying question
-texts. The current split is retained. Appendix~\ref{app:protocol} specifies the
-dataset pin, reconstruction, and overlap.
+\emph{OOLONG-Pairs} is reconstructed from the \texttt{trec\_coarse} portion of
+OOLONG-synth~\citep{bertsch2025oolong}. Each task applies one of twenty
+predicates to a collection of labeled user records and asks for the set of
+user-ID pairs that satisfy it. A deterministic scorer compares predicted and
+gold pair sets. \emph{OBLIQ-Bench Math} (analogue queries) gives a competition
+problem and a candidate corpus of other problems. The model must rank, by ID,
+the candidates whose solutions use the same underlying proof technique. It is
+scored by NDCG@10 against the dataset's binary relevance judgments (151 queries
+over a 3,508-problem corpus).
+
+\paragraph{Blended optimization.}
+Both environments are optimized on a blend of three input sizes, so a single
+harness must work across them. OOLONG-Pairs uses record collections at nominal
+context windows of 8K, 16K, and 32K tokens. OBLIQ uses candidate pools of 200,
+500, and 1,000 problems; each pool holds a query's gold problems plus random
+negatives. At every size, mining and validation tasks are disjoint and are
+never used for testing. Promotion strata $\ell$ in
+Equation~\ref{eq:promotion-main} are these sizes: context windows for OOLONG-Pairs
+and pool sizes for OBLIQ. Table~\ref{tab:study-settings} gives both
+profiles. Both start from the sparse \hzero{}; the hand-written \hzerostar{}
+is used only as an evaluation reference.
 
 \begin{table}[t]
 \centering\small
-\begin{tabularx}{\linewidth}{@{}lrl>{\raggedright\arraybackslash}X@{}}
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}Xl@{}}
 \toprule
-Role & Tasks & Attempts/task & Use \\
+ & OOLONG-Pairs & OBLIQ Math \\
 \midrule
-Short mining & 20 & 2 & Failure evidence \\
-Short validation & 10 & 1 per harness & Joint promotion decision \\
-Short test & 10 & 3 per condition & Held-out task instances \\
-Long test & 40 & 3 per condition & Larger record collections \\
+Strata $\ell$ & 8K / 16K / 32K tok. & 200 / 500 / 1000 docs \\
+Mine/val./test & 8 / 8 / 4 per $\ell$ & 8 / 8 / 4 per $\ell$ \\
+Long test & 40 tasks at 262K & -- \\
+$|V_s|$ & 6 (1/2/3 per $\ell$) & 6 (2 per $\ell$) \\
+$m$, $v$, $v_s$, $k$ & 2, 3, 1, 4 & 2, 3, 1, 4 \\
+$T$, $p$ & 10, 3 & 10, 5 \\
+Quality & pair-set F1 & NDCG@10 \\
+Pass & exact pair set & NDCG@10 $\ge 0.9$ \\
+$\tau_\ell$ & .144 / .144 / .244 & .227 / .198 / .266 \\
+$\tau_{\mathrm{imp}}$ & 0 & 0.01 \\
+Cost band & $[0.5, 3]\times$ & $[0, 3]\times$ \\
+Early stop & on & off \\
+Re-attrib. & on & off \\
+Refinement & on (\texttt{wrong\_format}) & off \\
+Iter./depth & 45 (+3 final.) / 3 & 30 / 3 \\
 \bottomrule
 \end{tabularx}
-\caption{Configured study. At most four admitted edits per round, three
-optimization rounds, and patience three. Upstream short/long window labels are
-8,192/262,144 tokens; these are not
-measured lengths of the reconstructed prompts.}
+\caption{Optimization profiles. Per-size counts are tasks; $m$ and $v$ are
+attempts per mining and validation task, $v_s$ per screening task, $k$ the
+candidate ceiling, $T$ the round ceiling, and $p$ the patience. Margins $\tau_\ell$ come from a bootstrap over each
+environment's round-one incumbent validation scores. Both profiles cap each run
+at \$2 and 3,600\,s and each validation subject at \$100.}
 \label{tab:study-settings}
 \end{table}
 
-\paragraph{Comparison and metrics.}
+\paragraph{Evaluation conditions.}
 \label{sec:baselines}
-The primary comparison is the exact saved starting harness \texttt{H0*R}
-(evaluation condition \texttt{initial}) against the frozen edited harness
-(\texttt{sh\_rlm}), on matching short and long task sets. Reference conditions
-are the sparse \hzero{} (\texttt{b1}), the upstream-style \hzerostar{}
-(\texttt{h0\_star}), and a pinned \emph{paper reconstruction} of
-$\lambda$-RLM~\citep{roy2026ycombinator}. The evaluation condition list must be
-selected explicitly: the runner's default reference grid omits \texttt{initial}.
-Exact pair-set equality defines a pass. We additionally report recorded
-pair-level precision, recall, F1, and available missing/extra-pair counts,
-together with usage, cost, runtime, and completion coverage. These supplementary
-metrics do not alter the promotion gate. Final evaluation uses three attempts
-per task; individual model attempts have no controlled random seed.
+After optimization stops, the final incumbent is frozen as \shrlm and compared
+on held-out test tasks with three fixed references. All four conditions run on
+the same model:
+\begin{itemize}
+\setlength{\itemsep}{1pt}
+\item \hzero{}: the sparse starting harness, measuring what optimization added;
+\item \hzerostar{}: an upstream-style hand-written \rlm{} prompt;
+\item $\lambda$-RLM: a pinned reconstruction of the hand-designed recursive
+method of~\citet{roy2026ycombinator};
+\item \shrlm: the frozen optimized harness.
+\end{itemize}
+Each condition makes three attempts per test task. Test tasks include the four
+held-out tasks per optimization size in each environment. For OOLONG-Pairs they
+also include 40 tasks at a nominal 262K window. That is $8\times$ the longest
+optimization context, and no long-window task is mined or validated. OBLIQ test
+queries come from a frozen 40-query split already used for earlier
+full-corpus comparisons, and they are disjoint from all mining and validation
+queries.
 
-\paragraph{Interpretation and planned extensions.}
-Results will compare matching tasks with completed, failed, and missing attempt
-counts reported separately. Repeated attempts and predicates sharing a context
-are not independent corpus samples. A promotion under one-attempt validation
-is a selection decision, not a significance test. Cross-environment evaluation
-and weight-training comparisons remain future work: this profile materializes
-only OOLONG-Pairs short and long splits. No completed transfer result or
-long-context performance gain is claimed here.
+\paragraph{Metrics.}
+We report mean primary quality (F1 or NDCG@10) per test size and macro-averaged
+across sizes, together with pass rate under each environment's pass threshold.
+We also report cost, runtime, sub-call counts, and completed, failed, and
+missing attempts. Repeated attempts on one task, and OOLONG-Pairs predicates
+that share a record collection, are not independent samples, so uncertainty
+will be estimated over tasks. A promotion during optimization is a selection
+decision, not a significance test. Cross-environment transfer and
+weight-training comparisons remain future work.

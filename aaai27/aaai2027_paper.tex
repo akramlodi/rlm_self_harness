@@ -65,6 +65,7 @@
 \newcommand{\rlm}{\textsc{RLM}\xspace}
 \newcommand{\rlms}{\textsc{RLM}s\xspace}
 \newcommand{\sh}{\textsc{Self-Harness}\xspace}
+\newcommand{\shrlm}{\textsc{SH-RLM}\xspace}
 \newcommand{\sid}[1]{\textbf{\texttt{#1}}}
 \newcommand{\hzero}{\ensuremath{\mathrm{H}_{0}}\xspace}
 \newcommand{\hzerostar}{\ensuremath{\mathrm{H}_{0}^{*}}\xspace}
@@ -164,8 +165,10 @@ Recursive language models (\rlms) let a bounded-context model operate over input
 than its context window by offloading the input, decomposing it, invoking recursive model
 calls, and aggregating their outputs. Vanilla RLMs suffer from many failure
 modes, necessitating the need to fine-tune LLMs or extend the RLM harness by hand to overcome limitations in specific tasks. We propose adapting the \sh{} framework to \rlms, so that a fixed model improves its own recursive harness from evidence produced while running: it mines recurring failure mechanisms from verifier-grounded execution traces, proposes minimal edits to declared harness surfaces, and promotes only edits that survive non-regressive
-validation. The optimized harness is frozen and evaluated on instances $8$--$32\times$
-longer than any seen during optimization and in new target environments. Results forthcoming.
+validation. We optimize separately on OOLONG-Pairs and OBLIQ-Bench Math from a sparse
+starting harness, freeze the result, and compare it with the starting harness, a
+hand-written \rlm{} prompt, and $\lambda$-RLM on held-out tasks. For OOLONG-Pairs these
+include inputs $8\times$ longer than any seen during optimization. Results forthcoming.
 \end{abstract}
 
 % ================================================================================================
@@ -213,7 +216,7 @@ Several recent works treat the harness itself as an object of optimization. Agen
 Another line of work uses a separate model or joint optimization to improve harnesses. Harness-R1 trains a dedicated harness engineer using reinforcement learning to generate executable harness patches from agent failures~\citep{shao2026harnessr1}. HarnessForge and HarnessX further investigate joint harness and policy evolution, using failure signals and structured harness components to guide optimization~\citep{chen2026harnessforge,chen2026harnessx}. In contrast, our approach uses the same frozen model for proposing and executing harness changes, with no weight updates or auxiliary trained engineer. This isolates the contribution of harness optimization itself.
 
 \paragraph{Evaluating harness evolution.}
-Recent work has also highlighted the difficulty of evaluating automatically evolved harnesses. Rethinking the Evaluation of Harness Evolution argues that improvements should be compared against task-level search under matched inference and feedback budgets, since iterative harness evolution may otherwise benefit from additional search~\citep{wang2026rethinkeval}. Harness-Bench provides a shared benchmark for evaluating harness effects across models and execution environments~\citep{yao2026harnessbench}. Our evaluation addresses these concerns by freezing the optimized harness before testing and evaluating on longer, held-out instances and a disjoint target environment.
+Recent work has also highlighted the difficulty of evaluating automatically evolved harnesses. Rethinking the Evaluation of Harness Evolution argues that improvements should be compared against task-level search under matched inference and feedback budgets, since iterative harness evolution may otherwise benefit from additional search~\citep{wang2026rethinkeval}. Harness-Bench provides a shared benchmark for evaluating harness effects across models and execution environments~\citep{yao2026harnessbench}. Our evaluation addresses these concerns by freezing the optimized harness before testing, evaluating only on held-out instances (including, for OOLONG-Pairs, inputs longer than any used in optimization), and comparing against hand-designed harnesses on the same model.
 
 \paragraph{Harness benefit and model capability.}
 Finally, Disentangling Harness Evolution separates harness-updating from harness-benefit: models may differ in their ability to produce useful harness updates and in their ability to correctly use those updates~\citep{lin2026disentangling}. This is relevant to our setting because both harness proposal and execution use a single frozen backbone. Consequently, performance may depend not only on the quality of the discovered harness, but also on the model's ability to follow and benefit from its changes.
@@ -259,16 +262,19 @@ Our work makes the following contributions:
 \input{aaai27/optimization_method.tex}
 \input{aaai27/figures/Figure_2}
 \input{aaai27/experiment_protocol.tex}
-\input{aaai27/eliaz_experiments.tex}   % <- new
+% Preliminary (pre-study) runs now live in the appendix; see below.
 \section{Limitations and Future Work}
 \label{sec:limitations}
 
 Diagnoses and behavioral predictions are model judgments constrained by observed
-operations, not causal proofs. Joint promotion measures a batch, and an
-exact-pass tie can promote despite a decrease in an optional dense metric.
-Validation is reused adaptively, and the short roles share record collections.
-The study starts from hand-authored H0*R guidance and uses only two contexts per
-length. These choices define the scope of the evaluation; stronger claims about
+operations, not causal proofs. Screening ranks candidates on a few tasks with
+one attempt each, so a better candidate can lose the tournament and is then
+retired without full validation. Under OOLONG-Pairs' $\tau_{\mathrm{imp}}=0$,
+a macro-F1 tie that clears every per-length veto promotes, so a promotion is a
+selection decision rather than a significant improvement.
+Validation is reused adaptively. OOLONG-Pairs roles share record collections,
+with only two collections per length, and OBLIQ validates on eight queries per
+pool size. These choices define the scope of the evaluation; stronger claims about
 individual edits or unseen source data would need additional evidence.
 
 All optimization stages and evaluation infrastructure are implemented. The next
@@ -294,6 +300,7 @@ no human-subject experiment or deployed decision system.
 \clearpage
 \appendix
 \input{aaai27/optimization_appendix.tex}
+\input{aaai27/eliaz_experiments.tex}
 
 % Reproducibility checklist: if ReproducibilityChecklist.tex has its own
 % \documentclass, compile and submit it separately instead of \input-ing it.

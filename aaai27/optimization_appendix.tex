@@ -2,9 +2,9 @@
 \section{Runtime and Initial Harness}
 \label{app:surfaces}
 
-The implementation described here is the repository at revision
-\texttt{070d1a8493d7}, with the OOLONG-Pairs configuration inspected on
-September 28, 2026. These are implementation specifications for the forthcoming
+The implementation described here is the repository's main branch at revision
+\texttt{5ae009e9}, with both study configurations inspected on November 15,
+2026. These are implementation specifications for the forthcoming
 study, not experimental results. The study's eventual launch revision, frozen
 configuration, split manifest, and initial/final harness hashes must accompany
 its results.
@@ -14,16 +14,17 @@ its results.
 disabled runtime policy, the default metadata formatter, empty helper and skill
 libraries, and accepting answer middleware. \hzerostar{} replaces S1 with the
 upstream-style system prompt, leaves S2--S5 empty, and enables the orchestrator
-addendum. \texttt{H0*R}, the configured initial harness, additionally replaces
+addendum. \texttt{H0*R}, a hand-written reference, additionally replaces
 S1's recursive-call description and supplies a hand-authored S2 example. That
 example distinguishes a bare completion from a child with its own REPL, splits
 line-oriented input into batches of 300, requests label counts, merges counts in
 Python, and retries a chunk after a parse failure. It was informed by development
-observations; gains over \hzero{} alone would conflate this initialization with
-automated editing. The \texttt{initial} evaluation condition loads the exact
+observations. Optimization starts from \hzero{}, not from \texttt{H0*R}, so the
+learned harness can be compared against the hand-written one rather than seeded
+by it. The \texttt{initial} evaluation condition loads the exact
 saved round-one harness rather than substituting a reference from today's
 registry. Figure~\ref{fig:edit-surfaces} and Figure~\ref{fig:full-repl-contract}
-show the sparse reference, not the complete \texttt{H0*R} prompt.
+show the sparse \hzero{} reference.
 
 \paragraph{Execution contract.}
 S1--S5 are concatenated into one system prompt; a clause referring to early turns
@@ -175,16 +176,22 @@ surface coverage.
 
 One response under \texttt{proposal-selection/v2} selects evidence-supported
 pattern/surface interventions before supplying replacement payloads; these are
-not separate selection and generation calls. The first admitted candidate owns
-its surface and pattern. Rejected entries do not reserve a surface. At most
-$k$ edits are admitted, with fewer or zero allowed. Three short explanation
+not separate selection and generation calls. Each admitted candidate occupies
+one exact (pattern, surface) pair: the same pattern may be attacked on several
+surfaces, and the same surface may carry edits for different patterns, but a
+pair cannot be claimed twice. Rejected entries reserve nothing. At most $k$
+candidates are admitted, with fewer or zero allowed. Every admitted candidate is
+materialized as its own complete harness, the incumbent with one surface
+changed; candidates are never composed with each other. Three short explanation
 fields identify incumbent behavior, unresolved observed failure, and the change
 at a specific operation, input, or trigger. Guidance asks whether the same
-demonstrated failure could persist if the edit were followed perfectly. Repeating
-an existing instruction more emphatically, moving it to another surface, or
-repairing an already-recovered fault is insufficient without a substantive
-behavioral difference. Replacing a misleading example can be the smallest
-effective change.
+demonstrated failure could persist if the edit were followed perfectly, and
+requires the change to be stated as a forcing rule, a concrete trigger the
+model will actually meet on a real input, rather than as softer or more
+emphatic phrasing. Repeating an existing instruction more emphatically, moving
+it to another surface, or repairing an already-recovered fault is insufficient
+without a substantive behavioral difference. Replacing a misleading example can
+be the smallest effective change.
 
 The general prompt asks which information must survive each operation and which
 task conditions must the final computation enforce. It does not prescribe an
@@ -198,7 +205,7 @@ task validations. When failed-member repair is invoked there is one repair
 response, restricted to failed original patterns. It may select another eligible
 unoccupied surface or withdraw an edit while retaining valid siblings unchanged;
 it may not invent new patterns. Collision repair must choose a contender or
-withdraw it, still enforcing one admitted edit per surface.
+withdraw it, still enforcing one admitted candidate per (pattern, surface) pair.
 
 For text under \texttt{literal-text/v1}, the model supplies literal instructions;
 the host encodes formatting braces exactly once and restores the designated
@@ -213,10 +220,12 @@ Saved artifacts distinguish literal proposal text, encoded source/template, and
 runtime rendering.
 
 \paragraph{History and qualified progress.}
-The archive retains attempts, admission/rejection reasons, batch membership,
+The archive retains attempts, admission/rejection reasons, screening ranks,
 measured outcomes, and revision links. The bounded prompt summary prioritizes
 recent rounds, the incumbent's promotion, relevant measured predecessors, and an
-older promising direction when it fits. Revisiting an intervention requires a
+older promising direction when it fits. Mechanisms already attempted on more
+than one surface are listed separately, so the proposer sees that moving the
+same idea to a new surface has been tried. Revisiting an intervention requires a
 resolvable predecessor reference and a stated substantive change to the operation
 or joint hypothesis. Validation contributes aggregate scores, costs, sanitized
 failure summaries, and observed activation; its raw traces and gold/answer dumps
@@ -229,8 +238,8 @@ terminal-outcome values. Comparison also requires compatible verifier/protocol/
 repetition settings and matching instance-attempt sets. Missing, unsupported, or
 incomparable metrics remain \texttt{not\_assessed}. The label is qualified
 evidence, not promotion or statistical significance; a simultaneous exact-pass
-regression remains recorded. An identical rejected batch already measured under
-the same incumbent can be skipped before new validation.
+regression remains recorded. An identical rejected harness already measured
+under the same incumbent can be skipped before new validation.
 
 \paragraph{Observed behavior.}
 Instrumentation reports root S6 syntax retries and S9 redirects, and S10 loads
@@ -239,50 +248,122 @@ unassessed. The intended-behavior field remains \texttt{not\_assessed}: activati
 does not establish compliance or task correctness. There is no general semantic
 compliance detector for S1--S5, S7, or S8.
 
-\section{Joint Validation and Stopping}
+\section{Screening, Validation, and Stopping}
 \label{app:validation}
 \label{app:algorithm}
 
-Let $H$ be the incumbent, $C$ the composition of all admitted edits, and
-$P(X)$ the number of final-answer verifier passes from harness $X$ on the same
-$n_{\mathrm{ho}}v$ validation attempts. A singleton is the combined candidate;
-an empty or skipped batch schedules no validation. Only $H$ and $C$ are scored;
-constituents of a multi-edit batch have membership records without individual
-scores. The implemented pass-count conditions are
+Let $H$ be the incumbent and $C_1,\dots,C_{k'}$ ($k'\le k$) the admitted
+candidates, each $H$ with one surface replaced. Let $V$ be the held-out
+validation tasks, stratified by optimization context length
+$\ell\in\mathcal{L}$, and $V_s\subset V$ a small fixed screening subset. For
+OOLONG-Pairs, $V_s$ is curated from held-out task IDs of known difficulty and
+spans every length (one, two, and three instances at 8K, 16K, and 32K). For
+OBLIQ it holds the hardest and a median-scoring validation query per pool size.
+Other environments use a generic small subset. Validation tasks are never mined.
+
+\paragraph{Promotion metric and rule.}
+The configured metric is either the verifier-pass count or a verifier-owned
+primary quality. Both study profiles use primary quality: pair-set F1 for
+OOLONG-Pairs and NDCG@10 for OBLIQ, written $F$ below. For harness $X$ let
+$\bar F_\ell(X)$ be its mean primary quality over the attempts in stratum $\ell$, and
+$\Delta_\ell=\bar F_\ell(C)-\bar F_\ell(H)$. A candidate $C$ is accepted when
 \begin{equation}
-\Delta=P(C)-P(H),\qquad
-\Delta\geq-\tau_{\mathrm{reg}},\qquad
-\Delta\geq\tau_{\mathrm{imp}}.
+\Delta_\ell\geq-\tau_\ell\ \ \forall\ell\in\mathcal{L},\qquad
+\bar\Delta=\tfrac{1}{|\mathcal{L}|}\textstyle\sum_{\ell}\Delta_\ell\geq\tau_{\mathrm{imp}},
 \label{eq:promotion}
 \end{equation}
-For each configured resource metric $q$, its mean must lie within the inclusive
-baseline-relative band, $a_q\bar q(H)\leq\bar q(C)\leq b_q\bar q(H)$, with
-unbounded endpoints permitted. Current thresholds are both zero; mean cost must
-be between zero and three times incumbent cost, and subcall count is unconstrained.
-Thus an exact-pass tie, including zero versus zero, can promote even if F1 falls.
-This is the intended aggregate verifier-pass/resource rule, not a guarantee of
-per-task improvement or secondary-metric non-regression.
+with equality tolerated up to floating-point precision. The per-length margins
+$\tau_\ell$ are calibrated by a nested bootstrap over the incumbent's own
+held-out scores at the 95th percentile, so any one length can veto a candidate
+whose macro mean improves. Under the pass-count metric there is no length axis,
+and a single $\tau_{\mathrm{reg}}$ bounds the pass-count change. For each
+configured resource metric $q$, the candidate mean must also lie in the
+inclusive band $a_q\bar q(H)\leq\bar q(C)\leq b_q\bar q(H)$, with unbounded
+endpoints permitted. Cost-band enforcement can be disabled, in which case the
+band is still recorded. An optional list of candidate-owned terminal failure
+causes may not become more frequent than under $H$. Per-profile values are in
+Table~\ref{tab:study-settings}; neither profile constrains sub-calls. Under the
+OOLONG-Pairs setting $\tau_{\mathrm{imp}}=0$, a candidate with $\bar\Delta=0$
+that clears every $\tau_\ell$ promotes. This is a selection rule, not a significance
+test or a guarantee of per-task improvement.
+
+\paragraph{Screening tournament.}
+If $k'\ge2$, $H$ and every $C_i$ are evaluated independently on $V_s$ with
+$v_s<v$ attempts per task; the incumbent is run fresh on exactly $V_s$ so that
+every comparison uses the same tasks and attempts. Each candidate is scored
+against $H$ with Equation~\ref{eq:promotion} and ranked by $\bar\Delta$.
+Candidates that were never scored (for example, over budget) sink below every
+scored one, and ties break deterministically by candidate identifier. Screening
+verdicts are written to a separate screening ledger and are never promotion
+decisions. If $k'\le1$, the tournament is skipped and the single candidate (if
+any) proceeds directly.
+
+\paragraph{Re-attribution.}
+If every screened candidate fails Equation~\ref{eq:promotion} on $V_s$, the
+already-executed mining runs are attributed a second time into a separate
+evidence bundle, with no new task rollouts. This targets attribution noise:
+independent re-attributions of the same digest often disagree. The proposer
+then produces a fresh candidate pool from that bundle, which is screened in the
+same way. The retry happens at most once per round. If it yields no candidate,
+the original ranking stands. If its pool is also screened out, its own ranking
+is used.
+
+\paragraph{Full validation.}
+Only the top-ranked candidate $C^\star$ is evaluated on all of $V$ with $v$
+attempts, alongside $H$. Its $v_s$ screening attempts on $V_s$ are copied into
+this evaluation and only the remaining instance-attempts run. If $H$ has not
+changed since an earlier round, its completed held-out runs are reused rather
+than repeated. Screening runs never seed an incumbent baseline, because they
+cover only $V_s$. Under F1 promotion with early stopping enabled, $H$ is
+evaluated first and $C^\star$'s tasks are ordered by length. Once all
+of a length's runs are complete and $\Delta_\ell<-\tau_\ell$, the remaining
+runs are skipped and $C^\star$ is rejected. Early stopping changes cost, not
+the rule: a candidate that completes is judged by
+Equation~\ref{eq:promotion}. If $C^\star$ is rejected, the other screened
+candidates are retired rather than validated in turn.
+
+\paragraph{Refinement.}
+A rejected $C^\star$ may still improve F1 on runs that produced a measurable
+answer while failing more often with a terminal cause such as malformed
+output. Refinement is considered when its F1 conditional on a measurable answer
+exceeds $H$'s by at least $\delta_{\mathrm{ref}}$ on the same length strata
+($\delta_{\mathrm{ref}}=0.02$). The configured terminal-cause failure rate is
+recorded but does not gate admission. One repair generation then mines
+$C^\star$ on the held-in tasks and attributes the failures. The proposer is
+restricted to patterns whose verifier cause is in the configured set
+(\texttt{wrong\_format}) and to a single edit applied to $C^\star$. The
+resulting descendant is validated against the \emph{original} $H$ on the same
+$V$ under Equation~\ref{eq:promotion}, reusing $H$'s held-out runs. The branch
+has at most one generation and never recurses. Because it spends a full
+mining-and-validation leg, the implementation waits for an explicit recorded
+confirmation before running it. The decision is persisted either way.
 
 \begin{quote}\small
-\textbf{Inputs:} configured initial harness $H$, mining tasks $M$, validation
-tasks $V$, repetitions $m,v$, edit ceiling $k$, round ceiling $T$, patience $p$,
-and promotion settings. Initialize history and no-promotion counter $z=0$.
+\textbf{Inputs:} initial harness $H$, mining tasks $M$, validation tasks $V$ and
+screening subset $V_s$, repetitions $m,v,v_s$, candidate ceiling $k$, round
+ceiling $T$, patience $p$, and promotion settings. Initialize history and
+no-promotion counter $z=0$.
 \begin{enumerate}
 \item For each round up to $T$, execute or resume $H$ on $M$ with $m$ attempts;
 record final outcomes, traces, and available observations.
 \item Diagnose eligible failures, cluster records, and select bounded evidence
-and history. Propose, admit, and if needed repair up to $k$ edits on distinct
-patterns and surfaces.
-\item Set promoted to false. If an evaluable, nonduplicate batch exists, compose
-$C$ and freshly evaluate or resume $H,C$ on $V$ with $v$ attempts. An unscorable
-baseline follows the experiment error path. For a complete comparable candidate,
-apply Equation~\ref{eq:promotion} and resource bands; if accepted set $H=C$ and
-promoted to true.
-\item Persist the batch outcome and constituent membership, or the reason no
-comparison occurred; update history. Set $z=0$ on promotion, otherwise $z=z+1$.
-Stop when $z\geq p$.
+and history. Propose, admit, and if needed repair up to $k$ single-surface
+candidates on distinct (pattern, surface) pairs; preflight each one.
+\item If at least two candidates load, screen $H$ and every candidate on $V_s$
+with $v_s$ attempts and rank them. If all are screened out, re-attribute the
+same mining runs once, propose a fresh pool, and re-screen.
+\item Fully evaluate the top-ranked $C^\star$ (or the only candidate) and $H$
+on $V$ with $v$ attempts, reusing $C^\star$'s screening runs and any stored runs
+of an unchanged $H$, with optional per-length early stopping. An unscorable
+baseline follows the experiment error path. If Equation~\ref{eq:promotion} and
+the resource bands hold, set $H=C^\star$.
+\item Otherwise, if refinement is enabled and admitted, run one confirmed repair
+generation from $C^\star$ and apply the same rule to its descendant against $H$.
+\item Persist screening and promotion ledgers, or the reason no comparison
+occurred; update history. Set $z=0$ on promotion, otherwise $z=z+1$. Stop when
+$z\geq p$.
 \item Freeze the last incumbent; run separately specified final-evaluation
-conditions. Do not retrospectively select a harness using test scores or F1.
+conditions. Do not retrospectively select a harness using test scores.
 \end{enumerate}
 \end{quote}
 
@@ -313,16 +394,31 @@ Resumed/cached completion & Reuse only with matching identity/contracts; not a n
 \section{Experimental Protocol and Provenance}
 \label{app:protocol}
 
-\paragraph{Pinned data and scoring.}
-The profile is \path{configs/experiment_oolong_pairs_DeepSeekV4Flash.toml}.
+\paragraph{Profiles.}
+Optimization runs from
+\path{configs/experiment_oolong_pairs_blended_openrouter_DeepSeekV4Flash.toml} and
+\path{configs/experiment_obliq_bench_math_openrouter_DeepSeekV4Flash_blended_h0init.toml}
+via \path{examples/run_experiment.py}. Final evaluation runs from
+\path{examples/run_evaluation.py} on each experiment's frozen splits, with conditions
+\texttt{b1} (\hzero{}), \texttt{h0\_star} (\hzerostar{}), \texttt{lambda\_rlm}, and
+\texttt{sh\_rlm}. The configuration identity is hashed on first use, and any later
+change to an identity-covered setting refuses to resume the experiment.
+
+\paragraph{OOLONG-Pairs data and scoring.}
 The dataset is \texttt{oolongbench/oolong-synth}, upstream validation partition,
 \texttt{trec\_coarse}, revision
-\path{f0d59eaf0febf130664cfceb710436c8e3216b2b}. The loader selects the first
-two distinct windows per configured length, with a 50,000-row scan ceiling,
-then pairs each with task IDs 1--20 and shuffles the instances with seed zero.
-The seed controls task partitioning, not per-attempt model randomness. Labels
-are removed from model-visible records; gold user-pair sets are computed from
-the labeled records and task predicates.
+\path{f0d59eaf0febf130664cfceb710436c8e3216b2b}. For each nominal window (8K,
+16K, 32K, and the test-only 262K), the loader selects the first two distinct
+record collections, with a 50,000-row scan ceiling, and pairs each with task
+IDs 1--20, giving 40 instances per window. Labels are removed from
+model-visible records; gold user-pair sets are computed from the labeled
+records and task predicates. Within each optimization window, roles are 8
+mining, 8 validation, and 4 test instances. A further 8 are reserved for a
+refinement promotion split that the current implementation does not use,
+because refinement validates on the ordinary validation set. Role assignment
+follows a curated task order rather than the raw seeded shuffle, so that
+validation includes known-hard task IDs (11 and 18) as well as easier ones. All
+40 262K instances are test-only.
 
 The scorer extracts integer pairs and compares sets. Global pair order and
 duplicate pairs do not affect set equality, but order within a pair is preserved:
@@ -333,72 +429,58 @@ failure. A correctly empty prediction against an empty gold set passes and has
 precision/recall/F1 equal to one. These extraction and empty-set distinctions
 are adaptations of the example scorer, not an unmodified upstream verifier.
 
-\paragraph{Task separation and shared records.}
-The two short windows contain 188 records each; the two long windows contain
-6,374 each. Short instances are partitioned 20/10/10, while all 40 long
-instances are reserved for separate evaluation. The current split remains
-unchanged. Table~\ref{tab:context-overlap} makes its unit explicit.
+Different predicates over the same record collection ask different aggregation
+questions over identical records, and each window has only two collections. Test
+results at the optimization windows therefore measure held-out task instances,
+not unseen records. The 262K test uses larger, distinct collections that share
+question texts with the shorter ones; it measures length generalization, not
+wholly unseen source text. Stripping labels and adding task text changes actual
+prompt lengths, so evaluation reports measured prompt sizes separately from the
+nominal window labels.
 
-\begin{table}[t]
-\centering\small
-\setlength{\tabcolsep}{3.5pt} % AAAI: fit the single column
-\begin{tabular}{@{}lrrr@{}}
-\toprule
-Short context (input-prefix hash) & Mining & Validation & Short test \\
-\midrule
-Window 9 (\texttt{5f067945b676}) & 10 & 6 & 4 \\
-Window 10 (\texttt{e939371361d4}) & 10 & 4 & 6 \\
-\bottomrule
-\end{tabular}
-\caption{Task counts per shared short record collection at partition seed zero.
-Hashes exclude the task question. Distinct task instances do not imply distinct
-underlying record collections.}
-\label{tab:context-overlap}
-\end{table}
+\paragraph{OBLIQ-Bench Math data and scoring.}
+The dataset is \texttt{dianetc/OBLIQ-Bench}, \texttt{analogues/math} subset,
+revision \path{4ebee29f68ceeb62ca00bd73d5478acdd3cd7764}: 3,508 corpus problems,
+151 queries, and binary relevance judgments. Each instance is a query, a
+candidate pool, and instructions to end with a ranked list of at most ten
+bracketed corpus IDs. The pool holds the query's gold problems plus random
+negatives up to 200, 500, or 1,000 problems, sampled with a seed per query;
+the query's own self-match IDs are excluded. Each pool size draws a
+\emph{disjoint} set of queries rather than the same queries at three
+difficulties. Test queries come from a frozen 40-query split used in earlier
+full-corpus comparisons, and mining and validation queries come from the
+remaining 111. Each pool size receives 8 mining, 8 validation, and 4 test
+queries. The screening subset holds the hardest and a median-scoring validation
+query per pool size, chosen from the round-one incumbent's validation scores.
 
-Different predicates over the same window ask different aggregation questions
-over identical records. Between the two short windows, no complete
-\texttt{(user\_id, date, question\_text)} record is identical, but 43 question
-texts recur with different users/dates. The long windows also have no identical
-complete-record overlap with the short windows, while sharing question texts.
-Short-test results support the held-out-task-instance interpretation; long
-evaluation assesses larger record collections. Neither establishes wholly
-unseen-source-text generalization. A stronger source-separated design is needed
-only if that becomes a central claim. This overlap is not evidence of answer
-memorization.
-
-The nominal upstream lengths differ by $32\times$, but stripping labels and
-adding task text changes actual prompt lengths. Evaluation will report
-reconstructed prompt character counts and, when measured, token counts with
-the tokenizer identified, separately from nominal window labels. Multiple
-predicates per window and three requests per task do not increase the number of
-independent contexts. Any future interval or paired test must specify its unit,
-attempt aggregation, missingness, and the two-context limitation; no implemented
-bootstrap or significance analysis is claimed here.
+The verifier takes the last \texttt{RANKED:} list in the answer, keeps the first
+ten distinct IDs, and computes NDCG@10. A missing list is a format failure, and
+an explicit empty list is \texttt{no\_answer}. NDCG@10 of at least 0.9 counts as
+a pass. Below that, the failure is labeled incomplete, spurious, or mixed by
+whether gold IDs are missing, extra IDs are present, or both. Because all
+judgments share one relevance grade, a prediction equal to the gold set scores
+1.0 regardless of order.
 
 \paragraph{Model, caps, and concurrency.}
-All three optimization roles use Azure Foundry \texttt{DeepSeek-V4-Flash},
+All three roles use \texttt{deepseek/deepseek-v4-flash} through OpenRouter with
 temperature 0, top-$p$ 0.95, and an output-token cap of 8,192. The provider's
 default reasoning mode is enabled, without guaranteeing returned reasoning.
-Per-run limits are 30 iterations, depth three, 3,600 seconds, and a \$2 usage
-budget. Each validation subject, including the incumbent, has a \$100 cumulative
-budget. There are three mining run workers. Validation allows five subject
-workers but has only two measured subjects, with one run worker per subject;
-recursive calls can add provider concurrency. Final evaluation has a separate
-run-worker option and uses three attempts per task per condition. Record the
-chosen worker count in the evaluation manifest; it does not change repetition
-counts.
+Each run is capped at depth three, 3,600 seconds, and \$2. OOLONG-Pairs allows 45
+iterations plus a three-iteration, 600-second finalization window in which only
+answer submission remains available. OBLIQ allows 30 iterations. Each validation
+or screening subject, including the incumbent, has a \$100 cumulative budget.
+Concurrency settings (mining, screening, and validation workers) do not change
+any repetition count. Final evaluation uses three attempts per task per
+condition.
 
-The main comparison explicitly selects \texttt{initial} and \texttt{sh\_rlm}.
-The default reference grid is \texttt{b1}, \texttt{h0\_star},
-\texttt{lambda\_rlm}, \texttt{sh\_rlm}. The latter's typed baseline is identified
-by its method kind, reconstruction version, upstream revision, and source hash;
-it is not an unmodified released OOLONG-Pairs implementation. Model/deployment,
-rendered prompts, source/configuration snapshots, split IDs/hashes, exact edit
-payloads, harness lineage, and analysis versions belong in the study artifacts.
-Freezing these before a run does not by itself constitute preregistration.
-Previously inspected development/test material must retain its exposure history
-if later used to support a result.
+The $\lambda$-RLM condition is identified by its method kind, reconstruction
+version, upstream revision, and source hash; it is not an unmodified released
+implementation for either environment. Model/deployment, rendered prompts,
+source/configuration snapshots, split IDs/hashes, exact edit payloads, harness
+lineage, and analysis versions belong in the study artifacts. Freezing these
+before a run does not by itself constitute preregistration. Previously inspected
+development or test material must retain its exposure history if later used to
+support a result.
 
 \section{Measurement, Cost, and Saved Observations}
 \label{app:measurement}
@@ -411,11 +493,15 @@ recorded attempt values, including verifier-declared zeros for completed runtime
 resource, format, and content-filter failures. It is macro averaging across
 attempts, not pooled pair-level micro-F1. Missing/extra counts are reported only
 where available, with coverage, rather than filling absent diagnostics with zero.
+OBLIQ-Bench Math stores per-attempt NDCG@10 to three decimals, with format and
+empty-answer failures scored zero; its pass rule is NDCG@10 at least 0.9.
 Other environments supply their own metric definitions or remain unassessed.
 
 Surface activity distinguishes submitted, admitted, evaluated, and promoted
-edits. Constituents inherit promotion membership from a promoted batch without
-individual efficacy estimates. Per-round quality plots use the freshly measured
+edits, and records each candidate's screening rank separately from its
+promotion decision. Because candidates are never merged, a promoted edit is the
+whole measured difference from its incumbent; screened-out and retired
+candidates carry only screening-subset estimates. Per-round quality plots use the freshly measured
 candidate on promotion and freshly measured incumbent otherwise; a round without
 a measurement is missing, not a zero or a carried-forward score. Environment
 labels come from the configuration. Trace summaries can report depth, call
@@ -425,23 +511,36 @@ walkable runs, passing and failing, with unwalkable runs separate; it is neither
 a token ratio nor proof of meaningless decomposition.
 
 \paragraph{Cost.}
-An ordinary completed round with an evaluable batch schedules
+An ordinary completed round with $k'\ge2$ loaded candidates schedules at most
 \begin{equation}
-N_{\mathrm{round}}=m n_{\mathrm{in}}+2v n_{\mathrm{ho}}.
+N_{\mathrm{round}}=m n_{\mathrm{in}}
++(k'+1)\,v_s n_s
++\underbrace{v n_{\mathrm{ho}}}_{H}
++\underbrace{(v n_{\mathrm{ho}}-v_s n_s)}_{C^\star}
 \label{eq:round-cost}
 \end{equation}
-The current profile gives $40+20=60$ task attempts, independent of how many
-edits the batch contains, or 180 over three such rounds. No evaluable batch
-means no new validation leg. With 10 short and 40 long tasks, final evaluation
-requires $3(10+40)J=150J$ attempts for $J$ conditions: 300 for initial versus
-final, 600 for the default four-condition grid, or 750 for all five. These are
+task attempts, where $n_s=|V_s|$. The incumbent term is zero when an unchanged
+incumbent's held-out runs are reused, and per-length early stopping can shorten
+the $C^\star$ term. With $k'\le1$ there is no screening term and the candidate
+runs all $v n_{\mathrm{ho}}$ attempts. A re-attribution adds one more screening
+pool, at most $(k+1)v_s n_s$. An admitted, confirmed refinement adds
+$m n_{\mathrm{in}}+v n_{\mathrm{ho}}$, with the incumbent's runs reused.
+Both blended profiles have $n_{\mathrm{in}}=n_{\mathrm{ho}}=24$ across three
+sizes, $m=2$, $v=3$, $k=4$, $v_s=1$, and $n_s=6$, so a full round schedules
+$48+30+72+66=216$ attempts, or 144 when the incumbent is reused. OBLIQ disables
+early stopping, re-attribution, and refinement, so its rounds have no further
+terms. No admitted candidate means no screening or validation leg. Final
+evaluation runs three attempts per task for each of the four conditions. With
+12 short and 40 long OOLONG-Pairs test tasks that is $3\cdot52\cdot4=624$
+attempts, and with 12 OBLIQ test queries it is $3\cdot12\cdot4=144$. These are
 scheduling counts, not measured results or provider-call counts. Root attempts
 may issue many recursive/model requests. Attribution, proposal, repairs, and
 operational retries also consume resources.
 
-Configured accounting rates are \$0.19 per million input tokens and \$0.51 per
-million output tokens, as recorded for this study; they are not a current market
-quote. Actual usage and its coverage will be reported separately from scheduling
+The spend breaker uses the per-response cost OpenRouter returns. Configured
+rates of \$0.009 per million input tokens and \$1.28 per million output tokens,
+OpenRouter's listed price when the profiles were written, feed only cost
+projections; they are not a current market quote. Actual usage and its coverage will be reported separately from scheduling
 projections. Task usage is not added again to a stage total
 that already includes it. Breaker reservations are not billed spend; interrupted
 or unreported requests can leave a lower bound, and the per-run budget is not a
@@ -497,7 +596,8 @@ Cross-environment transfer would require a separately specified target protocol
 and completed evaluation. A weight-training comparison would require an available
 trainable checkpoint, justified backbone matching, and measured compute; no
 fine-tuning condition or hardware allocation is claimed for this hosted study.
-Joint batch outcomes suffice for the present design. An optional future
+Because each promotion measures one single-surface edit against its incumbent,
+per-round outcomes already attribute measured gains to individual edits. An optional future
 leave-one-surface-out study would revert a final surface to its starting value
 and rerun the same evaluation; it would measure that final-state counterfactual,
 not the marginal contribution of every historical edit overwritten along the way.

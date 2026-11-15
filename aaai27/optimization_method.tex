@@ -13,9 +13,9 @@ Following \citet{zhang2026selfharness}, we expose ten editable harness surfaces:
 five instruction fields, runtime policy, execution-output formatting, REPL
 helpers, answer middleware, and a skill library. Each surface corresponds to a
 declared field or group of fields. Human-authored capability descriptions and
-mechanism-to-surface routes constrain the search. The current study starts from
-\texttt{H0*R}, which already contains hand-authored recursion and decomposition
-guidance; the sparse \hzero{} is a reference baseline. Appendix~\ref{app:surfaces}
+mechanism-to-surface routes constrain the search. Optimization starts from the
+sparse \hzero{}; the hand-authored \hzerostar{} and \texttt{H0*R} serve as
+reference harnesses rather than as seeds. Appendix~\ref{app:surfaces}
 specifies the actual inputs, scope, and invocation conditions of each surface.
 
 
@@ -23,36 +23,83 @@ specifies the actual inputs, scope, and invocation conditions of each surface.
 \label{sec:sho}
 
 The same fixed model executes tasks, diagnoses failures, and proposes edits.
-Each round has three stages (Figure~\ref{fig:sh-loop}).
+Each round has four stages (Figure~\ref{fig:sh-loop}): weakness mining,
+proposal of independent candidates, a screening tournament, and full validation
+of the tournament winner. Two bounded fallbacks, re-attribution and
+refinement, run only when the main path finds no acceptable candidate.
 
 \paragraph{Weakness mining.}
-The incumbent runs on mining tasks. The environment verifier evaluates final
-answers, and an attributor uses selected execution-trace operations to infer
-failure mechanisms with explicit uncertainty. Diagnoses use a predefined
-vocabulary and are clustered by their recorded failure signature. Cited
-operations support an interpretation; they do not independently establish its
-causal correctness.
+The incumbent $\mathrm{H}_t$ runs on held-in mining tasks. The environment
+verifier evaluates final answers, and an attributor uses selected
+execution-trace operations to infer failure mechanisms with explicit
+uncertainty. Diagnoses use a predefined vocabulary and are clustered by their
+recorded failure signature. Cited operations support an interpretation; they
+do not independently establish its causal correctness.
 
-\paragraph{Harness proposal.}
+\paragraph{Independent candidate proposal.}
 The proposer receives compact operation-level evidence, the incumbent surfaces,
-runtime capabilities, and bounded history of attempted edits and outcomes. It
-selects an intervention before writing its replacement text and must explain
-what the incumbent does, what observed behavior remains wrong, and what changes
-at the relevant operation. At most one admitted edit may occupy a surface or
-target a pattern in a round. The edit ceiling permits fewer edits or abstention.
-Host materialization and preflight reject malformed or structurally invalid
-changes before task evaluation.
+runtime capabilities, and bounded history of attempted edits and outcomes,
+including mechanisms already tried on other surfaces. It returns up to $k$
+candidates $C_1,\dots,C_k$, each a single-surface edit of $\mathrm{H}_t$ aimed at
+one mined pattern. Admission reserves an exact (pattern, surface) pair, so one
+pattern may be attacked on several surfaces and one surface may carry edits for
+different patterns. Candidates are \emph{not} merged: each is a complete
+harness that differs from the incumbent on one surface. For each edit the
+proposer must explain what the incumbent does, what observed behavior remains
+wrong, and which concrete trigger the edit acts on, phrased as a rule the model
+will meet on a real input rather than as softer emphasis. Host materialization
+and preflight reject malformed or structurally invalid edits before any task
+evaluation.
 
-\paragraph{Joint validation and promotion.}
-All admitted edits are composed into one candidate, which is compared with a
-freshly evaluated incumbent on the same validation tasks. Validation tasks are
-excluded from mining but reused for adaptive selection; aggregate outcomes
-inform later proposal history. In the current configuration, promotion requires
-at least as many environment-verifier passes as the incumbent and compliance
-with the configured resource bands. Optional verifier-defined dense metrics
-inform diagnosis and history, but are not promotion conditions. The combined
-candidate is the measured unit; its outcome does not identify each edit's
-individual contribution. Optimization stops at the round ceiling or after the
-configured number of rounds without promotion, then freezes the final incumbent
-for separate evaluation. Appendices~\ref{app:mining}--\ref{app:measurement}
-give the implementation contracts and measurement definitions.
+\paragraph{Screening tournament.}
+When more than one candidate is admitted, each one and the incumbent run
+independently on a small, fixed screening subset $V_s$ of the validation tasks,
+with $v_s<v$ attempts per task. Candidates are ranked by their change in the
+promotion metric relative to the incumbent on $V_s$; unscored candidates (for
+example, over budget) rank last. Screening only orders candidates: its
+accept/reject verdicts never promote a harness. If every screened candidate
+falls short of the promotion rule on $V_s$, the loop can re-attribute the
+\emph{same} mining runs once, with no new rollouts, proposes a fresh pool, and
+screens it. With zero or one admitted candidate the tournament is skipped.
+
+\paragraph{Full validation and promotion.}
+Only the top-ranked candidate $C^\star$ is fully validated against
+$\mathrm{H}_t$ on all held-out validation tasks $V$ with $v$ attempts. Its
+screening attempts are reused as part of this evaluation, and an incumbent
+that did not change since an earlier round reuses its stored held-out runs.
+Let $\bar F_\ell(X)$ be harness $X$'s mean verifier-defined primary quality
+(F1 for OOLONG-Pairs, NDCG@10 for OBLIQ) on validation tasks in input-size
+stratum $\ell\in\mathcal{L}$ (a context window or a candidate-pool size), and $\Delta_\ell=\bar F_\ell(C^\star)-\bar
+F_\ell(\mathrm{H}_t)$. $C^\star$ is promoted when
+\begin{equation}
+\Delta_\ell\geq-\tau_\ell\ \ \forall \ell\in\mathcal{L},\qquad
+\tfrac{1}{|\mathcal{L}|}\textstyle\sum_{\ell}\Delta_\ell\geq\tau_{\mathrm{imp}},
+\label{eq:promotion-main}
+\end{equation}
+and its mean cost per run stays within a configured band relative to the
+incumbent's. The per-stratum margins $\tau_\ell$ are calibrated to the
+harness's own evaluation noise; any one stratum can veto a candidate whose
+macro mean improves. When early stopping is enabled, $C^\star$'s strata are
+evaluated in order, and a completed stratum that already violates its margin
+stops validation early.
+A promoted single-surface edit becomes $\mathrm{H}_{t+1}$; a rejection retires
+the remaining screened candidates, and the next round mines fresh evidence
+against the unchanged incumbent. Validation tasks are never mined, but their
+aggregate outcomes inform later proposal history.
+
+\paragraph{Refinement.}
+A rejected $C^\star$ may still help on the runs where it produced a measurable
+answer while failing more often in some other way (for example, malformed
+output). If its quality conditional on a measurable answer exceeds the
+incumbent's by a configured margin, one bounded repair generation runs (when
+enabled; OOLONG-Pairs only in the current study). $C^\star$ is mined
+on the held-in tasks, the proposer is restricted to patterns with the
+configured failure causes, and the single resulting descendant is validated
+against the original incumbent under Equation~\ref{eq:promotion-main}. The
+branch never recurses and cannot promote without passing the ordinary gate.
+
+\paragraph{Stopping.}
+Optimization stops at the round ceiling $T$ or after $p$ consecutive rounds
+without promotion, then freezes the final incumbent for separate evaluation.
+Appendices~\ref{app:mining}--\ref{app:measurement} give the implementation
+contracts and measurement definitions.
