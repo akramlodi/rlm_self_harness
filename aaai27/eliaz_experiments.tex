@@ -184,15 +184,7 @@ most accurate and the cheapest condition, so it dominates the other three. \shrl
 \hzero sit close together at the expensive end, and only the difference
 against \hzerostar has a confidence interval clear of 0 in \shrlm's favor.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\linewidth]{aaai27/figures/fig_long_context.pdf}
-\caption{256K OOLONG-Pairs test (DeepSeek-V3.2; 9 tasks $\times$ 3
-attempts per condition). (a)~Mean F1 against mean cost per run.
-(b)~\shrlm minus each reference with task-level paired bootstrap 95\%
-intervals; right of 0 favors \shrlm. Data as in \Cref{tab:long}.}
-\label{fig:long}
-\end{figure}
+\input{aaai27/figures/fig_long_context.tex}
 
 \begin{table}[t]
 \centering\small

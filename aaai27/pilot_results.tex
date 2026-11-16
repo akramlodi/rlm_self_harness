@@ -19,22 +19,7 @@ trajectory and was stopped after four rounds. Its held-out tasks are validation
 tasks, not test tasks, so it measures the loop, not the final harness.
 \Cref{fig:pilot} summarizes every gate decision.
 
-\begin{figure*}[t]
-\centering
-\includegraphics[width=\textwidth]{aaai27/figures/fig_pilot_gate.pdf}
-\caption{Pilot run (DeepSeek-V4-Flash, OOLONG-Pairs, 12 validation tasks
-$\times$ 3 attempts per subject). Filled blue markers are promoted
-candidates and hollow orange markers are rejected ones; R$t$~S$j$ is the round
-and edited surface. (a)~Held-out F1 change against the round's incumbent per
-stratum and macro-averaged. Dashed lines are the veto margins $-\tau_\ell$; the
-dotted line is $\tau_{\mathrm{imp}}$. (b)~Macro-F1 change in screening (3 tasks
-$\times$ 1 attempt) against full validation; the grey line is $y{=}x$.
-(c)~Outcome of the 36 validation runs: a scored answer, a malformed answer
-(\texttt{wrong\_format}, F1 $=0$), or termination by the 3,600\,s cap (F1
-$=0$). Incumbent rows after round 1 reuse the previous candidate's runs and
-are omitted.}
-\label{fig:pilot}
-\end{figure*}
+\input{aaai27/figures/fig_pilot_gate.tex}
 
 \paragraph{Two promotions.}
 Round 1 mined mostly \texttt{mixed\_set\_error} failures and promoted an
