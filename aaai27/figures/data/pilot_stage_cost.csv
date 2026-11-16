@@ -1,0 +1,17 @@
+round,stage,cost_usd,wall_hours,lower_bound
+1,attribution,0.0459,0.065,False
+1,mining,1.4478,1.187,False
+1,proposal,0.0068,0.01,False
+1,screening,2.0356,2.214,True
+1,validation,3.1813,4.792,True
+2,attribution,0.0481,0.047,False
+2,mining,1.6849,1.566,False
+2,proposal,0.0078,0.004,False
+2,screening,2.3066,1.534,False
+2,validation,10.8567,3.782,False
+3,attribution,0.0395,0.037,False
+3,mining,3.0934,2.139,False
+3,proposal,0.0144,0.014,False
+3,screening,2.8203,2.05,False
+3,validation,2.122,2.11,True
+4,validation,9.4257,1.976,True

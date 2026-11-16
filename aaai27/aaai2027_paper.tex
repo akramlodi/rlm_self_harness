@@ -262,6 +262,7 @@ Our work makes the following contributions:
 \input{aaai27/optimization_method.tex}
 \input{aaai27/figures/Figure_2}
 \input{aaai27/experiment_protocol.tex}
+\input{aaai27/pilot_results.tex}
 % Preliminary (pre-study) runs now live in the appendix; see below.
 \section{Limitations and Future Work}
 \label{sec:limitations}
@@ -272,6 +273,9 @@ one attempt each, so a better candidate can lose the tournament and is then
 retired without full validation. Under OOLONG-Pairs' $\tau_{\mathrm{imp}}=0$,
 a macro-F1 tie that clears every per-length veto promotes, so a promotion is a
 selection decision rather than a significant improvement.
+In the pilot run reported above, this rule promoted a harness whose
+32K F1 fell by .081, and both screening winners that reached validation lost
+more than .35 macro F1 there.
 Validation is reused adaptively. OOLONG-Pairs roles share record collections,
 with only two collections per length, and OBLIQ validates on eight queries per
 pool size. These choices define the scope of the evaluation; stronger claims about

@@ -161,8 +161,8 @@ reused. The veto lines are each round's self-calibrated margins.}
 
 \paragraph{Long-context test.}
 We compare the frozen \shrlm harness with \hzerostar on the 256K OOLONG-Pairs
-test set, which is 8$\times$ the longest optimization length. Both conditions
-run on the same 9 tasks (3 per task group) with 3 attempts each, and all 9 ran
+test set, which is 8$\times$ the longest optimization length. All four
+conditions run on the same 9 tasks (3 per task group) with 3 attempts each, and all 9 ran
 to completion (\cref{tab:long}). \shrlm scores higher on every task. Most of
 the gap comes from how \hzerostar fails: 9 of its 27 runs end in
 \texttt{wrong\_format} and score 0, and its runs average 592\,s, against
@@ -179,6 +179,20 @@ its runs end in \texttt{wrong\_format} and 2 more are terminated. Most of
 improvement over \hzero. $\lambda$-RLM is the strongest condition. It beats
 \shrlm by .135 (CI excludes 0) and wins all 9 tasks, at $0.14\times$ the cost
 per run and about 110\,s per run.
+\Cref{fig:long} places the four conditions on quality and cost. $\lambda$-RLM is both the
+most accurate and the cheapest condition, so it dominates the other three. \shrlm and
+\hzero sit close together at the expensive end, and only the difference
+against \hzerostar has a confidence interval clear of 0 in \shrlm's favor.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{aaai27/figures/fig_long_context.pdf}
+\caption{256K OOLONG-Pairs test (DeepSeek-V3.2; 9 tasks $\times$ 3
+attempts per condition). (a)~Mean F1 against mean cost per run.
+(b)~\shrlm minus each reference with task-level paired bootstrap 95\%
+intervals; right of 0 favors \shrlm. Data as in \Cref{tab:long}.}
+\label{fig:long}
+\end{figure}
 
 \begin{table}[t]
 \centering\small

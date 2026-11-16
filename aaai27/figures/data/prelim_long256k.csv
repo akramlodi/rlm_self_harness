@@ -1,0 +1,8 @@
+# Source: Table tab:long and Section "Long-context test" in eliaz_experiments.tex
+# (DeepSeek-V3.2, OOLONG-Pairs 256K, 9 tasks x 3 attempts per condition).
+# diff_* = SH-RLM minus this condition, task-level paired bootstrap 95% CI.
+condition,n_tasks,mean_f1,cost_per_run_usd,mean_runtime_s,wrong_format_runs,diff_vs_shrlm,ci_lo,ci_hi
+H0,9,0.526,0.59,4463,2,0.048,-0.045,0.134
+H0*,9,0.185,0.47,592,9,0.388,0.220,0.556
+lambda-RLM,9,0.708,0.10,110,,-0.135,-0.187,-0.088
+SH-RLM,9,0.573,0.72,4094,,,,

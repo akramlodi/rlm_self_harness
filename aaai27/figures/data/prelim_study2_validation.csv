@@ -1,0 +1,9 @@
+# Source: Table tab:val in eliaz_experiments.tex (DeepSeek-V3.2, Study 2).
+# delta = candidate - incumbent held-out F1; tau = self-calibrated veto margin.
+round,length,incumbent_f1,candidate_f1,delta,tau
+1,8K,0.700,0.740,0.039,0.143
+1,16K,0.746,0.765,0.019,0.158
+1,32K,0.609,0.719,0.110,0.252
+2,8K,0.740,0.752,0.012,0.150
+2,16K,0.765,0.736,-0.029,0.129
+2,32K,0.719,0.775,0.056,0.173
