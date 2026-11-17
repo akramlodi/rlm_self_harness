@@ -1,0 +1,174 @@
+\begin{figure*}[t]
+\centering
+\begin{minipage}{.46\linewidth}
+\centering
+\begin{tikzpicture}[
+  x=.64cm,y=12cm,
+  accepted/.style={circle,draw=editgreen,fill=white,line width=1.15pt,minimum size=5.4pt,inner sep=0pt},
+  rejected/.style={cross out,draw=fixgrey,line width=1.05pt,minimum size=5.4pt,inner sep=0pt},
+  every node/.style={font=\scriptsize}
+]
+  \draw[black!18] (0,0) grid[xstep=1,ystep=.05] (10,.35);
+  \draw[->,black!70] (0,0) -- (10.35,0) node[right] {Round};
+  \draw[->,black!70] (0,0) -- (0,.39);
+  \node[rotate=90] at (-.95,.18) {Validation F1};
+  \foreach \x in {0,...,10} \draw (\x,0) -- +(0,-.005) node[below=2pt] {\x};
+  \foreach \y/\lab in {0/.55,.05/.60,.10/.65,.15/.70,.20/.75,.25/.80,.30/.85,.35/.90}
+    \draw (0,\y) -- +(-.04,0) node[left=2pt] {\lab};
+
+  \fill[editfill,opacity=.55] (0,.36) rectangle (5.45,.385);
+  \fill[blue!7] (5.55,.36) rectangle (10,.385);
+  \node[font=\scriptsize\bfseries,text=editgreen] at (2.7,.3725)
+    {rounds 1--5: $\tau_{\mathrm{imp}}=0$};
+  \node[font=\scriptsize\bfseries,text=blue!55!black] at (7.8,.3725)
+    {rounds 6--10: $\tau_{\mathrm{imp}}=.01$};
+  \draw[densely dashed,red!65,line width=.9pt] (5.5,0) -- (5.5,.36);
+
+  % Reported incumbent lineage.
+  \draw[editgreen,line width=1.45pt]
+    (0,.0229) -- (1,.0229) -- (1,.1849) -- (2,.1849) -- (2,.1855)
+    -- (4,.1855) -- (4,.2413) -- (5,.2413) -- (5,.2823)
+    -- (7,.2823) -- (7,.3005) -- (10,.3005) -- (10,.2591);
+
+  \node[accepted] at (0,.0229) {};
+  \node[accepted] at (1,.1849) {};
+  \node[accepted] at (2,.1855) {};
+  \node[accepted] at (4,.2413) {};
+  \node[accepted] at (5,.2823) {};
+  \node[accepted] at (7,.3005) {};
+  \node[accepted] at (10,.2591) {};
+
+  % Rejections use the compact baseline row convention of the Self-Harness
+  % trajectory figure; their measured scores and context are in the side panel.
+  \foreach \x/\lab in {3/R3,6/R6,8/R8,9/R9} {
+    \node[rejected] at (\x,.010) {};
+    \node[text=fixgrey,anchor=south] at (\x,.017) {\lab};
+  }
+
+  % Separately executed continuations, excluded from the reported lineage.
+  \draw[fixgrey!62,densely dashed,line width=1.05pt]
+    (2,.1855) -- (3,.2338) -- (4,.2338);
+  \node[circle,draw=fixgrey!75,fill=white,line width=1pt,minimum size=5pt,inner sep=0pt] at (3,.2338) {};
+  \node[rejected] at (4,.2338) {};
+
+  \draw[fixgrey!62,densely dashed,line width=1.05pt]
+    (5,.2823) -- (6,.2868) -- (7,.2442);
+  \node[circle,draw=fixgrey!75,fill=white,line width=1pt,minimum size=5pt,inner sep=0pt] at (6,.2868) {};
+  \node[rejected] at (7,.2442) {};
+
+  % Marker legend, placed below the iteration axis as in Self-Harness.
+  \node[accepted] at (1.30,-.060) {};
+  \node[anchor=west] at (1.43,-.060) {accepted};
+  \node[rejected] at (3.90,-.060) {};
+  \node[anchor=west] at (4.03,-.060) {rejected};
+  \draw[fixgrey!62,densely dashed,line width=1.05pt] (6.05,-.060) -- (6.45,-.060);
+  \node[anchor=west] at (6.55,-.060) {abandoned branch};
+\end{tikzpicture}
+\end{minipage}%
+\hfill
+\begin{minipage}{.52\linewidth}
+\centering\scriptsize
+\setlength{\tabcolsep}{2.2pt}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\linewidth}{@{}lrrrrrX@{}}
+\toprule
+R & F1 & $\Delta$F1 & $\Delta$tok & Fail. & Dec. & What changed \\
+\midrule
+1  & .7349 & +.1620 & $-8.9\%$   & $23\to6$ & Prom. & emit user-ID pairs \\
+2  & .7355 & +.0007 & $+11.7\%$  & $6\to1$  & Prom. & recover missing users \\
+3  & .7838 & +.0483 & $-3.4\%$   & $1\to1$  & Rej.  & wrong-format regression \\
+4  & .7913 & +.0558 & $-12.1\%$  & $1\to0$  & Prom. & confirm target categories \\
+5  & .8323 & +.0410 & $+16.8\%$  & $0\to0$  & Prom. & correct detected errors \\
+6  & .8368 & +.0045 & $-14.1\%$  & $0\to0$  & Rej.  & below revised $\tau_{\mathrm{imp}}=.01$ \\
+7  & .8505 & +.0182 & $-33.8\%$  & $0\to0$  & Prom. & resolve count mismatch \\
+8  & .8164 & $-$.0341 & $+56.5\%$  & $0\to1$  & Rej.  & format regression, +1 fail \\
+9  & .6546 & $-$.1959 & $+665.7\%$ & $0\to7$  & Rej.  & token blowup, +7 fail \\
+10 & .8091 & +.0128 & $-11.0\%$  & $0\to0$  & Prom. & rebuild after corrections \\
+\bottomrule
+\end{tabularx}
+\end{minipage}
+\caption{OOLONG-Pairs optimization trajectory (left) and the full per-round
+record it summarizes (right). Changes are relative to that round's incumbent;
+terminal failure counts are out of 72 attempts. Dark-green circles and the
+step line denote accepted candidates on the reported incumbent lineage; gray
+crosses in the row above the iteration axis denote rejected candidates.
+Light-gray dashed traces show two abandoned exploratory continuations, found
+by checking every sibling experiment directory in this lineage.}
+\label{fig:optimization-trajectory}
+\end{figure*}
+
+% Diff-card primitives for fig:final-surface-edits: a full-width shaded row
+% per logical line, "+" for appended text in that round's own color, plain
+% (phantom-indented to match) for text retained verbatim from H0.
+% Colorbox-around-parbox (not soul's \hl) so the shading spans the whole
+% card width even when a line wraps. Round-to-text attribution verified
+% against the real harness.json snapshots at each round (not the short
+% behavioral_change summaries, which omit one of round 10's two insertions).
+\newcommand{\diffsame}[1]{%
+  \noindent\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\ttfamily\small\phantom{+ }#1}\par\vspace{2pt}}
+\newcommand{\diffadd}[2]{%
+  \noindent\colorbox{#1}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\ttfamily\small+\ #2}}\par\vspace{2pt}}
+% Round-number badge for card titles: black text, background matching that
+% round's own row fill color (not colored text) -- tight padding so it reads
+% as a small tag rather than a full-size colorbox.
+\newcommand{\rbadge}[2]{{\setlength{\fboxsep}{1.5pt}\colorbox{#1}{\textcolor{black}{#2}}}}
+
+\begin{figure*}[p]
+\centering
+\setlength{\fboxsep}{4pt}
+\begin{tcolorbox}[
+  enhanced, colback=white, colframe=black!35, boxrule=0.5pt,
+  arc=2pt, left=3pt, right=3pt, top=3pt, bottom=4pt,
+  colbacktitle=black!8, coltitle=black, fonttitle=\bfseries\small,
+  title={S2---decomposition instruction (promoted round \rbadge{r4fill}{4})}
+]
+\diffsame{Start by probing `context' to understand what you have, then decide how the task breaks into steps.}
+\diffadd{r4fill}{Before selecting target categories, re-read the task question from `context' to identify which categories are required.}
+\diffadd{r4fill}{Store the required categories in a variable and print them to confirm they match the task.}
+\end{tcolorbox}
+
+\vspace{4pt}
+\begin{tcolorbox}[
+  enhanced, colback=white, colframe=black!35, boxrule=0.5pt,
+  arc=2pt, left=3pt, right=3pt, top=3pt, bottom=4pt,
+  colbacktitle=black!8, coltitle=black, fonttitle=\bfseries\small,
+  title={S3---execution instruction (cumulative promoted edits from rounds
+    \rbadge{r1fill}{1}, \rbadge{r2fill}{2}, \rbadge{r5fill}{5}, and
+    \rbadge{r10fill}{10})}
+]
+\diffsame{On each turn, run one block of code, print what you need to see, and build the result up in REPL variables.}
+\diffadd{r1fill}{After classifying questions, generate the required user-ID pairs and output them in the format (user\_id\_1, user\_id\_2), one per line.}
+\diffadd{r10fill}{When generating pairs from two user sets, skip pairs where the two user IDs are equal (a user cannot pair with itself).}
+\diffadd{r2fill}{After classifying, verify that all users with entity or human being questions are captured. If any user appears to be missing, reclassify their questions.}
+\diffadd{r5fill}{If you detect a classification error (e.g., a user's question count doesn't match the expected pattern), reclassify the affected questions before proceeding.}
+\diffadd{r10fill}{After any reclassification, you MUST rebuild the user-to-category mapping and regenerate all pairs from scratch using the updated classifications. Do not reuse a previously computed user set or pair list after any classification change.}
+\end{tcolorbox}
+
+\vspace{4pt}
+\begin{tcolorbox}[
+  enhanced, colback=white, colframe=black!35, boxrule=0.5pt,
+  arc=2pt, left=3pt, right=3pt, top=3pt, bottom=4pt,
+  colbacktitle=black!8, coltitle=black, fonttitle=\bfseries\small,
+  title={S4---verification instruction (promoted round \rbadge{r7fill}{7})}
+]
+\diffsame{Check your candidate answer before setting `answer["ready"] = True'.}
+\diffadd{r7fill}{If you compute an expected count (e.g., of pairs, users, or classifications) and it does not match the actual count, do not submit until the discrepancy is resolved.}
+\diffadd{r7fill}{Print the source of the discrepancy: which users or classifications differ between the expected and actual sets.}
+\diffadd{r7fill}{Correct the underlying issue (e.g., reclassify affected questions, regenerate pairs) and re-verify before submitting.}
+\end{tcolorbox}
+
+\caption{Full retained field values for every surface changed in the frozen
+round-10 harness, shown as a diff against the initial $H_0$ text: a plain line
+is retained verbatim from $H_0$; a ``+'' line is new text, colored by the
+round that added it (round number colored to match in each card's title).
+S3 draws on four rounds, each shown in its own color; round 10 contributes
+two separate insertions, one in the middle of the existing text and one at
+the end, not a single trailing append. Every edit to these three surfaces was
+a pure addition -- no span of the original text was altered or removed, so
+no ``-'' lines appear anywhere. Unlike Figure~\ref{fig:optimization-trajectory},
+this figure does not summarize the edits: it reproduces the full text from
+the saved harness artifacts, diffed directly against the real per-round
+harness snapshots (not the short per-candidate change summaries, which omit
+one of round 10's two insertions).}
+\label{fig:final-surface-edits}
+\end{figure*}

@@ -1,0 +1,181 @@
+\section{Results}
+\label{sec:results}
+\suppressfloats[t]
+
+\subsection{Adaptive Validation Improves, but Is Not a Final Test}
+
+Across the optimization history, the starting incumbent's validation F1 of
+.5729 rises to .8091 for the final promoted candidate (+41.2\% relative).
+Recorded tokens fall from 45.11M to 42.47M (5.9\%), provider cost from
+\$7.788 to \$2.585 (66.8\%), and terminal failures from 23/72 to 0. These
+endpoints look jointly favorable, but they were selected after repeated
+validation access and an adaptive threshold change.
+
+Figure~\ref{fig:optimization-trajectory} separates the reported lineage from
+two exploratory continuations and labels every evaluated round's decision.
+Figure~\ref{fig:final-surface-edits} gives the complete initial and final text
+of the three surfaces whose edits survive in the final harness. The light-gray
+branches are not additional optimizer seeds: they are abandoned continuations
+in which round 3 or the original $\tau_{\mathrm{imp}}=0$ round-6 decision was
+treated as promoted.
+
+\input{aaai27/figures/optimization_trajectory}
+
+Figure~\ref{fig:optimization-trajectory}'s side panel also demonstrates why
+this run is not a Pareto-aware optimizer. Round 6 improves every displayed
+objective (F1, tokens, failures) but is rejected by the scalar threshold,
+while round 7 is promoted despite a 65.8\% provider-cost increase (its token
+count falls 33.8\%). Applying Equation~\ref{eq:pareto-audit} to the available
+round-level objectives, round 6 dominates its incumbent, whereas round 7 and its incumbent are
+non-dominated because quality and tokens improve but cost worsens. The scalar
+gate therefore produces \textbf{opposite decisions to the Pareto relation in
+both rounds}. The appropriate claim is \emph{post hoc Pareto evaluation of a
+constrained quality optimizer}.
+
+\subsection{Pareto-Aware Frozen Length Audit}
+
+\begin{table}[ht]
+\centering\small
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Method & F1 & Tokens & Cost & Fail. & Instab. \\
+\midrule
+\hzero{}      & .6967 & 53.55M & \$2.788 & 6 & .2289 \\
+\hzerostar{}  & .7248 & \textbf{26.72M} & \textbf{\$1.733} & 6 & .2048 \\
+\shrlm{}      & \textbf{.7442} & 58.08M & \$2.915 & \textbf{2} & \textbf{.1630} \\
+$\lambda$-RLM & .8472 &  1.05M & \$0.144 & 0 & .0321 \\
+\bottomrule
+\end{tabular}
+\caption{Frozen 48-task OOLONG-Pairs test (96 runs/method). Tokens and cost are
+totals; Fail. counts terminal failures. Instab. is the mean within-task absolute
+difference between two attempts. $\lambda$-RLM is task-specific and its host
+compute is unpriced. Bold marks the best generic harness on each objective.}
+\label{tab:frozen48}
+\end{table}
+
+\begin{table}[ht]
+\centering\scriptsize
+\setlength{\tabcolsep}{3.2pt}
+\renewcommand{\arraystretch}{1.02}
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+Method & Metric & 8K & 16K & 32K & Macro / total \\
+\midrule
+\hzero{} & F1 & .7891 & .6481 & .6529 & .6967 \\
+ & Tokens & 19.03M & 20.99M & 13.52M & 53.55M \\
+ & Cost & \$0.816 & \$1.071 & \$0.900 & \$2.788 \\
+\addlinespace[2pt]
+\hzerostar{} & F1 & .6504 & \textbf{.7591} & \textbf{.7649} & .7248 \\
+ & Tokens & \textbf{10.39M} & \textbf{8.81M} & \textbf{7.53M} & \textbf{26.72M} \\
+ & Cost & \textbf{\$0.496} & \textbf{\$0.529} & \textbf{\$0.708} & \textbf{\$1.733} \\
+\addlinespace[2pt]
+\shrlm{} & F1 & \textbf{.8185} & .7142 & .7000 & \textbf{.7442} \\
+ & Tokens & 18.07M & 22.40M & 17.61M & 58.08M \\
+ & Cost & \$0.725 & \$0.931 & \$1.259 & \$2.915 \\
+\addlinespace[2pt]
+$\lambda$-RLM & F1 & .8829 & .8440 & .8148 & .8472 \\
+ & Tokens & 0.129M & 0.328M & 0.592M & 1.05M \\
+ & Cost & \$0.016 & \$0.050 & \$0.078 & \$0.144 \\
+\bottomrule
+\end{tabular}
+\caption{Per-length frozen results for all four conditions. Each cell reports
+mean F1, total recorded tokens, or total provider cost. Each length contains
+16 tasks and 32 runs per method; the final column is macro F1 or the total over
+all 96 runs. Bold marks the best generic harness; $\lambda$-RLM is specialized
+and its host computation is unpriced.}
+\label{tab:frozen48-length}
+\end{table}
+
+On the frozen test (Tables~\ref{tab:frozen48}--\ref{tab:frozen48-length}), \hzerostar{} strictly dominates
+\hzero{}: it has higher F1, about half the tokens, 38\% lower cost, equal
+failures, and lower instability. \shrlm{} raises observed F1 by .0194 over
+\hzerostar{} and reduces failures, but uses 117\% more tokens and costs 68\%
+more; neither dominates the other. The paired task-bootstrap interval for the
+F1 difference is $[-.0521,.0935]$. By length, \shrlm{}--\hzerostar{} is +.1680
+at 8K (95\% CI $[.0352,.3143]$), $-.0450$ at 16K
+($[-.1590,.0561]$), and $-.0649$ at 32K ($[-.1586,.0278]$). Relative to
+\hzerostar{}, \shrlm{} uses \textbf{74\%, 154\%, and 134\% more tokens} and
+costs 46\%, 76\%, and 78\% more at 8K, 16K, and 32K, respectively. Thus the
+aggregate gain comes from the 8K stratum and does not establish monotonically
+improving length generalization or a quality--resource dominance relation.
+
+$\lambda$-RLM exceeds \shrlm{} by .1031 F1 (95\% CI $[.0580,.1534]$), with
+positive differences in all three length strata. It also records no terminal
+failures and costs \$0.016/\$0.050/\$0.078 across 8K/16K/32K, compared with
+\shrlm{}'s \$0.725/\$0.931/\$1.259. This is strong evidence that task-specific
+algorithmic structure matters. It is not a clean systems-cost dominance claim,
+because its deterministic host work is excluded from provider accounting.
+
+\subsection{Long-Context and Cross-Task Audits}
+
+The 8K/16K/32K division applies only to the stratified frozen length test.
+The following evaluations each have one fixed regime: nominal 262K context for
+OOLONG-Pairs and a full 3,507-document candidate corpus for OBLIQ-Bench Math.
+
+\begin{table}[ht]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Method & 262K F1 & Tokens & Cost & Fail. \\
+\midrule
+\hzero{}      & .5696 & \textbf{80.13M} & \$10.962 & 7 \\
+\hzerostar{}  & .5923 & 80.53M & \textbf{\$9.154}  & \textbf{1} \\
+\shrlm{}      & \textbf{.6307} & 87.95M & \$10.384 & 2 \\
+$\lambda$-RLM & .7465 & 22.12M & \$4.816  & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Frozen 40-task, nominal 262K OOLONG-Pairs test (80 runs/method).
+Bold marks the best generic harness on each objective.}
+\label{tab:long}
+\end{table}
+
+The 262K test repeats the frontier pattern (Table~\ref{tab:long}). \shrlm{}
+improves over \hzerostar{} by .0383 F1, but the 95\% interval
+$[-.0417,.1212]$ crosses zero and resource use is higher. $\lambda$-RLM's
+.1158 advantage over \shrlm{} is resolved ($[.0737,.1657]$).
+
+\begin{table}[ht]
+\centering\scriptsize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Method & NDCG@10 & Tokens & Cost & Wrong fmt. \\
+\midrule
+\hzerostar{} & \textbf{.1040} & 70.18M & \$3.965 & \textbf{7} \\
+\hzero{} & .0850 & 51.11M & \textbf{\$2.485} & 18 \\
+\shrlm{} & .0517 & \textbf{50.54M} & \$2.534 & 29 \\
+\bottomrule
+\end{tabular}
+\caption{Cross-task transfer to the frozen 40-query, full-corpus OBLIQ-Bench
+Math split (80 runs/method). Tokens and provider cost are totals; Wrong fmt.
+counts unparsable final answers. \shrlm{} receives no OBLIQ feedback. Bold
+marks the best value on each objective.}
+\label{tab:obliq-transfer}
+\end{table}
+
+Transfer is negative (Table~\ref{tab:obliq-transfer}). Relative to
+\hzerostar{}, the frozen round-10 harness decreases mean NDCG@10 by 50.2\%
+($-.0522$, paired 95\% CI $[-.0914,-.0175]$) and raises wrong-format failures
+from 7/80 to 29/80. This loss is resolved despite \shrlm{} using 28.0\% fewer
+tokens and 36.1\% lower provider cost. \hzerostar{} also has higher observed
+NDCG@10 than \hzero{} by .0190, although its interval
+$[-.0051,.0447]$ crosses zero. Because no OBLIQ feedback enters the search,
+the result provides a concrete counterexample to broad cross-task robustness
+claims for the learned harness.
+
+\section{Discussion and Conclusion}
+
+The optimization run is successful as an engineering search: it discovers a
+harness with much better adaptive validation behavior and fewer formatting
+failures. It is not evidence that the final harness is unconditionally better.
+Frozen evaluation instead identifies a quality--efficiency frontier, unresolved
+quality differences between generic harnesses, a decisive advantage for a
+task-specific algorithm, and negative transfer. Reproducible AI reporting should
+therefore distinguish three objects: the adaptive optimization record, an
+untouched frozen test, and the multi-objective deployment choice. Publishing all
+attempts and failures changes the scientific conclusion from ``automatic harness
+improvement'' to the narrower and better-supported finding: scalar-guided
+self-harnessing can find useful trade-offs, but robust improvement requires an
+external Pareto audit.

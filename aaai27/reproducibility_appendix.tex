@@ -1,0 +1,46 @@
+\section{Reproducibility Record}
+\label{app:repro}
+
+Our retained experiment record contains the exact harness JSON for every
+incumbent and candidate, immutable instance manifests, per-attempt JSONL records, execution
+configuration, verifier output, trace paths, and SHA-256 trace digests. Runs use
+accounting schema \texttt{shrlm-accounting/v2}. Each record stores instance ID,
+attempt number, pass/fail cause, primary quality, input and output tokens,
+provider cost, execution time, and whether usage is a lower bound. Tables in the
+paper are computed from these records without dropping terminal failures. An
+anonymized release artifact should preserve this structure and remove provider
+credentials, local paths, and author-identifying metadata.
+
+\paragraph{Frozen-test aggregation.}
+For each method and task, we average its two attempts; the reported overall F1
+is the equally weighted mean over tasks. Length-specific means use the 16 tasks
+in that stratum. Total tokens and cost sum all attempts. A terminal failure is
+an attempt whose cause is a resource termination or unparsable final format.
+Paired bootstrap replicates sample task IDs with replacement and retain both
+methods' attempts for each sampled task. Percentile endpoints use 200,000
+replicates with a fixed analysis seed.
+
+\paragraph{Artifact identities.}
+The compared generic harnesses are the sparse round-zero harness, the pinned
+upstream-prompt reference, and the promoted incumbent saved after round 10.
+The specialized reference is the pinned $\lambda$-RLM reconstruction used in
+both frozen OOLONG tests. The 48-task manifest is identical across all four
+methods and contains 16 tasks at each nominal context length. The 262K manifest
+contains 40 tasks, and the OBLIQ manifest contains 40 queries; each manifest is
+reused verbatim across compared methods.
+
+\paragraph{Decision semantics.}
+The optimization objective is macro F1. Per-length non-regression and an
+increase in \texttt{wrong\_format} are vetoes. Recorded token and provider-cost
+changes are audit metrics, not a scalarized objective, and the configured cost
+band is not enforced for this run. Rounds 1--5 use improvement threshold zero;
+rounds 6--10 use .01, with round six recomputed after the change. No earlier
+promotion is rewritten. These facts are necessary to reproduce the incumbent
+sequence in Figure~\ref{fig:optimization-trajectory}.
+
+\paragraph{What the artifact does not establish.}
+OpenRouter does not guarantee replay-identical stochastic completions. The
+artifact therefore supports verification of inputs, code paths, accounting,
+and reported aggregation, but an independent rerun should be treated as a
+replication rather than a bitwise reproduction. Provider charges exclude local
+CPU work and should not be interpreted as complete energy or systems cost.

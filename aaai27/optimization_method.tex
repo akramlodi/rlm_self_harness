@@ -15,21 +15,29 @@ helpers, answer middleware, and a skill library. Each surface corresponds to a
 declared field or group of fields. Human-authored capability descriptions and
 mechanism-to-surface routes constrain the search. Optimization starts from the
 sparse \hzero{}; the hand-authored \hzerostar{} and \texttt{H0*R} serve as
-reference harnesses rather than as seeds. Appendix~\ref{app:surfaces}
-specifies the actual inputs, scope, and invocation conditions of each surface.
+reference harnesses rather than as seeds. Appendix~\ref{app:repro}
+lists the frozen artifacts and accounting conventions.
+
+\paragraph{Notation.}
+Throughout the paper, $\mathcal{M}$ is the fixed language model, $H_{r-1}$ is
+the incumbent entering numbered round $r$ and $H_r$ is its successor,
+$D_{\mathrm{in}}$ is the held-in mining split,
+$V$ is the repeatedly accessed held-out validation split, and $V_s\subset V$
+is its screening subset. Candidate $C_{r,j}$ changes exactly one surface of
+$H_{r-1}$; $C_r^\star$ is the candidate selected for full validation.
 
 
 \subsection{Self-Harness Optimization}
 \label{sec:sho}
 
 The same fixed model executes tasks, diagnoses failures, and proposes edits.
-Each round has four stages (Figure~\ref{fig:sh-loop}): weakness mining,
+Each round has four stages: weakness mining,
 proposal of independent candidates, a screening tournament, and full validation
 of the tournament winner. Two bounded fallbacks, re-attribution and
 refinement, run only when the main path finds no acceptable candidate.
 
 \paragraph{Weakness mining.}
-The incumbent $\mathrm{H}_t$ runs on held-in mining tasks. The environment
+The incumbent $H_{r-1}$ runs on $D_{\mathrm{in}}$. The environment
 verifier evaluates final answers, and an attributor uses selected
 execution-trace operations to infer failure mechanisms with explicit
 uncertainty. Diagnoses use a predefined vocabulary and are clustered by their
@@ -40,7 +48,7 @@ do not independently establish its causal correctness.
 The proposer receives compact operation-level evidence, the incumbent surfaces,
 runtime capabilities, and bounded history of attempted edits and outcomes,
 including mechanisms already tried on other surfaces. It returns up to $k$
-candidates $C_1,\dots,C_k$, each a single-surface edit of $\mathrm{H}_t$ aimed at
+candidates $C_{r,1},\dots,C_{r,k}$, each a single-surface edit of $H_{r-1}$ aimed at
 one mined pattern. Admission reserves an exact (pattern, surface) pair, so one
 pattern may be attacked on several surfaces and one surface may carry edits for
 different patterns. Candidates are \emph{not} merged: each is a complete
@@ -63,36 +71,40 @@ falls short of the promotion rule on $V_s$, the loop can re-attribute the
 screens it. With zero or one admitted candidate the tournament is skipped.
 
 \paragraph{Full validation and promotion.}
-Only the top-ranked candidate $C^\star$ is fully validated against
-$\mathrm{H}_t$ on all held-out validation tasks $V$ with $v$ attempts. Its
+Only the top-ranked candidate $C_r^\star$ is fully validated against
+$H_{r-1}$ on all held-out validation tasks $V$ with $v$ attempts. Its
 screening attempts are reused as part of this evaluation, and an incumbent
 that did not change since an earlier round reuses its stored held-out runs.
 Let $\bar F_\ell(X)$ be harness $X$'s mean verifier-defined primary quality
 (F1 for OOLONG-Pairs, NDCG@10 for OBLIQ) on validation tasks in input-size
-stratum $\ell\in\mathcal{L}$ (a context window or a candidate-pool size), and $\Delta_\ell=\bar F_\ell(C^\star)-\bar
-F_\ell(\mathrm{H}_t)$. $C^\star$ is promoted when
+stratum $\ell\in\mathcal{L}$ (a context window or a candidate-pool size), and
+$\Delta_{r,\ell}=\bar F_\ell(C_r^\star)-\bar F_\ell(H_{r-1})$.
+$C_r^\star$ is promoted when
 \begin{equation}
-\Delta_\ell\geq-\tau_\ell\ \ \forall \ell\in\mathcal{L},\qquad
-\tfrac{1}{|\mathcal{L}|}\textstyle\sum_{\ell}\Delta_\ell\geq\tau_{\mathrm{imp}},
+\Delta_{r,\ell}\geq-\tau_\ell\ \ \forall \ell\in\mathcal{L},\qquad
+\tfrac{1}{|\mathcal{L}|}\textstyle\sum_{\ell}\Delta_{r,\ell}\geq\tau_{\mathrm{imp}},
 \label{eq:promotion-main}
 \end{equation}
-and its mean cost per run stays within a configured band relative to the
-incumbent's. The per-stratum margins $\tau_\ell$ are calibrated to the
+and it does not increase \texttt{wrong\_format} terminal failures. Resource
+statistics and a nominal cost band are recorded, but the cost band was not an
+enforced promotion constraint in the reported OOLONG run. The per-stratum
+margins $\tau_\ell$ are calibrated to the
 harness's own evaluation noise; any one stratum can veto a candidate whose
-macro mean improves. When early stopping is enabled, $C^\star$'s strata are
+macro mean improves. When early stopping is enabled, $C_r^\star$'s strata are
 evaluated in order, and a completed stratum that already violates its margin
 stops validation early.
-A promoted single-surface edit becomes $\mathrm{H}_{t+1}$; a rejection retires
+A promoted single-surface edit becomes $H_r$; a rejection sets
+$H_r=H_{r-1}$ and retires
 the remaining screened candidates, and the next round mines fresh evidence
 against the unchanged incumbent. Validation tasks are never mined, but their
 aggregate outcomes inform later proposal history.
 
 \paragraph{Refinement.}
-A rejected $C^\star$ may still help on the runs where it produced a measurable
+A rejected $C_r^\star$ may still help on the runs where it produced a measurable
 answer while failing more often in some other way (for example, malformed
 output). If its quality conditional on a measurable answer exceeds the
 incumbent's by a configured margin, one bounded repair generation runs (when
-enabled; OOLONG-Pairs only in the current study). $C^\star$ is mined
+enabled; OOLONG-Pairs only in the current study). $C_r^\star$ is mined
 on the held-in tasks, the proposer is restricted to patterns with the
 configured failure causes, and the single resulting descendant is validated
 against the original incumbent under Equation~\ref{eq:promotion-main}. The
@@ -101,5 +113,40 @@ branch never recurses and cannot promote without passing the ordinary gate.
 \paragraph{Stopping.}
 Optimization stops at the round ceiling $T$ or after $p$ consecutive rounds
 without promotion, then freezes the final incumbent for separate evaluation.
-Appendices~\ref{app:mining}--\ref{app:measurement} give the implementation
-contracts and measurement definitions.
+Appendix~\ref{app:repro} gives the artifact and measurement definitions.
+
+\begin{algorithm*}[t]
+\caption{Executed SH-RLM optimization and promotion procedure}
+\label{alg:self-harness}
+\small
+\hrule\vspace{2pt}
+\textbf{Require:} fixed model $\mathcal{M}$, initial harness $H_0$, held-in
+split $D_{\mathrm{in}}$, held-out split $V$, screening subset $V_s$, evaluator
+$\mathcal{E}$, proposal width $k$, round limit $T$, patience $p$.\\[-1pt]
+\textbf{Ensure:} frozen final incumbent $H_{T'}$, where $T'\leq T$.\\[-2pt]
+\begin{tabular}{@{}r@{\hspace{5pt}}p{.69\textwidth}@{\hspace{8pt}}p{.21\textwidth}@{}}
+1 & $z\leftarrow0$ & \emph{consecutive rejections}\\
+2 & \textbf{for} $r=1,\ldots,T$ \textbf{do} & \\
+3 & \quad $R_r\leftarrow\textsc{Evaluate}(\mathcal{M},H_{r-1},D_{\mathrm{in}},\mathcal{E})$ & held-in executions only\\
+4 & \quad $B_r\leftarrow\textsc{MineFailures}(R_r)$ & verifier-grounded evidence\\
+5 & \quad $\mathcal{C}_r\leftarrow\textsc{Propose}(\mathcal{M},H_{r-1},B_r,k)$ & independent one-surface edits\\
+6 & \quad $\mathcal{C}_r\leftarrow\textsc{Preflight}(\mathcal{C}_r)$ & reject malformed edits\\
+7 & \quad \textbf{if} $|\mathcal{C}_r|>1$ \textbf{then} & \\
+8 & \qquad $C_r^\star\leftarrow\textsc{TopRanked}(\textsc{Screen}(H_{r-1},\mathcal{C}_r,V_s,\mathcal{E}))$ & screening orders; never promotes\\
+9 & \qquad \textbf{if} no candidate clears the screening gate \textbf{then} re-attribute $R_r$ once, propose a fresh pool, and repeat line 8 & bounded fallback\\
+10 & \quad \textbf{else} $C_r^\star\leftarrow$ the sole preflighted candidate & skip tournament\\
+11 & \quad $(P(H_{r-1}),P(C_r^\star))\leftarrow\textsc{FullValidation}(H_{r-1},C_r^\star,V,\mathcal{E})$ & $v$ attempts per task\\
+12 & \quad $\Delta_{r,\ell}\leftarrow\bar F_\ell(C_r^\star)-\bar F_\ell(H_{r-1})$ for every $\ell\in\mathcal{L}$ & all-attempt means\\
+13 & \quad $\tau_{\mathrm{imp}}\leftarrow0$ if $r\leq5$, else $.01$ & adaptive guard; round 6 recomputed\\
+14 & \quad $a_r\leftarrow[\Delta_{r,\ell}\geq-\tau_\ell\ \forall\ell]\wedge[|\mathcal{L}|^{-1}\sum_\ell\Delta_{r,\ell}\geq\tau_{\mathrm{imp}}]$ & quality gate\\
+15 & \quad $a_r\leftarrow a_r\wedge[\mathrm{WF}(C_r^\star)\leq\mathrm{WF}(H_{r-1})]$ & wrong-format gate\\
+16 & \quad \textbf{if} $a_r$ \textbf{then} $H_r\leftarrow C_r^\star$; $z\leftarrow0$; record \textsc{Promote} & incumbent changes\\
+17 & \quad \textbf{else if} the refinement trigger fires \textbf{then} $C_r^\dagger\leftarrow\textsc{Refine}(C_r^\star,B_r)$ once; repeat lines 11--15 for $C_r^\dagger$ and set $(H_r,z)$ to $(C_r^\dagger,0)$ if it passes, otherwise $(H_{r-1},z+1)$ & no recursive refinement\\
+18 & \quad \textbf{else} $H_r\leftarrow H_{r-1}$; $z\leftarrow z+1$; record \textsc{Reject} & incumbent unchanged\\
+19 & \quad Persist candidates, attempts, summaries, decisions, hashes, and any configuration intervention & complete audit trail\\
+20 & \quad \textbf{if} $z\geq p$ \textbf{then break} & patience stopping\\
+21 & \textbf{end for} & \\
+22 & \textbf{return} the frozen final incumbent $H_{T'}$ & separate final evaluation\\
+\end{tabular}
+\vspace{2pt}\hrule
+\end{algorithm*}

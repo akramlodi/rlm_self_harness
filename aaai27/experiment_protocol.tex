@@ -1,99 +1,112 @@
-% Shared main-text experimental protocol; results are prospective.
-\section{Experiments}
+\section{Experimental Protocol}
 \label{sec:setup}
 
-We optimize a harness separately in two long-input environments and then
-evaluate the frozen result against three fixed-harness references. Runner,
-attributor, and proposer use the same frozen \textbf{DeepSeek-V4-Flash} model,
-served through OpenRouter with identical decoding settings. Optimization and
-evaluation are implemented. This is a work in progress, and results and
-analysis will be added once the runs complete. Preliminary runs from an earlier
-configuration are reported in Appendix~\ref{sec:diag} and are not part of this
-study.
-
-\paragraph{Environments.}
-\label{sec:envs-and-splits}
-\emph{OOLONG-Pairs} is reconstructed from the \texttt{trec\_coarse} portion of
+\paragraph{Environment and model.}
+OOLONG-Pairs is reconstructed from the \texttt{trec\_coarse} portion of
 OOLONG-synth~\citep{bertsch2025oolong}. Each task applies one of twenty
-predicates to a collection of labeled user records and asks for the set of
-user-ID pairs that satisfy it. A deterministic scorer compares predicted and
-gold pair sets. \emph{OBLIQ-Bench Math} (analogue queries) gives a competition
-problem and a candidate corpus of other problems. The model must rank, by ID,
-the candidates whose solutions use the same underlying proof technique. It is
-scored by NDCG@10 against the dataset's binary relevance judgments (151 queries
-over a 3,508-problem corpus).
+predicates to labeled user records and asks for all user-ID pairs satisfying
+it; a deterministic verifier computes pair-set F1. Runner, attributor, and
+proposer use the same pinned DeepSeek-V4-Flash endpoint through OpenRouter.
+Model weights, decoding configuration, verifier, resource limits, and editable
+surface schema remain fixed.
 
-\paragraph{Blended optimization.}
-Both environments are optimized on a blend of three input sizes, so a single
-harness must work across them. OOLONG-Pairs uses record collections at nominal
-context windows of 8K, 16K, and 32K tokens. OBLIQ uses candidate pools of 200,
-500, and 1,000 problems; each pool holds a query's gold problems plus random
-negatives. At every size, mining and validation tasks are disjoint and are
-never used for testing. Promotion strata $\ell$ in
-Equation~\ref{eq:promotion-main} are these sizes: context windows for OOLONG-Pairs
-and pool sizes for OBLIQ. Table~\ref{tab:study-settings} gives both
-profiles. Both start from the sparse \hzero{}; the hand-written \hzerostar{}
-is used only as an evaluation reference.
+\paragraph{Optimization split.}
+The ten-round run blends nominal 8K, 16K, and 32K contexts. Mining and
+validation tasks are role-disjoint. Each fully evaluated subject has 24
+validation tasks (eight per length) and three attempts per task. The loop starts
+from sparse \hzero{}; its final promoted incumbent is denoted \shrlm. Validation
+is held out from mining but is repeatedly accessed by the adaptive optimizer,
+so it is evidence about the search trajectory rather than a final test.
 
 \begin{table}[t]
-\centering\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}Xl@{}}
+\centering\scriptsize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}ll@{}}
 \toprule
- & OOLONG-Pairs & OBLIQ Math \\
+Setting & Executed value \\
 \midrule
-Strata $\ell$ & 8K / 16K / 32K tok. & 200 / 500 / 1000 docs \\
-Mine/val./test & 8 / 8 / 4 per $\ell$ & 8 / 8 / 4 per $\ell$ \\
-Long test & 40 tasks at 262K & -- \\
-$|V_s|$ & 6 (1/2/3 per $\ell$) & 6 (2 per $\ell$) \\
-$m$, $v$, $v_s$, $k$ & 2, 3, 1, 4 & 2, 3, 1, 4 \\
-$T$, $p$ & 10, 3 & 10, 5 \\
-Quality & pair-set F1 & NDCG@10 \\
-Pass & exact pair set & NDCG@10 $\ge 0.9$ \\
-$\tau_\ell$ & .144 / .144 / .244 & .227 / .198 / .266 \\
-$\tau_{\mathrm{imp}}$ & 0 & 0.01 \\
-Cost band & $[0.5, 3]\times$ & $[0, 3]\times$ \\
-Early stop & on & off \\
-Re-attrib. & on & off \\
-Refinement & on (\texttt{wrong\_format}) & off \\
-Iter./depth & 45 (+3 final.) / 3 & 30 / 3 \\
+Optimization strata & 8K / 16K / 32K tokens \\
+Mining / validation tasks & 8 / 8 per stratum \\
+Screening subset $|V_s|$ & 6 tasks (2 per stratum) \\
+Attempts $m,v,v_s$ & 2 / 3 / 1 per task \\
+Candidate ceiling $k$ & 4 single-surface edits per round \\
+Round ceiling / patience $T,p$ & 10 / 3; temporarily 15 / 4, unenforced \\
+$\tau_\ell$ (8K / 16K / 32K) & .143542 / .143708 / .243833 \\
+$\tau_{\mathrm{imp}}$ & 0 (R1--R5); .01 (R6--R10) \\
+Cost band & $[0.5,3.0]\times$; recorded, not enforced \\
+Fallbacks & re-attribution; one wrong-format refinement \\
+RLM caps & 45+3 iterations; depth 3; \$2; 3600 s \\
+Decoding & temperature 0; top-$p$ .95; 8192 output tokens \\
 \bottomrule
-\end{tabularx}
-\caption{Optimization profiles. Per-size counts are tasks; $m$ and $v$ are
-attempts per mining and validation task, $v_s$ per screening task, $k$ the
-candidate ceiling, $T$ the round ceiling, and $p$ the patience. Margins $\tau_\ell$ come from a bootstrap over each
-environment's round-one incumbent validation scores. Both profiles cap each run
-at \$2 and 3,600\,s and each validation subject at \$100.}
+\end{tabular}
+\caption{Executed OOLONG-Pairs optimization profile. The threshold change is
+an adaptive intervention, not a pre-specified schedule. Cost is measured for
+every decision but does not gate promotion in this run.}
 \label{tab:study-settings}
 \end{table}
 
-\paragraph{Evaluation conditions.}
-\label{sec:baselines}
-After optimization stops, the final incumbent is frozen as \shrlm and compared
-on held-out test tasks with three fixed references. All four conditions run on
-the same model:
-\begin{itemize}
-\setlength{\itemsep}{1pt}
-\item \hzero{}: the sparse starting harness, measuring what optimization added;
-\item \hzerostar{}: an upstream-style hand-written \rlm{} prompt;
-\item $\lambda$-RLM: a pinned reconstruction of the hand-designed recursive
-method of~\citet{roy2026ycombinator};
-\item \shrlm: the frozen optimized harness.
-\end{itemize}
-Each condition makes three attempts per test task. Test tasks include the four
-held-out tasks per optimization size in each environment. For OOLONG-Pairs they
-also include 40 tasks at a nominal 262K window. That is $8\times$ the longest
-optimization context, and no long-window task is mined or validated. OBLIQ test
-queries come from a frozen 40-query split already used for earlier
-full-corpus comparisons, and they are disjoint from all mining and validation
-queries.
+\paragraph{Adaptive intervention.}
+Rounds 1--5 used $\tau_{\mathrm{imp}}=0$. After a round-six candidate improved
+macro F1 by only .0045, we changed the threshold to .01, recomputed that
+decision as a rejection, and used .01 for rounds 6--10. Earlier decisions were
+not retroactively changed; consequently round two's +.0007 candidate remains
+promoted. During continuation the operational ceiling and patience were also
+temporarily relaxed from 10/3 to 15/4 with patience unenforced, then restored
+to 10/3 after round nine. No candidate decision changes under the restored
+stopping rule because no three-round rejection streak occurred. The .01
+threshold is operational, not statistically calibrated. We report these
+interventions because concealing them would overstate the pre-specification
+and reproducibility of the search.
 
-\paragraph{Metrics.}
-We report mean primary quality (F1 or NDCG@10) per test size and macro-averaged
-across sizes, together with pass rate under each environment's pass threshold.
-We also report cost, runtime, sub-call counts, and completed, failed, and
-missing attempts. Repeated attempts on one task, and OOLONG-Pairs predicates
-that share a record collection, are not independent samples, so uncertainty
-will be estimated over tasks. A promotion during optimization is a selection
-decision, not a significance test. Cross-environment transfer and
-weight-training comparisons remain future work.
+\paragraph{Frozen comparisons.}
+We compare four immutable conditions, all using the same frozen model endpoint:
+\begin{itemize}
+  \item \hzero{} is the sparse mechanism floor and optimization seed. It
+  measures what the search adds.
+  \item \hzerostar{} is the pinned, hand-authored upstream RLM prompt and
+  orchestration reference. It is never used as an optimization seed.
+  \item \shrlm{} is the frozen round-10 incumbent produced from \hzero{} by
+  the reported search.
+  \item $\lambda$-RLM is a pinned reconstruction of the task-specific
+  split--map--parse--filter--cross procedure of~\citet{roy2026ycombinator}.
+  It receives OOLONG-specific structure and performs deterministic pair
+  construction on the host, so it is a specialized reference rather than an
+  equivalent generic harness.
+\end{itemize}
+
+The primary frozen test contains 48 OOLONG-Pairs tasks, 16 at each of 8K, 16K,
+and 32K, with two fresh attempts per task (96 runs per method). A second frozen
+test contains 40 tasks at a nominal 262K window, also with two attempts (80 runs
+per method). We never replace failed attempts: wrong-format and resource
+terminations receive zero quality. For transfer, we apply \hzero{},
+\hzerostar{}, and the frozen round-10 harness without further optimization to
+the same 40-query full-corpus OBLIQ-Bench Math split, two attempts per query,
+scored by NDCG@10.
+
+\paragraph{Pareto-aware frozen evaluation.}
+We report all-attempt mean quality, total recorded input-plus-output tokens,
+provider cost, and terminal failures. Stochastic instability is the mean
+absolute F1 difference between the two attempts for each task. Uncertainty for
+quality differences uses a paired nonparametric bootstrap over tasks (not over
+attempts), with attempts for a task resampled as one cluster and 95\% percentile
+intervals. The executed promotion rule observes primary quality $Q$ plus its
+hard constraints. A scalar comparison can therefore prefer $A$ to $B$ whenever
+$Q(A)>Q(B)$ even if $A$ consumes more tokens, costs more, or fails more often.
+For the frozen audit we instead retain the full benefit-oriented vector
+\begin{equation}
+\begin{aligned}
+ \mathbf{z}(H)&=(Q(H),-T(H),-C(H),\\[-2pt]
+ &\hspace{3.8em}-E(H),-I(H)),\\
+ A\succ_P B&\iff z_j(A)\ge z_j(B)\quad\forall j,\\[-2pt]
+ &\hspace{3.8em}\text{and }z_k(A)>z_k(B)\text{ for some }k,
+\end{aligned}
+ \label{eq:pareto-audit}
+\end{equation}
+where $T,C,E,I$ are tokens, provider cost, terminal failures, and instability.
+If neither $A\succ_P B$ nor $B\succ_P A$, the evidence supports a trade-off,
+not a single winner. This prevents a small quality increase from hiding an
+arbitrarily large resource regression. We do not collapse $\mathbf{z}$ into a
+post hoc scalar or use it to rewrite promotion history. Thus, ``Pareto-aware''
+refers specifically to frozen comparison and deployment audit; the executed
+optimizer remains a constrained scalar-quality search. Provider cost does not
+include host compute.

@@ -25,6 +25,7 @@
 \usepackage{newfloat}
 \usepackage{listings}
 \DeclareCaptionStyle{ruled}{labelfont=normalfont,labelsep=colon,strut=off} % DO NOT CHANGE THIS
+\DeclareFloatingEnvironment[fileext=loa,name=Algorithm,placement=tb]{algorithm}
 \lstset{%
 	basicstyle={\footnotesize\ttfamily},
 	numbers=left,numberstyle=\footnotesize,xleftmargin=2em,
@@ -50,16 +51,16 @@
 \usepackage{array}
 \usepackage{tabularx}
 \usepackage{xcolor}
+\usepackage{tcolorbox} % bordered diff cards with a title bar (fig:final-surface-edits)
+\tcbuselibrary{skins,breakable}
 \usepackage{tikz}
-\usetikzlibrary{positioning,fit,backgrounds,arrows.meta,calc,shadows}
+\usetikzlibrary{positioning,fit,backgrounds,arrows.meta,calc,shadows,shapes.geometric,shapes.misc}
 \usepackage{cleveref} % works without hyperref
 \usepackage{xspace}
 
-% Personal comment commands (comment out the color versions before submitting)
-\newcommand{\SC}[1]{\textcolor{violet}{Simon: #1}}
-\newcommand{\JB}[1]{\textcolor{teal}{Jaloliddin: #1}}
-% \renewcommand{\SC}[1]{}
-% \renewcommand{\JB}[1]{}
+% Author comments are disabled in the submission build.
+\newcommand{\SC}[1]{}
+\newcommand{\JB}[1]{}
 
 % Convenience macros
 \newcommand{\rlm}{\textsc{RLM}\xspace}
@@ -73,12 +74,23 @@
 % ---- styling for the RLM edit-space figure (fig:surfaces) ----
 \definecolor{editgreen}{HTML}{2E7D5B}
 \definecolor{editfill}{HTML}{E7F5EE}
+\definecolor{branchgreen}{HTML}{8BC9A3}
 \definecolor{fixgrey}{HTML}{8A8F98}
 \definecolor{fixfill}{HTML}{F1F2F4}
 \definecolor{envtint}{HTML}{EAF1FB}
 \definecolor{subtint}{HTML}{FCF1E7}
 \definecolor{inkcol}{HTML}{2B2F36}
 \newcommand{\cardhd}{\bfseries}
+
+% ---- per-round colors for fig:final-surface-edits: each round's own
+% addition gets a unique background fill, shared by its diff rows and its
+% round-number badge in the card title (badge text stays black).
+\definecolor{r1fill}{HTML}{8EC9FA}
+\definecolor{r2fill}{HTML}{6EE0C4}
+\definecolor{r4fill}{HTML}{9BE085}
+\definecolor{r5fill}{HTML}{FFBB66}
+\definecolor{r7fill}{HTML}{C9A0F5}
+\definecolor{r10fill}{HTML}{FFDE59}
 \newcommand{\cardsb}{\normalfont\scriptsize\color{black!62}}
 \tikzset{
   penbadge/.pic={
@@ -102,7 +114,7 @@
 \definecolor{lstcom}{HTML}{6B7280}
 \lstdefinestyle{harness}{
   language=Python,
-  basicstyle=\ttfamily\scriptsize\linespread{0.88}\selectfont,
+  basicstyle=\ttfamily\scriptsize,
   keywordstyle=\color{lstkw},
   stringstyle=\color{lststr},
   commentstyle=\color{lstcom},
@@ -110,7 +122,7 @@
   emph={str,list,dict,int,tuple},
   emphstyle=\color{lstkw},
   numbers=left,
-  numberstyle=\ttfamily\tiny\color{lstnum},
+  numberstyle=\ttfamily\scriptsize\color{lstnum},
   numbersep=9pt,
   backgroundcolor=\color{lstbg},
   frame=single,
@@ -129,7 +141,8 @@
 }
 
 %% ---------------------------------------------------------------------
-\title{Self-Harnessing Recursive Language Models}
+\title{When Scalar Validation Is Not Enough:\\
+A Multi-Metric Audit of Self-Harnessing Recursive Language Models}
 % Anonymous submission: keep the author block exactly as in
 % AnonymousSubmission2027.tex if it differs from this.
 \author{
@@ -145,30 +158,32 @@
 %-------------------------------------- Abstract -------------------------------------------------
 % ================================================================================================
 
-% \begin{abstract}
-% Recursive language models (\rlms) use a persistent execution environment and
-% recursive model calls to work over inputs larger than a single model context.
-% Their performance depends on the surrounding harness. We adapt
-% \sh{}~\citep{zhang2026selfharness} to this setting: a fixed model diagnoses failed
-% executions, proposes bounded edits to declared harness surfaces, and compares
-% one combined candidate with the incumbent on validation tasks. The current gate
-% allows ties in verifier-pass count within configured resource bands. We describe
-% the implemented loop and a forthcoming OOLONG-Pairs study comparing the saved
-% initial and final harnesses on held-out task instances and larger record
-% collections. Results and cross-environment transfer evaluation remain forthcoming.
-% \end{abstract}
-
-
 \begin{abstract}
-\JB{Abstract from Short paper}
-Recursive language models (\rlms) let a bounded-context model operate over inputs larger
-than its context window by offloading the input, decomposing it, invoking recursive model
-calls, and aggregating their outputs. Vanilla RLMs suffer from many failure
-modes, necessitating the need to fine-tune LLMs or extend the RLM harness by hand to overcome limitations in specific tasks. We propose adapting the \sh{} framework to \rlms, so that a fixed model improves its own recursive harness from evidence produced while running: it mines recurring failure mechanisms from verifier-grounded execution traces, proposes minimal edits to declared harness surfaces, and promotes only edits that survive non-regressive
-validation. We optimize separately on OOLONG-Pairs and OBLIQ-Bench Math from a sparse
-starting harness, freeze the result, and compare it with the starting harness, a
-hand-written \rlm{} prompt, and $\lambda$-RLM on held-out tasks. For OOLONG-Pairs these
-include inputs $8\times$ longer than any seen during optimization. Results forthcoming.
+Self-optimizing agent harnesses create a reproducibility problem: an adaptive
+validation score can rise while cost, reliability, or out-of-distribution
+behavior worsens. We adapt \sh{} framework to recursive language models (\rlms): a fixed
+DeepSeek-V4-Flash model mines its own failures and proposes single-surface
+harness edits over ten rounds on OOLONG-Pairs, and we freeze every compared
+harness to audit quality, token use, cost, failures, stochastic instability,
+length shift, and cross-task transfer. Held-out validation F1 rises from .5729
+to .8091 (+23.6 points, 41\% relative) while tokens fall 5.9\%, cost falls
+66.8\%, and terminal failures fall from 23/72 to 0. On a frozen 48-task test
+never seen during optimization, that gain mostly disappears against the
+stronger of two hand-authored references: .7442 F1 versus .7248 for H0*, a
+separately pinned upstream prompt never used as the optimization seed, a 95\%
+interval $[-.0521,.0935]$ that crosses zero, at 2.17$\times$ the tokens. It
+still clearly beats the seed itself, H0 (.6967), the sparse prompt the loop
+actually started from. Length shift and task shift then pull
+in opposite directions: on much longer, 262k-token instances of the same task
+the optimized harness still generalizes positively (.6307 versus .5923, +6.5\%),
+but it transfers negatively to an unrelated task, OBLIQ-Bench Math (.0517
+versus .1040 for the stronger generic reference H0*, a 50.2\% relative decline;
+paired 95\% interval $[-.0914,-.0175]$) -- ten rounds of OOLONG-Pairs-specific
+optimization left it substantially worse on the unseen task. The result is a
+reproducible, post hoc Pareto-aware audit rather than a
+scalar win: held-out adaptive validation alone is insufficient evidence of a
+robust harness improvement. Pareto awareness applies to frozen evaluation, not
+to the optimizer's historical promotion decisions.
 \end{abstract}
 
 % ================================================================================================
@@ -176,29 +191,42 @@ include inputs $8\times$ longer than any seen during optimization. Results forth
 % ================================================================================================
 
 \section{Introduction}
-Frontier language models are bounded by a fixed context window, and quality degrades on
-inputs longer than what the model was effectively trained and evaluated on, well before the
-window limit is reached, a failure mode termed \emph{context rot}~\citep{hong2025contextrot}.
-An input is called \emph{in-distribution} when its length and structure resemble what the model reliably handles, and \emph{out-of-distribution} otherwise, where behavior degrades unpredictably. Recursive language models (\rlms) scale inference-time compute instead of the
-context window~\citep{snell2024scaling}: a model decomposes its own context and invokes fresh
-copies of itself on the pieces~\citep{zhang2025rlm}, turning a long out-of-distribution input
-into sub-calls that are individually shorter~\citep{zhang2026harness}; shortening addresses
-the length dimension of the mismatch, though it does not by itself guarantee a sub-call's
-content is otherwise in-distribution.
-Performance therefore depends on the harness governing recursion, not just the model, and multiple possible failure modes implicate the harness:
-policies collapse into a single sub-call~\citep{zhang2026harness},
-deeper recursion degrades accuracy while inflating cost~\citep{wang2026overthink}, and recursion
-halts by heuristic rather than evidence~\citep{guha2026termination}.
+Reproducible AI evaluation becomes difficult when the evaluated system rewrites
+its own scaffold. Candidate harnesses are selected using repeated access to a
+held-out validation set; stochastic model calls make small deltas unstable; and
+one scalar can conceal regressions in efficiency, reliability, or distribution
+shift. A saved ``best'' harness is therefore not a reproducible improvement
+unless its artifacts are frozen and its claims survive a separate,
+multi-objective audit.
 
-Three approaches are mainly used today.
-Fine-tuning the model to work within the
-harness~\citep{zhang2026harness,yang2026recursive} ties any gain to a specific checkpoint.
-Hand-engineering the harness~\citep{alizadeh2026srlm,roy2026ycombinator,lumer2026rah} requires
-frequent expert work that a new model family can outpace.
-The third, \emph{meta-agent} approach edits the scaffold directly by inspecting an agent's own trajectories, as in \sh{}~\citep{zhang2026selfharness}, which mines execution traces for recurring failures, proposes minimal edits, and promotes only non-regressive ones. We adapt \sh{} to \rlms (SH-RLM). \rlms are a natural but untested setting for this third approach: final answers can be checked by an environment verifier, while execution traces support model-inferred diagnoses of recursive behavior.
-We ask: \emph{can a language model
-identify recurring failures in its own recursive behavior, convert them into targeted harness
-edits, and build a harness that keeps performing when applied to inputs longer than those it was optimized on? Is a SH-RLM competitive against a hand designed harness-RLM?}
+Recursive language models (\rlms) make these risks concrete. An \rlm{} stores a
+long input outside the model context, uses a persistent execution environment,
+and invokes fresh model calls over selected pieces~\citep{zhang2025rlm}. This can
+mitigate context degradation~\citep{hong2025contextrot}, but moves substantial
+behavior into the harness: instructions, recursion policy, execution formatting,
+helpers, and answer extraction. Poor policies can collapse into one sub-call,
+over-recurse, inflate cost, or terminate unreliably
+\citep{zhang2026harness,wang2026overthink,guha2026termination}.
+
+We adapt \sh{}~\citep{zhang2026selfharness} to this setting. A single frozen model
+runs OOLONG-Pairs tasks, diagnoses verifier-grounded traces, proposes bounded
+single-surface edits, and promotes candidates through a quality gate. The
+optimizer is deliberately \emph{not} described as Pareto-aware: F1 is its primary
+objective, per-length and formatting checks are constraints, and token and cost
+measurements are recorded but do not determine every decision. Our research
+question is consequently broader than whether the final validation score rises:
+\emph{does scalar-guided harness optimization produce a robust, reproducible
+improvement once quality, efficiency, reliability, stochasticity, length shift,
+and transfer are measured together?}
+
+The answer is mixed. The ten-round loop greatly improves its adaptive validation
+record, but the frozen final harness is not a clear Pareto improvement over a
+pinned upstream prompt. It improves observed F1 and failures while consuming
+substantially more tokens, and its F1 advantage is statistically unresolved on
+the available 48-task test. A task-specific algorithm remains much stronger,
+and cross-task transfer is negative. These are useful negative results: they
+show exactly why reproducible reporting must preserve all attempts, disclose
+adaptive interventions, and separate optimization evidence from final tests.
 
 % ================================================================================================
 %----------------------------------- Related Work ------------------------------------------------
@@ -221,86 +249,70 @@ Recent work has also highlighted the difficulty of evaluating automatically evol
 \paragraph{Harness benefit and model capability.}
 Finally, Disentangling Harness Evolution separates harness-updating from harness-benefit: models may differ in their ability to produce useful harness updates and in their ability to correctly use those updates~\citep{lin2026disentangling}. This is relevant to our setting because both harness proposal and execution use a single frozen backbone. Consequently, performance may depend not only on the quality of the discovered harness, but also on the model's ability to follow and benefit from its changes.
 
-\section{Our Contributions}
+\section{Contributions}
 
 Our work makes the following contributions:
 
 \begin{itemize}
-    \item \textbf{\sh{} for recursive language models.}
-    Adapting \sh{} \citep{zhang2026selfharness} to \rlms by declaring ten editable harness surfaces keyed to phases of the \rlm{} loop, starting from a deliberately sparse initial harness and letting a fixed model mine its own traces, propose targeted edits, and validate them without weight updates or a stronger external model.
+    \item \textbf{A reproducible self-harnessing study.}
+    We expose ten declared \rlm{} harness surfaces, save every candidate and
+    attempt, and disclose the mid-study threshold change instead of presenting
+    the run as a pre-specified Pareto optimizer.
 
-    \item \textbf{Failure-driven harness optimization.}
-    We introduce a propose--validate--promote loop that uses execution failures to identify weaknesses in the harness, generate targeted modifications, and retain only validated improvements.
+    \item \textbf{An explicit Pareto-aware evaluation.}
+    We jointly report task quality, tokens, provider cost, terminal failures,
+    paired stochastic instability, per-length behavior, and cross-task transfer,
+    with uncertainty clustered by task rather than by attempt. We apply Pareto
+    dominance only after freezing all methods and do not relabel the executed
+    scalar-quality search as a Pareto-aware optimizer.
 
-    \item \textbf{Length generalization.}
-    We evaluate whether harnesses optimized on shorter contexts continue to improve performance on substantially longer inputs, testing whether the learned harness improvements generalize beyond the context lengths used during optimization.
-
-    \item \textbf{Empirical evaluation.}
-    We evaluate self-harnessing across long-context benchmarks and compare optimized harnesses against fixed-harness baselines to measure the effectiveness of automatically discovered harness improvements.
+    \item \textbf{Evidence against scalar conclusions.}
+    The optimized harness improves adaptive validation but occupies a trade-off
+    frontier on frozen tests, loses to a task-specific recursive algorithm, and
+    transfers negatively to an unseen ranking task.
 \end{itemize}
-
-% \section{Our Contributions}
-% \JB{Contributions from short paper. Are we not planning to do cross-environment transfer?}
-% \begin{enumerate}
-% \setlength{\itemsep}{1pt}
-% \setlength{\topsep}{2pt}
-% \setlength{\parskip}{0pt}
-% \item \textbf{\sh{} for recursive language models.}
-% Adapting \sh{} \citep{zhang2026selfharness} to \rlms by declaring ten editable harness surfaces keyed to phases of the \rlm{} loop, starting from a deliberately sparse initial harness and letting a fixed model mine its own traces, propose targeted edits, and validate them without weight updates or a stronger external model.
-
-% \item \textbf{Evidence of length generalization.}
-% Optimising only on short source instances, freeze the harness, and evaluate on source instances $8$--$32\times$ longer.
-
-% \item \textbf{Evidence of cross-environment transfer.}
-% Applying the same frozen harness to an unseen target environment's short and long splits.
-% \end{enumerate}
-
 
 % Paths are prefixed with aaai27/ because Overleaf compiles from the project
 % root, where the NeurIPS files with the same names live.
 % (\textwidth -> \linewidth, or figure -> figure* for full-width).
 \input{aaai27/optimization_method.tex}
-\input{aaai27/figures/Figure_2}
 \input{aaai27/experiment_protocol.tex}
-% Preliminary (pre-study) runs now live in the appendix; see below.
+\input{aaai27/results.tex}
 \section{Limitations and Future Work}
 \label{sec:limitations}
 
-Diagnoses and behavioral predictions are model judgments constrained by observed
-operations, not causal proofs. Screening ranks candidates on a few tasks with
-one attempt each, so a better candidate can lose the tournament and is then
-retired without full validation. Under OOLONG-Pairs' $\tau_{\mathrm{imp}}=0$,
-a macro-F1 tie that clears every per-length veto promotes, so a promotion is a
-selection decision rather than a significant improvement.
-Validation is reused adaptively. OOLONG-Pairs roles share record collections,
-with only two collections per length, and OBLIQ validates on eight queries per
-pool size. These choices define the scope of the evaluation; stronger claims about
-individual edits or unseen source data would need additional evidence.
-
-All optimization stages and evaluation infrastructure are implemented. The next
-step is to freeze the study configuration, run optimization, and evaluate the
-saved initial and final harnesses under the declared protocol. Completed results,
-resource totals, and any uncertainty analysis will be reported with their actual
-coverage. Cross-environment transfer, weight training, and optional ablations
-remain separate future studies (Appendix~\ref{app:extensions}).
+The 48-task length test yields only 16 independent tasks per stratum, and its
+confidence intervals remain wide. Provider sampling is not guaranteed to be
+stationary across dates. The same model proposes and executes edits, so results
+may not transfer to other model families. Diagnosis text is model judgment, not
+causal proof. Validation was accessed adaptively, and the threshold change after
+round five prevents a fully pre-registered interpretation. Cost covers recorded
+provider charges only; it omits host-side computation, which particularly favors
+the deterministic operations in $\lambda$-RLM. The OBLIQ study is a transfer
+audit, not an independently optimized environment. Larger frozen tests, matched
+wall-clock accounting, multiple optimizer seeds, and replication on other
+models are the highest-value next steps.
 
 \paragraph{Broader impacts.}
 Harness optimization could reduce manual engineering and improve the use of
 fixed models, but a benchmark pass does not measure safe deployment or resistance
 to misuse. Automatically edited instructions may change behavior outside the
-benchmark; the optional safety analysis in Appendix~\ref{app:alignment} is not
-part of the current promotion gate. This study uses public benchmark data and
-no human-subject experiment or deployed decision system.
+benchmark, and safety is not part of the current promotion gate. This study uses
+public benchmark data and no human-subject experiment or deployed decision
+system. Its audit also shows that optimizing quality can increase resource use,
+so downstream users should choose from a disclosed frontier rather than deploy
+the highest-scoring artifact by default.
 
 % AAAI sets the bibliography style itself (aaai2027.bst) — no \bibliographystyle.
 \bibliography{aaai27/references}
 
-% Check the call for papers: AAAI may require the appendix as a separate
-% supplementary file instead of after the references.
+% Working-paper appendices follow the references. Keep the historical
+% optimization appendix as a separate, unchanged record of the earlier design.
 \clearpage
 \appendix
 \input{aaai27/optimization_appendix.tex}
-\input{aaai27/eliaz_experiments.tex}
+\input{eliaz_experiments.tex}
+\input{aaai27/reproducibility_appendix.tex}
 
 % Reproducibility checklist: if ReproducibilityChecklist.tex has its own
 % \documentclass, compile and submit it separately instead of \input-ing it.

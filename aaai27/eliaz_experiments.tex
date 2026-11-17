@@ -163,7 +163,7 @@ reused. The veto lines are each round's self-calibrated margins.}
 We compare the frozen \shrlm harness with \hzerostar on the 256K OOLONG-Pairs
 test set, which is 8$\times$ the longest optimization length. Both conditions
 run on the same 9 tasks (3 per task group) with 3 attempts each, and all 9 ran
-to completion (\cref{tab:long}). \shrlm scores higher on every task. Most of
+to completion (\cref{tab:long-matched}). \shrlm scores higher on every task. Most of
 the gap comes from how \hzerostar fails: 9 of its 27 runs end in
 \texttt{wrong\_format} and score 0, and its runs average 592\,s, against
 4094\,s for \shrlm. So \hzerostar mostly answers without classifying the
@@ -196,7 +196,7 @@ $\lambda$-RLM & 9 & .708 & \$0.10 \\
 attempts per condition, all complete. Paired difference +.388, 95\% bootstrap CI
 [+.220, +.556]; \shrlm wins all 9 tasks. Against \hzero: +.048
 [$-$.045, +.134]. Against $\lambda$-RLM: $-$.135 [$-$.187, $-$.088].}
-\label{tab:long}
+\label{tab:long-matched}
 \end{table}
 
 \paragraph{Discussion and limitations.}

@@ -125,6 +125,7 @@ probability.
 Mechanism & Eligible surfaces (primary first) \\
 \midrule
 REPL contract misuse & S1, S9, S10, S4 \\
+Task objective misinterpretation & S2, S3, S4, S10 \\
 Whole-input subcall collapse & S2, S3, S10, S6 \\
 Incomplete coverage & S2, S4, S3, S10 \\
 Redundant decomposition & S2, S3, S10 \\
@@ -138,12 +139,13 @@ Swallowed subcall error & S5, S3, S6 \\
 Iteration budget exhaustion & S6, S3, S1, S10, S5$^{\dagger}$ \\
 Unparsed child output & S7, S3, S5, S8$^{\dagger}$ \\
 REPL execution fault & S8, S10, S3, S1, S5$^{\dagger}$ \\
+Answer serialization failure & S9, S4, S10 \\
 Lossy aggregation & S3, S4, S8$^{\dagger}$ \\
 Unconsulted procedure & S10, S3, S2 \\
 Other & S1--S10 \\
 \bottomrule
 \end{tabularx}
-\caption{Human-defined, many-to-many routing (taxonomy 3.3.0).
+\caption{Human-defined, many-to-many routing (taxonomy 3.4.0).
 An \texttt{UNATTRIBUTED} diagnosis has no eligible route, including when its
 mechanism is Other. $\dagger$ denotes additional operation-evidence requirements.}
 \label{tab:routes}
@@ -573,7 +575,7 @@ different source. Observation persistence errors remain visible failures.
 \toprule
 Contract & Version \\
 \midrule
-Taxonomy / capabilities & 3.3.0 / \texttt{surface-capabilities/v1} \\
+Taxonomy / capabilities & 3.4.0 / \texttt{surface-capabilities/v2} \\
 Attribution prompt / validator / digest & 1.6.0 / 1.2.0 / 1.8.0 \\
 Proposal prompt / validator & 4.3.0 / 4.2.0 \\
 Proposal response / text & \texttt{proposal-selection/v2} / \texttt{literal-text/v1} \\
